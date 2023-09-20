@@ -43,3 +43,10 @@ fn setup(
     // TODO: setup bevy camera
 }
 ```
+
+
+# credits
+
+- [bevy](https://github.com/bevyengine/bevy)
+- [gaussian-splatting](https://github.dev/graphdeco-inria/gaussian-splatting)
+- [rusty-automata](https://github.com/mosure/rusty-automata)
