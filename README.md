@@ -1,4 +1,4 @@
-# bevy-gaussian-splatting / bevy-gaussian-cloud
+# bevy-gaussian-splatting
 
 [![test](https://github.com/mosure/bevy-gaussian-splatting/workflows/test/badge.svg)](https://github.com/Mosure/bevy-gaussian-splatting/actions?query=workflow%3Atest)
 [![GitHub License](https://img.shields.io/github/license/mosure/bevy-gaussian-splatting)](https://raw.githubusercontent.com/mosure/bevy-gaussian-splatting/main/LICENSE)
@@ -15,7 +15,6 @@ bevy gaussian splatting render pipeline plugin
 
 - [ ] bevy gaussian cloud render pipeline
 - [ ] bevy camera to gaussian cloud pipeline
-- [ ] 
 
 ## usage
 
