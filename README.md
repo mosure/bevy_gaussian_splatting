@@ -14,7 +14,7 @@ bevy gaussian splatting render pipeline plugin
 ## capabilities
 
 - [ ] bevy gaussian cloud render pipeline
-- [ ] bevy camera to gaussian cloud pipeline
+- [ ] bevy 3D camera to gaussian cloud pipeline
 
 ## usage
 
