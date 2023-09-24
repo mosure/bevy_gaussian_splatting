@@ -26,7 +26,7 @@ use bevy_gaussian_splatting::GaussianSplattingPlugin;
 fn main() {
     App::build()
         .add_plugins(DefaultPlugins)
-        .add_plugin(GaussianSplattingPlugin)
+        .add_plugins(GaussianSplattingPlugin)
         .add_system(Startup, setup)
         .run();
 }
