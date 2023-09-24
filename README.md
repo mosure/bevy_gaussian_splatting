@@ -31,17 +31,16 @@ fn main() {
         .run();
 }
 
-fn setup(
+fn setup_gaussian_cloud(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
 ) {
-    commands.spawn_bundle(GaussianSplattingBundle {
+    commands.spawn(GaussianSplattingBundle {
         verticies: asset_server.load("scenes/test.ply"),
-        // TODO: add transform option
         ..Default::default()
     });
 
-    // TODO: setup bevy camera
+    commands.spawn(Camera2dBundle::default());
 }
 ```
 

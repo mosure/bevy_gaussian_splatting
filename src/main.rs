@@ -9,6 +9,7 @@ use bevy::{
 
 use bevy_gaussian_splatting::{
     GaussianSplattingBundle,
+    GaussianSplattingPlugin,
     utils::setup_hooks,
 };
 
@@ -50,6 +51,8 @@ fn setup_gaussian_cloud(
 fn example_app() {
     let config = GaussianSplattingViewer::default();
     let mut app = App::new();
+
+    app.add_plugins(GaussianSplattingPlugin);
 
     app.add_systems(Startup, setup_gaussian_cloud);
 
