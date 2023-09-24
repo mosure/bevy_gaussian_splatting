@@ -28,6 +28,7 @@ pub struct GaussianSplattingPlugin;
 
 impl Plugin for GaussianSplattingPlugin {
     fn build(&self, _app: &mut App) {
+        // TODO: register ply asset loader
         // TODO: setup render pipeline and add GaussianSplattingBundle system
     }
 }

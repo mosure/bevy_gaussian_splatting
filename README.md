@@ -49,6 +49,7 @@ fn setup(
 # credits
 
 - [bevy](https://github.com/bevyengine/bevy)
-- [gaussian-splatting](https://github.dev/graphdeco-inria/gaussian-splatting)
+- [gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting)
+- [diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization)
 - [rusty-automata](https://github.com/mosure/rusty-automata)
 - [sturdy-dollop](https://github.com/mosure/sturdy-dollop)

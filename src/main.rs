@@ -42,6 +42,8 @@ fn setup_gaussian_cloud(
         verticies: asset_server.load("scenes/test.ply"),
         ..Default::default()
     });
+
+    commands.spawn(Camera2dBundle::default());
 }
 
 
@@ -79,6 +81,8 @@ fn example_app() {
         app.add_systems(Startup, fps_display_setup);
         app.add_systems(Update, fps_update_system);
     }
+
+    app.run();
 }
 
 
