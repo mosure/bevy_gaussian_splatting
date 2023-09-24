@@ -5,8 +5,7 @@
 [![GitHub Last Commit](https://img.shields.io/github/last-commit/mosure/bevy-gaussian-splatting)](https://github.com/mosure/bevy-gaussian-splatting)
 [![GitHub Releases](https://img.shields.io/github/v/release/mosure/bevy-gaussian-splatting?include_prereleases&sort=semver)](https://github.com/mosure/bevy-gaussian-splatting/releases)
 [![GitHub Issues](https://img.shields.io/github/issues/mosure/bevy-gaussian-splatting)](https://github.com/mosure/bevy-gaussian-splatting/issues)
-[![Average time to resolve an issue](http://isitmaintained.com/badge/resolution/mosure/bevy-gaussian-splatting.svg)](http://isitmaintained.com/project/mosure/bevy-gaussian-splatting github
-"Average time to resolve an issue")
+[![Average time to resolve an issue](https://isitmaintained.com/badge/resolution/mosure/bevy-gaussian-splatting.svg)](http://isitmaintained.com/project/mosure/bevy-gaussian-splatting)
 
 ![Alt text](docs/notferris.png)
 
