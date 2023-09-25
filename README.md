@@ -26,7 +26,7 @@ fn main() {
     App::build()
         .add_plugins(DefaultPlugins)
         .add_plugins(GaussianSplattingPlugin)
-        .add_system(Startup, setup)
+        .add_systems(Startup, setup_gaussian_cloud)
         .run();
 }
 
