@@ -39,7 +39,7 @@ fn setup_gaussian_cloud(
         ..Default::default()
     });
 
-    commands.spawn(Camera2dBundle::default());
+    commands.spawn(Camera3dBundle::default());
 }
 ```
 
