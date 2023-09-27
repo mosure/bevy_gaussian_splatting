@@ -1,21 +1,13 @@
-use bevy::{
-    prelude::*,
-    reflect::TypeUuid,
+use bevy::prelude::*;
+
+use gaussian::{
+    GaussianCloud,
+    GaussianCloudLoader,
 };
 
+pub mod gaussian;
 pub mod utils;
 
-
-#[derive(Clone, Debug, Reflect)]
-pub struct Gaussian {
-    pub color: Color,
-    pub transform: Transform,
-    // TODO: support gaussian animations (e.g. switching between different times of day, in different regions of a scene)
-}
-
-#[derive(Clone, Debug, Reflect, TypeUuid)]
-#[uuid = "ac2f08eb-bc32-aabb-ff21-51571ea332d5"]
-pub struct GaussianCloud(Vec<Gaussian>);
 
 #[derive(Component, Default)]
 pub struct GaussianSplattingBundle {
@@ -27,8 +19,10 @@ pub struct GaussianSplattingBundle {
 pub struct GaussianSplattingPlugin;
 
 impl Plugin for GaussianSplattingPlugin {
-    fn build(&self, _app: &mut App) {
-        // TODO: register ply asset loader
+    fn build(&self, app: &mut App) {
+        app.add_asset::<GaussianCloud>();
+        app.init_asset_loader::<GaussianCloudLoader>();
+
         // TODO: setup render pipeline and add GaussianSplattingBundle system
     }
 }

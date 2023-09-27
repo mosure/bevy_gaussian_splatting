@@ -44,17 +44,13 @@ fn setup_gaussian_cloud(
         ..Default::default()
     });
 
-    commands.spawn(Camera2dBundle::default());
+    commands.spawn(Camera3dBundle::default());
 }
 
 
 fn example_app() {
     let config = GaussianSplattingViewer::default();
     let mut app = App::new();
-
-    app.add_plugins(GaussianSplattingPlugin);
-
-    app.add_systems(Startup, setup_gaussian_cloud);
 
     // setup for gaussian viewer app
     app.insert_resource(ClearColor(Color::rgb_u8(112, 48, 48)));
@@ -84,6 +80,11 @@ fn example_app() {
         app.add_systems(Startup, fps_display_setup);
         app.add_systems(Update, fps_update_system);
     }
+
+
+    // setup for gaussian splatting
+    app.add_plugins(GaussianSplattingPlugin);
+    app.add_systems(Startup, setup_gaussian_cloud);
 
     app.run();
 }
