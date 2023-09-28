@@ -1,10 +1,16 @@
 [package]
 name = "bevy_gaussian_splatting"
-version = "1.0.0"
+description = "bevy gaussian splatting render pipeline plugin"
+version = "0.1.0"
 edition = "2021"
 authors = ["mosure <mitchell@mosure.me>"]
+license = "MIT"
+keywords = ["bevy", "gaussian-splatting", "render-pipeline", "ply"]
+categories = ["computer-vision", "graphics", "rendering", "rendering::data-formats"]
+homepage = "https://github.com/mosure/bevy_gaussian_splatting"
+repository = "https://github.com/mosure/bevy_gaussian_splatting"
+readme = "README.md"
 exclude = ["dist", "build", "assets", "credits"]
-
 
 [dependencies]
 bevy = "0.11.2"
