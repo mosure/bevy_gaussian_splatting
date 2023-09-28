@@ -5,8 +5,11 @@ use gaussian::{
     GaussianCloudLoader,
 };
 
+use render::RenderPipelinePlugin;
+
 pub mod gaussian;
 pub mod ply;
+pub mod render;
 pub mod utils;
 
 
@@ -24,6 +27,8 @@ impl Plugin for GaussianSplattingPlugin {
         app.add_asset::<GaussianCloud>();
         app.init_asset_loader::<GaussianCloudLoader>();
 
-        // TODO: setup render pipeline and add GaussianSplattingBundle system
+        app.add_plugins(RenderPipelinePlugin);
+
+        // TODO: add GaussianSplattingBundle system
     }
 }

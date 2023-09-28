@@ -31,15 +31,15 @@ const fn num_sh_coefficients(degree: usize) -> usize {
     }
 }
 const SH_DEGREE: usize = 3;
-pub const SH_COEFF_COUNT: usize = num_sh_coefficients(SH_DEGREE) * 3;
+pub const MAX_SH_COEFF_COUNT: usize = num_sh_coefficients(SH_DEGREE) * 3;
 #[derive(Clone, Debug, Reflect)]
 pub struct SphericalHarmonicCoefficients {
-    pub coefficients: [Vec3; SH_COEFF_COUNT],
+    pub coefficients: [Vec3; MAX_SH_COEFF_COUNT],
 }
 impl Default for SphericalHarmonicCoefficients {
     fn default() -> Self {
         Self {
-            coefficients: [Vec3::ZERO; SH_COEFF_COUNT],
+            coefficients: [Vec3::ZERO; MAX_SH_COEFF_COUNT],
         }
     }
 }
@@ -73,9 +73,6 @@ impl AssetLoader for GaussianCloudLoader {
 
             let ply_cloud = parse_ply(&mut f)?;
             let cloud = GaussianCloud(ply_cloud);
-
-            println!("loaded {} gaussians", cloud.0.len());
-            println!("first gaussian: {:?}", cloud.0[1000]);
 
             load_context.set_default_asset(LoadedAsset::new(cloud));
             Ok(())

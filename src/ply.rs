@@ -11,7 +11,7 @@ use ply_rs::{
 
 use crate::gaussian::{
     Gaussian,
-    SH_COEFF_COUNT,
+    MAX_SH_COEFF_COUNT,
 };
 
 
@@ -41,7 +41,7 @@ impl PropertyAccess for Gaussian {
             ("rot_3", Property::Float(v))       => self.transform.rotation.w = v,
             (_, Property::Float(v)) if key.starts_with("f_rest_") => {
                 let i = key[7..].parse::<usize>().unwrap();
-                let sh_upper_bound = SH_COEFF_COUNT - 3;
+                let sh_upper_bound = MAX_SH_COEFF_COUNT - 3;
 
                 match i {
                     _ if i < sh_upper_bound => {
