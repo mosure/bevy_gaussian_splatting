@@ -5,4 +5,4 @@ Cargo.lock
 *.pdb
 
 
-assets/scenes/test.ply
+*.ply
