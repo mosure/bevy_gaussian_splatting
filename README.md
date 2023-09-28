@@ -1,11 +1,11 @@
-# bevy-gaussian-splatting
+# bevy_gaussian_splatting
 
-[![test](https://github.com/mosure/bevy-gaussian-splatting/workflows/test/badge.svg)](https://github.com/Mosure/bevy-gaussian-splatting/actions?query=workflow%3Atest)
-[![GitHub License](https://img.shields.io/github/license/mosure/bevy-gaussian-splatting)](https://raw.githubusercontent.com/mosure/bevy-gaussian-splatting/main/LICENSE)
-[![GitHub Last Commit](https://img.shields.io/github/last-commit/mosure/bevy-gaussian-splatting)](https://github.com/mosure/bevy-gaussian-splatting)
-[![GitHub Releases](https://img.shields.io/github/v/release/mosure/bevy-gaussian-splatting?include_prereleases&sort=semver)](https://github.com/mosure/bevy-gaussian-splatting/releases)
-[![GitHub Issues](https://img.shields.io/github/issues/mosure/bevy-gaussian-splatting)](https://github.com/mosure/bevy-gaussian-splatting/issues)
-[![Average time to resolve an issue](https://isitmaintained.com/badge/resolution/mosure/bevy-gaussian-splatting.svg)](http://isitmaintained.com/project/mosure/bevy-gaussian-splatting)
+[![test](https://github.com/mosure/bevy_gaussian_splatting/workflows/test/badge.svg)](https://github.com/Mosure/bevy_gaussian_splatting/actions?query=workflow%3Atest)
+[![GitHub License](https://img.shields.io/github/license/mosure/bevy_gaussian_splatting)](https://raw.githubusercontent.com/mosure/bevy_gaussian_splatting/main/LICENSE)
+[![GitHub Last Commit](https://img.shields.io/github/last-commit/mosure/bevy_gaussian_splatting)](https://github.com/mosure/bevy_gaussian_splatting)
+[![GitHub Releases](https://img.shields.io/github/v/release/mosure/bevy_gaussian_splatting?include_prereleases&sort=semver)](https://github.com/mosure/bevy_gaussian_splatting/releases)
+[![GitHub Issues](https://img.shields.io/github/issues/mosure/bevy_gaussian_splatting)](https://github.com/mosure/bevy_gaussian_splatting/issues)
+[![Average time to resolve an issue](https://isitmaintained.com/badge/resolution/mosure/bevy_gaussian_splatting.svg)](http://isitmaintained.com/project/mosure/bevy_gaussian_splatting)
 
 ![Alt text](docs/notferris.png)
 

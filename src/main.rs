@@ -29,7 +29,7 @@ impl Default for GaussianSplattingViewer {
             show_fps: true,
             width: 1920.0,
             height: 1080.0,
-            name: "bevy-gaussian-splatting".to_string(),
+            name: "bevy_gaussian_splatting".to_string(),
         }
     }
 }
