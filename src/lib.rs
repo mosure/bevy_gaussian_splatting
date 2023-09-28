@@ -6,6 +6,7 @@ use gaussian::{
 };
 
 pub mod gaussian;
+pub mod ply;
 pub mod utils;
 
 
