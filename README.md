@@ -45,6 +45,13 @@ fn setup_gaussian_cloud(
 ```
 
 
+## compatible bevy versions
+
+| `bevy_gaussian_splatting` | `bevy` |
+| :--           | :--    |
+| `0.1`         | `0.11` |
+
+
 # credits
 
 - [bevy](https://github.com/bevyengine/bevy)
