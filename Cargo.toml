@@ -10,7 +10,7 @@ categories = ["computer-vision", "graphics", "rendering", "rendering::data-forma
 homepage = "https://github.com/mosure/bevy_gaussian_splatting"
 repository = "https://github.com/mosure/bevy_gaussian_splatting"
 readme = "README.md"
-exclude = ["dist", "build", "assets", "credits"]
+exclude = [".devcontainer", ".github", "docs", "dist", "build", "assets", "credits"]
 
 [dependencies]
 bevy = "0.11.2"
