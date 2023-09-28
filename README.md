@@ -57,6 +57,6 @@ fn setup_gaussian_cloud(
 - [bevy](https://github.com/bevyengine/bevy)
 - [diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization)
 - [gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting)
-- [gaussian-splatting-web](https://github.dev/cvlab-epfl/gaussian-splatting-web)
+- [gaussian-splatting-web](https://github.com/cvlab-epfl/gaussian-splatting-web)
 - [rusty-automata](https://github.com/mosure/rusty-automata)
 - [sturdy-dollop](https://github.com/mosure/sturdy-dollop)
