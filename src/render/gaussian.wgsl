@@ -70,10 +70,6 @@ fn compute_cov3d(log_scale: vec3<f32>, rot: vec4<f32>) -> array<f32, 6> {
     );
 }
 
-fn ndc2pix(v: f32, size: u32) -> f32 {
-    return ((v + 1.0) * f32(size) - 1.0) * 0.5;
-}
-
 fn compute_cov2d(position: vec3<f32>, log_scale: vec3<f32>, rot: vec4<f32>) -> vec3<f32> {
     let cov3d = compute_cov3d(log_scale, rot);
 
