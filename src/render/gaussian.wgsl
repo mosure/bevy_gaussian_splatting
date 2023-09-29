@@ -37,6 +37,7 @@ fn sigmoid(x: f32) -> f32 {
     }
 }
 
+// TODO: precompute cov3d
 fn compute_cov3d(log_scale: vec3<f32>, rot: vec4<f32>) -> array<f32, 6> {
     let modifier = uniforms.scale_modifier;
     let S = mat3x3<f32>(
