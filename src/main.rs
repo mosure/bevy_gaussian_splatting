@@ -9,6 +9,7 @@ use bevy::{
 
 use bevy_gaussian_splatting::{
     GaussianSplattingBundle,
+    GaussianSplattingCamera,
     GaussianSplattingPlugin,
     utils::setup_hooks,
 };

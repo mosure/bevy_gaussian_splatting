@@ -1,6 +1,9 @@
-use std::io::{
-    BufReader,
-    Cursor,
+use std::{
+    io::{
+        BufReader,
+        Cursor,
+    },
+    marker::Copy,
 };
 
 use bevy::{
@@ -12,6 +15,10 @@ use bevy::{
     },
     reflect::TypeUuid,
     utils::BoxedFuture,
+};
+use bytemuck::{
+    Pod,
+    Zeroable,
 };
 
 use crate::ply::parse_ply;
@@ -53,9 +60,18 @@ pub struct Gaussian {
     pub spherical_harmonic: SphericalHarmonicCoefficients,
 }
 
+// TODO: convert previous Gaussian struct to packed gaussian (test if Pod/Copy can be added to members)?
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct PackedGaussian {
+    position: Vec3,
+    scale: f32,
+    color: [f32; 4],
+}
+
 #[derive(Clone, Debug, Reflect, TypeUuid)]
 #[uuid = "ac2f08eb-bc32-aabb-ff21-51571ea332d5"]
-pub struct GaussianCloud(Vec<Gaussian>);
+pub struct GaussianCloud(pub Vec<Gaussian>);
 
 
 #[derive(Default)]
