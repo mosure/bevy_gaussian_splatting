@@ -14,6 +14,7 @@ exclude = [".devcontainer", ".github", "docs", "dist", "build", "assets", "credi
 
 [dependencies]
 bevy = "0.11.2"
+bevy_panorbit_camera = "0.8.0"
 bytemuck = "1.14.0"
 ply-rs = "0.1.3"
 
