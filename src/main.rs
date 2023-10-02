@@ -6,6 +6,10 @@ use bevy::{
         FrameTimeDiagnosticsPlugin,
     },
 };
+use bevy_panorbit_camera::{
+    PanOrbitCamera,
+    PanOrbitCameraPlugin,
+};
 
 use bevy_gaussian_splatting::{
     GaussianSplattingBundle,
@@ -44,7 +48,13 @@ fn setup_gaussian_cloud(
         ..Default::default()
     });
 
-    commands.spawn(Camera3dBundle::default());
+    commands.spawn((
+        Camera3dBundle {
+            transform: Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
+            ..default()
+        },
+        PanOrbitCamera::default(),
+    ));
 }
 
 
@@ -70,6 +80,9 @@ fn example_app() {
             ..default()
         })
     );
+    app.add_plugins((
+        PanOrbitCameraPlugin,
+    ));
 
     if config.esc_close {
         app.add_systems(Update, esc_close);
