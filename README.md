@@ -58,5 +58,6 @@ fn setup_gaussian_cloud(
 - [diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization)
 - [gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting)
 - [gaussian-splatting-web](https://github.com/cvlab-epfl/gaussian-splatting-web)
+- [point-visualizer](https://github.com/mosure/point-visualizer)
 - [rusty-automata](https://github.com/mosure/rusty-automata)
 - [sturdy-dollop](https://github.com/mosure/sturdy-dollop)
