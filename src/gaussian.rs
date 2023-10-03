@@ -13,7 +13,10 @@ use bevy::{
         LoadContext,
         LoadedAsset,
     },
-    reflect::TypeUuid,
+    reflect::{
+        TypePath,
+        TypeUuid,
+    },
     utils::BoxedFuture,
 };
 use bytemuck::{
@@ -24,7 +27,8 @@ use bytemuck::{
 use crate::ply::parse_ply;
 
 
-#[derive(Clone, Debug, Default, Reflect)]
+#[derive(Clone, Debug, Default, Reflect, Copy, Pod, Zeroable)]
+#[repr(C)]
 pub struct AnisotropicCovariance {
     pub mean: Vec3,
     pub covariance: Mat3,
@@ -38,8 +42,9 @@ const fn num_sh_coefficients(degree: usize) -> usize {
     }
 }
 const SH_DEGREE: usize = 3;
-pub const MAX_SH_COEFF_COUNT: usize = num_sh_coefficients(SH_DEGREE) * 3;
-#[derive(Clone, Debug, Reflect)]
+pub const MAX_SH_COEFF_COUNT: usize = num_sh_coefficients(SH_DEGREE);
+#[derive(Clone, Debug, Reflect, Copy, Pod, Zeroable)]
+#[repr(C)]
 pub struct SphericalHarmonicCoefficients {
     pub coefficients: [Vec3; MAX_SH_COEFF_COUNT],
 }
@@ -51,25 +56,19 @@ impl Default for SphericalHarmonicCoefficients {
     }
 }
 
-#[derive(Clone, Debug, Default, Reflect)]
+#[derive(Clone, Debug, Reflect, Default, Copy, Pod, Zeroable)]
+#[repr(C)]
 pub struct Gaussian {
-    pub normal: Vec3,
-    pub opacity: f32,
-    pub transform: Transform,
     pub anisotropic_covariance: AnisotropicCovariance,
+    pub normal: Vec3,
+    pub position: Vec3,
+    pub opacity: f32,
+    pub rotation: [f32; 4],
+    pub scale: Vec3,
     pub spherical_harmonic: SphericalHarmonicCoefficients,
 }
 
-// TODO: convert previous Gaussian struct to packed gaussian (test if Pod/Copy can be added to members)?
-#[derive(Clone, Copy, Pod, Zeroable)]
-#[repr(C)]
-pub struct PackedGaussian {
-    position: Vec3,
-    scale: f32,
-    color: [f32; 4],
-}
-
-#[derive(Clone, Debug, Reflect, TypeUuid)]
+#[derive(Clone, Debug, TypeUuid, TypePath)]
 #[uuid = "ac2f08eb-bc32-aabb-ff21-51571ea332d5"]
 pub struct GaussianCloud(pub Vec<Gaussian>);
 

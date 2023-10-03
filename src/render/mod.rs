@@ -12,13 +12,13 @@ use bevy::{
             SystemParamItem,
         },
     },
-    pbr::{
-        MeshPipeline,
-        MeshPipelineKey,
-        MeshUniform,
-        SetMeshBindGroup,
-        SetMeshViewBindGroup,
-    },
+    // pbr::{
+    //     MeshPipeline,
+    //     MeshPipelineKey,
+    //     MeshUniform,
+    //     SetMeshBindGroup,
+    //     SetMeshViewBindGroup,
+    // },
     reflect::TypeUuid,
     render::{
         camera::ExtractedCamera,
@@ -29,7 +29,7 @@ use bevy::{
         Extract,
         mesh::{
             GpuBufferInfo,
-            MeshVertexBufferLayout,
+            // MeshVertexBufferLayout,
         },
         render_asset::{
             PrepareAssetError,
@@ -58,16 +58,14 @@ use bevy::{
             ViewTarget,
         },
     },
-};
-use bytemuck::{
-    Pod,
-    Zeroable,
+    utils::Hashed,
 };
 
 use crate::GaussianSplattingBundle;
 use crate::gaussian::{
     Gaussian,
     GaussianCloud,
+    MAX_SH_COEFF_COUNT,
 };
 
 
@@ -121,12 +119,19 @@ impl Plugin for RenderPipelinePlugin {
 
 // see: https://github.com/bevyengine/bevy/blob/v0.11.3/examples/shader/shader_instancing.rs
 
+pub type GaussianVertexBufferLayout = Hashed<InnerGaussianVertexBufferLayout>;
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct InnerGaussianVertexBufferLayout {
+    layout: VertexBufferLayout,
+}
+
+// TODO: use point mesh pipeline instead of custom pipeline?
 #[derive(Debug, Clone)]
 pub struct GpuGaussianCloud {
     pub vertex_buffer: Buffer,
     pub vertex_count: u32,
     pub buffer_info: GpuBufferInfo,
-    pub layout: MeshVertexBufferLayout, // TODO: write custom gaussian vertex buffer layout
+    pub layout: GaussianVertexBufferLayout,
 }
 impl RenderAsset for GaussianCloud {
     type ExtractedAsset = GaussianCloud;
@@ -140,45 +145,44 @@ impl RenderAsset for GaussianCloud {
 
     /// converts the extracted gaussian cloud a into [`GpuGaussianCloud`].
     fn prepare_asset(
-        mesh: Self::ExtractedAsset,
+        gaussian_cloud: Self::ExtractedAsset,
         render_device: &mut SystemParamItem<Self::Param>,
     ) -> Result<Self::PreparedAsset, PrepareAssetError<Self::ExtractedAsset>> {
-        let vertex_buffer_data = mesh.get_vertex_buffer_data();
         let vertex_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
             usage: BufferUsages::VERTEX,
-            label: Some("Mesh Vertex Buffer"),
-            contents: &vertex_buffer_data,
+            label: Some("gaussian cloud vertex buffer"),
+            contents: bytemuck::cast_slice(gaussian_cloud.0.as_slice()),
         });
 
-        let buffer_info = if let Some(data) = mesh.get_index_buffer_bytes() {
-            GpuBufferInfo::Indexed {
-                buffer: render_device.create_buffer_with_data(&BufferInitDescriptor {
-                    usage: BufferUsages::INDEX,
-                    contents: data,
-                    label: Some("Mesh Index Buffer"),
-                }),
-                count: mesh.indices().unwrap().len() as u32,
-                index_format: mesh.indices().unwrap().into(),
-            }
-        } else {
-            GpuBufferInfo::NonIndexed
+        let layout = VertexBufferLayout {
+            array_stride: std::mem::size_of::<Gaussian>() as u64,
+            step_mode: VertexStepMode::Instance,
+            attributes: vec![
+                VertexAttribute {
+                    format: VertexFormat::Float32x4,
+                    offset: 0,
+                    shader_location: 3,
+                },
+                VertexAttribute {
+                    format: VertexFormat::Float32x4,
+                    offset: VertexFormat::Float32x4.size(),
+                    shader_location: 4,
+                },
+            ],
         };
 
-        let mesh_vertex_buffer_layout = mesh.get_mesh_vertex_buffer_layout();
-
-        Ok(GpuMesh {
+        Ok(GpuGaussianCloud {
             vertex_buffer,
-            vertex_count: mesh.count_vertices() as u32,
-            buffer_info,
-            primitive_topology: mesh.primitive_topology(),
-            layout: mesh_vertex_buffer_layout,
-            morph_targets: mesh
-                .morph_targets
-                .and_then(|mt| images.get(&mt).map(|i| i.texture_view.clone())),
+            vertex_count: gaussian_cloud.0.len() as u32,
+            buffer_info: GpuBufferInfo::NonIndexed,
+            layout: GaussianVertexBufferLayout::new(
+                InnerGaussianVertexBufferLayout {
+                    layout,
+                }
+            )
         })
     }
 }
-
 
 
 
@@ -189,29 +193,21 @@ fn queue_gaussians(
     msaa: Res<Msaa>,
     mut pipelines: ResMut<SpecializedMeshPipelines<GaussianCloudPipeline>>,
     pipeline_cache: Res<PipelineCache>,
-    meshes: Res<RenderAssets<Mesh>>,
-    material_meshes: Query<(Entity, &MeshUniform, &Handle<Mesh>), With<GaussianSplattingBundle>>,
+    gaussian_clouds: Res<RenderAssets<GaussianCloud>>,
+    gaussian_splatting_bundles: Query<(Entity, &Handle<GaussianCloud>), With<GaussianSplattingBundle>>,
     mut views: Query<(&ExtractedView, &mut RenderPhase<Transparent3d>)>,
 ) {
     let draw_custom = transparent_3d_draw_functions.read().id::<DrawGaussians>();
 
-    let msaa_key = MeshPipelineKey::from_msaa_samples(msaa.samples());
-
     for (view, mut transparent_phase) in &mut views {
-        let view_key = msaa_key | MeshPipelineKey::from_hdr(view.hdr);
         let rangefinder = view.rangefinder3d();
-        for (entity, mesh_uniform, mesh_handle) in &material_meshes {
-            if let Some(mesh) = meshes.get(mesh_handle) {
-                let key =
-                    view_key | MeshPipelineKey::from_primitive_topology(mesh.primitive_topology);
-                let pipeline = pipelines
-                    .specialize(&pipeline_cache, &custom_pipeline, key, &mesh.layout)
-                    .unwrap();
+        for (entity, gaussian_cloud_handle) in &gaussian_splatting_bundles {
+            if let Some(mesh) = gaussian_clouds.get(gaussian_cloud_handle) {
                 transparent_phase.add(Transparent3d {
                     entity,
-                    pipeline,
                     draw_function: draw_custom,
-                    distance: rangefinder.distance(&mesh_uniform.transform),
+                    distance: 0.0,
+                    pipeline: todo!(),
                 });
             }
         }
@@ -240,7 +236,7 @@ fn prepare_instance_buffers(
             });
             commands.entity(entity).insert(InstanceBuffer {
                 buffer,
-                length: cloud.len(),
+                length: cloud.0.len(),
             });
         }
     }
@@ -249,16 +245,12 @@ fn prepare_instance_buffers(
 #[derive(Resource)]
 pub struct GaussianCloudPipeline {
     shader: Handle<Shader>,
-    mesh_pipeline: MeshPipeline,
 }
 
 impl FromWorld for GaussianCloudPipeline {
     fn from_world(world: &mut World) -> Self {
-        let mesh_pipeline = world.resource::<MeshPipeline>();
-
         GaussianCloudPipeline {
             shader: GAUSSIAN_SHADER_HANDLE.typed(),
-            mesh_pipeline: mesh_pipeline.clone(),
         }
     }
 }

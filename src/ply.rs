@@ -22,9 +22,9 @@ impl PropertyAccess for Gaussian {
 
     fn set_property(&mut self, key: String, property: Property) {
         match (key.as_ref(), property) {
-            ("x", Property::Float(v))           => self.transform.translation.x = v,
-            ("y", Property::Float(v))           => self.transform.translation.y = v,
-            ("z", Property::Float(v))           => self.transform.translation.z = v,
+            ("x", Property::Float(v))           => self.position.x = v,
+            ("y", Property::Float(v))           => self.position.y = v,
+            ("z", Property::Float(v))           => self.position.z = v,
             ("nx", Property::Float(v))          => self.normal.x = v,
             ("ny", Property::Float(v))          => self.normal.y = v,
             ("nz", Property::Float(v))          => self.normal.z = v,
@@ -32,13 +32,13 @@ impl PropertyAccess for Gaussian {
             ("f_dc_1", Property::Float(v))      => self.spherical_harmonic.coefficients[0].y = v,
             ("f_dc_2", Property::Float(v))      => self.spherical_harmonic.coefficients[0].z = v,
             ("opacity", Property::Float(v))     => self.opacity = v,
-            ("scale_0", Property::Float(v))     => self.transform.scale.x = v,
-            ("scale_1", Property::Float(v))     => self.transform.scale.y = v,
-            ("scale_2", Property::Float(v))     => self.transform.scale.z = v,
-            ("rot_0", Property::Float(v))       => self.transform.rotation.x = v,
-            ("rot_1", Property::Float(v))       => self.transform.rotation.y = v,
-            ("rot_2", Property::Float(v))       => self.transform.rotation.z = v,
-            ("rot_3", Property::Float(v))       => self.transform.rotation.w = v,
+            ("scale_0", Property::Float(v))     => self.scale.x = v,
+            ("scale_1", Property::Float(v))     => self.scale.y = v,
+            ("scale_2", Property::Float(v))     => self.scale.z = v,
+            ("rot_0", Property::Float(v))       => self.rotation.x = v,
+            ("rot_1", Property::Float(v))       => self.rotation.y = v,
+            ("rot_2", Property::Float(v))       => self.rotation.z = v,
+            ("rot_3", Property::Float(v))       => self.rotation.w = v,
             (_, Property::Float(v)) if key.starts_with("f_rest_") => {
                 let i = key[7..].parse::<usize>().unwrap();
                 let sh_upper_bound = MAX_SH_COEFF_COUNT - 3;
