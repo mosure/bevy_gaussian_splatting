@@ -38,6 +38,7 @@ impl ExtractComponent for GaussianSplattingBundle {
 
 #[derive(Component, Default)]
 struct GaussianSplattingCamera;
+// TODO: filter camera 3D entities
 
 // TODO: add render pipeline config
 pub struct GaussianSplattingPlugin;

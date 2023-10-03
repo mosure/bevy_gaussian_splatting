@@ -35,10 +35,10 @@ impl PropertyAccess for Gaussian {
             ("scale_0", Property::Float(v))     => self.scale.x = v,
             ("scale_1", Property::Float(v))     => self.scale.y = v,
             ("scale_2", Property::Float(v))     => self.scale.z = v,
-            ("rot_0", Property::Float(v))       => self.rotation.x = v,
-            ("rot_1", Property::Float(v))       => self.rotation.y = v,
-            ("rot_2", Property::Float(v))       => self.rotation.z = v,
-            ("rot_3", Property::Float(v))       => self.rotation.w = v,
+            ("rot_0", Property::Float(v))       => self.rotation[0] = v,
+            ("rot_1", Property::Float(v))       => self.rotation[1] = v,
+            ("rot_2", Property::Float(v))       => self.rotation[2] = v,
+            ("rot_3", Property::Float(v))       => self.rotation[3] = v,
             (_, Property::Float(v)) if key.starts_with("f_rest_") => {
                 let i = key[7..].parse::<usize>().unwrap();
                 let sh_upper_bound = MAX_SH_COEFF_COUNT - 3;

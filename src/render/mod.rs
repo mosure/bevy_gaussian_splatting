@@ -1,3 +1,5 @@
+use std::hash::Hash;
+
 use bevy::{
     prelude::*,
     asset::{
@@ -5,32 +7,17 @@ use bevy::{
         HandleUntyped,
     },
     core_pipeline::core_3d::Transparent3d,
-    ecs::{
-        query::QueryItem,
-        system::{
-            lifetimeless::*,
-            SystemParamItem,
-        },
+    ecs::system::{
+        lifetimeless::*,
+        SystemParamItem,
     },
-    // pbr::{
-    //     MeshPipeline,
-    //     MeshPipelineKey,
-    //     MeshUniform,
-    //     SetMeshBindGroup,
-    //     SetMeshViewBindGroup,
-    // },
+    pbr::{
+        SetMeshBindGroup,
+        SetMeshViewBindGroup,
+    },
     reflect::TypeUuid,
     render::{
-        camera::ExtractedCamera,
-        extract_component::{
-            ExtractComponent,
-            ExtractComponentPlugin,
-        },
-        Extract,
-        mesh::{
-            GpuBufferInfo,
-            // MeshVertexBufferLayout,
-        },
+        mesh::GpuBufferInfo,
         render_asset::{
             PrepareAssetError,
             RenderAsset,
@@ -51,12 +38,7 @@ use bevy::{
         Render,
         RenderApp,
         RenderSet,
-        view::{
-            ExtractedView,
-            NoFrustumCulling,
-            ViewDepthTexture,
-            ViewTarget,
-        },
+        view::ExtractedView,
     },
     utils::Hashed,
 };
@@ -65,7 +47,6 @@ use crate::GaussianSplattingBundle;
 use crate::gaussian::{
     Gaussian,
     GaussianCloud,
-    MAX_SH_COEFF_COUNT,
 };
 
 
@@ -100,7 +81,8 @@ impl Plugin for RenderPipelinePlugin {
 
         app.sub_app_mut(RenderApp)
             .add_render_command::<Transparent3d, DrawGaussians>()
-            .init_resource::<SpecializedMeshPipelines<GaussianCloudPipeline>>()
+            .init_resource::<GaussianCloudPipeline>()
+            .init_resource::<SpecializedRenderPipelines<GaussianCloudPipeline>>()
             .add_systems(
                 Render,
                 (
@@ -154,6 +136,7 @@ impl RenderAsset for GaussianCloud {
             contents: bytemuck::cast_slice(gaussian_cloud.0.as_slice()),
         });
 
+        // TODO: vertex layout only needs to be in one location (it is cached here)
         let layout = VertexBufferLayout {
             array_stride: std::mem::size_of::<Gaussian>() as u64,
             step_mode: VertexStepMode::Instance,
@@ -185,13 +168,11 @@ impl RenderAsset for GaussianCloud {
 }
 
 
-
 #[allow(clippy::too_many_arguments)]
 fn queue_gaussians(
     transparent_3d_draw_functions: Res<DrawFunctions<Transparent3d>>,
     custom_pipeline: Res<GaussianCloudPipeline>,
-    msaa: Res<Msaa>,
-    mut pipelines: ResMut<SpecializedMeshPipelines<GaussianCloudPipeline>>,
+    mut pipelines: ResMut<SpecializedRenderPipelines<GaussianCloudPipeline>>,
     pipeline_cache: Res<PipelineCache>,
     gaussian_clouds: Res<RenderAssets<GaussianCloud>>,
     gaussian_splatting_bundles: Query<(Entity, &Handle<GaussianCloud>), With<GaussianSplattingBundle>>,
@@ -199,15 +180,22 @@ fn queue_gaussians(
 ) {
     let draw_custom = transparent_3d_draw_functions.read().id::<DrawGaussians>();
 
-    for (view, mut transparent_phase) in &mut views {
-        let rangefinder = view.rangefinder3d();
+    for (_view, mut transparent_phase) in &mut views {
         for (entity, gaussian_cloud_handle) in &gaussian_splatting_bundles {
-            if let Some(mesh) = gaussian_clouds.get(gaussian_cloud_handle) {
+            if let Some(_cloud) = gaussian_clouds.get(gaussian_cloud_handle) {
+                let key = GaussianCloudPipelineKey {
+
+                };
+
+                let pipeline = pipelines.specialize(&pipeline_cache, &custom_pipeline, key);
+
+                // TODO: use cached pipeline components from GpuGaussianCloud
+
                 transparent_phase.add(Transparent3d {
                     entity,
                     draw_function: draw_custom,
                     distance: 0.0,
-                    pipeline: todo!(),
+                    pipeline,
                 });
             }
         }
@@ -248,52 +236,66 @@ pub struct GaussianCloudPipeline {
 }
 
 impl FromWorld for GaussianCloudPipeline {
-    fn from_world(world: &mut World) -> Self {
+    fn from_world(_world: &mut World) -> Self {
         GaussianCloudPipeline {
             shader: GAUSSIAN_SHADER_HANDLE.typed(),
         }
     }
 }
 
-// TODO: specialized mesh pipeline may not work here (given precomputed normals and uv and expecting TRI?)
-//          instead, use a brand new vertex layout based on gaussian struct?
-impl SpecializedMeshPipeline for GaussianCloudPipeline {
-    type Key = MeshPipelineKey;
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
+pub struct GaussianCloudPipelineKey {
 
-    fn specialize(
-        &self,
-        key: Self::Key,
-        layout: &MeshVertexBufferLayout,
-    ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
-        let mut descriptor = self.mesh_pipeline.specialize(key, layout)?;
+}
 
-        // meshes typically live in bind group 2. because we are using bindgroup 1
-        // we need to add MESH_BINDGROUP_1 shader def so that the bindings are correctly
-        // linked in the shader
-        descriptor
-            .vertex
-            .shader_defs
-            .push("MESH_BINDGROUP_1".into());
+impl SpecializedRenderPipeline for GaussianCloudPipeline {
+    type Key = GaussianCloudPipelineKey;
 
-        descriptor.vertex.shader = self.shader.clone();
-        descriptor.vertex.buffers.push(VertexBufferLayout {
-            array_stride: std::mem::size_of::<Gaussian>() as u64,
-            step_mode: VertexStepMode::Instance,
-            attributes: vec![
-                VertexAttribute {
-                    format: VertexFormat::Float32x4,
-                    offset: 0,
-                    shader_location: 3, // shader locations 0-2 are taken up by Position, Normal and UV attributes
-                },
-                VertexAttribute {
-                    format: VertexFormat::Float32x4,
-                    offset: VertexFormat::Float32x4.size(),
-                    shader_location: 4,
-                },
-            ],
-        });
-        descriptor.fragment.as_mut().unwrap().shader = self.shader.clone();
-        Ok(descriptor)
+    fn specialize(&self, _key: Self::Key) -> RenderPipelineDescriptor {
+        let shader_defs = vec!["MESH_BINDGROUP_1".into()];
+
+        RenderPipelineDescriptor {
+            label: Some("gaussian cloud pipeline".into()),
+            layout: vec![],
+            vertex: VertexState {
+                shader: self.shader.clone(),
+                shader_defs,
+                entry_point: "vs_points".into(),
+                buffers: vec![
+                    VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Gaussian>() as u64,
+                        step_mode: VertexStepMode::Instance,
+                        attributes: vec![
+                            // TODO: add all gaussian attributes
+                            VertexAttribute {
+                                format: VertexFormat::Float32x4,
+                                offset: 0,
+                                shader_location: 3,
+                            },
+                            VertexAttribute {
+                                format: VertexFormat::Float32x4,
+                                offset: VertexFormat::Float32x4.size(),
+                                shader_location: 4,
+                            },
+                        ],
+                    }
+                ],
+            },
+            fragment: Some(FragmentState {
+                shader: self.shader.clone(),
+                shader_defs: vec![],
+                entry_point: "fs_main".into(),
+                targets: vec![Some(ColorTargetState {
+                    format: TextureFormat::Rgba8UnormSrgb,
+                    blend: Some(BlendState::ALPHA_BLENDING),
+                    write_mask: ColorWrites::ALL,
+                })],
+            }),
+            primitive: PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            push_constant_ranges: Vec::new(),
+        }
     }
 }
 
@@ -307,7 +309,6 @@ type DrawGaussians = (
 pub struct DrawGaussianInstanced;
 
 impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
-    // TODO: verify RenderAssets<GaussianCloud> is correct
     type Param = SRes<RenderAssets<GaussianCloud>>;
     type ViewWorldQuery = ();
     type ItemWorldQuery = (Read<Handle<GaussianCloud>>, Read<InstanceBuffer>);
