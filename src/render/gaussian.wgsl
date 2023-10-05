@@ -1,3 +1,6 @@
+#import bevy_render::globals    Globals
+#import bevy_render::view       View
+
 #import bevy_gaussian_splatting::spherical_harmonics    compute_color_from_sh_3_degree
 
 
@@ -6,7 +9,7 @@ struct GaussianInput {
     @location(1) log_scale: vec3<f32>,
     @location(2) rot: vec4<f32>,
     @location(3) opacity_logit: f32,
-    sh: array<vec3<f32>, n_sh_coeffs>,
+    sh: array<vec3<f32>, #{MAX_SH_COEFF_COUNT}>,
 };
 
 struct GaussianOutput {
@@ -17,8 +20,8 @@ struct GaussianOutput {
 };
 
 struct SceneUniforms {
-    viewMatrix: mat4x4<f32>,
-    projMatrix: mat4x4<f32>,
+    view_matrix: mat4x4<f32>,
+    projection_matrix: mat4x4<f32>,
     camera_position: vec3<f32>,
     tan_fovx: f32,
     tan_fovy: f32,
@@ -26,6 +29,13 @@ struct SceneUniforms {
     focal_y: f32,
     scale_modifier: f32,
 };
+
+
+@group(0) @binding(0) var<uniform> globals: Globals;
+@group(0) @binding(1) var<uniform> view: View;
+@group(0) @binding(2) var<uniform> uniforms: SceneUniforms;
+
+@group(1) @binding(0) var<storage, read> points: array<GaussianInput>;
 
 
 fn sigmoid(x: f32) -> f32 {
@@ -73,7 +83,7 @@ fn compute_cov3d(log_scale: vec3<f32>, rot: vec4<f32>) -> array<f32, 6> {
 fn compute_cov2d(position: vec3<f32>, log_scale: vec3<f32>, rot: vec4<f32>) -> vec3<f32> {
     let cov3d = compute_cov3d(log_scale, rot);
 
-    var t = uniforms.viewMatrix * vec4<f32>(position, 1.0);
+    var t = uniforms.view_matrix * vec4<f32>(position, 1.0);
 
     let limx = 1.3 * uniforms.tan_fovx;
     let limy = 1.3 * uniforms.tan_fovy;
@@ -90,7 +100,7 @@ fn compute_cov2d(position: vec3<f32>, log_scale: vec3<f32>, rot: vec4<f32>) -> v
         0.0, 0.0, 0.0, 0.0
     );
 
-    let W = transpose(uniforms.viewMatrix);
+    let W = transpose(uniforms.view_matrix);
 
     let T = W * J;
 
@@ -112,9 +122,6 @@ fn compute_cov2d(position: vec3<f32>, log_scale: vec3<f32>, rot: vec4<f32>) -> v
 }
 
 
-@binding(0) @group(0) var<uniform> uniforms: SceneUniforms;
-@binding(1) @group(1) var<storage, read> points: array<GaussianInput>;
-
 const quadVertices = array<vec2<f32>, 6>(
     vec2<f32>(-1.0, -1.0),
     vec2<f32>(-1.0, 1.0),
@@ -125,7 +132,10 @@ const quadVertices = array<vec2<f32>, 6>(
 );
 
 @vertex
-fn vs_points(@builtin(vertex_index) vertex_index: u32) -> GaussianOutput {
+fn vs_points(
+    @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
+) -> GaussianOutput {
     var output: GaussianOutput;
     let pointIndex = vertex_index / 6u;
     let quadIndex = vertex_index % 6u;
@@ -146,10 +156,10 @@ fn vs_points(@builtin(vertex_index) vertex_index: u32) -> GaussianOutput {
     );
     output.conic_and_opacity = vec4<f32>(conic, sigmoid(point.opacity_logit));
 
-    var projPosition = uniforms.projMatrix * vec4<f32>(point.position, 1.0);
+    var projPosition = uniforms.projection_matrix * vec4<f32>(point.position, 1.0);
     projPosition = projPosition / projPosition.w;
     output.position = vec4<f32>(projPosition.xy + 2 * radius_ndc * quadOffset, projPosition.zw);
-    output.color = compute_color_from_sh_3_degree(point.position, point.sh);
+    output.color = compute_color_from_sh_3_degree(point.position, point.sh, uniforms.camera_position);
     output.uv = radius_px * quadOffset;
 
     return output;

@@ -53,8 +53,8 @@ impl PropertyAccess for Gaussian {
                         self.spherical_harmonic.coefficients[j][k] = v;
                     },
                     _ => {
-                        println!("unmapped property: {}", key);
-                        println!("value: {}", v);
+                        // println!("unmapped property: {}", key);
+                        // println!("value: {}", v);
                     },
                 }
             }
@@ -66,6 +66,8 @@ impl PropertyAccess for Gaussian {
 pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, Error> {
     let gaussian_parser = Parser::<Gaussian>::new();
     let header = gaussian_parser.read_header(&mut reader)?;
+
+    // TODO: determine spherical harmonic order from header (for speedup on lower orders)
 
     let mut cloud = Vec::new();
 

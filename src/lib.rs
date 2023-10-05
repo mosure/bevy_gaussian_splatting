@@ -1,7 +1,10 @@
 use bevy::{
     prelude::*,
     ecs::query::QueryItem,
-    render::extract_component::ExtractComponent,
+    render::extract_component::{
+        ExtractComponent,
+        ExtractComponentPlugin,
+    },
 };
 
 use gaussian::{
@@ -17,7 +20,7 @@ pub mod render;
 pub mod utils;
 
 
-#[derive(Component, Default)]
+#[derive(Component, Default, Reflect)]
 pub struct GaussianSplattingBundle {
     pub transform: Transform, // TODO: implement global transform
     pub verticies: Handle<GaussianCloud>,
@@ -48,6 +51,11 @@ impl Plugin for GaussianSplattingPlugin {
         app.add_asset::<GaussianCloud>();
         app.init_asset_loader::<GaussianCloudLoader>();
 
-        app.add_plugins(RenderPipelinePlugin);
+        app.register_type::<GaussianSplattingBundle>();
+
+        app.add_plugins((
+            ExtractComponentPlugin::<GaussianSplattingBundle>::default(),
+            RenderPipelinePlugin,
+        ));
     }
 }

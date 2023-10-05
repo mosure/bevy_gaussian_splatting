@@ -62,4 +62,5 @@ fn setup_gaussian_cloud(
 - [gaussian-splatting-web](https://github.com/cvlab-epfl/gaussian-splatting-web)
 - [point-visualizer](https://github.com/mosure/point-visualizer)
 - [rusty-automata](https://github.com/mosure/rusty-automata)
+- [sokatter](https://github.com/Lichtso/splatter)
 - [sturdy-dollop](https://github.com/mosure/sturdy-dollop)
