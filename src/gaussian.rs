@@ -73,6 +73,12 @@ pub struct Gaussian {
 #[uuid = "ac2f08eb-bc32-aabb-ff21-51571ea332d5"]
 pub struct GaussianCloud(pub Vec<Gaussian>);
 
+#[derive(Component, Default, Reflect, Clone)]
+pub struct GaussianCloudSettings {
+    pub global_scale: f32,  // TODO: default to 1.0
+    pub global_transform: GlobalTransform,  // TODO: default to identity
+}
+
 
 #[derive(Default)]
 pub struct GaussianCloudLoader;

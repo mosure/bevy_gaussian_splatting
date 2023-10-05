@@ -1,4 +1,4 @@
-use std::hash::Hash;
+use std::{hash::Hash, num::NonZeroU64};
 
 use bevy::{
     prelude::*,
@@ -7,10 +7,16 @@ use bevy::{
         HandleUntyped,
     },
     core_pipeline::core_3d::Transparent3d,
-    ecs::{system::{
-        lifetimeless::*,
-        SystemParamItem,
-    }, query::ROQueryItem},
+    ecs::{
+        system::{
+            lifetimeless::*,
+            SystemParamItem,
+        },
+        query::{
+            QueryItem,
+            ROQueryItem,
+        },
+    },
     reflect::TypeUuid,
     render::{
         Extract,
@@ -18,6 +24,8 @@ use bevy::{
             DynamicUniformIndex,
             UniformComponentPlugin,
             ComponentUniforms,
+            ExtractComponent,
+            ExtractComponentPlugin,
         },
         globals::{
             GlobalsUniform,
@@ -54,7 +62,7 @@ use bevy::{
     },
 };
 
-use crate::GaussianSplattingBundle;
+use crate::{GaussianSplattingBundle, gaussian::GaussianCloudSettings};
 use crate::gaussian::{
     Gaussian,
     GaussianCloud,
@@ -87,6 +95,9 @@ impl Plugin for RenderPipelinePlugin {
         app.add_plugins(RenderAssetPlugin::<GaussianCloud>::default());
         app.add_plugins(UniformComponentPlugin::<GaussianCloudUniform>::default());
 
+        // TODO: either use extract_gaussians OR ExtractComponentPlugin (extract_gaussians allows for earlier visibility culling)
+        app.add_plugins(ExtractComponentPlugin::<GaussianSplattingBundle>::default());
+
         // TODO(future): pre-pass filter using output from core 3d render pipeline
 
         // TODO: gaussian splatting render pipeline
@@ -116,6 +127,29 @@ impl Plugin for RenderPipelinePlugin {
                 .init_resource::<GaussianCloudPipeline>()
                 .init_resource::<SpecializedRenderPipelines<GaussianCloudPipeline>>();
         }
+    }
+}
+
+
+#[derive(Component, Clone)]
+pub struct GpuGaussianSplattingBundle {
+    settings_uniform: GaussianCloudUniform,
+    verticies: Handle<GaussianCloud>,
+}
+
+impl ExtractComponent for GaussianSplattingBundle {
+    type Query = &'static GaussianSplattingBundle;
+    type Filter = ();
+    type Out = GpuGaussianSplattingBundle;
+
+    fn extract_component(item: QueryItem<'_, Self::Query>) -> Option<GpuGaussianSplattingBundle> {
+        Some(GpuGaussianSplattingBundle {
+            settings_uniform: GaussianCloudUniform {
+                global_scale: item.settings.global_scale,
+                transform: item.settings.global_transform.compute_matrix(),
+            },
+            verticies: item.verticies.clone(),
+        })
     }
 }
 
@@ -165,7 +199,7 @@ fn queue_gaussians(
     mut pipelines: ResMut<SpecializedRenderPipelines<GaussianCloudPipeline>>,
     pipeline_cache: Res<PipelineCache>,
     gaussian_clouds: Res<RenderAssets<GaussianCloud>>,
-    gaussian_splatting_bundles: Query<(Entity, &GaussianSplattingBundle)>,
+    gaussian_splatting_bundles: Query<(Entity, &GpuGaussianSplattingBundle)>,
     mut views: Query<(&ExtractedView, &mut RenderPhase<Transparent3d>)>,
 ) {
     let draw_custom = transparent_3d_draw_functions.read().id::<DrawGaussians>();
@@ -223,6 +257,16 @@ impl FromWorld for GaussianCloudPipeline {
                 },
                 count: None,
             },
+            BindGroupLayoutEntry {
+                binding: 2,
+                visibility: ShaderStages::VERTEX_FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: Some(GaussianCloudUniform::min_size()),
+                },
+                count: None,
+            }
         ];
 
         let view_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
@@ -238,12 +282,14 @@ impl FromWorld for GaussianCloudPipeline {
                     binding: 0,
                     visibility: ShaderStages::VERTEX_FRAGMENT,
                     ty: BindingType::Buffer {
-                        ty: BufferBindingType::Uniform,
+                        ty: BufferBindingType::Storage {
+                            read_only: true,
+                        },
                         has_dynamic_offset: false,
-                        min_binding_size: Some(GaussianCloudUniform::min_size()),
+                        min_binding_size: NonZeroU64::new(std::mem::size_of::<Gaussian>() as u64)
                     },
                     count: None,
-                }
+                },
             ],
         });
 
@@ -360,9 +406,11 @@ type DrawGaussians = (
 
 #[derive(Component, ShaderType, Clone)]
 pub struct GaussianCloudUniform {
+    pub global_scale: f32,
     pub transform: Mat4,
 }
 
+// TODO: this is redundant with ExtractComponent for GaussianSplattingBundle
 pub fn extract_gaussians(
     mut commands: Commands,
     mut prev_commands_len: Local<usize>,
@@ -370,7 +418,7 @@ pub fn extract_gaussians(
         Query<(
             Entity,
             &ComputedVisibility,
-            &GlobalTransform,
+            &GaussianCloudSettings,
             &Handle<GaussianCloud>,
         )>,
     >,
@@ -378,12 +426,12 @@ pub fn extract_gaussians(
     let mut commands_list = Vec::with_capacity(*prev_commands_len);
     let visible_gaussians = gaussians_query.iter().filter(|(_, vis, ..)| vis.is_visible());
 
-    for (entity, _, transform, handle) in
+    for (entity, _, settings, handle) in
         visible_gaussians
     {
-        let transform = transform.compute_matrix();
         let uniform = GaussianCloudUniform {
-            transform,
+            global_scale: settings.global_scale,
+            transform: settings.global_transform.compute_matrix(),
         };
         commands_list.push((entity, (handle.clone_weak(), uniform)));
     }
@@ -441,13 +489,16 @@ pub fn queue_gaussian_view_bind_groups(
         &mut RenderPhase<Transparent3d>,
     )>,
     globals_buffer: Res<GlobalsBuffer>,
+    gaussian_cloud_uniforms: Res<ComponentUniforms<GaussianCloudUniform>>,
 ) {
     if let (
         Some(view_binding),
         Some(globals),
+        Some(gaussian_cloud_uniform),
     ) = (
         view_uniforms.uniforms.binding(),
         globals_buffer.buffer.binding(),
+        gaussian_cloud_uniforms.binding(),
     ) {
         for (
             entity,
@@ -465,6 +516,10 @@ pub fn queue_gaussian_view_bind_groups(
                 BindGroupEntry {
                     binding: 1,
                     resource: globals.clone(),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: gaussian_cloud_uniform.clone(),
                 },
             ];
 

@@ -1,15 +1,9 @@
-use bevy::{
-    prelude::*,
-    ecs::query::QueryItem,
-    render::extract_component::{
-        ExtractComponent,
-        ExtractComponentPlugin,
-    },
-};
+use bevy::prelude::*;
 
 use gaussian::{
     GaussianCloud,
     GaussianCloudLoader,
+    GaussianCloudSettings,
 };
 
 use render::RenderPipelinePlugin;
@@ -22,22 +16,10 @@ pub mod utils;
 
 #[derive(Component, Default, Reflect)]
 pub struct GaussianSplattingBundle {
-    pub transform: Transform, // TODO: implement global transform
+    pub settings: GaussianCloudSettings, // TODO: implement global transform
     pub verticies: Handle<GaussianCloud>,
 }
 
-impl ExtractComponent for GaussianSplattingBundle {
-    type Query = &'static GaussianSplattingBundle;
-    type Filter = ();
-    type Out = Self;
-
-    fn extract_component(item: QueryItem<'_, Self::Query>) -> Option<Self> {
-        Some(GaussianSplattingBundle {
-            transform: item.transform,
-            verticies: item.verticies.clone(),
-        })
-    }
-}
 
 #[derive(Component, Default)]
 struct GaussianSplattingCamera;
@@ -54,7 +36,6 @@ impl Plugin for GaussianSplattingPlugin {
         app.register_type::<GaussianSplattingBundle>();
 
         app.add_plugins((
-            ExtractComponentPlugin::<GaussianSplattingBundle>::default(),
             RenderPipelinePlugin,
         ));
     }
