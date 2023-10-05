@@ -9,10 +9,20 @@ use bevy::{
     core_pipeline::core_3d::Transparent3d,
     ecs::{system::{
         lifetimeless::*,
-        SystemParamItem, SystemState,
+        SystemParamItem,
     }, query::ROQueryItem},
     reflect::TypeUuid,
     render::{
+        Extract,
+        extract_component::{
+            DynamicUniformIndex,
+            UniformComponentPlugin,
+            ComponentUniforms,
+        },
+        globals::{
+            GlobalsUniform,
+            GlobalsBuffer,
+        },
         mesh::GpuBufferInfo,
         render_asset::{
             PrepareAssetError,
@@ -35,8 +45,12 @@ use bevy::{
         Render,
         RenderApp,
         RenderSet,
-        view::{ExtractedView, ViewUniform, ViewUniforms, ViewUniformOffset},
-        extract_component::{DynamicUniformIndex, UniformComponentPlugin, ComponentUniforms}, globals::{GlobalsUniform, GlobalsBuffer}, Extract,
+        view::{
+            ExtractedView,
+            ViewUniform,
+            ViewUniforms,
+            ViewUniformOffset,
+        },
     },
 };
 
@@ -84,8 +98,6 @@ impl Plugin for RenderPipelinePlugin {
             render_app
                 .add_render_command::<Transparent3d, DrawGaussians>()
                 .init_resource::<GaussianBindGroups>()
-                .init_resource::<GaussianCloudPipeline>()
-                .init_resource::<SpecializedRenderPipelines<GaussianCloudPipeline>>()
                 .add_systems(ExtractSchedule, extract_gaussians)
                 .add_systems(
                     Render,
@@ -100,7 +112,9 @@ impl Plugin for RenderPipelinePlugin {
 
     fn finish(&self, app: &mut App) {
         if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app.init_resource::<GaussianCloudPipeline>();
+            render_app
+                .init_resource::<GaussianCloudPipeline>()
+                .init_resource::<SpecializedRenderPipelines<GaussianCloudPipeline>>();
         }
     }
 }
@@ -110,7 +124,7 @@ impl Plugin for RenderPipelinePlugin {
 // TODO: use point mesh pipeline instead of custom pipeline?
 #[derive(Debug, Clone)]
 pub struct GpuGaussianCloud {
-    pub vertex_buffer: Buffer,
+    pub vertex_buffer: Buffer, //TODO: add this buffer to group 1 layout (and move gaussian uniforms to group 0, binding 2)
     pub vertex_count: u32,
     pub buffer_info: GpuBufferInfo,
 }
@@ -180,18 +194,15 @@ fn queue_gaussians(
 #[derive(Resource)]
 pub struct GaussianCloudPipeline {
     shader: Handle<Shader>,
+    pub gaussian_layout: BindGroupLayout,
     pub view_layout: BindGroupLayout,
 }
 
 impl FromWorld for GaussianCloudPipeline {
-    fn from_world(world: &mut World) -> Self {
-        // TODO: this render device does not exist?
-        let mut system_state: SystemState<(
-            Res<RenderDevice>,
-        )> = SystemState::new(world);
-        let render_device = system_state.get_mut(world).0;
+    fn from_world(render_world: &mut World) -> Self {
+        let render_device = render_world.resource::<RenderDevice>();
 
-        let layout_entries = vec![
+        let view_layout_entries = vec![
             BindGroupLayoutEntry {
                 binding: 0,
                 visibility: ShaderStages::VERTEX_FRAGMENT,
@@ -216,10 +227,28 @@ impl FromWorld for GaussianCloudPipeline {
 
         let view_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("gaussian_view_layout"),
-            entries: &layout_entries,
+            entries: &view_layout_entries,
+        });
+
+
+        let gaussian_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("gaussian_layout"),
+            entries: &vec![
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::VERTEX_FRAGMENT,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(GaussianCloudUniform::min_size()),
+                    },
+                    count: None,
+                }
+            ],
         });
 
         GaussianCloudPipeline {
+            gaussian_layout,
             view_layout,
             shader: GAUSSIAN_SHADER_HANDLE.typed(),
         }
@@ -246,6 +275,7 @@ impl SpecializedRenderPipeline for GaussianCloudPipeline {
             label: Some("gaussian cloud pipeline".into()),
             layout: vec![
                 self.view_layout.clone(),
+                self.gaussian_layout.clone(),
             ],
             vertex: VertexState {
                 shader: self.shader.clone(),
@@ -373,7 +403,7 @@ pub fn queue_gaussian_bind_group(
     render_device: Res<RenderDevice>,
     gaussian_uniforms: Res<ComponentUniforms<GaussianCloudUniform>>,
 ) {
-    let layout: &BindGroupLayout = &gaussian_cloud_pipeline.view_layout;
+    let layout: &BindGroupLayout = &gaussian_cloud_pipeline.gaussian_layout;
     let Some(model) = gaussian_uniforms.buffer() else {
         return;
     };
@@ -421,8 +451,8 @@ pub fn queue_gaussian_view_bind_groups(
     ) {
         for (
             entity,
-            extracted_view,
-            render_phase,
+            _extracted_view,
+            _render_phase,
         ) in &views
         {
             let layout = &gaussian_cloud_pipeline.view_layout;
@@ -540,8 +570,10 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
                 pass.draw_indexed(0..*count, 0, 0..gpu_gaussian_cloud.vertex_count as u32);
             }
             GpuBufferInfo::NonIndexed => {
-                pass.draw(0..gpu_gaussian_cloud.vertex_count, 0..gpu_gaussian_cloud.vertex_count as u32);
+                pass.draw(0..4, 0..gpu_gaussian_cloud.vertex_count as u32);
             }
+
+            // TODO: add support for indirect draw and match over sort methods
         }
         RenderCommandResult::Success
     }

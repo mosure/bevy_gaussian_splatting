@@ -27,12 +27,13 @@ use bytemuck::{
 use crate::ply::parse_ply;
 
 
-#[derive(Clone, Debug, Default, Reflect, Copy, Pod, Zeroable)]
-#[repr(C)]
-pub struct AnisotropicCovariance {
-    pub mean: Vec3,
-    pub covariance: Mat3,
-}
+// // TODO: precompute cov3d
+// #[derive(Clone, Debug, Default, Reflect, Copy, Pod, Zeroable)]
+// #[repr(C)]
+// pub struct AnisotropicCovariance {
+//     pub mean: Vec3,
+//     pub covariance: Mat3,
+// }
 
 const fn num_sh_coefficients(degree: usize) -> usize {
     if degree == 0 {
@@ -59,12 +60,12 @@ impl Default for SphericalHarmonicCoefficients {
 #[derive(Clone, Debug, Reflect, Default, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct Gaussian {
-    pub anisotropic_covariance: AnisotropicCovariance,
-    pub normal: Vec3,
+    //pub anisotropic_covariance: AnisotropicCovariance,
+    //pub normal: Vec3,
     pub position: Vec3,
-    pub opacity: f32,
-    pub rotation: [f32; 4],
     pub scale: Vec3,
+    pub rotation: [f32; 4],
+    pub opacity: f32,
     pub spherical_harmonic: SphericalHarmonicCoefficients,
 }
 

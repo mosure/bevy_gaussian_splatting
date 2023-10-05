@@ -19,7 +19,7 @@ struct GaussianOutput {
     @location(2) conic_and_opacity: vec4<f32>,
 };
 
-struct SceneUniforms {
+struct GaussianUniforms {
     view_matrix: mat4x4<f32>,
     projection_matrix: mat4x4<f32>,
     camera_position: vec3<f32>,
@@ -33,7 +33,7 @@ struct SceneUniforms {
 
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var<uniform> view: View;
-@group(0) @binding(2) var<uniform> uniforms: SceneUniforms;
+@group(0) @binding(2) var<uniform> uniforms: GaussianUniforms;
 
 @group(1) @binding(0) var<storage, read> points: array<GaussianInput>;
 
@@ -122,25 +122,23 @@ fn compute_cov2d(position: vec3<f32>, log_scale: vec3<f32>, rot: vec4<f32>) -> v
 }
 
 
-const quadVertices = array<vec2<f32>, 6>(
-    vec2<f32>(-1.0, -1.0),
-    vec2<f32>(-1.0, 1.0),
-    vec2<f32>(1.0, -1.0),
-    vec2<f32>(1.0, 1.0),
-    vec2<f32>(-1.0, 1.0),
-    vec2<f32>(1.0, -1.0),
-);
-
 @vertex
 fn vs_points(
     @builtin(instance_index) instance_index: u32,
     @builtin(vertex_index) vertex_index: u32,
 ) -> GaussianOutput {
+    // TODO: size may need to be 6 for aabb?
+    var quad_vertices = array<vec2<f32>, 4>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(-1.0, 1.0),
+        vec2<f32>(1.0, -1.0),
+        vec2<f32>(1.0, 1.0),
+    );
+
     var output: GaussianOutput;
-    let pointIndex = vertex_index / 6u;
-    let quadIndex = vertex_index % 6u;
-    let quadOffset = quadVertices[quadIndex];
-    let point = points[pointIndex];
+    let quad_index = vertex_index % 4u;
+    let quad_offset = quad_vertices[quad_index];
+    let point = points[instance_index];
 
     let cov2d = compute_cov2d(point.position, point.log_scale, point.rot);
     let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
@@ -151,22 +149,22 @@ fn vs_points(
     let lambda_2 = mid - sqrt(max(0.1, mid * mid - det));
     let radius_px = ceil(3.0 * sqrt(max(lambda_1, lambda_2)));
     let radius_ndc = vec2<f32>(
-        radius_px / (canvas_height),
-        radius_px / (canvas_width),
+        radius_px / (view.viewport.w), // TODO: test viewport.z swap
+        radius_px / (view.viewport.z),
     );
     output.conic_and_opacity = vec4<f32>(conic, sigmoid(point.opacity_logit));
 
     var projPosition = uniforms.projection_matrix * vec4<f32>(point.position, 1.0);
     projPosition = projPosition / projPosition.w;
-    output.position = vec4<f32>(projPosition.xy + 2 * radius_ndc * quadOffset, projPosition.zw);
+    output.position = vec4<f32>(projPosition.xy + 2.0 * radius_ndc * quad_offset, projPosition.zw);
     output.color = compute_color_from_sh_3_degree(point.position, point.sh, uniforms.camera_position);
-    output.uv = radius_px * quadOffset;
+    output.uv = radius_px * quad_offset;
 
     return output;
 }
 
 @fragment
-fn fs_main(input: PointOutput) -> @location(0) vec4<f32> {
+fn fs_main(input: GaussianOutput) -> @location(0) vec4<f32> {
     // we want the distance from the gaussian to the fragment while uv
     // is the reverse
     let d = -input.uv;

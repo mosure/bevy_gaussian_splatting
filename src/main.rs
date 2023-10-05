@@ -44,7 +44,7 @@ fn setup_gaussian_cloud(
     asset_server: Res<AssetServer>,
 ) {
     commands.spawn(GaussianSplattingBundle {
-        verticies: asset_server.load("scenes/test.ply"),
+        verticies: asset_server.load("scenes/icecream.ply"),
         ..Default::default()
     });
 
