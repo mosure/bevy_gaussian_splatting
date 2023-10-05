@@ -57,6 +57,7 @@ fn setup_gaussian_cloud(
 
 - [bevy](https://github.com/bevyengine/bevy)
 - [diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization)
+- [dreamgaussian](https://github.com/dreamgaussian/dreamgaussian)
 - [dynamic-3d-gaussians](https://github.com/JonathonLuiten/Dynamic3DGaussians)
 - [gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting)
 - [gaussian-splatting-web](https://github.com/cvlab-epfl/gaussian-splatting-web)
