@@ -34,7 +34,16 @@ jobs:
         key: ${{ runner.os }}-cargo-build-stable-${{ hashFiles('**/Cargo.toml') }}
 
     - name: build
-      run: cargo build
+      run: cargo build --timings
 
-    - name: run tests
+    - name: lint
+      run: cargo clippy
+
+    - name: test
       run: cargo test
+
+    - name: bench
+      run: cargo bench
+
+    - name: doc
+      run: cargo doc
