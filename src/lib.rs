@@ -14,7 +14,7 @@ pub mod render;
 pub mod utils;
 
 
-#[derive(Component, Default, Reflect)]
+#[derive(Bundle, Default, Reflect)]
 pub struct GaussianSplattingBundle {
     pub settings: GaussianCloudSettings, // TODO: implement global transform
     pub verticies: Handle<GaussianCloud>,

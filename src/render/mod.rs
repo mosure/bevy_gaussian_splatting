@@ -1,4 +1,4 @@
-use std::{hash::Hash, num::NonZeroU64};
+use std::hash::Hash;
 
 use bevy::{
     prelude::*,
@@ -12,10 +12,7 @@ use bevy::{
             lifetimeless::*,
             SystemParamItem,
         },
-        query::{
-            QueryItem,
-            ROQueryItem,
-        },
+        query::ROQueryItem,
     },
     reflect::TypeUuid,
     render::{
@@ -24,8 +21,6 @@ use bevy::{
             DynamicUniformIndex,
             UniformComponentPlugin,
             ComponentUniforms,
-            ExtractComponent,
-            ExtractComponentPlugin,
         },
         globals::{
             GlobalsUniform,
@@ -62,16 +57,17 @@ use bevy::{
     },
 };
 
-use crate::{GaussianSplattingBundle, gaussian::GaussianCloudSettings};
 use crate::gaussian::{
     Gaussian,
     GaussianCloud,
+    GaussianCloudSettings,
     MAX_SH_COEFF_COUNT,
 };
 
 
 const GAUSSIAN_SHADER_HANDLE: HandleUntyped = HandleUntyped::weak_from_u64(Shader::TYPE_UUID, 68294581);
 const SPHERICAL_HARMONICS_SHADER_HANDLE: HandleUntyped = HandleUntyped::weak_from_u64(Shader::TYPE_UUID, 834667312);
+
 
 #[derive(Default)]
 pub struct RenderPipelinePlugin;
@@ -94,16 +90,6 @@ impl Plugin for RenderPipelinePlugin {
 
         app.add_plugins(RenderAssetPlugin::<GaussianCloud>::default());
         app.add_plugins(UniformComponentPlugin::<GaussianCloudUniform>::default());
-
-        // TODO: either use extract_gaussians OR ExtractComponentPlugin (extract_gaussians allows for earlier visibility culling)
-        app.add_plugins(ExtractComponentPlugin::<GaussianSplattingBundle>::default());
-
-        // TODO(future): pre-pass filter using output from core 3d render pipeline
-
-        // TODO: gaussian splatting render pipeline
-        // TODO: add a gaussian splatting render pass
-        // TODO: add a gaussian splatting camera component
-        // TODO: add a gaussian cloud sorting system
 
         if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
@@ -131,35 +117,16 @@ impl Plugin for RenderPipelinePlugin {
 }
 
 
-#[derive(Component, Clone)]
+#[derive(Bundle)]
 pub struct GpuGaussianSplattingBundle {
-    settings_uniform: GaussianCloudUniform,
-    verticies: Handle<GaussianCloud>,
+    pub settings_uniform: GaussianCloudUniform,
+    pub verticies: Handle<GaussianCloud>,
 }
 
-impl ExtractComponent for GaussianSplattingBundle {
-    type Query = &'static GaussianSplattingBundle;
-    type Filter = ();
-    type Out = GpuGaussianSplattingBundle;
-
-    fn extract_component(item: QueryItem<'_, Self::Query>) -> Option<GpuGaussianSplattingBundle> {
-        Some(GpuGaussianSplattingBundle {
-            settings_uniform: GaussianCloudUniform {
-                global_scale: item.settings.global_scale,
-                transform: item.settings.global_transform.compute_matrix(),
-            },
-            verticies: item.verticies.clone(),
-        })
-    }
-}
-
-
-
-// TODO: use point mesh pipeline instead of custom pipeline?
 #[derive(Debug, Clone)]
 pub struct GpuGaussianCloud {
-    pub vertex_buffer: Buffer, //TODO: add this buffer to group 1 layout (and move gaussian uniforms to group 0, binding 2)
-    pub vertex_count: u32,
+    pub buffer: Buffer,
+    pub count: u32,
     pub buffer_info: GpuBufferInfo,
 }
 impl RenderAsset for GaussianCloud {
@@ -167,25 +134,23 @@ impl RenderAsset for GaussianCloud {
     type PreparedAsset = GpuGaussianCloud;
     type Param = SRes<RenderDevice>;
 
-    /// clones the gaussian cloud
     fn extract_asset(&self) -> Self::ExtractedAsset {
         self.clone()
     }
 
-    /// converts the extracted gaussian cloud a into [`GpuGaussianCloud`].
     fn prepare_asset(
         gaussian_cloud: Self::ExtractedAsset,
         render_device: &mut SystemParamItem<Self::Param>,
     ) -> Result<Self::PreparedAsset, PrepareAssetError<Self::ExtractedAsset>> {
-        let vertex_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
-            label: Some("gaussian cloud vertex buffer"),
+        let buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("gaussian cloud buffer"),
             contents: bytemuck::cast_slice(gaussian_cloud.0.as_slice()),
-            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::STORAGE,
         });
 
         Ok(GpuGaussianCloud {
-            vertex_buffer,
-            vertex_count: gaussian_cloud.0.len() as u32,
+            buffer,
+            count: gaussian_cloud.0.len() as u32,
             buffer_info: GpuBufferInfo::NonIndexed,
         })
     }
@@ -199,14 +164,17 @@ fn queue_gaussians(
     mut pipelines: ResMut<SpecializedRenderPipelines<GaussianCloudPipeline>>,
     pipeline_cache: Res<PipelineCache>,
     gaussian_clouds: Res<RenderAssets<GaussianCloud>>,
-    gaussian_splatting_bundles: Query<(Entity, &GpuGaussianSplattingBundle)>,
+    gaussian_splatting_bundles: Query<(
+        Entity,
+        &Handle<GaussianCloud>,
+    )>,
     mut views: Query<(&ExtractedView, &mut RenderPhase<Transparent3d>)>,
 ) {
     let draw_custom = transparent_3d_draw_functions.read().id::<DrawGaussians>();
 
     for (_view, mut transparent_phase) in &mut views {
-        for (entity, bundle) in &gaussian_splatting_bundles {
-            if let Some(_cloud) = gaussian_clouds.get(&bundle.verticies) {
+        for (entity, verticies) in &gaussian_splatting_bundles {
+            if let Some(_cloud) = gaussian_clouds.get(verticies) {
                 let key = GaussianCloudPipelineKey {
 
                 };
@@ -257,16 +225,6 @@ impl FromWorld for GaussianCloudPipeline {
                 },
                 count: None,
             },
-            BindGroupLayoutEntry {
-                binding: 2,
-                visibility: ShaderStages::VERTEX_FRAGMENT,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: Some(GaussianCloudUniform::min_size()),
-                },
-                count: None,
-            }
         ];
 
         let view_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
@@ -282,11 +240,19 @@ impl FromWorld for GaussianCloudPipeline {
                     binding: 0,
                     visibility: ShaderStages::VERTEX_FRAGMENT,
                     ty: BindingType::Buffer {
-                        ty: BufferBindingType::Storage {
-                            read_only: true,
-                        },
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: Some(GaussianCloudUniform::min_size()),
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: ShaderStages::VERTEX_FRAGMENT,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
-                        min_binding_size: NonZeroU64::new(std::mem::size_of::<Gaussian>() as u64)
+                        min_binding_size: BufferSize::new(std::mem::size_of::<Gaussian>() as u64 * 100_000),
                     },
                     count: None,
                 },
@@ -299,8 +265,6 @@ impl FromWorld for GaussianCloudPipeline {
             shader: GAUSSIAN_SHADER_HANDLE.typed(),
         }
     }
-
-
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
@@ -313,7 +277,6 @@ impl SpecializedRenderPipeline for GaussianCloudPipeline {
 
     fn specialize(&self, _key: Self::Key) -> RenderPipelineDescriptor {
         let shader_defs = vec![
-            "MESH_BINDGROUP_1".into(),
             ShaderDefVal::UInt("MAX_SH_COEFF_COUNT".into(), MAX_SH_COEFF_COUNT as u32),
         ];
 
@@ -327,39 +290,7 @@ impl SpecializedRenderPipeline for GaussianCloudPipeline {
                 shader: self.shader.clone(),
                 shader_defs: shader_defs.clone(),
                 entry_point: "vs_points".into(),
-                buffers: vec![
-                    VertexBufferLayout {
-                        array_stride: std::mem::size_of::<Gaussian>() as u64,
-                        step_mode: VertexStepMode::Instance,
-                        attributes: vec![
-                            // position
-                            VertexAttribute {
-                                format: VertexFormat::Float32x3,
-                                offset: 0,
-                                shader_location: 0,
-                            },
-                            // log_scale
-                            VertexAttribute {
-                                format: VertexFormat::Float32x3,
-                                offset: VertexFormat::Float32x3.size(),
-                                shader_location: 1,
-                            },
-                            // rotation
-                            VertexAttribute {
-                                format: VertexFormat::Float32x4,
-                                offset: 2 * VertexFormat::Float32x3.size(),
-                                shader_location: 2,
-                            },
-                            // opacity
-                            VertexAttribute {
-                                format: VertexFormat::Float32,
-                                offset: 2 * VertexFormat::Float32x3.size() + VertexFormat::Float32x4.size(),
-                                shader_location: 3,
-                            },
-                            // spherical_harmonic array...
-                        ],
-                    }
-                ],
+                buffers: vec![],
             },
             fragment: Some(FragmentState {
                 shader: self.shader.clone(),
@@ -396,8 +327,6 @@ impl SpecializedRenderPipeline for GaussianCloudPipeline {
 
 type DrawGaussians = (
     SetItemPipeline,
-    // TODO: convert to gaussian bind group, use native globals and view uniforms: https://github.com/bevyengine/bevy/blob/0d23d71c19c784ceb1acfbb134dda9ce0c2adc61/crates/bevy_render/src/view/view.wgsl#L10
-    //          also see: https://github.com/bevyengine/bevy/blob/0d23d71c19c784ceb1acfbb134dda9ce0c2adc61/crates/bevy_pbr/src/render/mesh.rs#L1006
     SetGaussianViewBindGroup<0>,
     SetGaussianBindGroup<1>,
     DrawGaussianInstanced,
@@ -410,30 +339,33 @@ pub struct GaussianCloudUniform {
     pub transform: Mat4,
 }
 
-// TODO: this is redundant with ExtractComponent for GaussianSplattingBundle
 pub fn extract_gaussians(
     mut commands: Commands,
     mut prev_commands_len: Local<usize>,
     gaussians_query: Extract<
         Query<(
             Entity,
-            &ComputedVisibility,
+            // &ComputedVisibility,
             &GaussianCloudSettings,
             &Handle<GaussianCloud>,
         )>,
     >,
 ) {
     let mut commands_list = Vec::with_capacity(*prev_commands_len);
-    let visible_gaussians = gaussians_query.iter().filter(|(_, vis, ..)| vis.is_visible());
+    // let visible_gaussians = gaussians_query.iter().filter(|(_, vis, ..)| vis.is_visible());
 
-    for (entity, _, settings, handle) in
-        visible_gaussians
-    {
-        let uniform = GaussianCloudUniform {
+    for (entity, settings, verticies) in gaussians_query.iter() {
+        let settings_uniform = GaussianCloudUniform {
             global_scale: settings.global_scale,
             transform: settings.global_transform.compute_matrix(),
         };
-        commands_list.push((entity, (handle.clone_weak(), uniform)));
+        commands_list.push((
+            entity,
+            GpuGaussianSplattingBundle {
+                settings_uniform,
+                verticies: verticies.clone_weak(),
+            },
+        ));
     }
     *prev_commands_len = commands_list.len();
     commands.insert_or_spawn_batch(commands_list);
@@ -450,26 +382,43 @@ pub fn queue_gaussian_bind_group(
     gaussian_cloud_pipeline: Res<GaussianCloudPipeline>,
     render_device: Res<RenderDevice>,
     gaussian_uniforms: Res<ComponentUniforms<GaussianCloudUniform>>,
+    gaussian_cloud_res: Res<RenderAssets<GaussianCloud>>,
+    gaussian_clouds: Query<(
+        Entity,
+        &Handle<GaussianCloud>,
+    )>,
 ) {
     let layout: &BindGroupLayout = &gaussian_cloud_pipeline.gaussian_layout;
     let Some(model) = gaussian_uniforms.buffer() else {
         return;
     };
 
-    groups.base_bind_group = Some(render_device.create_bind_group(&BindGroupDescriptor {
-        entries: &[
-            BindGroupEntry {
-                binding: 0,
-                resource: BindingResource::Buffer(BufferBinding {
-                    buffer: model,
-                    offset: 0,
-                    size: Some(BufferSize::new(GaussianCloudUniform::min_size().get()).unwrap()),
-                }),
-            }
-        ],
-        layout,
-        label: Some("gaussian_bind_group"),
-    }));
+    for (_entity, cloud_handle) in gaussian_clouds.iter() {
+        let cloud = gaussian_cloud_res.get(cloud_handle).unwrap();
+
+        groups.base_bind_group = Some(render_device.create_bind_group(&BindGroupDescriptor {
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: model,
+                        offset: 0,
+                        size: BufferSize::new(model.size()),
+                    }),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &cloud.buffer,
+                        offset: 0,
+                        size: BufferSize::new(cloud.buffer.size()),
+                    }),
+                },
+            ],
+            layout,
+            label: Some("gaussian_bind_group"),
+        }));
+    }
 }
 
 
@@ -489,16 +438,13 @@ pub fn queue_gaussian_view_bind_groups(
         &mut RenderPhase<Transparent3d>,
     )>,
     globals_buffer: Res<GlobalsBuffer>,
-    gaussian_cloud_uniforms: Res<ComponentUniforms<GaussianCloudUniform>>,
 ) {
     if let (
         Some(view_binding),
         Some(globals),
-        Some(gaussian_cloud_uniform),
     ) = (
         view_uniforms.uniforms.binding(),
         globals_buffer.buffer.binding(),
-        gaussian_cloud_uniforms.binding(),
     ) {
         for (
             entity,
@@ -517,10 +463,6 @@ pub fn queue_gaussian_view_bind_groups(
                     binding: 1,
                     resource: globals.clone(),
                 },
-                BindGroupEntry {
-                    binding: 2,
-                    resource: gaussian_cloud_uniform.clone(),
-                },
             ];
 
             let view_bind_group = render_device.create_bind_group(&BindGroupDescriptor {
@@ -528,6 +470,7 @@ pub fn queue_gaussian_view_bind_groups(
                 label: Some("gaussian_view_bind_group"),
                 layout,
             });
+
 
             commands.entity(entity).insert(GaussianViewBindGroup {
                 value: view_bind_group,
@@ -612,9 +555,6 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
             None => return RenderCommandResult::Failure,
         };
 
-        pass.set_vertex_buffer(0, gpu_gaussian_cloud.vertex_buffer.slice(..));
-        pass.set_vertex_buffer(1, gpu_gaussian_cloud.vertex_buffer.slice(..));
-
         match &gpu_gaussian_cloud.buffer_info {
             GpuBufferInfo::Indexed {
                 buffer,
@@ -622,10 +562,10 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
                 count,
             } => {
                 pass.set_index_buffer(buffer.slice(..), 0, *index_format);
-                pass.draw_indexed(0..*count, 0, 0..gpu_gaussian_cloud.vertex_count as u32);
+                pass.draw_indexed(0..*count, 0, 0..gpu_gaussian_cloud.count as u32);
             }
             GpuBufferInfo::NonIndexed => {
-                pass.draw(0..4, 0..gpu_gaussian_cloud.vertex_count as u32);
+                pass.draw(0..4, 0..gpu_gaussian_cloud.count as u32);
             }
 
             // TODO: add support for indirect draw and match over sort methods

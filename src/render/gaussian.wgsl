@@ -20,22 +20,16 @@ struct GaussianOutput {
 };
 
 struct GaussianUniforms {
-    view_matrix: mat4x4<f32>,
-    projection_matrix: mat4x4<f32>,
-    camera_position: vec3<f32>,
-    tan_fovx: f32,
-    tan_fovy: f32,
-    focal_x: f32,
-    focal_y: f32,
-    scale_modifier: f32,
+    global_scale: f32,
+    transform: mat4x4<f32>,
 };
 
 
-@group(0) @binding(0) var<uniform> globals: Globals;
-@group(0) @binding(1) var<uniform> view: View;
-@group(0) @binding(2) var<uniform> uniforms: GaussianUniforms;
+@group(0) @binding(0) var<uniform> view: View;
+@group(0) @binding(1) var<uniform> globals: Globals;
 
-@group(1) @binding(0) var<storage, read> points: array<GaussianInput>;
+@group(1) @binding(0) var<uniform> uniforms: GaussianUniforms;
+@group(1) @binding(1) var<storage, read> points: array<GaussianInput>;
 
 
 fn sigmoid(x: f32) -> f32 {
@@ -49,7 +43,7 @@ fn sigmoid(x: f32) -> f32 {
 
 // TODO: precompute cov3d
 fn compute_cov3d(log_scale: vec3<f32>, rot: vec4<f32>) -> array<f32, 6> {
-    let modifier = uniforms.scale_modifier;
+    let modifier = uniforms.global_scale;
     let S = mat3x3<f32>(
         exp(log_scale.x) * modifier, 0.0, 0.0,
         0.0, exp(log_scale.y) * modifier, 0.0,
@@ -83,10 +77,17 @@ fn compute_cov3d(log_scale: vec3<f32>, rot: vec4<f32>) -> array<f32, 6> {
 fn compute_cov2d(position: vec3<f32>, log_scale: vec3<f32>, rot: vec4<f32>) -> vec3<f32> {
     let cov3d = compute_cov3d(log_scale, rot);
 
-    var t = uniforms.view_matrix * vec4<f32>(position, 1.0);
+    var t = view.view * vec4<f32>(position, 1.0);
 
-    let limx = 1.3 * uniforms.tan_fovx;
-    let limy = 1.3 * uniforms.tan_fovy;
+    let focal_x = view.projection[0][0];
+    let focal_y = view.projection[1][1];
+
+    let aspect_ratio = focal_x / focal_y;
+    let tan_fovy = 1.0 / focal_y;
+    let tan_fovx = tan_fovy * aspect_ratio;
+
+    let limx = 1.3 * tan_fovx;
+    let limy = 1.3 * tan_fovy;
     let txtz = t.x / t.z;
     let tytz = t.y / t.z;
 
@@ -94,13 +95,13 @@ fn compute_cov2d(position: vec3<f32>, log_scale: vec3<f32>, rot: vec4<f32>) -> v
     t.y = min(limy, max(-limy, tytz)) * t.z;
 
     let J = mat4x4(
-        uniforms.focal_x / t.z, 0.0, -(uniforms.focal_x * t.x) / (t.z * t.z), 0.0,
-        0.0, uniforms.focal_y / t.z, -(uniforms.focal_y * t.y) / (t.z * t.z), 0.0,
+        focal_x / t.z, 0.0, -(focal_x * t.x) / (t.z * t.z), 0.0,
+        0.0, focal_y / t.z, -(focal_y * t.y) / (t.z * t.z), 0.0,
         0.0, 0.0, 0.0, 0.0,
         0.0, 0.0, 0.0, 0.0
     );
 
-    let W = transpose(uniforms.view_matrix);
+    let W = transpose(view.view);
 
     let T = W * J;
 
@@ -154,10 +155,10 @@ fn vs_points(
     );
     output.conic_and_opacity = vec4<f32>(conic, sigmoid(point.opacity_logit));
 
-    var projPosition = uniforms.projection_matrix * vec4<f32>(point.position, 1.0);
+    var projPosition = view.projection * vec4<f32>(point.position, 1.0);
     projPosition = projPosition / projPosition.w;
     output.position = vec4<f32>(projPosition.xy + 2.0 * radius_ndc * quad_offset, projPosition.zw);
-    output.color = compute_color_from_sh_3_degree(point.position, point.sh, uniforms.camera_position);
+    output.color = compute_color_from_sh_3_degree(point.position, point.sh, view.world_position);
     output.uv = radius_px * quad_offset;
 
     return output;
