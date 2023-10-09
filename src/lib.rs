@@ -25,7 +25,6 @@ pub struct GaussianSplattingBundle {
 struct GaussianSplattingCamera;
 // TODO: filter camera 3D entities
 
-// TODO: add render pipeline config
 pub struct GaussianSplattingPlugin;
 
 impl Plugin for GaussianSplattingPlugin {

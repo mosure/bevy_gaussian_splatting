@@ -17,6 +17,7 @@ use bevy::{
         TypePath,
         TypeUuid,
     },
+    render::render_resource::ShaderType,
     utils::BoxedFuture,
 };
 use bytemuck::{
@@ -27,14 +28,6 @@ use bytemuck::{
 use crate::ply::parse_ply;
 
 
-// // TODO: precompute cov3d
-// #[derive(Clone, Debug, Default, Reflect, Copy, Pod, Zeroable)]
-// #[repr(C)]
-// pub struct AnisotropicCovariance {
-//     pub mean: Vec3,
-//     pub covariance: Mat3,
-// }
-
 const fn num_sh_coefficients(degree: usize) -> usize {
     if degree == 0 {
         1
@@ -44,7 +37,7 @@ const fn num_sh_coefficients(degree: usize) -> usize {
 }
 const SH_DEGREE: usize = 3;
 pub const MAX_SH_COEFF_COUNT: usize = num_sh_coefficients(SH_DEGREE);
-#[derive(Clone, Debug, Reflect, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, ShaderType, Pod, Zeroable)]
 #[repr(C)]
 pub struct SphericalHarmonicCoefficients {
     pub coefficients: [Vec3; MAX_SH_COEFF_COUNT],
@@ -57,26 +50,35 @@ impl Default for SphericalHarmonicCoefficients {
     }
 }
 
-#[derive(Clone, Debug, Reflect, Default, Copy, Pod, Zeroable)]
+#[derive(Clone, Default, Copy, ShaderType, Pod, Zeroable)]
 #[repr(C)]
 pub struct Gaussian {
     //pub anisotropic_covariance: AnisotropicCovariance,
     //pub normal: Vec3,
+    pub rotation: [f32; 4],
     pub position: Vec3,
     pub scale: Vec3,
-    pub rotation: [f32; 4],
     pub opacity: f32,
     pub spherical_harmonic: SphericalHarmonicCoefficients,
 }
 
-#[derive(Clone, Debug, TypeUuid, TypePath)]
+#[derive(Clone, TypeUuid, TypePath)]
 #[uuid = "ac2f08eb-bc32-aabb-ff21-51571ea332d5"]
 pub struct GaussianCloud(pub Vec<Gaussian>);
 
-#[derive(Component, Default, Reflect, Clone)]
+#[derive(Component, Reflect, Clone)]
 pub struct GaussianCloudSettings {
-    pub global_scale: f32,  // TODO: default to 1.0
-    pub global_transform: GlobalTransform,  // TODO: default to identity
+    pub global_scale: f32,
+    pub global_transform: GlobalTransform,
+}
+
+impl Default for GaussianCloudSettings {
+    fn default() -> Self {
+        Self {
+            global_scale: 1.0,
+            global_transform: Transform::IDENTITY.into(),
+        }
+    }
 }
 
 

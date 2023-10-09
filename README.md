@@ -56,6 +56,7 @@ fn setup_gaussian_cloud(
 # credits
 
 - [bevy](https://github.com/bevyengine/bevy)
+- [bevy-hanabi](https://github.com/djeedai/bevy_hanabi)
 - [diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization)
 - [dreamgaussian](https://github.com/dreamgaussian/dreamgaussian)
 - [dynamic-3d-gaussians](https://github.com/JonathonLuiten/Dynamic3DGaussians)

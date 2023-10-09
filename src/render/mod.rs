@@ -94,7 +94,7 @@ impl Plugin for RenderPipelinePlugin {
         if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .add_render_command::<Transparent3d, DrawGaussians>()
-                .init_resource::<GaussianBindGroups>()
+                .init_resource::<GaussianUniformBindGroups>()
                 .add_systems(ExtractSchedule, extract_gaussians)
                 .add_systems(
                     Render,
@@ -196,7 +196,8 @@ fn queue_gaussians(
 #[derive(Resource)]
 pub struct GaussianCloudPipeline {
     shader: Handle<Shader>,
-    pub gaussian_layout: BindGroupLayout,
+    pub gaussian_cloud_layout: BindGroupLayout,
+    pub gaussian_uniform_layout: BindGroupLayout,
     pub view_layout: BindGroupLayout,
 }
 
@@ -232,27 +233,34 @@ impl FromWorld for GaussianCloudPipeline {
             entries: &view_layout_entries,
         });
 
-
-        let gaussian_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("gaussian_layout"),
+        let gaussian_uniform_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("gaussian_uniform_layout"),
             entries: &vec![
                 BindGroupLayoutEntry {
                     binding: 0,
                     visibility: ShaderStages::VERTEX_FRAGMENT,
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Uniform,
-                        has_dynamic_offset: true,
+                        has_dynamic_offset: false,
                         min_binding_size: Some(GaussianCloudUniform::min_size()),
                     },
                     count: None,
                 },
+            ],
+        });
+
+        println!("gaussian size: {}", std::mem::size_of::<Gaussian>());
+
+        let gaussian_cloud_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("gaussian_cloud_layout"),
+            entries: &vec![
                 BindGroupLayoutEntry {
-                    binding: 1,
+                    binding: 0,
                     visibility: ShaderStages::VERTEX_FRAGMENT,
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(std::mem::size_of::<Gaussian>() as u64 * 100_000),
+                        min_binding_size: BufferSize::new(std::mem::size_of::<Gaussian>() as u64),
                     },
                     count: None,
                 },
@@ -260,7 +268,8 @@ impl FromWorld for GaussianCloudPipeline {
         });
 
         GaussianCloudPipeline {
-            gaussian_layout,
+            gaussian_cloud_layout,
+            gaussian_uniform_layout,
             view_layout,
             shader: GAUSSIAN_SHADER_HANDLE.typed(),
         }
@@ -284,7 +293,8 @@ impl SpecializedRenderPipeline for GaussianCloudPipeline {
             label: Some("gaussian cloud pipeline".into()),
             layout: vec![
                 self.view_layout.clone(),
-                self.gaussian_layout.clone(),
+                self.gaussian_uniform_layout.clone(),
+                self.gaussian_cloud_layout.clone(),
             ],
             vertex: VertexState {
                 shader: self.shader.clone(),
@@ -328,7 +338,7 @@ impl SpecializedRenderPipeline for GaussianCloudPipeline {
 type DrawGaussians = (
     SetItemPipeline,
     SetGaussianViewBindGroup<0>,
-    SetGaussianBindGroup<1>,
+    SetGaussianUniformBindGroup<1>,
     DrawGaussianInstanced,
 );
 
@@ -373,12 +383,18 @@ pub fn extract_gaussians(
 
 
 #[derive(Resource, Default)]
-pub struct GaussianBindGroups {
+pub struct GaussianUniformBindGroups {
     base_bind_group: Option<BindGroup>,
 }
 
+#[derive(Component)]
+pub struct GaussianCloudBindGroup {
+    pub bind_group: BindGroup,
+}
+
 pub fn queue_gaussian_bind_group(
-    mut groups: ResMut<GaussianBindGroups>,
+    mut commands: Commands,
+    mut groups: ResMut<GaussianUniformBindGroups>,
     gaussian_cloud_pipeline: Res<GaussianCloudPipeline>,
     render_device: Res<RenderDevice>,
     gaussian_uniforms: Res<ComponentUniforms<GaussianCloudUniform>>,
@@ -388,12 +404,13 @@ pub fn queue_gaussian_bind_group(
         &Handle<GaussianCloud>,
     )>,
 ) {
-    let layout: &BindGroupLayout = &gaussian_cloud_pipeline.gaussian_layout;
     let Some(model) = gaussian_uniforms.buffer() else {
         return;
     };
 
-    for (_entity, cloud_handle) in gaussian_clouds.iter() {
+    assert!(model.size() == std::mem::size_of::<GaussianCloudUniform>() as u64);
+
+    for (entity, cloud_handle) in gaussian_clouds.iter() {
         let cloud = gaussian_cloud_res.get(cloud_handle).unwrap();
 
         groups.base_bind_group = Some(render_device.create_bind_group(&BindGroupDescriptor {
@@ -406,18 +423,29 @@ pub fn queue_gaussian_bind_group(
                         size: BufferSize::new(model.size()),
                     }),
                 },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::Buffer(BufferBinding {
-                        buffer: &cloud.buffer,
-                        offset: 0,
-                        size: BufferSize::new(cloud.buffer.size()),
-                    }),
-                },
             ],
-            layout,
-            label: Some("gaussian_bind_group"),
+            layout: &gaussian_cloud_pipeline.gaussian_uniform_layout,
+            label: Some("gaussian_uniform_bind_group"),
         }));
+
+        println!("gaussian cloud element size: {}", cloud.buffer.size() / cloud.count as u64);
+
+        commands.entity(entity).insert(GaussianCloudBindGroup {
+            bind_group: render_device.create_bind_group(&BindGroupDescriptor {
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::Buffer(BufferBinding {
+                            buffer: &cloud.buffer,
+                            offset: 0,
+                            size: BufferSize::new(cloud.buffer.size()),
+                        }),
+                    },
+                ],
+                layout: &gaussian_cloud_pipeline.gaussian_cloud_layout,
+                label: Some("gaussian_cloud_bind_group"),
+            }),
+        });
     }
 }
 
@@ -510,9 +538,9 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianViewBindGroup
 }
 
 
-pub struct SetGaussianBindGroup<const I: usize>;
-impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianBindGroup<I> {
-    type Param = SRes<GaussianBindGroups>;
+pub struct SetGaussianUniformBindGroup<const I: usize>;
+impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianUniformBindGroup<I> {
+    type Param = SRes<GaussianUniformBindGroups>;
     type ViewWorldQuery = ();
     type ItemWorldQuery = Read<DynamicUniformIndex<GaussianCloudUniform>>;
 
@@ -535,25 +563,29 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianBindGroup<I> 
     }
 }
 
-
 pub struct DrawGaussianInstanced;
 impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
     type Param = SRes<RenderAssets<GaussianCloud>>;
     type ViewWorldQuery = ();
-    type ItemWorldQuery = Read<Handle<GaussianCloud>>;
+    type ItemWorldQuery = (
+        Read<Handle<GaussianCloud>>,
+        Read<GaussianCloudBindGroup>,
+    );
 
     #[inline]
     fn render<'w>(
         _item: &P,
         _view: (),
-        gaussian_cloud_handle: &'w Handle<GaussianCloud>,
+        (handle, bind_group): (&'w Handle<GaussianCloud>, &'w GaussianCloudBindGroup),
         gaussian_clouds: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
-        let gpu_gaussian_cloud = match gaussian_clouds.into_inner().get(gaussian_cloud_handle) {
+        let gpu_gaussian_cloud = match gaussian_clouds.into_inner().get(handle) {
             Some(gpu_gaussian_cloud) => gpu_gaussian_cloud,
             None => return RenderCommandResult::Failure,
         };
+
+        pass.set_bind_group(2, &bind_group.bind_group, &[]);
 
         match &gpu_gaussian_cloud.buffer_info {
             GpuBufferInfo::Indexed {

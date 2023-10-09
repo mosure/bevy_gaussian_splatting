@@ -25,7 +25,7 @@ const SH_C3_ = array<f32, 7>(
 
 fn compute_color_from_sh_3_degree(
     position: vec3<f32>,
-    sh: array<vec3<f32>, 16>,
+    sh: array<vec3<f32>, #{MAX_SH_COEFF_COUNT}>,
     camera_position: vec3<f32>,
 ) -> vec3<f32> {
     let dir = normalize(position - camera_position);

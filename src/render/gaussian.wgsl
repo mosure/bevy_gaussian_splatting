@@ -5,9 +5,9 @@
 
 
 struct GaussianInput {
-    @location(0) position: vec3<f32>,
-    @location(1) log_scale: vec3<f32>,
-    @location(2) rot: vec4<f32>,
+    @location(0) rot: vec4<f32>,
+    @location(1) position: vec3<f32>,
+    @location(2) log_scale: vec3<f32>,
     @location(3) opacity_logit: f32,
     sh: array<vec3<f32>, #{MAX_SH_COEFF_COUNT}>,
 };
@@ -21,7 +21,7 @@ struct GaussianOutput {
 
 struct GaussianUniforms {
     global_scale: f32,
-    transform: mat4x4<f32>,
+    transform: f32,
 };
 
 
@@ -29,7 +29,8 @@ struct GaussianUniforms {
 @group(0) @binding(1) var<uniform> globals: Globals;
 
 @group(1) @binding(0) var<uniform> uniforms: GaussianUniforms;
-@group(1) @binding(1) var<storage, read> points: array<GaussianInput>;
+
+@group(2) @binding(0) var<storage, read> points: array<GaussianInput>;
 
 
 fn sigmoid(x: f32) -> f32 {
@@ -41,7 +42,7 @@ fn sigmoid(x: f32) -> f32 {
     }
 }
 
-// TODO: precompute cov3d
+// TODO: precompute and store cov3d
 fn compute_cov3d(log_scale: vec3<f32>, rot: vec4<f32>) -> array<f32, 6> {
     let modifier = uniforms.global_scale;
     let S = mat3x3<f32>(
@@ -128,7 +129,7 @@ fn vs_points(
     @builtin(instance_index) instance_index: u32,
     @builtin(vertex_index) vertex_index: u32,
 ) -> GaussianOutput {
-    // TODO: size may need to be 6 for aabb?
+    // TODO: size may need to be 6
     var quad_vertices = array<vec2<f32>, 4>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>(-1.0, 1.0),
