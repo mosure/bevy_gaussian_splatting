@@ -58,7 +58,6 @@ use bevy::{
 };
 
 use crate::gaussian::{
-    Gaussian,
     GaussianCloud,
     GaussianCloudSettings,
     MAX_SH_COEFF_COUNT,
@@ -597,7 +596,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
                 pass.draw_indexed(0..*count, 0, 0..gpu_gaussian_cloud.count as u32);
             }
             GpuBufferInfo::NonIndexed => {
-                pass.draw(0..4, 0..gpu_gaussian_cloud.count as u32);
+                pass.draw(0..6, 0..gpu_gaussian_cloud.count as u32);
             }
 
             // TODO: add support for indirect draw and match over sort methods

@@ -95,7 +95,7 @@ fn compute_cov2d(position: vec3<f32>, log_scale: vec3<f32>, rot: vec4<f32>) -> v
     t.x = min(limx, max(-limx, txtz)) * t.z;
     t.y = min(limy, max(-limy, tytz)) * t.z;
 
-    let J = mat4x4(
+    let J = mat4x4<f32>(
         focal_x / t.z, 0.0, -(focal_x * t.x) / (t.z * t.z), 0.0,
         0.0, focal_y / t.z, -(focal_y * t.y) / (t.z * t.z), 0.0,
         0.0, 0.0, 0.0, 0.0,
@@ -106,7 +106,7 @@ fn compute_cov2d(position: vec3<f32>, log_scale: vec3<f32>, rot: vec4<f32>) -> v
 
     let T = W * J;
 
-    let Vrk = mat4x4(
+    let Vrk = mat4x4<f32>(
         cov3d[0], cov3d[1], cov3d[2], 0.0,
         cov3d[1], cov3d[3], cov3d[4], 0.0,
         cov3d[2], cov3d[4], cov3d[5], 0.0,
@@ -129,16 +129,17 @@ fn vs_points(
     @builtin(instance_index) instance_index: u32,
     @builtin(vertex_index) vertex_index: u32,
 ) -> GaussianOutput {
-    // TODO: size may need to be 6
-    var quad_vertices = array<vec2<f32>, 4>(
+    var quad_vertices = array<vec2<f32>, 6>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>(-1.0, 1.0),
         vec2<f32>(1.0, -1.0),
         vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, 1.0),
+        vec2<f32>(1.0, -1.0),
     );
 
     var output: GaussianOutput;
-    let quad_index = vertex_index % 4u;
+    let quad_index = vertex_index % 6u;
     let quad_offset = quad_vertices[quad_index];
     let point = points[instance_index];
 
@@ -156,7 +157,7 @@ fn vs_points(
     );
     output.conic_and_opacity = vec4<f32>(conic, sigmoid(point.opacity_logit));
 
-    var projPosition = view.projection * vec4<f32>(point.position, 1.0);
+    var projPosition = view.view_proj * vec4<f32>(point.position, 1.0);
     projPosition = projPosition / projPosition.w;
     output.position = vec4<f32>(projPosition.xy + 2.0 * radius_ndc * quad_offset, projPosition.zw);
     output.color = compute_color_from_sh_3_degree(point.position, point.sh, view.world_position);
