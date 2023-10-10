@@ -241,15 +241,13 @@ impl FromWorld for GaussianCloudPipeline {
                     visibility: ShaderStages::VERTEX_FRAGMENT,
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
+                        has_dynamic_offset: true,
                         min_binding_size: Some(GaussianCloudUniform::min_size()),
                     },
                     count: None,
                 },
             ],
         });
-
-        println!("gaussian size: {}", std::mem::size_of::<Gaussian>());
 
         let gaussian_cloud_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("gaussian_cloud_layout"),
@@ -260,7 +258,7 @@ impl FromWorld for GaussianCloudPipeline {
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(std::mem::size_of::<Gaussian>() as u64),
+                        min_binding_size: None,
                     },
                     count: None,
                 },
@@ -329,7 +327,11 @@ impl SpecializedRenderPipeline for GaussianCloudPipeline {
                     clamp: 0.0,
                 },
             }),
-            multisample: MultisampleState::default(),
+            multisample: MultisampleState {
+                count: 4,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             push_constant_ranges: Vec::new(),
         }
     }
@@ -427,8 +429,6 @@ pub fn queue_gaussian_bind_group(
             layout: &gaussian_cloud_pipeline.gaussian_uniform_layout,
             label: Some("gaussian_uniform_bind_group"),
         }));
-
-        println!("gaussian cloud element size: {}", cloud.buffer.size() / cloud.count as u64);
 
         commands.entity(entity).insert(GaussianCloudBindGroup {
             bind_group: render_device.create_bind_group(&BindGroupDescriptor {
