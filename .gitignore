@@ -6,3 +6,5 @@ Cargo.lock
 
 
 *.ply
+
+.DS_Store
