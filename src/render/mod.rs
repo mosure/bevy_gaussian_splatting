@@ -305,11 +305,30 @@ impl SpecializedRenderPipeline for GaussianCloudPipeline {
                 entry_point: "fs_main".into(),
                 targets: vec![Some(ColorTargetState {
                     format: TextureFormat::Rgba8UnormSrgb,
-                    blend: Some(BlendState::ALPHA_BLENDING),
+                    blend: Some(BlendState {
+                        color: BlendComponent {
+                            src_factor: BlendFactor::DstAlpha,
+                            dst_factor: BlendFactor::One,
+                            operation: BlendOperation::Add,
+                        },
+                        alpha: BlendComponent {
+                            src_factor: BlendFactor::Zero,
+                            dst_factor: BlendFactor::OneMinusSrcAlpha,
+                            operation: BlendOperation::Add,
+                        },
+                    }),
                     write_mask: ColorWrites::ALL,
                 })],
             }),
-            primitive: PrimitiveState::default(),
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                front_face: FrontFace::Ccw,
+                unclipped_depth: false,
+                cull_mode: None,
+                conservative: false,
+                polygon_mode: PolygonMode::Fill,
+            },
             depth_stencil: Some(DepthStencilState {
                 format: TextureFormat::Depth32Float,
                 depth_write_enabled: false,
@@ -596,7 +615,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
                 pass.draw_indexed(0..*count, 0, 0..gpu_gaussian_cloud.count as u32);
             }
             GpuBufferInfo::NonIndexed => {
-                pass.draw(0..6, 0..gpu_gaussian_cloud.count as u32);
+                pass.draw(0..4, 0..gpu_gaussian_cloud.count as u32);
             }
 
             // TODO: add support for indirect draw and match over sort methods
