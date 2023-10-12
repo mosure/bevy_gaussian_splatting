@@ -28,9 +28,9 @@ impl PropertyAccess for Gaussian {
             // ("nx", Property::Float(v))          => self.normal.x = v,
             // ("ny", Property::Float(v))          => self.normal.y = v,
             // ("nz", Property::Float(v))          => self.normal.z = v,
-            ("f_dc_0", Property::Float(v))      => self.spherical_harmonic.coefficients[0].x = v,
-            ("f_dc_1", Property::Float(v))      => self.spherical_harmonic.coefficients[0].y = v,
-            ("f_dc_2", Property::Float(v))      => self.spherical_harmonic.coefficients[0].z = v,
+            ("f_dc_0", Property::Float(v))      => self.spherical_harmonic.coefficients[0] = v,
+            ("f_dc_1", Property::Float(v))      => self.spherical_harmonic.coefficients[1] = v,
+            ("f_dc_2", Property::Float(v))      => self.spherical_harmonic.coefficients[2] = v,
             ("opacity", Property::Float(v))     => self.opacity = 1.0 / (1.0 + (-v).exp()),
             ("scale_0", Property::Float(v))     => self.scale.x = v.exp(),  // TODO: variance cap: https://github.com/Lichtso/splatter/blob/c6b7a3894c25578cd29c9761619e4f194449e389/src/scene.rs#L235
             ("scale_1", Property::Float(v))     => self.scale.y = v.exp(),
@@ -46,11 +46,9 @@ impl PropertyAccess for Gaussian {
                 match i {
                     _ if i < sh_upper_bound => {
                         let i = i + 3;
-                        let j = i / 3;
-                        let k = i % 3;
 
-                        // TODO: verify this is the correct sh order
-                        self.spherical_harmonic.coefficients[j][k] = v;
+                        // TODO: verify this is the correct sh order (packed not planar)
+                        self.spherical_harmonic.coefficients[i] = v;
                     },
                     _ => {
                         // println!("unmapped property: {}", key);

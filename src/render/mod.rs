@@ -58,6 +58,7 @@ use bevy::{
 };
 
 use crate::gaussian::{
+    Gaussian,
     GaussianCloud,
     GaussianCloudSettings,
     MAX_SH_COEFF_COUNT,
@@ -257,7 +258,7 @@ impl FromWorld for GaussianCloudPipeline {
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
-                        min_binding_size: None,
+                        min_binding_size: BufferSize::new(std::mem::size_of::<Gaussian>() as u64),
                     },
                     count: None,
                 },

@@ -5,11 +5,11 @@
 
 
 struct GaussianInput {
-    @location(0) rot: vec4<f32>,
+    @location(0) rotation: vec4<f32>,
     @location(1) position: vec3<f32>,
     @location(2) scale: vec3<f32>,
     @location(3) opacity: f32,
-    sh: array<vec3<f32>, #{MAX_SH_COEFF_COUNT}>,
+    sh: array<f32, #{MAX_SH_COEFF_COUNT}>,
 };
 
 struct GaussianOutput {
@@ -137,7 +137,7 @@ fn vs_points(
 
     let M = projected_contour_of_ellipsoid(
         point.scale * uniforms.global_scale,
-        point.rot,
+        point.rotation,
         point.position,
     );
     let translation = extract_translation_of_ellipse(M);
@@ -161,7 +161,7 @@ fn vs_points(
         vec3<f32>(transformation.z, 1.0),
     );
 
-    let ellipse_margin = 2.0;
+    let ellipse_margin = 3.3;  // should be 2.0
     output.uv = quad_offset * ellipse_margin;
     output.position = vec4<f32>(
         (T * vec3<f32>(output.uv, 1.0)).xy / view.viewport.zw,

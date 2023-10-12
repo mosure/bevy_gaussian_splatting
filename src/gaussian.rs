@@ -36,16 +36,16 @@ const fn num_sh_coefficients(degree: usize) -> usize {
     }
 }
 const SH_DEGREE: usize = 3;
-pub const MAX_SH_COEFF_COUNT: usize = num_sh_coefficients(SH_DEGREE);
+pub const MAX_SH_COEFF_COUNT: usize = num_sh_coefficients(SH_DEGREE) * 3;
 #[derive(Clone, Copy, ShaderType, Pod, Zeroable)]
 #[repr(C)]
 pub struct SphericalHarmonicCoefficients {
-    pub coefficients: [Vec3; MAX_SH_COEFF_COUNT],
+    pub coefficients: [f32; MAX_SH_COEFF_COUNT],
 }
 impl Default for SphericalHarmonicCoefficients {
     fn default() -> Self {
         Self {
-            coefficients: [Vec3::ZERO; MAX_SH_COEFF_COUNT],
+            coefficients: [0.0; MAX_SH_COEFF_COUNT],
         }
     }
 }
@@ -60,6 +60,7 @@ pub struct Gaussian {
     pub scale: Vec3,
     pub opacity: f32,
     pub spherical_harmonic: SphericalHarmonicCoefficients,
+    padding: f32,
 }
 
 #[derive(Clone, TypeUuid, TypePath)]
@@ -81,24 +82,25 @@ impl GaussianCloud {
                 opacity: 0.8,
                 spherical_harmonic: SphericalHarmonicCoefficients{
                     coefficients: [
-                        Vec3::new(1.0, 0.0, 1.0),
-                        Vec3::new(0.0, 0.0, 0.0),
-                        Vec3::new(0.0, 0.0, 0.0),
-                        Vec3::new(0.0, 0.0, 0.0),
-                        Vec3::new(0.0, 0.0, 0.0),
-                        Vec3::new(0.0, 0.0, 0.0),
-                        Vec3::new(0.0, 0.0, 0.0),
-                        Vec3::new(0.0, 0.0, 0.0),
-                        Vec3::new(0.0, 0.0, 0.0),
-                        Vec3::new(0.0, 0.0, 0.0),
-                        Vec3::new(0.0, 0.0, 0.0),
-                        Vec3::new(0.0, 0.0, 0.0),
-                        Vec3::new(0.0, 0.0, 0.0),
-                        Vec3::new(0.0, 0.0, 0.0),
-                        Vec3::new(0.0, 0.0, 0.0),
-                        Vec3::new(0.0, 0.0, 0.0),
+                        1.0, 0.0, 1.0,
+                        0.0, 1.0, 0.0,
+                        1.0, 0.0, 0.0,
+                        1.0, 0.0, 1.0,
+                        0.0, 0.0, 0.0,
+                        0.0, 1.0, 0.0,
+                        0.0, 0.0, 0.0,
+                        1.0, 0.0, 0.0,
+                        0.0, 0.0, 0.0,
+                        0.0, 0.0, 1.0,
+                        0.0, 0.0, 0.0,
+                        0.0, 0.0, 0.0,
+                        1.0, 0.0, 0.0,
+                        0.0, 0.0, 0.0,
+                        0.0, 1.0, 0.0,
+                        0.0, 0.0, 1.0,
                     ],
                 },
+                padding: 0.0,
             },
         ])
     }
