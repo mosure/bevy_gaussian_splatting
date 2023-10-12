@@ -66,6 +66,45 @@ pub struct Gaussian {
 #[uuid = "ac2f08eb-bc32-aabb-ff21-51571ea332d5"]
 pub struct GaussianCloud(pub Vec<Gaussian>);
 
+impl GaussianCloud {
+    pub fn test_model() -> Self {
+        Self(vec![
+            Gaussian {
+                rotation: [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                ],
+                position: Vec3::new(0.0, 0.0, 0.0),
+                scale: Vec3::new(1.0, 1.0, 1.0),
+                opacity: 0.8,
+                spherical_harmonic: SphericalHarmonicCoefficients{
+                    coefficients: [
+                        Vec3::new(1.0, 0.0, 1.0),
+                        Vec3::new(0.0, 0.0, 0.0),
+                        Vec3::new(0.0, 0.0, 0.0),
+                        Vec3::new(0.0, 0.0, 0.0),
+                        Vec3::new(0.0, 0.0, 0.0),
+                        Vec3::new(0.0, 0.0, 0.0),
+                        Vec3::new(0.0, 0.0, 0.0),
+                        Vec3::new(0.0, 0.0, 0.0),
+                        Vec3::new(0.0, 0.0, 0.0),
+                        Vec3::new(0.0, 0.0, 0.0),
+                        Vec3::new(0.0, 0.0, 0.0),
+                        Vec3::new(0.0, 0.0, 0.0),
+                        Vec3::new(0.0, 0.0, 0.0),
+                        Vec3::new(0.0, 0.0, 0.0),
+                        Vec3::new(0.0, 0.0, 0.0),
+                        Vec3::new(0.0, 0.0, 0.0),
+                    ],
+                },
+            },
+        ])
+    }
+}
+
+
 #[derive(Component, Reflect, Clone)]
 pub struct GaussianCloudSettings {
     pub global_scale: f32,

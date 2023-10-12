@@ -12,8 +12,11 @@ use bevy_panorbit_camera::{
 };
 
 use bevy_gaussian_splatting::{
+    Gaussian,
+    GaussianCloud,
     GaussianSplattingBundle,
     GaussianSplattingPlugin,
+    SphericalHarmonicCoefficients,
     utils::setup_hooks,
 };
 
@@ -41,10 +44,13 @@ impl Default for GaussianSplattingViewer {
 
 fn setup_gaussian_cloud(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
+    _asset_server: Res<AssetServer>,
+    mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
 ) {
+    let cloud = gaussian_assets.add(GaussianCloud::test_model());
     commands.spawn(GaussianSplattingBundle {
-        verticies: asset_server.load("scenes/icecream.ply"),
+        cloud,
+        // cloud: asset_server.load("scenes/icecream.ply"),
         ..Default::default()
     });
 

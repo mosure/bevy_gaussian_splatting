@@ -1,9 +1,11 @@
 use bevy::prelude::*;
 
-use gaussian::{
+pub use gaussian::{
+    Gaussian,
     GaussianCloud,
     GaussianCloudLoader,
     GaussianCloudSettings,
+    SphericalHarmonicCoefficients,
 };
 
 use render::RenderPipelinePlugin;
@@ -17,7 +19,7 @@ pub mod utils;
 #[derive(Bundle, Default, Reflect)]
 pub struct GaussianSplattingBundle {
     pub settings: GaussianCloudSettings, // TODO: implement global transform
-    pub verticies: Handle<GaussianCloud>,
+    pub cloud: Handle<GaussianCloud>,
 }
 
 
