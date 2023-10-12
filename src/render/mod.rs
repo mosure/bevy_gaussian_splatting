@@ -5,6 +5,7 @@ use bevy::{
     asset::{
         load_internal_asset,
         HandleUntyped,
+        LoadState,
     },
     core_pipeline::core_3d::Transparent3d,
     ecs::{
@@ -419,6 +420,7 @@ pub fn queue_gaussian_bind_group(
     gaussian_cloud_pipeline: Res<GaussianCloudPipeline>,
     render_device: Res<RenderDevice>,
     gaussian_uniforms: Res<ComponentUniforms<GaussianCloudUniform>>,
+    asset_server: Res<AssetServer>,
     gaussian_cloud_res: Res<RenderAssets<GaussianCloud>>,
     gaussian_clouds: Query<(
         Entity,
@@ -432,6 +434,10 @@ pub fn queue_gaussian_bind_group(
     assert!(model.size() == std::mem::size_of::<GaussianCloudUniform>() as u64);
 
     for (entity, cloud_handle) in gaussian_clouds.iter() {
+        if asset_server.get_load_state(cloud_handle) == LoadState::Loading {
+            continue;
+        }
+
         let cloud = gaussian_cloud_res.get(cloud_handle).unwrap();
 
         groups.base_bind_group = Some(render_device.create_bind_group(&BindGroupDescriptor {

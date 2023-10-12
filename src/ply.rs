@@ -9,10 +9,7 @@ use ply_rs::{
     parser::Parser,
 };
 
-use crate::gaussian::{
-    Gaussian,
-    MAX_SH_COEFF_COUNT,
-};
+use crate::gaussian::Gaussian;
 
 
 impl PropertyAccess for Gaussian {
@@ -41,19 +38,13 @@ impl PropertyAccess for Gaussian {
             ("rot_3", Property::Float(v))       => self.rotation[3] = v,
             (_, Property::Float(v)) if key.starts_with("f_rest_") => {
                 let i = key[7..].parse::<usize>().unwrap();
-                let sh_upper_bound = MAX_SH_COEFF_COUNT - 3;
 
                 match i {
-                    _ if i < sh_upper_bound => {
-                        let i = i + 3;
-
+                    _ if i + 3 < self.spherical_harmonic.coefficients.len() => {
                         // TODO: verify this is the correct sh order (packed not planar)
-                        self.spherical_harmonic.coefficients[i] = v;
+                        self.spherical_harmonic.coefficients[i + 3] = v;
                     },
-                    _ => {
-                        // println!("unmapped property: {}", key);
-                        // println!("value: {}", v);
-                    },
+                    _ => { },
                 }
             }
             (_, _) => {},
@@ -64,8 +55,6 @@ impl PropertyAccess for Gaussian {
 pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, Error> {
     let gaussian_parser = Parser::<Gaussian>::new();
     let header = gaussian_parser.read_header(&mut reader)?;
-
-    // TODO: determine spherical harmonic order from header (for speedup on lower orders)
 
     let mut cloud = Vec::new();
 
