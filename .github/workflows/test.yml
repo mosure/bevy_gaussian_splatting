@@ -19,7 +19,7 @@ jobs:
         os: [windows-latest, macos-latest]
 
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 120
 
     steps:
     - uses: actions/checkout@v3
@@ -36,5 +36,8 @@ jobs:
     - name: build
       run: cargo build
 
-    - name: run tests
+    - name: lint
+      run: cargo clippy
+
+    - name: test
       run: cargo test

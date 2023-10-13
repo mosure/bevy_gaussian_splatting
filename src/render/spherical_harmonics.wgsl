@@ -1,63 +1,51 @@
 #define_import_path bevy_gaussian_splatting::spherical_harmonics
 
 
-const SH_C0 = 0.28209479177387814f;
-const SH_C1 = 0.4886025119029199f;
-const SH_C2 = array(
-    1.0925484305920792f,
-    -1.0925484305920792f,
-    0.31539156525252005f,
-    -1.0925484305920792f,
-    0.5462742152960396f
+const shc = array<f32, 16>(
+    0.28209479177387814,
+    -0.4886025119029199,
+    0.4886025119029199,
+    -0.4886025119029199,
+    1.0925484305920792,
+    -1.0925484305920792,
+    0.31539156525252005,
+    -1.0925484305920792,
+    0.5462742152960396,
+    -0.5900435899266435,
+    2.890611442640554,
+    -0.4570457994644658,
+    0.3731763325901154,
+    -0.4570457994644658,
+    1.445305721320277,
+    -0.5900435899266435,
 );
-const SH_C3 = array(
-    -0.5900435899266435f,
-    2.890611442640554f,
-    -0.4570457994644658f,
-    0.3731763325901154f,
-    -0.4570457994644658f,
-    1.445305721320277f,
-    -0.5900435899266435f
-);
 
-fn compute_color_from_sh_3_degree(position: vec3<f32>, sh: array<vec3<f32>, 16>) -> vec3<f32> {
-    let dir = normalize(position - uniforms.camera_position);
-    var result = SH_C0 * sh[0];
+fn spherical_harmonics_lookup(
+    ray_direction: vec3<f32>,
+    sh: array<f32, #{MAX_SH_COEFF_COUNT}>,
+) -> vec3<f32> {
+    var rds = ray_direction * ray_direction;
+    var color = vec3<f32>(0.5);
 
-    // if deg > 0
-    let x = dir.x;
-    let y = dir.y;
-    let z = dir.z;
+    color += shc[ 0] * vec3<f32>(sh[0], sh[1], sh[2]);
 
-    result = result + SH_C1 * (-y * sh[1] + z * sh[2] - x * sh[3]);
+    color += shc[ 1] * vec3<f32>(sh[3], sh[4], sh[5]) * ray_direction.y;
+    color += shc[ 2] * vec3<f32>(sh[6], sh[7], sh[8]) * ray_direction.z;
+    color += shc[ 3] * vec3<f32>(sh[9], sh[10], sh[11]) * ray_direction.x;
 
-    let xx = x * x;
-    let yy = y * y;
-    let zz = z * z;
-    let xy = x * y;
-    let xz = x * z;
-    let yz = y * z;
+    color += shc[ 4] * vec3<f32>(sh[12], sh[13], sh[14]) * ray_direction.x * ray_direction.y;
+    color += shc[ 5] * vec3<f32>(sh[15], sh[16], sh[17]) * ray_direction.y * ray_direction.z;
+    color += shc[ 6] * vec3<f32>(sh[18], sh[19], sh[20]) * (2.0 * rds.z - rds.x - rds.y);
+    color += shc[ 7] * vec3<f32>(sh[21], sh[22], sh[23]) * ray_direction.x * ray_direction.z;
+    color += shc[ 8] * vec3<f32>(sh[24], sh[25], sh[26]) * (rds.x - rds.y);
 
-    // if (sh_degree > 1) {
-    result = result +
-        SH_C2[0] * xy * sh[4] +
-        SH_C2[1] * yz * sh[5] +
-        SH_C2[2] * (2. * zz - xx - yy) * sh[6] +
-        SH_C2[3] * xz * sh[7] +
-        SH_C2[4] * (xx - yy) * sh[8];
+    color += shc[ 9] * vec3<f32>(sh[27], sh[28], sh[29]) * ray_direction.y * (3.0 * rds.x - rds.y);
+    color += shc[10] * vec3<f32>(sh[30], sh[31], sh[32]) * ray_direction.x * ray_direction.y * ray_direction.z;
+    color += shc[11] * vec3<f32>(sh[33], sh[34], sh[35]) * ray_direction.y * (4.0 * rds.z - rds.x - rds.y);
+    color += shc[12] * vec3<f32>(sh[36], sh[37], sh[38]) * ray_direction.z * (2.0 * rds.z - 3.0 * rds.x - 3.0 * rds.y);
+    color += shc[13] * vec3<f32>(sh[39], sh[40], sh[41]) * ray_direction.x * (4.0 * rds.z - rds.x - rds.y);
+    color += shc[14] * vec3<f32>(sh[42], sh[43], sh[44]) * ray_direction.z * (rds.x - rds.y);
+    color += shc[15] * vec3<f32>(sh[45], sh[46], sh[47]) * ray_direction.x * (rds.x - 3.0 * rds.y);
 
-    // if (sh_degree > 2) {
-    result = result +
-        SH_C3[0] * y * (3. * xx - yy) * sh[9] +
-        SH_C3[1] * xy * z * sh[10] +
-        SH_C3[2] * y * (4. * zz - xx - yy) * sh[11] +
-        SH_C3[3] * z * (2. * zz - 3. * xx - 3. * yy) * sh[12] +
-        SH_C3[4] * x * (4. * zz - xx - yy) * sh[13] +
-        SH_C3[5] * z * (xx - yy) * sh[14] +
-        SH_C3[6] * x * (xx - 3. * yy) * sh[15];
-
-    // unconditional
-    result = result + 0.5;
-
-    return max(result, vec3<f32>(0.));
+    return color;
 }

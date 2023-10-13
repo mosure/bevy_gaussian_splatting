@@ -1,8 +1,11 @@
 use bevy::prelude::*;
 
-use gaussian::{
+pub use gaussian::{
+    Gaussian,
     GaussianCloud,
     GaussianCloudLoader,
+    GaussianCloudSettings,
+    SphericalHarmonicCoefficients,
 };
 
 use render::RenderPipelinePlugin;
@@ -13,13 +16,17 @@ pub mod render;
 pub mod utils;
 
 
-#[derive(Component, Default)]
+#[derive(Bundle, Default, Reflect)]
 pub struct GaussianSplattingBundle {
-    pub transform: Transform,
-    pub verticies: Handle<GaussianCloud>,
+    pub settings: GaussianCloudSettings, // TODO: implement global transform
+    pub cloud: Handle<GaussianCloud>,
 }
 
-// TODO: add render pipeline config
+
+#[derive(Component, Default)]
+struct GaussianSplattingCamera;
+// TODO: filter camera 3D entities
+
 pub struct GaussianSplattingPlugin;
 
 impl Plugin for GaussianSplattingPlugin {
@@ -27,8 +34,10 @@ impl Plugin for GaussianSplattingPlugin {
         app.add_asset::<GaussianCloud>();
         app.init_asset_loader::<GaussianCloudLoader>();
 
-        app.add_plugins(RenderPipelinePlugin);
+        app.register_type::<GaussianSplattingBundle>();
 
-        // TODO: add GaussianSplattingBundle system
+        app.add_plugins((
+            RenderPipelinePlugin,
+        ));
     }
 }

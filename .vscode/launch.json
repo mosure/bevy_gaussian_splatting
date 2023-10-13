@@ -1,0 +1,73 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in library 'bevy_gaussian_splatting'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=bevy_gaussian_splatting"
+                ],
+                "filter": {
+                    "name": "bevy_gaussian_splatting",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "CARGO_MANIFEST_DIR": "${workspaceFolder}",
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'bevy_gaussian_splatting'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=bevy_gaussian_splatting",
+                    "--package=bevy_gaussian_splatting"
+                ],
+                "filter": {
+                    "name": "bevy_gaussian_splatting",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "CARGO_MANIFEST_DIR": "${workspaceFolder}",
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'bevy_gaussian_splatting'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=bevy_gaussian_splatting",
+                    "--package=bevy_gaussian_splatting"
+                ],
+                "filter": {
+                    "name": "bevy_gaussian_splatting",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "CARGO_MANIFEST_DIR": "${workspaceFolder}",
+            }
+        }
+    ]
+}
