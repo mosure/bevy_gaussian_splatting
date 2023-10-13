@@ -102,14 +102,10 @@ impl GaussianCloud {
             padding: 0.0,
         };
         let mut cloud = GaussianCloud(Vec::new());
-        cloud.0.push(origin);
 
-        for (i, &x) in [0.0, 1.0].iter().enumerate() {
-            for (j, &y) in [0.0, 1.0].iter().enumerate() {
-                for (k, &z) in [0.0, 1.0].iter().enumerate() {
-                    if i == 0 && j == 0 && k == 0 {
-                        continue;
-                    }
+        for &x in [-1.0, 1.0].iter() {
+            for &y in [-1.0, 1.0].iter() {
+                for &z in [-1.0, 1.0].iter() {
                     let mut g = origin.clone();
                     g.position = Vec3::new(x, y, z);
                     cloud.0.push(g);
