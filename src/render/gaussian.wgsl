@@ -296,7 +296,7 @@ fn vs_points(
     let mid = 0.5 * (cov2d.x + cov2d.z);
     let lambda_1 = mid + sqrt(max(0.1, mid * mid - det));
     let lambda_2 = mid - sqrt(max(0.1, mid * mid - det));
-    let radius_px = ceil(3.0 * sqrt(max(lambda_1, lambda_2)));
+    let radius_px = 3.5 * sqrt(max(lambda_1, lambda_2));
     let radius_ndc = vec2<f32>(
         radius_px / f32(view.viewport.z),
         radius_px / f32(view.viewport.w),
