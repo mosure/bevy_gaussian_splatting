@@ -69,40 +69,55 @@ pub struct GaussianCloud(pub Vec<Gaussian>);
 
 impl GaussianCloud {
     pub fn test_model() -> Self {
-        Self(vec![
-            Gaussian {
-                rotation: [
-                    0.0,
-                    0.0,
-                    0.0,
-                    1.0,
+        let origin = Gaussian {
+            rotation: [
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+            ],
+            position: Vec3::new(0.0, 0.0, 0.0),
+            scale: Vec3::new(0.5, 0.5, 0.5),
+            opacity: 0.8,
+            spherical_harmonic: SphericalHarmonicCoefficients{
+                coefficients: [
+                    1.0, 0.0, 1.0,
+                    0.0, 0.5, 0.0,
+                    0.3, 0.2, 0.0,
+                    0.4, 0.0, 0.2,
+                    0.1, 0.0, 0.0,
+                    0.0, 0.3, 0.3,
+                    0.0, 1.0, 1.0,
+                    0.3, 0.0, 0.0,
+                    0.0, 0.0, 0.0,
+                    0.0, 0.3, 1.0,
+                    0.5, 0.3, 0.0,
+                    0.2, 0.3, 0.1,
+                    0.6, 0.3, 0.1,
+                    0.0, 0.3, 0.2,
+                    0.0, 0.5, 0.3,
+                    0.6, 0.1, 0.2,
                 ],
-                position: Vec3::new(0.0, 0.0, 0.0),
-                scale: Vec3::new(1.0, 1.0, 1.0),
-                opacity: 0.8,
-                spherical_harmonic: SphericalHarmonicCoefficients{
-                    coefficients: [
-                        1.0, 0.0, 1.0,
-                        0.0, 1.0, 0.0,
-                        1.0, 0.0, 0.0,
-                        1.0, 0.0, 1.0,
-                        0.0, 0.0, 0.0,
-                        0.0, 1.0, 0.0,
-                        0.0, 0.0, 0.0,
-                        1.0, 0.0, 0.0,
-                        0.0, 0.0, 0.0,
-                        0.0, 0.0, 1.0,
-                        0.0, 0.0, 0.0,
-                        0.0, 0.0, 0.0,
-                        1.0, 0.0, 0.0,
-                        0.0, 0.0, 0.0,
-                        0.0, 1.0, 0.0,
-                        0.0, 0.0, 1.0,
-                    ],
-                },
-                padding: 0.0,
             },
-        ])
+            padding: 0.0,
+        };
+        let mut cloud = GaussianCloud(Vec::new());
+        cloud.0.push(origin);
+
+        for (i, &x) in [0.0, 1.0].iter().enumerate() {
+            for (j, &y) in [0.0, 1.0].iter().enumerate() {
+                for (k, &z) in [0.0, 1.0].iter().enumerate() {
+                    if i == 0 && j == 0 && k == 0 {
+                        continue;
+                    }
+                    let mut g = origin.clone();
+                    g.position = Vec3::new(x, y, z);
+                    cloud.0.push(g);
+                }
+            }
+        }
+
+        cloud
     }
 }
 

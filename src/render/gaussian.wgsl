@@ -72,8 +72,8 @@ fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rot: vec4<f32>) -> vec3<
 
     var t = view.inverse_view * vec4<f32>(position, 1.0);
 
-    let focal_x = view.projection[0][0];
-    let focal_y = view.projection[1][1];
+    let focal_x = 500.0;
+    let focal_y = 500.0;
 
     let limx = 1.3 * 0.5 * view.viewport.z / focal_x;
     let limy = 1.3 * 0.5 * view.viewport.w / focal_y;
@@ -105,8 +105,8 @@ fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rot: vec4<f32>) -> vec3<
 
     // Apply low-pass filter: every Gaussian should be at least
     // one pixel wide/high. Discard 3rd row and column.
-    cov[0][0] += 0.3;
-    cov[1][1] += 0.3;
+    // cov[0][0] += 0.3;
+    // cov[1][1] += 0.3;
 
     return vec3<f32>(cov[0][0], cov[0][1], cov[1][1]);
 }
@@ -298,8 +298,8 @@ fn vs_points(
     let lambda_2 = mid - sqrt(max(0.1, mid * mid - det));
     let radius_px = ceil(3.0 * sqrt(max(lambda_1, lambda_2)));
     let radius_ndc = vec2<f32>(
-        radius_px / f32(view.viewport.w),
         radius_px / f32(view.viewport.z),
+        radius_px / f32(view.viewport.w),
     );
 
     output.uv = radius_px * quad_offset;

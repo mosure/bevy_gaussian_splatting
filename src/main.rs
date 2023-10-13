@@ -47,8 +47,8 @@ fn setup_gaussian_cloud(
 ) {
     let cloud = gaussian_assets.add(GaussianCloud::test_model());
     commands.spawn(GaussianSplattingBundle {
-        // cloud,
-        cloud: _asset_server.load("scenes/icecream.ply"),
+        cloud,
+        // cloud: _asset_server.load("scenes/icecream.ply"),
         ..Default::default()
     });
 
