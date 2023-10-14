@@ -1,6 +1,9 @@
 use std::io::BufRead;
 
-use bevy::asset::Error;
+use bevy::{
+    asset::Error,
+    math::Vec3,
+};
 use ply_rs::{
     ply::{
         Property,
@@ -9,7 +12,10 @@ use ply_rs::{
     parser::Parser,
 };
 
-use crate::gaussian::Gaussian;
+use crate::gaussian::{
+    Gaussian,
+    MAX_SIZE_VARIANCE,
+};
 
 
 impl PropertyAccess for Gaussian {
@@ -29,9 +35,9 @@ impl PropertyAccess for Gaussian {
             ("f_dc_1", Property::Float(v))      => self.spherical_harmonic.coefficients[1] = v,
             ("f_dc_2", Property::Float(v))      => self.spherical_harmonic.coefficients[2] = v,
             ("opacity", Property::Float(v))     => self.opacity = 1.0 / (1.0 + (-v).exp()),
-            ("scale_0", Property::Float(v))     => self.scale.x = v.exp(),  // TODO: variance cap: https://github.com/Lichtso/splatter/blob/c6b7a3894c25578cd29c9761619e4f194449e389/src/scene.rs#L235
-            ("scale_1", Property::Float(v))     => self.scale.y = v.exp(),
-            ("scale_2", Property::Float(v))     => self.scale.z = v.exp(),
+            ("scale_0", Property::Float(v))     => self.scale.x = v,
+            ("scale_1", Property::Float(v))     => self.scale.y = v,
+            ("scale_2", Property::Float(v))     => self.scale.z = v,
             ("rot_0", Property::Float(v))       => self.rotation[0] = v,
             ("rot_1", Property::Float(v))       => self.rotation[1] = v,
             ("rot_2", Property::Float(v))       => self.rotation[2] = v,
@@ -63,6 +69,14 @@ pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, Error> {
             "vertex" => { cloud = gaussian_parser.read_payload_for_element(&mut reader, &element, &header)?; },
             _ => {},
         }
+    }
+
+    for gaussian in &mut cloud {
+        let mean_scale = (gaussian.scale.x + gaussian.scale.y + gaussian.scale.z) / 3.0;
+        gaussian.scale = gaussian.scale
+            .max(Vec3::splat(mean_scale - MAX_SIZE_VARIANCE))
+            .min(Vec3::splat(mean_scale + MAX_SIZE_VARIANCE))
+            .exp();
     }
 
     Ok(cloud)

@@ -50,6 +50,8 @@ impl Default for SphericalHarmonicCoefficients {
     }
 }
 
+pub const MAX_SIZE_VARIANCE: f32 = 5.0;
+
 #[derive(Clone, Default, Copy, ShaderType, Pod, Zeroable)]
 #[repr(C)]
 pub struct Gaussian {
@@ -77,7 +79,7 @@ impl GaussianCloud {
                 0.0,
             ],
             position: Vec3::new(0.0, 0.0, 0.0),
-            scale: Vec3::new(0.5, 0.5, 0.5),
+            scale: Vec3::new(0.5, 0.5, 2.5),
             opacity: 0.8,
             spherical_harmonic: SphericalHarmonicCoefficients{
                 coefficients: [
