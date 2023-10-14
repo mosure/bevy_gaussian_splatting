@@ -83,6 +83,7 @@ fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rot: vec4<f32>) -> vec3<
         cov3d[2], cov3d[4], cov3d[5],
     );
 
+    // TODO: resolve metal vs directx differences
     var t = view.inverse_view * vec4<f32>(position, 1.0);
 
     let focal_x = 500.0;
