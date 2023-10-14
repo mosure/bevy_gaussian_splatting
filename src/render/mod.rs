@@ -367,8 +367,8 @@ type DrawGaussians = (
 
 #[derive(Component, ShaderType, Clone)]
 pub struct GaussianCloudUniform {
-    pub global_scale: f32,
     pub transform: Mat4,
+    pub global_scale: f32,
 }
 
 pub fn extract_gaussians(
@@ -388,8 +388,8 @@ pub fn extract_gaussians(
 
     for (entity, settings, verticies) in gaussians_query.iter() {
         let settings_uniform = GaussianCloudUniform {
-            global_scale: settings.global_scale,
             transform: settings.global_transform.compute_matrix(),
+            global_scale: settings.global_scale,
         };
         commands_list.push((
             entity,

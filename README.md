@@ -55,6 +55,7 @@ fn setup_gaussian_cloud(
 
 # credits
 
+- [4d gaussians](https://github.com/hustvl/4DGaussians)
 - [bevy](https://github.com/bevyengine/bevy)
 - [bevy-hanabi](https://github.com/djeedai/bevy_hanabi)
 - [diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization)
