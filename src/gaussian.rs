@@ -79,7 +79,7 @@ impl GaussianCloud {
                 0.0,
             ],
             position: Vec3::new(0.0, 0.0, 0.0),
-            scale: Vec3::new(0.5, 0.5, 2.5),
+            scale: Vec3::new(0.5, 0.5, 0.5),
             opacity: 0.8,
             spherical_harmonic: SphericalHarmonicCoefficients{
                 coefficients: [

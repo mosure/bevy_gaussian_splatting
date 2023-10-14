@@ -50,3 +50,24 @@ inherits = "release"
 opt-level = "z"
 lto = "fat"
 codegen-units = 1
+
+
+[[example]]
+name = "aabb"
+path = "examples/aabb.rs"
+
+[[example]]
+name = "cov2d"
+path = "examples/cov2d.rs"
+
+[[example]]
+name = "cov3d"
+path = "examples/cov3d.rs"
+
+[[example]]
+name = "gaussian_cube"
+path = "examples/gaussian_cube.rs"
+
+[[example]]
+name = "obb"
+path = "examples/obb.rs"

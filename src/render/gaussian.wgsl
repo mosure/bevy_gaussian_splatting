@@ -35,37 +35,6 @@ struct GaussianUniforms {
 
 // https://github.com/cvlab-epfl/gaussian-splatting-web/blob/905b3c0fb8961e42c79ef97e64609e82383ca1c2/src/shaders.ts#L185
 // TODO: precompute
-// fn compute_cov3d(scale: vec3<f32>, rot: vec4<f32>) -> array<f32, 6> {
-//     let modifier = uniforms.global_scale;
-//     let S = mat3x3<f32>(
-//         scale.x * modifier, 0., 0.,
-//         0., scale.y * modifier, 0.,
-//         0., 0., scale.z * modifier,
-//     );
-
-//     let r = rot.x;
-//     let x = rot.y;
-//     let y = rot.z;
-//     let z = rot.w;
-
-//     let R = mat3x3<f32>(
-//         1. - 2. * (y * y + z * z), 2. * (x * y - r * z), 2. * (x * z + r * y),
-//         2. * (x * y + r * z), 1. - 2. * (x * x + z * z), 2. * (y * z - r * x),
-//         2. * (x * z - r * y), 2. * (y * z + r * x), 1. - 2. * (x * x + y * y),
-//     );
-
-//     let M = S * R;
-//     let Sigma = transpose(M) * M;
-
-//     return array<f32, 6>(
-//         Sigma[0][0],
-//         Sigma[0][1],
-//         Sigma[0][2],
-//         Sigma[1][1],
-//         Sigma[1][2],
-//         Sigma[2][2],
-//     );
-// }
 fn compute_cov3d(scale: vec3<f32>, rot: vec4<f32>) -> array<f32, 6> {
     let S = scale * uniforms.global_scale;
 
@@ -188,7 +157,7 @@ fn get_bounding_box_corner(
         radius_px / view.viewport.w,
     );
 
-    // TODO: switch between methods
+    // TODO: ifdef switch between methods
 
     // creates a square AABB (inefficient fragment usage)
     return vec4<f32>(
