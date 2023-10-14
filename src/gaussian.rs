@@ -13,10 +13,7 @@ use bevy::{
         LoadContext,
         LoadedAsset,
     },
-    reflect::{
-        TypePath,
-        TypeUuid,
-    },
+    reflect::TypeUuid,
     render::render_resource::ShaderType,
     utils::BoxedFuture,
 };
@@ -37,7 +34,7 @@ const fn num_sh_coefficients(degree: usize) -> usize {
 }
 const SH_DEGREE: usize = 3;
 pub const MAX_SH_COEFF_COUNT: usize = num_sh_coefficients(SH_DEGREE) * 3;
-#[derive(Clone, Copy, ShaderType, Pod, Zeroable)]
+#[derive(Clone, Copy, Reflect, ShaderType, Pod, Zeroable)]
 #[repr(C)]
 pub struct SphericalHarmonicCoefficients {
     pub coefficients: [f32; MAX_SH_COEFF_COUNT],
@@ -52,7 +49,7 @@ impl Default for SphericalHarmonicCoefficients {
 
 pub const MAX_SIZE_VARIANCE: f32 = 5.0;
 
-#[derive(Clone, Default, Copy, ShaderType, Pod, Zeroable)]
+#[derive(Clone, Default, Copy, Reflect, ShaderType, Pod, Zeroable)]
 #[repr(C)]
 pub struct Gaussian {
     //pub anisotropic_covariance: AnisotropicCovariance,
@@ -65,7 +62,7 @@ pub struct Gaussian {
     padding: f32,
 }
 
-#[derive(Clone, TypeUuid, TypePath)]
+#[derive(Clone, Reflect, TypeUuid)]
 #[uuid = "ac2f08eb-bc32-aabb-ff21-51571ea332d5"]
 pub struct GaussianCloud(pub Vec<Gaussian>);
 
@@ -105,9 +102,9 @@ impl GaussianCloud {
         };
         let mut cloud = GaussianCloud(Vec::new());
 
-        for &x in [-1.0, 1.0].iter() {
-            for &y in [-1.0, 1.0].iter() {
-                for &z in [-1.0, 1.0].iter() {
+        for &x in [-0.5, 0.5].iter() {
+            for &y in [-0.5, 0.5].iter() {
+                for &z in [-0.5, 0.5].iter() {
                     let mut g = origin.clone();
                     g.position = Vec3::new(x, y, z);
                     cloud.0.push(g);
@@ -120,10 +117,13 @@ impl GaussianCloud {
 }
 
 
+// TODO: UI inspector for settings
 #[derive(Component, Reflect, Clone)]
 pub struct GaussianCloudSettings {
     pub global_scale: f32,
     pub global_transform: GlobalTransform,
+    // TODO: add OBB vs. AABB switch
+    // TODO: visualize bounding box option
 }
 
 impl Default for GaussianCloudSettings {
@@ -158,6 +158,7 @@ impl AssetLoader for GaussianCloudLoader {
     }
 
     fn extensions(&self) -> &[&str] {
+        // TODO: add support for .gcloud files (and utility to convert from .ply)
         &["ply"]
     }
 }

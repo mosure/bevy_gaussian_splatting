@@ -20,7 +20,7 @@ struct GaussianOutput {
 };
 
 struct GaussianUniforms {
-    transform: mat4x4<f32>,
+    global_transform: mat4x4<f32>,
     global_scale: f32,
 };
 
@@ -209,8 +209,10 @@ fn vs_points(
 ) -> GaussianOutput {
     var output: GaussianOutput;
     let point = points[instance_index];
+    let transformed_position = (uniforms.global_transform * vec4<f32>(point.position, 1.0)).xyz;
 
-    if (!in_frustum(world_to_clip(point.position).xyz)) {
+    let projected_position = world_to_clip(transformed_position);
+    if (!in_frustum(projected_position.xyz)) {
         output.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
         return output;
     }
@@ -225,13 +227,13 @@ fn vs_points(
     let quad_index = vertex_index % 4u;
     let quad_offset = quad_vertices[quad_index];
 
-    let ray_direction = normalize(point.position - view.world_position);
+    let ray_direction = normalize(transformed_position - view.world_position);
     output.color = vec4<f32>(
         spherical_harmonics_lookup(ray_direction, point.sh),
         point.opacity
     );
 
-    let cov2d = compute_cov2d(point.position, point.scale, point.rotation);
+    let cov2d = compute_cov2d(transformed_position, point.scale, point.rotation);
 
     // TODO: remove conic when OBB is used
     let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
@@ -243,7 +245,6 @@ fn vs_points(
     );
     output.conic = conic;
 
-    var projected_position = world_to_clip(point.position);
     let bb = get_bounding_box_corner(
         cov2d,
         quad_offset,
@@ -260,6 +261,7 @@ fn vs_points(
 
 @fragment
 fn fs_main(input: GaussianOutput) -> @location(0) vec4<f32> {
+    // TODO: draw gaussian without conic (OBB)
     let d = -input.uv;
     let conic = input.conic;
     let power = -0.5 * (conic.x * d.x * d.x + conic.z * d.y * d.y) + conic.y * d.x * d.y;

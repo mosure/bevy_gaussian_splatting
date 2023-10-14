@@ -6,6 +6,7 @@ use bevy::{
         FrameTimeDiagnosticsPlugin,
     },
 };
+use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_panorbit_camera::{
     PanOrbitCamera,
     PanOrbitCameraPlugin,
@@ -20,6 +21,7 @@ use bevy_gaussian_splatting::{
 
 
 pub struct GaussianSplattingViewer {
+    pub editor: bool,
     pub esc_close: bool,
     pub show_fps: bool,
     pub width: f32,
@@ -30,6 +32,7 @@ pub struct GaussianSplattingViewer {
 impl Default for GaussianSplattingViewer {
     fn default() -> GaussianSplattingViewer {
         GaussianSplattingViewer {
+            editor: true,
             esc_close: true,
             show_fps: true,
             width: 1920.0,
@@ -82,11 +85,15 @@ fn example_app() {
                 ..default()
             }),
             ..default()
-        })
+        }),
     );
     app.add_plugins((
         PanOrbitCameraPlugin,
     ));
+
+    if config.editor {
+        app.add_plugins(WorldInspectorPlugin::new());
+    }
 
     if config.esc_close {
         app.add_systems(Update, esc_close);
