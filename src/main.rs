@@ -88,7 +88,7 @@ fn example_app() {
     let mut app = App::new();
 
     // setup for gaussian viewer app
-    app.insert_resource(ClearColor(Color::rgb_u8(112, 48, 48)));
+    app.insert_resource(ClearColor(Color::rgb_u8(0, 0, 0)));
     app.add_plugins(
         DefaultPlugins
         .set(ImagePlugin::default_nearest())
