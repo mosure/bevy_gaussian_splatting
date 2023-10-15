@@ -12,6 +12,7 @@ repository = "https://github.com/mosure/bevy_gaussian_splatting"
 readme = "README.md"
 exclude = [".devcontainer", ".github", "docs", "dist", "build", "assets", "credits"]
 
+# TODO: use minimal bevy features
 [dependencies]
 bevy = "0.11.2"
 bevy_panorbit_camera = "0.8.0"
