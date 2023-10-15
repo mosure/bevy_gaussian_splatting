@@ -14,6 +14,7 @@ use bevy_panorbit_camera::{
 
 use bevy_gaussian_splatting::{
     GaussianCloud,
+    GaussianCloudSettings,
     GaussianSplattingBundle,
     GaussianSplattingPlugin,
     utils::setup_hooks,
@@ -48,11 +49,16 @@ fn setup_gaussian_cloud(
     _asset_server: Res<AssetServer>,
     mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
 ) {
+    // TODO: add file path argument
     let cloud = gaussian_assets.add(GaussianCloud::test_model());
     commands.spawn(GaussianSplattingBundle {
         cloud,
         // cloud: _asset_server.load("scenes/icecream.ply"),
-        ..Default::default()
+        settings: GaussianCloudSettings {
+            aabb: true,  // TODO: default to OBB (when working)
+            visualize_bounding_box: false,
+            ..default()
+        },
     });
 
     commands.spawn((

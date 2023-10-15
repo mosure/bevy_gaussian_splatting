@@ -117,20 +117,21 @@ impl GaussianCloud {
 }
 
 
-// TODO: UI inspector for settings
 #[derive(Component, Reflect, Clone)]
 pub struct GaussianCloudSettings {
+    pub aabb: bool,
     pub global_scale: f32,
     pub global_transform: GlobalTransform,
-    // TODO: add OBB vs. AABB switch
-    // TODO: visualize bounding box option
+    pub visualize_bounding_box: bool,
 }
 
 impl Default for GaussianCloudSettings {
     fn default() -> Self {
         Self {
+            aabb: false,
             global_scale: 1.0,
             global_transform: Transform::IDENTITY.into(),
+            visualize_bounding_box: false,
         }
     }
 }

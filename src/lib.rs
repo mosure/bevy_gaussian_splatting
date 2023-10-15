@@ -31,6 +31,7 @@ pub struct GaussianSplattingPlugin;
 
 impl Plugin for GaussianSplattingPlugin {
     fn build(&self, app: &mut App) {
+        // TODO: allow hot reloading of GaussianCloud handle through inspector UI
         app.add_asset::<GaussianCloud>();
         app.init_asset_loader::<GaussianCloudLoader>();
 

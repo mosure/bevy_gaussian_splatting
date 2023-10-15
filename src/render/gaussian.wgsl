@@ -17,6 +17,7 @@ struct GaussianOutput {
     @location(0) @interpolate(flat) color: vec4<f32>,
     @location(1) @interpolate(flat) conic: vec3<f32>,
     @location(2) @interpolate(linear) uv: vec2<f32>,
+    @location(3) @interpolate(linear) major_minor: vec2<f32>,
 };
 
 struct GaussianUniforms {
@@ -152,53 +153,55 @@ fn get_bounding_box_corner(
     let lambda2 = mid - sqrt(max(0.1, mid * mid - det));
     let x_axis_length = sqrt(lambda1);
     let y_axis_length = sqrt(lambda2);
+
+#ifdef USE_AABB
+    // creates a square AABB (inefficient fragment usage)
     let radius_px = 3.5 * max(x_axis_length, y_axis_length);
     let radius_ndc = vec2<f32>(
         radius_px / view.viewport.z,
         radius_px / view.viewport.w,
     );
 
-    // TODO: ifdef switch between methods
-
-    // creates a square AABB (inefficient fragment usage)
     return vec4<f32>(
         2.0 * radius_ndc * direction,
         radius_px * direction,
     );
+#endif
 
-
+#ifdef USE_OBB
     // bounding box is aligned to the eigenvectors with proper width/height
     // collapse unstable eigenvectors to circle
-    // let threshold = 0.1;
-    // if (abs(lambda1 - lambda2) < threshold) {
-    //     return vec4<f32>(
-    //         vec2<f32>(
-    //             direction.x * (x_axis_length + y_axis_length) * 0.5,
-    //             direction.y * x_axis_length
-    //         ) / view.viewport.zw,
-    //         direction * x_axis_length
-    //     );
-    // }
+    let threshold = 0.1;
+    if (abs(lambda1 - lambda2) < threshold) {
+        return vec4<f32>(
+            vec2<f32>(
+                direction.x * (x_axis_length + y_axis_length) * 0.5,
+                direction.y * x_axis_length
+            ) / view.viewport.zw,
+            direction * x_axis_length
+        );
+    }
 
-    // let eigvec1 = normalize(vec2<f32>(
-    //     cov2d.y,
-    //     lambda1 - cov2d.x
-    // ));
-    // let eigvec2 = vec2(-eigvec1.y, eigvec1.x);
-    // let rotation_matrix = mat2x2(
-    //     eigvec1.x, eigvec2.x,
-    //     eigvec1.y, eigvec2.y
-    // );
+    let eigvec1 = normalize(vec2<f32>(
+        cov2d.y,
+        lambda1 - cov2d.x
+    ));
+    let eigvec2 = vec2(-eigvec1.y, eigvec1.x);
+    let rotation_matrix = mat2x2(
+        eigvec1.x, eigvec2.x,
+        eigvec1.y, eigvec2.y
+    );
 
-    // let scaled_vertex = vec2<f32>(
-    //     direction.x * x_axis_length,
-    //     direction.y * y_axis_length
-    // );
+    let scaled_vertex = vec2<f32>(
+        direction.x * x_axis_length,
+        direction.y * y_axis_length
+    );
 
-    // return vec4<f32>(
-    //     rotation_matrix * (scaled_vertex / view.viewport.zw),
-    //     scaled_vertex
-    // );
+    return vec4<f32>(
+        rotation_matrix * (scaled_vertex / view.viewport.zw),
+        scaled_vertex
+    );
+#endif
 }
 
 
@@ -250,7 +253,8 @@ fn vs_points(
         quad_offset,
     );
 
-    output.uv = bb.zw;
+    output.uv = (quad_offset + vec2<f32>(1.0)) * 0.5;
+    output.major_minor = bb.zw;
     output.position = vec4<f32>(
         projected_position.xy + bb.xy,
         projected_position.zw
@@ -262,13 +266,24 @@ fn vs_points(
 @fragment
 fn fs_main(input: GaussianOutput) -> @location(0) vec4<f32> {
     // TODO: draw gaussian without conic (OBB)
-    let d = -input.uv;
+    let d = -input.major_minor;
     let conic = input.conic;
     let power = -0.5 * (conic.x * d.x * d.x + conic.z * d.y * d.y) + conic.y * d.x * d.y;
 
     if (power > 0.0) {
         discard;
     }
+
+#ifdef VISUALIZE_BOUNDING_BOX
+    let uv = input.uv;
+    let edge_width = 0.08;
+    if (
+        (uv.x < edge_width || uv.x > 1.0 - edge_width) ||
+        (uv.y < edge_width || uv.y > 1.0 - edge_width)
+    ) {
+        return vec4<f32>(0.3, 1.0, 0.1, 1.0);
+    }
+#endif
 
     let alpha = min(0.99, input.color.a * exp(power));
     return vec4<f32>(
