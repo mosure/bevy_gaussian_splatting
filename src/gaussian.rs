@@ -123,6 +123,7 @@ pub const MAX_SIZE_VARIANCE: f32 = 5.0;
     Deserialize,
 )]
 #[repr(C)]
+// TODO: support f16 gaussian clouds (shader and asset loader)
 pub struct Gaussian {
     pub rotation: [f32; 4],
     pub position: Vec3,

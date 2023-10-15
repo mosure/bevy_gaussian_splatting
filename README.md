@@ -19,6 +19,7 @@ bevy gaussian splatting render pipeline plugin
 - [X] ply to gcloud converter
 - [X] gcloud and ply asset loaders
 - [X] bevy gaussian cloud render pipeline
+- [ ] f16 and f32 gcloud support
 - [ ] 4D gaussian clouds via morph targets
 - [ ] bevy_openxr support
 - [ ] bevy 3D camera to gaussian cloud pipeline
