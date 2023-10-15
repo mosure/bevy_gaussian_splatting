@@ -46,19 +46,27 @@ impl Default for GaussianSplattingViewer {
 
 fn setup_gaussian_cloud(
     mut commands: Commands,
-    _asset_server: Res<AssetServer>,
+    asset_server: Res<AssetServer>,
     mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
 ) {
-    // TODO: add file path argument
-    let cloud = gaussian_assets.add(GaussianCloud::test_model());
+    let cloud: Handle<GaussianCloud>;
+    let settings = GaussianCloudSettings {
+        aabb: true,
+        visualize_bounding_box: false,
+        ..default()
+    };
+
+    let filename = std::env::args().nth(1);
+    if let Some(filename) = filename {
+        println!("loading {}", filename);
+        cloud = asset_server.load(filename.as_str());
+    } else {
+        cloud = gaussian_assets.add(GaussianCloud::test_model());
+    }
+
     commands.spawn(GaussianSplattingBundle {
         cloud,
-        // cloud: _asset_server.load("scenes/icecream.ply"),
-        settings: GaussianCloudSettings {
-            aabb: true,  // TODO: default to OBB (when working)
-            visualize_bounding_box: false,
-            ..default()
-        },
+        settings,
     });
 
     commands.spawn((

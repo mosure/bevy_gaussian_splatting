@@ -17,9 +17,17 @@ use bevy::{
     render::render_resource::ShaderType,
     utils::BoxedFuture,
 };
+use bincode2::deserialize_from;
 use bytemuck::{
     Pod,
     Zeroable,
+};
+use flate2::read::GzDecoder;
+use serde::{
+    Deserialize,
+    Serialize,
+    Serializer,
+    ser::SerializeTuple,
 };
 
 use crate::ply::parse_ply;
@@ -34,9 +42,19 @@ const fn num_sh_coefficients(degree: usize) -> usize {
 }
 const SH_DEGREE: usize = 3;
 pub const MAX_SH_COEFF_COUNT: usize = num_sh_coefficients(SH_DEGREE) * 3;
-#[derive(Clone, Copy, Reflect, ShaderType, Pod, Zeroable)]
+#[derive(
+    Clone,
+    Copy,
+    Reflect,
+    ShaderType,
+    Pod,
+    Zeroable,
+    Serialize,
+    Deserialize,
+)]
 #[repr(C)]
 pub struct SphericalHarmonicCoefficients {
+    #[serde(serialize_with = "coefficients_serializer", deserialize_with = "coefficients_deserializer")]
     pub coefficients: [f32; MAX_SH_COEFF_COUNT],
 }
 impl Default for SphericalHarmonicCoefficients {
@@ -46,14 +64,64 @@ impl Default for SphericalHarmonicCoefficients {
         }
     }
 }
+fn coefficients_serializer<S>(n: &[f32; MAX_SH_COEFF_COUNT], s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let mut tup = s.serialize_tuple(MAX_SH_COEFF_COUNT)?;
+    for &x in n.iter() {
+        tup.serialize_element(&x)?;
+    }
+
+    tup.end()
+}
+
+fn coefficients_deserializer<'de, D>(d: D) -> Result<[f32; MAX_SH_COEFF_COUNT], D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct CoefficientsVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for CoefficientsVisitor {
+        type Value = [f32; MAX_SH_COEFF_COUNT];
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("an array of floats")
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<[f32; MAX_SH_COEFF_COUNT], A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut coefficients = [0.0; MAX_SH_COEFF_COUNT];
+            for i in 0..MAX_SH_COEFF_COUNT {
+                coefficients[i] = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(i, &self))?;
+            }
+            Ok(coefficients)
+        }
+    }
+
+    d.deserialize_tuple(MAX_SH_COEFF_COUNT, CoefficientsVisitor)
+}
+
 
 pub const MAX_SIZE_VARIANCE: f32 = 5.0;
 
-#[derive(Clone, Default, Copy, Reflect, ShaderType, Pod, Zeroable)]
+#[derive(
+    Clone,
+    Default,
+    Copy,
+    Reflect,
+    ShaderType,
+    Pod,
+    Zeroable,
+    Serialize,
+    Deserialize,
+)]
 #[repr(C)]
 pub struct Gaussian {
-    //pub anisotropic_covariance: AnisotropicCovariance,
-    //pub normal: Vec3,
     pub rotation: [f32; 4],
     pub position: Vec3,
     pub scale: Vec3,
@@ -62,7 +130,13 @@ pub struct Gaussian {
     padding: f32,
 }
 
-#[derive(Clone, Reflect, TypeUuid)]
+#[derive(
+    Clone,
+    Reflect,
+    TypeUuid,
+    Serialize,
+    Deserialize,
+)]
 #[uuid = "ac2f08eb-bc32-aabb-ff21-51571ea332d5"]
 pub struct GaussianCloud(pub Vec<Gaussian>);
 
@@ -147,19 +221,30 @@ impl AssetLoader for GaussianCloudLoader {
         load_context: &'a mut LoadContext,
     ) -> BoxedFuture<'a, Result<(), bevy::asset::Error>> {
         Box::pin(async move {
-            let cursor = Cursor::new(bytes);
-            let mut f = BufReader::new(cursor);
+            match load_context.path().extension() {
+                Some(ext) if ext == "ply" => {
+                    let cursor = Cursor::new(bytes);
+                    let mut f = BufReader::new(cursor);
 
-            let ply_cloud = parse_ply(&mut f)?;
-            let cloud = GaussianCloud(ply_cloud);
+                    let ply_cloud = parse_ply(&mut f)?;
+                    let cloud = GaussianCloud(ply_cloud);
 
-            load_context.set_default_asset(LoadedAsset::new(cloud));
-            Ok(())
+                    load_context.set_default_asset(LoadedAsset::new(cloud));
+                    return Ok(());
+                },
+                Some(ext) if ext == "gcloud" => {
+                    let decompressed = GzDecoder::new(bytes);
+                    let cloud: GaussianCloud = deserialize_from(decompressed).expect("failed to decode cloud");
+
+                    load_context.set_default_asset(LoadedAsset::new(cloud));
+                    return Ok(());
+                },
+                _ => Ok(()),
+            }
         })
     }
 
     fn extensions(&self) -> &[&str] {
-        // TODO: add support for .gcloud files (and utility to convert from .ply)
-        &["ply"]
+        &["ply", "gcloud"]
     }
 }
