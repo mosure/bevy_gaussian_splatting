@@ -470,6 +470,10 @@ pub fn queue_gaussian_bind_group(
             continue;
         }
 
+        if !gaussian_cloud_res.contains_key(cloud_handle) {
+            continue;
+        }
+
         let cloud = gaussian_cloud_res.get(cloud_handle).unwrap();
 
         commands.entity(entity).insert(GaussianCloudBindGroup {
