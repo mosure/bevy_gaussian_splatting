@@ -10,14 +10,20 @@ categories = ["computer-vision", "graphics", "rendering", "rendering::data-forma
 homepage = "https://github.com/mosure/bevy_gaussian_splatting"
 repository = "https://github.com/mosure/bevy_gaussian_splatting"
 readme = "README.md"
+include = ["tools"]
 exclude = [".devcontainer", ".github", "docs", "dist", "build", "assets", "credits"]
+default-run = "bevy_gaussian_splatting"
 
 # TODO: use minimal bevy features
 [dependencies]
-bevy = "0.11.2"
+bevy = "0.11.3"
+bevy-inspector-egui = "0.20.0"
 bevy_panorbit_camera = "0.8.0"
+bincode2 = "2.0.1"
 bytemuck = "1.14.0"
+flate2 = "1.0.28"
 ply-rs = "0.1.3"
+serde = "1.0.189"
 
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -51,3 +57,15 @@ inherits = "release"
 opt-level = "z"
 lto = "fat"
 codegen-units = 1
+
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "bevy_gaussian_splatting"
+path = "src/main.rs"
+
+[[bin]]
+name = "ply_to_gcloud"
+path = "tools/ply_to_gcloud.rs"

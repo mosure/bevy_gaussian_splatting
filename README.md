@@ -12,9 +12,13 @@
 
 bevy gaussian splatting render pipeline plugin
 
+`cargo run -- {path to ply or gcloud.gz file}`
+
 ## capabilities
 
-- [ ] bevy gaussian cloud render pipeline
+- [X] ply to gcloud converter
+- [X] gcloud and ply asset loaders
+- [X] bevy gaussian cloud render pipeline
 - [ ] 4D gaussian clouds via morph targets
 - [ ] bevy 3D camera to gaussian cloud pipeline
 
@@ -55,11 +59,13 @@ fn setup_gaussian_cloud(
 
 # credits
 
+- [4d gaussians](https://github.com/hustvl/4DGaussians)
 - [bevy](https://github.com/bevyengine/bevy)
 - [bevy-hanabi](https://github.com/djeedai/bevy_hanabi)
 - [diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization)
 - [dreamgaussian](https://github.com/dreamgaussian/dreamgaussian)
 - [dynamic-3d-gaussians](https://github.com/JonathonLuiten/Dynamic3DGaussians)
+- [ewa splatting](https://www.cs.umd.edu/~zwicker/publications/EWASplatting-TVCG02.pdf)
 - [gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting)
 - [gaussian-splatting-web](https://github.com/cvlab-epfl/gaussian-splatting-web)
 - [making gaussian splats smaller](https://aras-p.info/blog/2023/09/13/Making-Gaussian-Splats-smaller/)

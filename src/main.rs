@@ -6,6 +6,7 @@ use bevy::{
         FrameTimeDiagnosticsPlugin,
     },
 };
+use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_panorbit_camera::{
     PanOrbitCamera,
     PanOrbitCameraPlugin,
@@ -13,6 +14,7 @@ use bevy_panorbit_camera::{
 
 use bevy_gaussian_splatting::{
     GaussianCloud,
+    GaussianCloudSettings,
     GaussianSplattingBundle,
     GaussianSplattingPlugin,
     utils::setup_hooks,
@@ -20,6 +22,7 @@ use bevy_gaussian_splatting::{
 
 
 pub struct GaussianSplattingViewer {
+    pub editor: bool,
     pub esc_close: bool,
     pub show_fps: bool,
     pub width: f32,
@@ -30,6 +33,7 @@ pub struct GaussianSplattingViewer {
 impl Default for GaussianSplattingViewer {
     fn default() -> GaussianSplattingViewer {
         GaussianSplattingViewer {
+            editor: true,
             esc_close: true,
             show_fps: true,
             width: 1920.0,
@@ -42,14 +46,27 @@ impl Default for GaussianSplattingViewer {
 
 fn setup_gaussian_cloud(
     mut commands: Commands,
-    _asset_server: Res<AssetServer>,
+    asset_server: Res<AssetServer>,
     mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
 ) {
-    let cloud = gaussian_assets.add(GaussianCloud::test_model());
+    let cloud: Handle<GaussianCloud>;
+    let settings = GaussianCloudSettings {
+        aabb: true,
+        visualize_bounding_box: false,
+        ..default()
+    };
+
+    let filename = std::env::args().nth(1);
+    if let Some(filename) = filename {
+        println!("loading {}", filename);
+        cloud = asset_server.load(filename.as_str());
+    } else {
+        cloud = gaussian_assets.add(GaussianCloud::test_model());
+    }
+
     commands.spawn(GaussianSplattingBundle {
         cloud,
-        // cloud: _asset_server.load("scenes/icecream.ply"),
-        ..Default::default()
+        settings,
     });
 
     commands.spawn((
@@ -82,11 +99,15 @@ fn example_app() {
                 ..default()
             }),
             ..default()
-        })
+        }),
     );
     app.add_plugins((
         PanOrbitCameraPlugin,
     ));
+
+    if config.editor {
+        app.add_plugins(WorldInspectorPlugin::new());
+    }
 
     if config.esc_close {
         app.add_systems(Update, esc_close);
