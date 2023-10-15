@@ -14,6 +14,7 @@ include = ["tools"]
 exclude = [".devcontainer", ".github", "docs", "dist", "build", "assets", "credits"]
 default-run = "bevy_gaussian_splatting"
 
+# TODO: use minimal bevy features
 [dependencies]
 bevy = "0.11.3"
 bevy-inspector-egui = "0.20.0"
