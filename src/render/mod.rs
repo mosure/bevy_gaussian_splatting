@@ -65,6 +65,8 @@ use crate::gaussian::{
     MAX_SH_COEFF_COUNT,
 };
 
+mod sort;
+
 
 const GAUSSIAN_SHADER_HANDLE: HandleUntyped = HandleUntyped::weak_from_u64(Shader::TYPE_UUID, 68294581);
 const SPHERICAL_HARMONICS_SHADER_HANDLE: HandleUntyped = HandleUntyped::weak_from_u64(Shader::TYPE_UUID, 834667312);
