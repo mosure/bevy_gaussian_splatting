@@ -12,13 +12,14 @@
 
 bevy gaussian splatting render pipeline plugin
 
-`cargo run -- {path to ply or gcloud.gz file}`
+`cargo run -- {path to ply or gcloud file}`
 
 ## capabilities
 
 - [X] ply to gcloud converter
 - [X] gcloud and ply asset loaders
 - [X] bevy gaussian cloud render pipeline
+- [ ] temporal depth sorting
 - [ ] f16 and f32 gcloud support
 - [ ] 4D gaussian clouds via morph targets
 - [ ] bevy_openxr support
@@ -43,13 +44,18 @@ fn setup_gaussian_cloud(
     asset_server: Res<AssetServer>,
 ) {
     commands.spawn(GaussianSplattingBundle {
-        cloud: asset_server.load("scenes/icecream.ply"),
+        cloud: asset_server.load("scenes/icecream.gcloud"),
         ..Default::default()
     });
 
     commands.spawn(Camera3dBundle::default());
 }
 ```
+
+## tools
+
+- [ply to gcloud converter](tools/README.md#ply-to-gcloud-converter)
+- [] gaussian cloud training tool
 
 
 ## compatible bevy versions
