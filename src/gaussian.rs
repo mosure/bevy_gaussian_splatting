@@ -45,6 +45,7 @@ pub const MAX_SH_COEFF_COUNT: usize = num_sh_coefficients(SH_DEGREE) * 3;
 #[derive(
     Clone,
     Copy,
+    Debug,
     Reflect,
     ShaderType,
     Pod,
@@ -111,6 +112,7 @@ pub const MAX_SIZE_VARIANCE: f32 = 5.0;
 
 #[derive(
     Clone,
+    Debug,
     Default,
     Copy,
     Reflect,
@@ -132,6 +134,7 @@ pub struct Gaussian {
 
 #[derive(
     Clone,
+    Debug,
     Reflect,
     TypeUuid,
     Serialize,
@@ -192,6 +195,7 @@ impl GaussianCloud {
 
 
 #[derive(Component, Reflect, Clone)]
+#[reflect(Component)]
 pub struct GaussianCloudSettings {
     pub aabb: bool,
     pub global_scale: f32,

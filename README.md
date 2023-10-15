@@ -20,6 +20,7 @@ bevy gaussian splatting render pipeline plugin
 - [X] gcloud and ply asset loaders
 - [X] bevy gaussian cloud render pipeline
 - [ ] 4D gaussian clouds via morph targets
+- [ ] bevy_openxr support
 - [ ] bevy 3D camera to gaussian cloud pipeline
 
 ## usage

@@ -1,6 +1,7 @@
 use bevy::{
     prelude::*,
     app::AppExit,
+    core::Name,
     diagnostic::{
         DiagnosticsStore,
         FrameTimeDiagnosticsPlugin,
@@ -64,10 +65,13 @@ fn setup_gaussian_cloud(
         cloud = gaussian_assets.add(GaussianCloud::test_model());
     }
 
-    commands.spawn(GaussianSplattingBundle {
-        cloud,
-        settings,
-    });
+    commands.spawn((
+        GaussianSplattingBundle {
+            cloud,
+            settings,
+        },
+        Name::new("gaussian_cloud"),
+    ));
 
     commands.spawn((
         Camera3dBundle {
