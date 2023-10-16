@@ -32,6 +32,6 @@ fn main() {
     // write gloud.gz
     let gz_file = std::fs::File::create(&gcloud_filename).expect("failed to create file");
     let mut gz_writer = std::io::BufWriter::new(gz_file);
-    let mut gz_encoder = GzEncoder::new(&mut gz_writer, Compression::default());  // TODO: consider switching to fast (or support multiple options), default is a bit slow
+    let mut gz_encoder = GzEncoder::new(&mut gz_writer, Compression::default());
     serialize_into(&mut gz_encoder, &cloud).expect("failed to encode cloud");
 }
