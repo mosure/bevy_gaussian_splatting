@@ -112,9 +112,9 @@ fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rot: vec4<f32>) -> vec3<
 
     let W = transpose(
         mat3x3<f32>(
-            view.inverse_view.x.xyz,
-            view.inverse_view.y.xyz,
-            view.inverse_view.z.xyz,
+            view.projection.x.xyz,
+            view.projection.y.xyz,
+            view.projection.z.xyz,
         )
     );
 
@@ -129,8 +129,8 @@ fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rot: vec4<f32>) -> vec3<
 
 
 fn world_to_clip(world_pos: vec3<f32>) -> vec4<f32> {
-    let homogenous_pos = view.view_proj * vec4<f32>(world_pos, 1.0);
-    return homogenous_pos / homogenous_pos.w;
+    let homogenous_pos = view.projection * view.inverse_view * vec4<f32>(world_pos, 1.0);
+    return homogenous_pos / (homogenous_pos.w + 0.000000001);
 }
 
 fn in_frustum(clip_space_pos: vec3<f32>) -> bool {
@@ -186,7 +186,10 @@ fn get_bounding_box_corner(
         cov2d.y,
         lambda1 - cov2d.x
     ));
-    let eigvec2 = vec2(-eigvec1.y, eigvec1.x);
+    let eigvec2 = normalize(vec2<f32>(
+        lambda2 - cov2d.z,
+        cov2d.y
+    ));
     let rotation_matrix = mat2x2(
         eigvec1.x, eigvec2.x,
         eigvec1.y, eigvec2.y
@@ -198,7 +201,7 @@ fn get_bounding_box_corner(
     );
 
     return vec4<f32>(
-        rotation_matrix * (scaled_vertex / view.viewport.zw),
+        (scaled_vertex / view.viewport.zw) * rotation_matrix,
         scaled_vertex
     );
 #endif
