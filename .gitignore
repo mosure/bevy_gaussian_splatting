@@ -4,6 +4,7 @@ Cargo.lock
 **/*.rs.bk
 *.pdb
 
+*.py
 
 *.ply
 *.gcloud
