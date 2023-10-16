@@ -2,6 +2,7 @@
 
 [target.wasm32-unknown-unknown]
 runner = "wasm-server-runner"
+rustflags = ["--cfg=web_sys_unstable_apis"]
 
 
 # fix spurious network error on windows
