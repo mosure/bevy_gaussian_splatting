@@ -19,6 +19,7 @@ bevy gaussian splatting render pipeline plugin
 - [X] ply to gcloud converter
 - [X] gcloud and ply asset loaders
 - [X] bevy gaussian cloud render pipeline
+- [ ] wasm support /w [live demo](https://mosure.github.io/bevy_gaussian_splatting)
 - [ ] temporal depth sorting
 - [ ] f16 and f32 gcloud support
 - [ ] 4D gaussian clouds via morph targets
@@ -56,6 +57,12 @@ fn setup_gaussian_cloud(
 
 - [ply to gcloud converter](tools/README.md#ply-to-gcloud-converter)
 - [] gaussian cloud training tool
+
+## wasm support
+
+to build wasm run:
+- `cargo build --target wasm32-unknown-unknown --release`
+- `wasm-bindgen --out-dir ./out/ --target web ./target/`
 
 
 ## compatible bevy versions
