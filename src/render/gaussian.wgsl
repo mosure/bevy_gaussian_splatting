@@ -4,6 +4,7 @@
 #import bevy_gaussian_splatting::spherical_harmonics    spherical_harmonics_lookup
 
 
+// TODO: fix the mapping between GPU and CPU
 struct GaussianInput {
     @location(0) rotation: vec4<f32>,
     @location(1) position: vec3<f32>,
@@ -36,13 +37,13 @@ struct GaussianUniforms {
 
 // https://github.com/cvlab-epfl/gaussian-splatting-web/blob/905b3c0fb8961e42c79ef97e64609e82383ca1c2/src/shaders.ts#L185
 // TODO: precompute
-fn compute_cov3d(scale: vec3<f32>, rot: vec4<f32>) -> array<f32, 6> {
+fn compute_cov3d(scale: vec3<f32>, rotation: vec4<f32>) -> array<f32, 6> {
     let S = scale * uniforms.global_scale;
 
-    let r = rot.x;
-    let x = rot.y;
-    let y = rot.z;
-    let z = rot.w;
+    let r = rotation.x;
+    let x = rotation.y;
+    let y = rotation.z;
+    let z = rotation.w;
 
     let R = mat3x3<f32>(
         1.0 - 2.0 * (y * y + z * z),
@@ -76,8 +77,8 @@ fn compute_cov3d(scale: vec3<f32>, rot: vec4<f32>) -> array<f32, 6> {
     );
 }
 
-fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rot: vec4<f32>) -> vec3<f32> {
-    let cov3d = compute_cov3d(scale, rot);
+fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>) -> vec3<f32> {
+    let cov3d = compute_cov3d(scale, rotation);
     let Vrk = mat3x3(
         cov3d[0], cov3d[1], cov3d[2],
         cov3d[1], cov3d[3], cov3d[4],
@@ -104,17 +105,17 @@ fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rot: vec4<f32>) -> vec3<
         -(focal_x * t.x) / (t.z * t.z),
 
         0.0,
-        -focal_y / t.z,
-        (focal_y * t.y) / (t.z * t.z),
+        focal_y / t.z,
+        -(focal_y * t.y) / (t.z * t.z),
 
         0.0, 0.0, 0.0,
     );
 
     let W = transpose(
         mat3x3<f32>(
-            view.projection.x.xyz,
-            view.projection.y.xyz,
-            view.projection.z.xyz,
+            view.inverse_projection.x.xyz,
+            view.inverse_projection.y.xyz,
+            view.inverse_projection.z.xyz,
         )
     );
 
@@ -169,18 +170,23 @@ fn get_bounding_box_corner(
 #endif
 
 #ifdef USE_OBB
-    // bounding box is aligned to the eigenvectors with proper width/height
-    // collapse unstable eigenvectors to circle
-    let threshold = 0.1;
-    if (abs(lambda1 - lambda2) < threshold) {
-        return vec4<f32>(
-            vec2<f32>(
-                direction.x * (x_axis_length + y_axis_length) * 0.5,
-                direction.y * x_axis_length
-            ) / view.viewport.zw,
-            direction * x_axis_length
-        );
-    }
+    let bounds = 3.5 * vec2<f32>(
+        x_axis_length,
+        y_axis_length,
+    );
+
+    // // bounding box is aligned to the eigenvectors with proper width/height
+    // // collapse unstable eigenvectors to circle
+    // let threshold = 0.1;
+    // if (abs(lambda1 - lambda2) < threshold) {
+    //     return vec4<f32>(
+    //         vec2<f32>(
+    //             direction.x * (x_axis_length + y_axis_length) * 0.5,
+    //             direction.y * x_axis_length
+    //         ) / view.viewport.zw,
+    //         direction * x_axis_length
+    //     );
+    // }
 
     let eigvec1 = normalize(vec2<f32>(
         cov2d.y,
@@ -195,10 +201,7 @@ fn get_bounding_box_corner(
         eigvec1.y, eigvec2.y
     );
 
-    let scaled_vertex = vec2<f32>(
-        direction.x * x_axis_length,
-        direction.y * y_axis_length
-    );
+    let scaled_vertex = direction * bounds;
 
     return vec4<f32>(
         (scaled_vertex / view.viewport.zw) * rotation_matrix,

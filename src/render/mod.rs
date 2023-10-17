@@ -260,7 +260,7 @@ impl FromWorld for GaussianCloudPipeline {
             entries: &vec![
                 BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: ShaderStages::VERTEX_FRAGMENT,
+                    visibility: ShaderStages::VERTEX,
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,

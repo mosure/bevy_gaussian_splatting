@@ -41,7 +41,9 @@ const fn num_sh_coefficients(degree: usize) -> usize {
     }
 }
 const SH_DEGREE: usize = 3;
-pub const MAX_SH_COEFF_COUNT: usize = num_sh_coefficients(SH_DEGREE) * 3;
+pub const SH_CHANNELS: usize = 3;
+pub const MAX_SH_COEFF_COUNT_PER_CHANNEL: usize = num_sh_coefficients(SH_DEGREE);
+pub const MAX_SH_COEFF_COUNT: usize = MAX_SH_COEFF_COUNT_PER_CHANNEL * SH_CHANNELS;
 #[derive(
     Clone,
     Copy,
@@ -126,11 +128,10 @@ pub const MAX_SIZE_VARIANCE: f32 = 5.0;
 // TODO: support f16 gaussian clouds (shader and asset loader)
 pub struct Gaussian {
     pub rotation: [f32; 4],
-    pub position: Vec3,
+    pub position: [f32; 4],
     pub scale: Vec3,
     pub opacity: f32,
     pub spherical_harmonic: SphericalHarmonicCoefficients,
-    padding: f32,
 }
 
 #[derive(
@@ -153,7 +154,12 @@ impl GaussianCloud {
                 0.0,
                 0.0,
             ],
-            position: Vec3::new(0.0, 0.0, 0.0),
+            position: [
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
             scale: Vec3::new(0.5, 0.5, 0.5),
             opacity: 0.8,
             spherical_harmonic: SphericalHarmonicCoefficients{
@@ -176,7 +182,6 @@ impl GaussianCloud {
                     0.6, 0.1, 0.2,
                 ],
             },
-            padding: 0.0,
         };
         let mut cloud = GaussianCloud(Vec::new());
 
@@ -184,7 +189,7 @@ impl GaussianCloud {
             for &y in [-0.5, 0.5].iter() {
                 for &z in [-0.5, 0.5].iter() {
                     let mut g = origin.clone();
-                    g.position = Vec3::new(x, y, z);
+                    g.position = [x, y, z, 1.0];
                     cloud.0.push(g);
                 }
             }

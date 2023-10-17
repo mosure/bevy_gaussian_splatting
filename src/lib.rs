@@ -32,6 +32,7 @@ pub struct GaussianSplattingPlugin;
 impl Plugin for GaussianSplattingPlugin {
     fn build(&self, app: &mut App) {
         // TODO: allow hot reloading of GaussianCloud handle through inspector UI
+        app.register_type::<SphericalHarmonicCoefficients>();
         app.register_type::<GaussianCloud>();
         app.add_asset::<GaussianCloud>();
         app.register_asset_reflect::<GaussianCloud>();
