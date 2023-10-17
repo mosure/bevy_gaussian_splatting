@@ -65,8 +65,6 @@ use crate::gaussian::{
     MAX_SH_COEFF_COUNT,
 };
 
-mod sort;
-
 
 const GAUSSIAN_SHADER_HANDLE: HandleUntyped = HandleUntyped::weak_from_u64(Shader::TYPE_UUID, 68294581);
 const SPHERICAL_HARMONICS_SHADER_HANDLE: HandleUntyped = HandleUntyped::weak_from_u64(Shader::TYPE_UUID, 834667312);
@@ -292,6 +290,17 @@ impl SpecializedRenderPipeline for GaussianCloudPipeline {
     fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
         let mut shader_defs = vec![
             ShaderDefVal::UInt("MAX_SH_COEFF_COUNT".into(), MAX_SH_COEFF_COUNT as u32),
+
+            ShaderDefVal::UInt("RADIX_BASE".into(), MAX_SH_COEFF_COUNT as u32),
+            ShaderDefVal::UInt("RADIX_BITS_PER_DIGIT".into(), MAX_SH_COEFF_COUNT as u32),
+            ShaderDefVal::UInt("RADIX_DIGIT_PLACES".into(), MAX_SH_COEFF_COUNT as u32),
+            ShaderDefVal::UInt("ENTRIES_PER_INVOCATION_A".into(), MAX_SH_COEFF_COUNT as u32),
+            ShaderDefVal::UInt("ENTRIES_PER_INVOCATION_C".into(), MAX_SH_COEFF_COUNT as u32),
+            ShaderDefVal::UInt("WORKGROUP_INVOCATIONS_A".into(), MAX_SH_COEFF_COUNT as u32),
+            ShaderDefVal::UInt("WORKGROUP_INVOCATIONS_C".into(), MAX_SH_COEFF_COUNT as u32),
+            ShaderDefVal::UInt("WORKGROUP_ENTRIES_C".into(), MAX_SH_COEFF_COUNT as u32),
+            ShaderDefVal::UInt("MAX_TILE_COUNT_C".into(), MAX_SH_COEFF_COUNT as u32),
+
         ];
 
         if key.aabb {
