@@ -29,9 +29,9 @@ fn spherical_harmonics_lookup(
 
     color += shc[ 0] * vec3<f32>(sh[0], sh[1], sh[2]);
 
-    color += shc[ 1] * vec3<f32>(sh[3], sh[4], sh[5]) * ray_direction.y;
-    color += shc[ 2] * vec3<f32>(sh[6], sh[7], sh[8]) * ray_direction.z;
-    color += shc[ 3] * vec3<f32>(sh[9], sh[10], sh[11]) * ray_direction.x;
+    color += shc[ 1] * vec3<f32>(sh[ 3], sh[ 4], sh[ 5]) * ray_direction.y;
+    color += shc[ 2] * vec3<f32>(sh[ 6], sh[ 7], sh[ 8]) * ray_direction.z;
+    color += shc[ 3] * vec3<f32>(sh[ 9], sh[10], sh[11]) * ray_direction.x;
 
     color += shc[ 4] * vec3<f32>(sh[12], sh[13], sh[14]) * ray_direction.x * ray_direction.y;
     color += shc[ 5] * vec3<f32>(sh[15], sh[16], sh[17]) * ray_direction.y * ray_direction.z;

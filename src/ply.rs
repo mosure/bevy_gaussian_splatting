@@ -1,9 +1,6 @@
 use std::io::BufRead;
 
-use bevy::{
-    asset::Error,
-    math::Vec3,
-};
+use bevy::asset::Error;
 use ply_rs::{
     ply::{
         Property,
@@ -14,7 +11,9 @@ use ply_rs::{
 
 use crate::gaussian::{
     Gaussian,
+    MAX_SH_COEFF_COUNT_PER_CHANNEL,
     MAX_SIZE_VARIANCE,
+    SH_CHANNELS,
 };
 
 
@@ -25,9 +24,9 @@ impl PropertyAccess for Gaussian {
 
     fn set_property(&mut self, key: String, property: Property) {
         match (key.as_ref(), property) {
-            ("x", Property::Float(v))           => self.position.x = v,
-            ("y", Property::Float(v))           => self.position.y = v,
-            ("z", Property::Float(v))           => self.position.z = v,
+            ("x", Property::Float(v))           => self.position[0] = v,
+            ("y", Property::Float(v))           => self.position[1] = v,
+            ("z", Property::Float(v))           => self.position[2] = v,
             // ("nx", Property::Float(v))          => self.normal.x = v,
             // ("ny", Property::Float(v))          => self.normal.y = v,
             // ("nz", Property::Float(v))          => self.normal.z = v,
@@ -47,7 +46,6 @@ impl PropertyAccess for Gaussian {
 
                 match i {
                     _ if i + 3 < self.spherical_harmonic.coefficients.len() => {
-                        // TODO: verify this is the correct sh order (packed not planar)
                         self.spherical_harmonic.coefficients[i + 3] = v;
                     },
                     _ => { },
@@ -72,11 +70,34 @@ pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, Error> {
     }
 
     for gaussian in &mut cloud {
-        let mean_scale = (gaussian.scale.x + gaussian.scale.y + gaussian.scale.z) / 3.0;
+        // let mean_scale = (gaussian.scale.x + gaussian.scale.y + gaussian.scale.z) / 3.0;
         gaussian.scale = gaussian.scale
-            .max(Vec3::splat(mean_scale - MAX_SIZE_VARIANCE))
-            .min(Vec3::splat(mean_scale + MAX_SIZE_VARIANCE))
+            // .max(Vec3::splat(mean_scale - MAX_SIZE_VARIANCE))
+            // .min(Vec3::splat(mean_scale + MAX_SIZE_VARIANCE))
             .exp();
+
+        // let rot = &gaussian.rotation;
+        // let qlen = (rot[0] * rot[0] + rot[1] * rot[1] + rot[2] * rot[2] + rot[3] * rot[3]).sqrt();
+        // gaussian.rotation = [
+        //     rot[0] / qlen,
+        //     rot[1] / qlen,
+        //     rot[2] / qlen,
+        //     rot[3] / qlen,
+        // ];
+
+        let sh_src = gaussian.spherical_harmonic.coefficients.clone();
+        let sh = &mut gaussian.spherical_harmonic.coefficients;
+        for i in SH_CHANNELS..sh_src.len() {
+            let j = i - SH_CHANNELS;
+
+            let channel = j / (MAX_SH_COEFF_COUNT_PER_CHANNEL - 1);
+            let coefficient = (j % (MAX_SH_COEFF_COUNT_PER_CHANNEL - 1)) + 1;
+
+            let interleaved_idx = coefficient * SH_CHANNELS + channel;
+            assert!(interleaved_idx >= SH_CHANNELS);
+
+            sh[interleaved_idx] = sh_src[i];
+        }
     }
 
     Ok(cloud)
