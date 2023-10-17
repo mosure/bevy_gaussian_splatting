@@ -77,6 +77,7 @@ to build wasm run:
 - [4d gaussians](https://github.com/hustvl/4DGaussians)
 - [bevy](https://github.com/bevyengine/bevy)
 - [bevy-hanabi](https://github.com/djeedai/bevy_hanabi)
+- [deformable-3d-gaussians](https://github.com/ingra14m/Deformable-3D-Gaussians)
 - [diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization)
 - [dreamgaussian](https://github.com/dreamgaussian/dreamgaussian)
 - [dynamic-3d-gaussians](https://github.com/JonathonLuiten/Dynamic3DGaussians)
