@@ -1,6 +1,9 @@
 use std::io::BufRead;
 
-use bevy::asset::Error;
+use bevy::{
+    asset::Error,
+    math::Vec3,
+};
 use ply_rs::{
     ply::{
         Property,
@@ -27,9 +30,6 @@ impl PropertyAccess for Gaussian {
             ("x", Property::Float(v))           => self.position[0] = v,
             ("y", Property::Float(v))           => self.position[1] = v,
             ("z", Property::Float(v))           => self.position[2] = v,
-            // ("nx", Property::Float(v))          => self.normal.x = v,
-            // ("ny", Property::Float(v))          => self.normal.y = v,
-            // ("nz", Property::Float(v))          => self.normal.z = v,
             ("f_dc_0", Property::Float(v))      => self.spherical_harmonic.coefficients[0] = v,
             ("f_dc_1", Property::Float(v))      => self.spherical_harmonic.coefficients[1] = v,
             ("f_dc_2", Property::Float(v))      => self.spherical_harmonic.coefficients[2] = v,
@@ -70,20 +70,11 @@ pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, Error> {
     }
 
     for gaussian in &mut cloud {
-        // let mean_scale = (gaussian.scale.x + gaussian.scale.y + gaussian.scale.z) / 3.0;
+        let mean_scale = (gaussian.scale.x + gaussian.scale.y + gaussian.scale.z) / 3.0;
         gaussian.scale = gaussian.scale
-            // .max(Vec3::splat(mean_scale - MAX_SIZE_VARIANCE))
-            // .min(Vec3::splat(mean_scale + MAX_SIZE_VARIANCE))
+            .max(Vec3::splat(mean_scale - MAX_SIZE_VARIANCE))
+            .min(Vec3::splat(mean_scale + MAX_SIZE_VARIANCE))
             .exp();
-
-        // let rot = &gaussian.rotation;
-        // let qlen = (rot[0] * rot[0] + rot[1] * rot[1] + rot[2] * rot[2] + rot[3] * rot[3]).sqrt();
-        // gaussian.rotation = [
-        //     rot[0] / qlen,
-        //     rot[1] / qlen,
-        //     rot[2] / qlen,
-        //     rot[3] / qlen,
-        // ];
 
         let sh_src = gaussian.spherical_harmonic.coefficients.clone();
         let sh = &mut gaussian.spherical_harmonic.coefficients;
