@@ -130,6 +130,8 @@ pub struct GpuGaussianCloud {
     pub buffer: Buffer,
     pub count: u32,
     pub buffer_info: GpuBufferInfo,
+
+    // TODO: GpuGaussianCloud buffers for sorting
 }
 impl RenderAsset for GaussianCloud {
     type ExtractedAsset = GaussianCloud;
@@ -175,6 +177,8 @@ fn queue_gaussians(
 ) {
     let draw_custom = transparent_3d_draw_functions.read().id::<DrawGaussians>();
 
+    // TODO: add compute pipelines to pipeline cache & compute phase
+
     for (_view, mut transparent_phase) in &mut views {
         for (entity, cloud, settings) in &gaussian_splatting_bundles {
             if let Some(_cloud) = gaussian_clouds.get(cloud) {
@@ -197,12 +201,16 @@ fn queue_gaussians(
 }
 
 
+
+
 #[derive(Resource)]
 pub struct GaussianCloudPipeline {
     shader: Handle<Shader>,
     pub gaussian_cloud_layout: BindGroupLayout,
     pub gaussian_uniform_layout: BindGroupLayout,
     pub view_layout: BindGroupLayout,
+    pub radix_sort_layout: BindGroupLayout,
+    pub radix_sort_pipelines: [ComputePipelineDescriptor; 3],
 }
 
 impl FromWorld for GaussianCloudPipeline {
@@ -269,13 +277,74 @@ impl FromWorld for GaussianCloudPipeline {
             ],
         });
 
+        let sort_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("radix_sort_layout"),
+            entries: &vec![
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::VERTEX,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: BufferSize::new(std::mem::size_of::<Gaussian>() as u64),
+                    },
+                    count: None,
+                },
+            ],
+        });
+
         GaussianCloudPipeline {
             gaussian_cloud_layout,
             gaussian_uniform_layout,
+            sort_layout,
             view_layout,
             shader: GAUSSIAN_SHADER_HANDLE.typed(),
         }
     }
+}
+
+fn shader_defs(
+    aabb: bool,
+    visualize_bounding_box: bool,
+) -> Vec<ShaderDefVal> {
+    let radix_bits_per_digit = 8;
+    let radix_digit_places = 32 / radix_bits_per_digit;
+    let radix_base = 1 << radix_bits_per_digit;
+    let entries_per_invocation_a = 8;
+    let entries_per_invocation_c = 8;
+    let workgroup_invocations_a = radix_base * radix_digit_places;
+    let workgroup_invocations_c = radix_base;
+    let _workgroup_entries_a = workgroup_invocations_a * entries_per_invocation_a;
+    let workgroup_entries_c = workgroup_invocations_c * entries_per_invocation_c;
+    let max_tile_count_c = (10000000 + workgroup_entries_c - 1) / workgroup_entries_c;
+
+    let mut shader_defs = vec![
+        ShaderDefVal::UInt("MAX_SH_COEFF_COUNT".into(), MAX_SH_COEFF_COUNT as u32),
+        ShaderDefVal::UInt("RADIX_BASE".into(), radix_base),
+        ShaderDefVal::UInt("RADIX_BITS_PER_DIGIT".into(), radix_bits_per_digit),
+        ShaderDefVal::UInt("RADIX_DIGIT_PLACES".into(), radix_digit_places),
+        ShaderDefVal::UInt("ENTRIES_PER_INVOCATION_A".into(), entries_per_invocation_a),
+        ShaderDefVal::UInt("ENTRIES_PER_INVOCATION_C".into(), entries_per_invocation_c),
+        ShaderDefVal::UInt("WORKGROUP_INVOCATIONS_A".into(), workgroup_invocations_a),
+        ShaderDefVal::UInt("WORKGROUP_INVOCATIONS_C".into(), workgroup_invocations_c),
+        ShaderDefVal::UInt("WORKGROUP_ENTRIES_C".into(), workgroup_entries_c),
+        ShaderDefVal::UInt("MAX_TILE_COUNT_C".into(), max_tile_count_c),
+
+    ];
+
+    if aabb {
+        shader_defs.push("USE_AABB".into());
+    }
+
+    if !aabb {
+        shader_defs.push("USE_OBB".into());
+    }
+
+    if visualize_bounding_box {
+        shader_defs.push("VISUALIZE_BOUNDING_BOX".into());
+    }
+
+    shader_defs
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
@@ -284,43 +353,42 @@ pub struct GaussianCloudPipelineKey {
     pub visualize_bounding_box: bool,
 }
 
-impl SpecializedRenderPipeline for GaussianCloudPipeline {
-    type Key = GaussianCloudPipelineKey;
+impl GaussianCloudPipeline {
+    fn specialize(&self) -> ComputePipelineDescriptor {
+        let shader_defs = shader_defs(false, false);
 
-    fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
-        let mut shader_defs = vec![
-            ShaderDefVal::UInt("MAX_SH_COEFF_COUNT".into(), MAX_SH_COEFF_COUNT as u32),
-
-            ShaderDefVal::UInt("RADIX_BASE".into(), MAX_SH_COEFF_COUNT as u32),
-            ShaderDefVal::UInt("RADIX_BITS_PER_DIGIT".into(), MAX_SH_COEFF_COUNT as u32),
-            ShaderDefVal::UInt("RADIX_DIGIT_PLACES".into(), MAX_SH_COEFF_COUNT as u32),
-            ShaderDefVal::UInt("ENTRIES_PER_INVOCATION_A".into(), MAX_SH_COEFF_COUNT as u32),
-            ShaderDefVal::UInt("ENTRIES_PER_INVOCATION_C".into(), MAX_SH_COEFF_COUNT as u32),
-            ShaderDefVal::UInt("WORKGROUP_INVOCATIONS_A".into(), MAX_SH_COEFF_COUNT as u32),
-            ShaderDefVal::UInt("WORKGROUP_INVOCATIONS_C".into(), MAX_SH_COEFF_COUNT as u32),
-            ShaderDefVal::UInt("WORKGROUP_ENTRIES_C".into(), MAX_SH_COEFF_COUNT as u32),
-            ShaderDefVal::UInt("MAX_TILE_COUNT_C".into(), MAX_SH_COEFF_COUNT as u32),
-
-        ];
-
-        if key.aabb {
-            shader_defs.push("USE_AABB".into());
-        }
-
-        if !key.aabb {
-            shader_defs.push("USE_OBB".into());
-        }
-
-        if key.visualize_bounding_box {
-            shader_defs.push("VISUALIZE_BOUNDING_BOX".into());
-        }
-
-        RenderPipelineDescriptor {
-            label: Some("gaussian cloud pipeline".into()),
+        ComputePipelineDescriptor {
+            label: Some("gaussian cloud compute pipeline".into()),
             layout: vec![
                 self.view_layout.clone(),
                 self.gaussian_uniform_layout.clone(),
                 self.gaussian_cloud_layout.clone(),
+                self.radix_sort_layout.clone(),
+            ],
+            push_constant_ranges: vec![],
+            shader: self.shader.clone(),
+            shader_defs,
+            entry_point: "radix_sort_a".into(),
+        }
+    }
+}
+
+impl SpecializedRenderPipeline for GaussianCloudPipeline {
+    type Key = GaussianCloudPipelineKey;
+
+    fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
+        let shader_defs = shader_defs(
+            key.aabb,
+            key.visualize_bounding_box,
+        );
+
+        RenderPipelineDescriptor {
+            label: Some("gaussian cloud render pipeline".into()),
+            layout: vec![
+                self.view_layout.clone(),
+                self.gaussian_uniform_layout.clone(),
+                self.gaussian_cloud_layout.clone(),
+                self.sort_layout.clone(),
             ],
             vertex: VertexState {
                 shader: self.shader.clone(),
@@ -504,6 +572,8 @@ pub fn queue_gaussian_bind_group(
             }),
         });
     }
+
+    // TODO: sort bind group bindings
 }
 
 
