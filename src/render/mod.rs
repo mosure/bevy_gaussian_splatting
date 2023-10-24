@@ -210,7 +210,7 @@ pub struct GaussianCloudPipeline {
     pub gaussian_uniform_layout: BindGroupLayout,
     pub view_layout: BindGroupLayout,
     pub radix_sort_layout: BindGroupLayout,
-    pub radix_sort_pipelines: [ComputePipelineDescriptor; 3],
+    pub radix_sort_pipelines: [CachedComputePipelineId; 3],
 }
 
 impl FromWorld for GaussianCloudPipeline {
@@ -220,7 +220,7 @@ impl FromWorld for GaussianCloudPipeline {
         let view_layout_entries = vec![
             BindGroupLayoutEntry {
                 binding: 0,
-                visibility: ShaderStages::VERTEX_FRAGMENT,
+                visibility: ShaderStages::all(),
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Uniform,
                     has_dynamic_offset: true,
@@ -230,7 +230,7 @@ impl FromWorld for GaussianCloudPipeline {
             },
             BindGroupLayoutEntry {
                 binding: 1,
-                visibility: ShaderStages::VERTEX_FRAGMENT,
+                visibility: ShaderStages::all(),
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -250,7 +250,7 @@ impl FromWorld for GaussianCloudPipeline {
             entries: &vec![
                 BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: ShaderStages::VERTEX_FRAGMENT,
+                    visibility: ShaderStages::all(),
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Uniform,
                         has_dynamic_offset: true,
@@ -266,7 +266,7 @@ impl FromWorld for GaussianCloudPipeline {
             entries: &vec![
                 BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: ShaderStages::VERTEX,
+                    visibility: ShaderStages::all(),
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
@@ -277,28 +277,159 @@ impl FromWorld for GaussianCloudPipeline {
             ],
         });
 
-        let sort_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        let radix_sort_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("radix_sort_layout"),
             entries: &vec![
                 BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: ShaderStages::VERTEX,
+                    visibility: ShaderStages::all(),
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: BufferSize::new(std::mem::size_of::<u32>() as u64),
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: ShaderStages::all(),
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: BufferSize::new(ShaderDefines::default().sorting_buffer_size as u64),
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: ShaderStages::all(),
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: BufferSize::new(std::mem::size_of::<(u32, u32)>() as u64),
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: ShaderStages::all(),
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: BufferSize::new(std::mem::size_of::<(u32, u32)>() as u64),
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: ShaderStages::all(),
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(std::mem::size_of::<Gaussian>() as u64),
+                        min_binding_size: BufferSize::new(std::mem::size_of::<(u32, u32)>() as u64),
                     },
                     count: None,
                 },
             ],
+        });
+
+        let layout = vec![
+            view_layout.clone(),
+            gaussian_uniform_layout.clone(),
+            gaussian_cloud_layout.clone(),
+            radix_sort_layout.clone(),
+        ];
+        let shader = GAUSSIAN_SHADER_HANDLE.typed();
+        let shader_defs = shader_defs(false, false);
+
+        let pipeline_cache = render_world.resource::<PipelineCache>();
+        let radix_sort_a = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+            label: Some("radix_sort_a".into()),
+            layout: layout.clone(),
+            push_constant_ranges: vec![],
+            shader: shader.clone(),
+            shader_defs: shader_defs.clone(),
+            entry_point: "radix_sort_a".into(),
+        });
+
+        let radix_sort_b = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+            label: Some("radix_sort_b".into()),
+            layout: layout.clone(),
+            push_constant_ranges: vec![],
+            shader: shader.clone(),
+            shader_defs: shader_defs.clone(),
+            entry_point: "radix_sort_b".into(),
+        });
+
+        let radix_sort_c = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+            label: Some("radix_sort_c".into()),
+            layout: layout.clone(),
+            push_constant_ranges: vec![],
+            shader: shader.clone(),
+            shader_defs: shader_defs.clone(),
+            entry_point: "radix_sort_c".into(),
         });
 
         GaussianCloudPipeline {
             gaussian_cloud_layout,
             gaussian_uniform_layout,
-            sort_layout,
+            radix_sort_layout,
             view_layout,
-            shader: GAUSSIAN_SHADER_HANDLE.typed(),
+            shader: shader.clone(),
+            radix_sort_pipelines: [
+                radix_sort_a,
+                radix_sort_b,
+                radix_sort_c,
+            ],
+        }
+    }
+}
+
+// TODO: allow setting shader defines via API
+struct ShaderDefines {
+    radix_bits_per_digit: u32,
+    radix_digit_places: u32,
+    radix_base: u32,
+    entries_per_invocation_a: u32,
+    entries_per_invocation_c: u32,
+    workgroup_invocations_a: u32,
+    workgroup_invocations_c: u32,
+    _workgroup_entries_a: u32,
+    workgroup_entries_c: u32,
+    max_tile_count_c: u32,
+    sorting_buffer_size: usize,
+}
+
+impl Default for ShaderDefines {
+    fn default() -> Self {
+        let radix_bits_per_digit = 8;
+        let radix_digit_places = 32 / radix_bits_per_digit;
+        let radix_base = 1 << radix_bits_per_digit;
+        let entries_per_invocation_a = 4;
+        let entries_per_invocation_c = 4;
+        let workgroup_invocations_a = radix_base * radix_digit_places;
+        let workgroup_invocations_c = radix_base;
+        let _workgroup_entries_a = workgroup_invocations_a * entries_per_invocation_a;
+        let workgroup_entries_c = workgroup_invocations_c * entries_per_invocation_c;
+        let max_tile_count_c = (10000000 + workgroup_entries_c - 1) / workgroup_entries_c;
+        let sorting_buffer_size = (
+            radix_base as usize *
+            (radix_digit_places as usize + max_tile_count_c as usize) *
+            std::mem::size_of::<u32>()
+        ) + std::mem::size_of::<u32>() * 5;
+
+        Self {
+            radix_bits_per_digit,
+            radix_digit_places,
+            radix_base,
+            entries_per_invocation_a,
+            entries_per_invocation_c,
+            workgroup_invocations_a,
+            workgroup_invocations_c,
+            _workgroup_entries_a,
+            workgroup_entries_c,
+            max_tile_count_c,
+            sorting_buffer_size,
         }
     }
 }
@@ -307,29 +438,18 @@ fn shader_defs(
     aabb: bool,
     visualize_bounding_box: bool,
 ) -> Vec<ShaderDefVal> {
-    let radix_bits_per_digit = 8;
-    let radix_digit_places = 32 / radix_bits_per_digit;
-    let radix_base = 1 << radix_bits_per_digit;
-    let entries_per_invocation_a = 8;
-    let entries_per_invocation_c = 8;
-    let workgroup_invocations_a = radix_base * radix_digit_places;
-    let workgroup_invocations_c = radix_base;
-    let _workgroup_entries_a = workgroup_invocations_a * entries_per_invocation_a;
-    let workgroup_entries_c = workgroup_invocations_c * entries_per_invocation_c;
-    let max_tile_count_c = (10000000 + workgroup_entries_c - 1) / workgroup_entries_c;
-
+    let defines = ShaderDefines::default();
     let mut shader_defs = vec![
         ShaderDefVal::UInt("MAX_SH_COEFF_COUNT".into(), MAX_SH_COEFF_COUNT as u32),
-        ShaderDefVal::UInt("RADIX_BASE".into(), radix_base),
-        ShaderDefVal::UInt("RADIX_BITS_PER_DIGIT".into(), radix_bits_per_digit),
-        ShaderDefVal::UInt("RADIX_DIGIT_PLACES".into(), radix_digit_places),
-        ShaderDefVal::UInt("ENTRIES_PER_INVOCATION_A".into(), entries_per_invocation_a),
-        ShaderDefVal::UInt("ENTRIES_PER_INVOCATION_C".into(), entries_per_invocation_c),
-        ShaderDefVal::UInt("WORKGROUP_INVOCATIONS_A".into(), workgroup_invocations_a),
-        ShaderDefVal::UInt("WORKGROUP_INVOCATIONS_C".into(), workgroup_invocations_c),
-        ShaderDefVal::UInt("WORKGROUP_ENTRIES_C".into(), workgroup_entries_c),
-        ShaderDefVal::UInt("MAX_TILE_COUNT_C".into(), max_tile_count_c),
-
+        ShaderDefVal::UInt("RADIX_BASE".into(), defines.radix_base),
+        ShaderDefVal::UInt("RADIX_BITS_PER_DIGIT".into(), defines.radix_bits_per_digit),
+        ShaderDefVal::UInt("RADIX_DIGIT_PLACES".into(), defines.radix_digit_places),
+        ShaderDefVal::UInt("ENTRIES_PER_INVOCATION_A".into(), defines.entries_per_invocation_a),
+        ShaderDefVal::UInt("ENTRIES_PER_INVOCATION_C".into(), defines.entries_per_invocation_c),
+        ShaderDefVal::UInt("WORKGROUP_INVOCATIONS_A".into(), defines.workgroup_invocations_a),
+        ShaderDefVal::UInt("WORKGROUP_INVOCATIONS_C".into(), defines.workgroup_invocations_c),
+        ShaderDefVal::UInt("WORKGROUP_ENTRIES_C".into(), defines.workgroup_entries_c),
+        ShaderDefVal::UInt("MAX_TILE_COUNT_C".into(), defines.max_tile_count_c),
     ];
 
     if aabb {
@@ -353,26 +473,6 @@ pub struct GaussianCloudPipelineKey {
     pub visualize_bounding_box: bool,
 }
 
-impl GaussianCloudPipeline {
-    fn specialize(&self) -> ComputePipelineDescriptor {
-        let shader_defs = shader_defs(false, false);
-
-        ComputePipelineDescriptor {
-            label: Some("gaussian cloud compute pipeline".into()),
-            layout: vec![
-                self.view_layout.clone(),
-                self.gaussian_uniform_layout.clone(),
-                self.gaussian_cloud_layout.clone(),
-                self.radix_sort_layout.clone(),
-            ],
-            push_constant_ranges: vec![],
-            shader: self.shader.clone(),
-            shader_defs,
-            entry_point: "radix_sort_a".into(),
-        }
-    }
-}
-
 impl SpecializedRenderPipeline for GaussianCloudPipeline {
     type Key = GaussianCloudPipelineKey;
 
@@ -388,7 +488,7 @@ impl SpecializedRenderPipeline for GaussianCloudPipeline {
                 self.view_layout.clone(),
                 self.gaussian_uniform_layout.clone(),
                 self.gaussian_cloud_layout.clone(),
-                self.sort_layout.clone(),
+                // TODO: add bind group for sorted entries
             ],
             vertex: VertexState {
                 shader: self.shader.clone(),
@@ -689,6 +789,48 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianUniformBindGr
         RenderCommandResult::Success
     }
 }
+
+// pub struct DrawGaussianInstanced;
+// impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
+//     type Param = SRes<RenderAssets<GaussianCloud>>;
+//     type ViewWorldQuery = ();
+//     type ItemWorldQuery = (
+//         Read<Handle<GaussianCloud>>,
+//         Read<GaussianCloudBindGroup>,
+//     );
+
+//     #[inline]
+//     fn render<'w>(
+//         _item: &P,
+//         _view: (),
+//         (handle, bind_group): (&'w Handle<GaussianCloud>, &'w GaussianCloudBindGroup),
+//         gaussian_clouds: SystemParamItem<'w, '_, Self::Param>,
+//         pass: &mut TrackedRenderPass<'w>,
+//     ) -> RenderCommandResult {
+//         let gpu_gaussian_cloud = match gaussian_clouds.into_inner().get(handle) {
+//             Some(gpu_gaussian_cloud) => gpu_gaussian_cloud,
+//             None => return RenderCommandResult::Failure,
+//         };
+
+//         pass.set_bind_group(2, &bind_group.bind_group, &[]);
+
+//         match &gpu_gaussian_cloud.buffer_info {
+//             GpuBufferInfo::Indexed {
+//                 buffer,
+//                 index_format,
+//                 count,
+//             } => {
+//                 pass.set_index_buffer(buffer.slice(..), 0, *index_format);
+//                 pass.draw_indexed(0..*count, 0, 0..gpu_gaussian_cloud.count as u32);
+//             }
+//             GpuBufferInfo::NonIndexed => {
+//                 pass.draw(0..4, 0..gpu_gaussian_cloud.count as u32);
+//             }
+//             // TODO: add support for indirect draw and match over sort methods
+//         }
+//         RenderCommandResult::Success
+//     }
+// }
 
 pub struct DrawGaussianInstanced;
 impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
