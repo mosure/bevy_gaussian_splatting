@@ -643,6 +643,7 @@ pub struct GaussianUniformBindGroups {
 #[derive(Component)]
 pub struct GaussianCloudBindGroup {
     pub cloud_bind_group: BindGroup,
+    // pub sorting_bind_group: BindGroup,
     pub sorted_bind_group: BindGroup,
 }
 
@@ -723,7 +724,7 @@ pub fn queue_gaussian_bind_group(
         });
     }
 
-    // TODO: sort bind group bindings
+    // TODO: render pass bind group and compute pass bind group
 }
 
 
@@ -875,6 +876,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
 
         pass.draw(0..4, 0..gpu_gaussian_cloud.count as u32);
 
+        // TODO: calculate proper DrawIndirect offset (5x u32 from end of sorting_global_buffer)
         pass.draw_indirect(&gpu_gaussian_cloud.sorting_global_buffer, 0);
 
         RenderCommandResult::Success
