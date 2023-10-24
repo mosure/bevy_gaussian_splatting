@@ -27,7 +27,6 @@ use bevy::{
             GlobalsUniform,
             GlobalsBuffer,
         },
-        mesh::GpuBufferInfo,
         render_asset::{
             PrepareAssetError,
             RenderAsset,
@@ -127,11 +126,13 @@ pub struct GpuGaussianSplattingBundle {
 
 #[derive(Debug, Clone)]
 pub struct GpuGaussianCloud {
-    pub buffer: Buffer,
+    pub gaussian_buffer: Buffer,
     pub count: u32,
-    pub buffer_info: GpuBufferInfo,
 
-    // TODO: GpuGaussianCloud buffers for sorting
+    // TODO: sorting pass buffers (0..4)
+    pub sorting_global_buffer: Buffer,
+    pub entry_buffer_a: Buffer,
+    pub entry_buffer_b: Buffer,
 }
 impl RenderAsset for GaussianCloud {
     type ExtractedAsset = GaussianCloud;
@@ -146,16 +147,42 @@ impl RenderAsset for GaussianCloud {
         gaussian_cloud: Self::ExtractedAsset,
         render_device: &mut SystemParamItem<Self::Param>,
     ) -> Result<Self::PreparedAsset, PrepareAssetError<Self::ExtractedAsset>> {
-        let buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+        let gaussian_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("gaussian cloud buffer"),
             contents: bytemuck::cast_slice(gaussian_cloud.0.as_slice()),
             usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::STORAGE,
         });
 
+        let count = gaussian_cloud.0.len() as u32;
+
+        // TODO: derive sorting_buffer_size from cloud count (with possible rounding to next power of 2)
+        let sorting_global_buffer = render_device.create_buffer(&BufferDescriptor {
+            label: Some("sorting global buffer"),
+            size: ShaderDefines::default().sorting_buffer_size as u64,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC | BufferUsages::INDIRECT,
+            mapped_at_creation: false,
+        });
+
+        let entry_buffer_a = render_device.create_buffer(&BufferDescriptor {
+            label: Some("entry buffer a"),
+            size: (count as usize * std::mem::size_of::<(u32, u32)>()) as u64,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        let entry_buffer_b = render_device.create_buffer(&BufferDescriptor {
+            label: Some("entry buffer b"),
+            size: (count as usize * std::mem::size_of::<(u32, u32)>()) as u64,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
         Ok(GpuGaussianCloud {
-            buffer,
-            count: gaussian_cloud.0.len() as u32,
-            buffer_info: GpuBufferInfo::NonIndexed,
+            gaussian_buffer,
+            count,
+            sorting_global_buffer,
+            entry_buffer_a,
+            entry_buffer_b,
         })
     }
 }
@@ -211,6 +238,7 @@ pub struct GaussianCloudPipeline {
     pub view_layout: BindGroupLayout,
     pub radix_sort_layout: BindGroupLayout,
     pub radix_sort_pipelines: [CachedComputePipelineId; 3],
+    pub sorted_layout: BindGroupLayout,
 }
 
 impl FromWorld for GaussianCloudPipeline {
@@ -282,7 +310,7 @@ impl FromWorld for GaussianCloudPipeline {
             entries: &vec![
                 BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: ShaderStages::all(),
+                    visibility: ShaderStages::COMPUTE,
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -292,7 +320,7 @@ impl FromWorld for GaussianCloudPipeline {
                 },
                 BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: ShaderStages::all(),
+                    visibility: ShaderStages::COMPUTE,
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
@@ -302,7 +330,7 @@ impl FromWorld for GaussianCloudPipeline {
                 },
                 BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: ShaderStages::all(),
+                    visibility: ShaderStages::COMPUTE,
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
@@ -312,7 +340,7 @@ impl FromWorld for GaussianCloudPipeline {
                 },
                 BindGroupLayoutEntry {
                     binding: 3,
-                    visibility: ShaderStages::all(),
+                    visibility: ShaderStages::COMPUTE,
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
@@ -320,9 +348,15 @@ impl FromWorld for GaussianCloudPipeline {
                     },
                     count: None,
                 },
+            ],
+        });
+
+        let sorted_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("sorted_layout"),
+            entries: &vec![
                 BindGroupLayoutEntry {
                     binding: 4,
-                    visibility: ShaderStages::all(),
+                    visibility: ShaderStages::VERTEX_FRAGMENT,
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
@@ -333,7 +367,7 @@ impl FromWorld for GaussianCloudPipeline {
             ],
         });
 
-        let layout = vec![
+        let compute_layout = vec![
             view_layout.clone(),
             gaussian_uniform_layout.clone(),
             gaussian_cloud_layout.clone(),
@@ -345,7 +379,7 @@ impl FromWorld for GaussianCloudPipeline {
         let pipeline_cache = render_world.resource::<PipelineCache>();
         let radix_sort_a = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("radix_sort_a".into()),
-            layout: layout.clone(),
+            layout: compute_layout.clone(),
             push_constant_ranges: vec![],
             shader: shader.clone(),
             shader_defs: shader_defs.clone(),
@@ -354,7 +388,7 @@ impl FromWorld for GaussianCloudPipeline {
 
         let radix_sort_b = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("radix_sort_b".into()),
-            layout: layout.clone(),
+            layout: compute_layout.clone(),
             push_constant_ranges: vec![],
             shader: shader.clone(),
             shader_defs: shader_defs.clone(),
@@ -363,7 +397,7 @@ impl FromWorld for GaussianCloudPipeline {
 
         let radix_sort_c = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("radix_sort_c".into()),
-            layout: layout.clone(),
+            layout: compute_layout.clone(),
             push_constant_ranges: vec![],
             shader: shader.clone(),
             shader_defs: shader_defs.clone(),
@@ -373,14 +407,15 @@ impl FromWorld for GaussianCloudPipeline {
         GaussianCloudPipeline {
             gaussian_cloud_layout,
             gaussian_uniform_layout,
-            radix_sort_layout,
             view_layout,
             shader: shader.clone(),
+            radix_sort_layout,
             radix_sort_pipelines: [
                 radix_sort_a,
                 radix_sort_b,
                 radix_sort_c,
             ],
+            sorted_layout,
         }
     }
 }
@@ -488,7 +523,7 @@ impl SpecializedRenderPipeline for GaussianCloudPipeline {
                 self.view_layout.clone(),
                 self.gaussian_uniform_layout.clone(),
                 self.gaussian_cloud_layout.clone(),
-                // TODO: add bind group for sorted entries
+                self.sorted_layout.clone(),
             ],
             vertex: VertexState {
                 shader: self.shader.clone(),
@@ -607,7 +642,8 @@ pub struct GaussianUniformBindGroups {
 
 #[derive(Component)]
 pub struct GaussianCloudBindGroup {
-    pub bind_group: BindGroup,
+    pub cloud_bind_group: BindGroup,
+    pub sorted_bind_group: BindGroup,
 }
 
 pub fn queue_gaussian_bind_group(
@@ -656,19 +692,33 @@ pub fn queue_gaussian_bind_group(
         let cloud = gaussian_cloud_res.get(cloud_handle).unwrap();
 
         commands.entity(entity).insert(GaussianCloudBindGroup {
-            bind_group: render_device.create_bind_group(&BindGroupDescriptor {
+            cloud_bind_group: render_device.create_bind_group(&BindGroupDescriptor {
                 entries: &[
                     BindGroupEntry {
                         binding: 0,
                         resource: BindingResource::Buffer(BufferBinding {
-                            buffer: &cloud.buffer,
+                            buffer: &cloud.gaussian_buffer,
                             offset: 0,
-                            size: BufferSize::new(cloud.buffer.size()),
+                            size: BufferSize::new(cloud.gaussian_buffer.size()),
                         }),
                     },
                 ],
                 layout: &gaussian_cloud_pipeline.gaussian_cloud_layout,
                 label: Some("gaussian_cloud_bind_group"),
+            }),
+            sorted_bind_group: render_device.create_bind_group(&BindGroupDescriptor {
+                entries: &[
+                    BindGroupEntry {
+                        binding: 4,
+                        resource: BindingResource::Buffer(BufferBinding {
+                            buffer: &cloud.sorting_global_buffer,
+                            offset: 0,
+                            size: BufferSize::new(cloud.sorting_global_buffer.size()),
+                        }),
+                    }
+                ],
+                layout: &gaussian_cloud_pipeline.sorted_layout,
+                label: Some("sorted_bind_group"),
             }),
         });
     }
@@ -790,47 +840,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianUniformBindGr
     }
 }
 
-// pub struct DrawGaussianInstanced;
-// impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
-//     type Param = SRes<RenderAssets<GaussianCloud>>;
-//     type ViewWorldQuery = ();
-//     type ItemWorldQuery = (
-//         Read<Handle<GaussianCloud>>,
-//         Read<GaussianCloudBindGroup>,
-//     );
-
-//     #[inline]
-//     fn render<'w>(
-//         _item: &P,
-//         _view: (),
-//         (handle, bind_group): (&'w Handle<GaussianCloud>, &'w GaussianCloudBindGroup),
-//         gaussian_clouds: SystemParamItem<'w, '_, Self::Param>,
-//         pass: &mut TrackedRenderPass<'w>,
-//     ) -> RenderCommandResult {
-//         let gpu_gaussian_cloud = match gaussian_clouds.into_inner().get(handle) {
-//             Some(gpu_gaussian_cloud) => gpu_gaussian_cloud,
-//             None => return RenderCommandResult::Failure,
-//         };
-
-//         pass.set_bind_group(2, &bind_group.bind_group, &[]);
-
-//         match &gpu_gaussian_cloud.buffer_info {
-//             GpuBufferInfo::Indexed {
-//                 buffer,
-//                 index_format,
-//                 count,
-//             } => {
-//                 pass.set_index_buffer(buffer.slice(..), 0, *index_format);
-//                 pass.draw_indexed(0..*count, 0, 0..gpu_gaussian_cloud.count as u32);
-//             }
-//             GpuBufferInfo::NonIndexed => {
-//                 pass.draw(0..4, 0..gpu_gaussian_cloud.count as u32);
-//             }
-//             // TODO: add support for indirect draw and match over sort methods
-//         }
-//         RenderCommandResult::Success
-//     }
-// }
+// TODO: add compute phase
 
 pub struct DrawGaussianInstanced;
 impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
@@ -845,7 +855,13 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
     fn render<'w>(
         _item: &P,
         _view: (),
-        (handle, bind_group): (&'w Handle<GaussianCloud>, &'w GaussianCloudBindGroup),
+        (
+            handle,
+            bind_groups,
+        ): (
+            &'w Handle<GaussianCloud>,
+            &'w GaussianCloudBindGroup,
+        ),
         gaussian_clouds: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
@@ -854,22 +870,13 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
             None => return RenderCommandResult::Failure,
         };
 
-        pass.set_bind_group(2, &bind_group.bind_group, &[]);
+        pass.set_bind_group(2, &bind_groups.cloud_bind_group, &[]);
+        pass.set_bind_group(3, &bind_groups.sorted_bind_group, &[]);
 
-        match &gpu_gaussian_cloud.buffer_info {
-            GpuBufferInfo::Indexed {
-                buffer,
-                index_format,
-                count,
-            } => {
-                pass.set_index_buffer(buffer.slice(..), 0, *index_format);
-                pass.draw_indexed(0..*count, 0, 0..gpu_gaussian_cloud.count as u32);
-            }
-            GpuBufferInfo::NonIndexed => {
-                pass.draw(0..4, 0..gpu_gaussian_cloud.count as u32);
-            }
-            // TODO: add support for indirect draw and match over sort methods
-        }
+        pass.draw(0..4, 0..gpu_gaussian_cloud.count as u32);
+
+        pass.draw_indirect(&gpu_gaussian_cloud.sorting_global_buffer, 0);
+
         RenderCommandResult::Success
     }
 
