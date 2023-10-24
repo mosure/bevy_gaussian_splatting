@@ -1,3 +1,4 @@
+use rand::seq::SliceRandom;
 use std::{
     io::{
         BufReader,
@@ -160,7 +161,7 @@ impl GaussianCloud {
                 0.0,
                 1.0,
             ],
-            scale: Vec3::new(0.5, 0.5, 0.5),
+            scale: Vec3::new(0.25, 0.25, 0.25),
             opacity: 0.8,
             spherical_harmonic: SphericalHarmonicCoefficients{
                 coefficients: [
@@ -191,6 +192,9 @@ impl GaussianCloud {
                     let mut g = origin.clone();
                     g.position = [x, y, z, 1.0];
                     cloud.0.push(g);
+
+                    let mut rng = rand::thread_rng();
+                    cloud.0.last_mut().unwrap().spherical_harmonic.coefficients.shuffle(&mut rng);
                 }
             }
         }
