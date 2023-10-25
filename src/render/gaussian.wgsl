@@ -6,9 +6,8 @@
 
 struct GaussianInput {
     @location(0) rotation: vec4<f32>,
-    @location(1) position: vec3<f32>,
-    @location(2) scale: vec3<f32>,
-    @location(3) opacity: f32,
+    @location(1) position: vec4<f32>,
+    @location(2) scale_opacity: vec4<f32>,
     sh: array<f32, #{MAX_SH_COEFF_COUNT}>,
 };
 
@@ -77,7 +76,7 @@ fn radix_sort_a(
             continue;
         }
         var key: u32 = 0xFFFFFFFFu; // Stream compaction for frustum culling
-        let clip_space_pos = world_to_clip(points[entry_index].position);
+        let clip_space_pos = world_to_clip(points[entry_index].position.xyz);
         if(in_frustum(clip_space_pos.xyz)) {
             // key = bitcast<u32>(clip_space_pos.z);
             key = u32(clip_space_pos.z * 0xFFFF.0) << 16u;
@@ -460,7 +459,7 @@ fn vs_points(
     // }
 
     let point = points[splat_index];
-    let transformed_position = (uniforms.global_transform * vec4<f32>(point.position, 1.0)).xyz;
+    let transformed_position = (uniforms.global_transform * point.position).xyz;
 
     let projected_position = world_to_clip(transformed_position);
     if (!in_frustum(projected_position.xyz)) {
@@ -481,10 +480,10 @@ fn vs_points(
     let ray_direction = normalize(transformed_position - view.world_position);
     output.color = vec4<f32>(
         spherical_harmonics_lookup(ray_direction, point.sh),
-        point.opacity
+        point.scale_opacity.a
     );
 
-    let cov2d = compute_cov2d(transformed_position, point.scale, point.rotation);
+    let cov2d = compute_cov2d(transformed_position, point.scale_opacity.rgb, point.rotation);
 
     // TODO: remove conic when OBB is used
     let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;

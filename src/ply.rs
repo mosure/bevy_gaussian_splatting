@@ -1,9 +1,6 @@
 use std::io::BufRead;
 
-use bevy::{
-    asset::Error,
-    math::Vec3,
-};
+use bevy::asset::Error;
 use ply_rs::{
     ply::{
         Property,
@@ -33,10 +30,10 @@ impl PropertyAccess for Gaussian {
             ("f_dc_0", Property::Float(v))      => self.spherical_harmonic.coefficients[0] = v,
             ("f_dc_1", Property::Float(v))      => self.spherical_harmonic.coefficients[1] = v,
             ("f_dc_2", Property::Float(v))      => self.spherical_harmonic.coefficients[2] = v,
-            ("opacity", Property::Float(v))     => self.opacity = 1.0 / (1.0 + (-v).exp()),
-            ("scale_0", Property::Float(v))     => self.scale.x = v,
-            ("scale_1", Property::Float(v))     => self.scale.y = v,
-            ("scale_2", Property::Float(v))     => self.scale.z = v,
+            ("scale_0", Property::Float(v))     => self.scale_opacity[0] = v,
+            ("scale_1", Property::Float(v))     => self.scale_opacity[1] = v,
+            ("scale_2", Property::Float(v))     => self.scale_opacity[2] = v,
+            ("opacity", Property::Float(v))     => self.scale_opacity[3] = 1.0 / (1.0 + (-v).exp()),
             ("rot_0", Property::Float(v))       => self.rotation[0] = v,
             ("rot_1", Property::Float(v))       => self.rotation[1] = v,
             ("rot_2", Property::Float(v))       => self.rotation[2] = v,
@@ -70,11 +67,15 @@ pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, Error> {
     }
 
     for gaussian in &mut cloud {
-        let mean_scale = (gaussian.scale.x + gaussian.scale.y + gaussian.scale.z) / 3.0;
-        gaussian.scale = gaussian.scale
-            .max(Vec3::splat(mean_scale - MAX_SIZE_VARIANCE))
-            .min(Vec3::splat(mean_scale + MAX_SIZE_VARIANCE))
-            .exp();
+        gaussian.position[3] = 1.0;
+
+        let mean_scale = (gaussian.scale_opacity[0] + gaussian.scale_opacity[1] + gaussian.scale_opacity[2]) / 3.0;
+        for i in 0..3 {
+            gaussian.scale_opacity[i] = gaussian.scale_opacity[i]
+                .max(mean_scale - MAX_SIZE_VARIANCE)
+                .min(mean_scale + MAX_SIZE_VARIANCE)
+                .exp();
+        }
 
         let sh_src = gaussian.spherical_harmonic.coefficients.clone();
         let sh = &mut gaussian.spherical_harmonic.coefficients;

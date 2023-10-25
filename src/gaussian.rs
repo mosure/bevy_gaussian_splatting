@@ -130,8 +130,7 @@ pub const MAX_SIZE_VARIANCE: f32 = 5.0;
 pub struct Gaussian {
     pub rotation: [f32; 4],
     pub position: [f32; 4],
-    pub scale: Vec3,
-    pub opacity: f32,
+    pub scale_opacity: [f32; 4],
     pub spherical_harmonic: SphericalHarmonicCoefficients,
 }
 
@@ -161,8 +160,12 @@ impl GaussianCloud {
                 0.0,
                 1.0,
             ],
-            scale: Vec3::new(0.25, 0.25, 0.25),
-            opacity: 0.8,
+            scale_opacity: [
+                0.25,
+                0.25,
+                0.25,
+                0.5,
+            ],
             spherical_harmonic: SphericalHarmonicCoefficients{
                 coefficients: [
                     1.0, 0.0, 1.0,
