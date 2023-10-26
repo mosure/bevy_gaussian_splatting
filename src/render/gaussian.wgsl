@@ -317,17 +317,22 @@ fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>) -> 
         cov3d[2], cov3d[4], cov3d[5],
     );
 
-    // TODO: resolve metal vs directx differences
     var t = view.inverse_view * vec4<f32>(position, 1.0);
 
-    let focal_x = 1900.0;
-    let focal_y = 1080.0;
+#ifdef USE_AABB
+    let focal_x = view.viewport.z / (2.0 * view.projection[0][0]);
+    let focal_y = view.viewport.w / (2.0 * view.projection[1][1]);
+#endif
+
+#ifdef USE_OBB
+    let focal_x = view.viewport.z / (2.0 * view.inverse_projection[0][0]);
+    let focal_y = view.viewport.w / (2.0 * view.inverse_projection[1][1]);
+#endif
 
     let limx = 1.3 * 0.5 * view.viewport.z / focal_x;
     let limy = 1.3 * 0.5 * view.viewport.w / focal_y;
     let txtz = t.x / t.z;
     let tytz = t.y / t.z;
-
     t.x = min(limx, max(-limx, txtz)) * t.z;
     t.y = min(limy, max(-limy, tytz)) * t.z;
 
@@ -343,19 +348,31 @@ fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>) -> 
         0.0, 0.0, 0.0,
     );
 
+#ifdef USE_AABB
     let W = transpose(
         mat3x3<f32>(
-            view.inverse_projection.x.xyz,
-            view.inverse_projection.y.xyz,
-            view.inverse_projection.z.xyz,
+            view.projection.x.xyz,
+            view.projection.y.xyz,
+            view.projection.z.xyz,
         )
     );
+#endif
+
+#ifdef USE_OBB
+    let W = transpose(
+        mat3x3<f32>(
+            view.projection.x.xyz,
+            view.projection.y.xyz,
+            view.projection.z.xyz,
+        )
+    );
+#endif
 
     let T = W * J;
 
     var cov = transpose(T) * transpose(Vrk) * T;
-    cov[0][0] += 0.3f;
-    cov[1][1] += 0.3f;
+    // cov[0][0] += 0.3f;
+    // cov[1][1] += 0.3f;
 
     return vec3<f32>(cov[0][0], cov[0][1], cov[1][1]);
 }
@@ -380,12 +397,21 @@ fn get_bounding_box_corner(
     // return vec4<f32>(offset, uv);
 
     let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
-
     let mid = 0.5 * (cov2d.x + cov2d.z);
     let lambda1 = mid + sqrt(max(0.1, mid * mid - det));
     let lambda2 = mid - sqrt(max(0.1, mid * mid - det));
     let x_axis_length = sqrt(lambda1);
     let y_axis_length = sqrt(lambda2);
+
+    // let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
+    // let mid = 0.5 * (cov2d.x + cov2d.z);
+    // var discriminant = max(0.0, mid * mid - det);
+
+    // let lambda1 = mid + sqrt(discriminant);
+    // let lambda2 = mid - sqrt(discriminant);
+    // let x_axis_length = sqrt(lambda1);
+    // let y_axis_length = sqrt(lambda2);
+
 
 #ifdef USE_AABB
     // creates a square AABB (inefficient fragment usage)
@@ -402,32 +428,31 @@ fn get_bounding_box_corner(
 #endif
 
 #ifdef USE_OBB
-    let bounds = 3.5 * vec2<f32>(
+    // TODO: shouldn't require 3.5 stdevs
+    let bounds = vec2<f32>(
         x_axis_length,
         y_axis_length,
     );
 
-    // // bounding box is aligned to the eigenvectors with proper width/height
-    // // collapse unstable eigenvectors to circle
-    // let threshold = 0.1;
-    // if (abs(lambda1 - lambda2) < threshold) {
-    //     return vec4<f32>(
-    //         vec2<f32>(
-    //             direction.x * (x_axis_length + y_axis_length) * 0.5,
-    //             direction.y * x_axis_length
-    //         ) / view.viewport.zw,
-    //         direction * x_axis_length
-    //     );
-    // }
+    // bounding box is aligned to the eigenvectors with proper width/height
+    // collapse unstable eigenvectors to circle
+    let threshold = 0.1;
+    if (abs(lambda1 - lambda2) < threshold) {
+        let circle = direction * max(x_axis_length, y_axis_length);
+        return vec4<f32>(
+            circle / view.viewport.zw,
+            circle
+        );
+    }
 
     let eigvec1 = normalize(vec2<f32>(
         cov2d.y,
         lambda1 - cov2d.x
     ));
-    let eigvec2 = normalize(vec2<f32>(
-        lambda2 - cov2d.z,
-        cov2d.y
-    ));
+    let eigvec2 = vec2<f32>(
+        -eigvec1.y,
+        eigvec1.x
+    );
     let rotation_matrix = mat2x2(
         eigvec1.x, eigvec2.x,
         eigvec1.y, eigvec2.y
@@ -436,7 +461,7 @@ fn get_bounding_box_corner(
     let scaled_vertex = direction * bounds;
 
     return vec4<f32>(
-        (scaled_vertex / view.viewport.zw) * rotation_matrix,
+        (scaled_vertex / view.viewport.z) * rotation_matrix,
         scaled_vertex
     );
 #endif
@@ -513,6 +538,8 @@ fn vs_points(
 @fragment
 fn fs_main(input: GaussianOutput) -> @location(0) vec4<f32> {
     // TODO: draw gaussian without conic (OBB)
+
+#ifdef USE_AABB
     let d = -input.major_minor;
     let conic = input.conic;
     let power = -0.5 * (conic.x * d.x * d.x + conic.z * d.y * d.y) + conic.y * d.x * d.y;
@@ -520,6 +547,20 @@ fn fs_main(input: GaussianOutput) -> @location(0) vec4<f32> {
     if (power > 0.0) {
         discard;
     }
+#endif
+
+#ifdef USE_OBB
+    let norm_uv = input.uv * 2.0 - 1.0;
+    let sigma = 1.0 / 3.5;
+    let sigma_squared = sigma * sigma;
+    let distance_squared = dot(norm_uv, norm_uv);
+
+    let power = -distance_squared / (2.0 * sigma_squared);
+
+    if (distance_squared > 3.5 * 3.5) {
+        discard;
+    }
+#endif
 
 #ifdef VISUALIZE_BOUNDING_BOX
     let uv = input.uv;
@@ -532,9 +573,10 @@ fn fs_main(input: GaussianOutput) -> @location(0) vec4<f32> {
     }
 #endif
 
-    let alpha = min(0.99, input.color.a * exp(power));
+    let alpha = exp(power);
+    let final_alpha = alpha * input.color.a;
     return vec4<f32>(
-        input.color.rgb * alpha,
-        alpha,
+        input.color.rgb * final_alpha,
+        final_alpha,
     );
 }
