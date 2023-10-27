@@ -129,8 +129,8 @@ pub struct GpuGaussianCloud {
     pub gaussian_buffer: Buffer,
     pub count: u32,
 
-    // TODO: sorting pass buffers (0..4)
     pub sorting_global_buffer: Buffer,
+    pub sorting_pass_buffers: [Buffer; 4],
     pub entry_buffer_a: Buffer,
     pub entry_buffer_b: Buffer,
 }
@@ -162,6 +162,19 @@ impl RenderAsset for GaussianCloud {
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC | BufferUsages::INDIRECT,
             mapped_at_creation: false,
         });
+        // TODO: separate indirect buffer from histograms and counters (BufferUsages cannot be fused)
+
+        let sorting_pass_buffers = (0..4)
+            .map(|idx| {
+                render_device.create_buffer_with_data(&BufferInitDescriptor {
+                    label: format!("sorting pass buffer {}", idx).as_str().into(),
+                    contents: &[idx as u8, 0, 0, 0],
+                    usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+                })
+            })
+            .collect::<Vec<Buffer>>()
+            .try_into()
+            .unwrap();
 
         let entry_buffer_a = render_device.create_buffer(&BufferDescriptor {
             label: Some("entry buffer a"),
@@ -181,6 +194,7 @@ impl RenderAsset for GaussianCloud {
             gaussian_buffer,
             count,
             sorting_global_buffer,
+            sorting_pass_buffers,
             entry_buffer_a,
             entry_buffer_b,
         })
@@ -306,6 +320,17 @@ impl FromWorld for GaussianCloudPipeline {
             ],
         });
 
+        let sorting_buffer_entry = BindGroupLayoutEntry {
+            binding: 1,
+            visibility: ShaderStages::COMPUTE,
+            ty: BindingType::Buffer {
+                ty: BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size: BufferSize::new(ShaderDefines::default().sorting_buffer_size as u64),
+            },
+            count: None,
+        };
+
         let radix_sort_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("radix_sort_layout"),
             entries: &vec![
@@ -319,16 +344,7 @@ impl FromWorld for GaussianCloudPipeline {
                     },
                     count: None,
                 },
-                BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: ShaderStages::COMPUTE,
-                    ty: BindingType::Buffer {
-                        ty: BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(ShaderDefines::default().sorting_buffer_size as u64),
-                    },
-                    count: None,
-                },
+                sorting_buffer_entry.clone(),
                 BindGroupLayoutEntry {
                     binding: 2,
                     visibility: ShaderStages::COMPUTE,
@@ -355,6 +371,7 @@ impl FromWorld for GaussianCloudPipeline {
         let sorted_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("sorted_layout"),
             entries: &vec![
+                sorting_buffer_entry,
                 BindGroupLayoutEntry {
                     binding: 4,
                     visibility: ShaderStages::VERTEX_FRAGMENT,
@@ -673,7 +690,7 @@ pub struct GaussianUniformBindGroups {
 #[derive(Component)]
 pub struct GaussianCloudBindGroup {
     pub cloud_bind_group: BindGroup,
-    // pub sorting_bind_group: BindGroup,
+    pub radix_sort_bind_groups: [BindGroup; 4],
     pub sorted_bind_group: BindGroup,
 }
 
@@ -722,6 +739,61 @@ pub fn queue_gaussian_bind_group(
 
         let cloud = gaussian_cloud_res.get(cloud_handle).unwrap();
 
+        let sorting_global_entry = BindGroupEntry {
+            binding: 1,
+            resource: BindingResource::Buffer(BufferBinding {
+                buffer: &cloud.sorting_global_buffer,
+                offset: 0,
+                size: BufferSize::new(cloud.sorting_global_buffer.size()),
+            }),
+        };
+
+        let radix_sort_bind_groups: [BindGroup; 4] = (0..4)
+            .map(|idx| {
+                render_device.create_bind_group(&BindGroupDescriptor {
+                    label: format!("radix_sort_bind_group {}", idx).as_str().into(),
+                    layout: &gaussian_cloud_pipeline.radix_sort_layout,
+                    entries: &[
+                        BindGroupEntry {
+                            binding: 0,
+                            resource: BindingResource::Buffer(BufferBinding {
+                                buffer: &cloud.sorting_pass_buffers[idx],
+                                offset: 0,
+                                size: BufferSize::new(std::mem::size_of::<u32>() as u64),
+                            }),
+                        },
+                        sorting_global_entry.clone(),
+                        BindGroupEntry {
+                            binding: 2,
+                            resource: BindingResource::Buffer(BufferBinding {
+                                buffer: if idx % 1 == 0 {
+                                    &cloud.entry_buffer_a
+                                } else {
+                                    &cloud.entry_buffer_b
+                                },
+                                offset: 0,
+                                size: BufferSize::new((cloud.count as usize * std::mem::size_of::<(u32, u32)>()) as u64),
+                            }),
+                        },
+                        BindGroupEntry {
+                            binding: 3,
+                            resource: BindingResource::Buffer(BufferBinding {
+                                buffer: if idx % 1 == 0 {
+                                    &cloud.entry_buffer_b
+                                } else {
+                                    &cloud.entry_buffer_a
+                                },
+                                offset: 0,
+                                size: BufferSize::new((cloud.count as usize * std::mem::size_of::<(u32, u32)>()) as u64),
+                            }),
+                        },
+                    ],
+                })
+            })
+            .collect::<Vec<BindGroup>>()
+            .try_into()
+            .unwrap();
+
         commands.entity(entity).insert(GaussianCloudBindGroup {
             cloud_bind_group: render_device.create_bind_group(&BindGroupDescriptor {
                 entries: &[
@@ -737,24 +809,24 @@ pub fn queue_gaussian_bind_group(
                 layout: &gaussian_cloud_pipeline.gaussian_cloud_layout,
                 label: Some("gaussian_cloud_bind_group"),
             }),
+            radix_sort_bind_groups,
             sorted_bind_group: render_device.create_bind_group(&BindGroupDescriptor {
                 entries: &[
+                    sorting_global_entry,
                     BindGroupEntry {
                         binding: 4,
                         resource: BindingResource::Buffer(BufferBinding {
-                            buffer: &cloud.sorting_global_buffer,
+                            buffer: &cloud.entry_buffer_a,
                             offset: 0,
-                            size: BufferSize::new(cloud.sorting_global_buffer.size()),
+                            size: BufferSize::new((cloud.count as usize * std::mem::size_of::<(u32, u32)>()) as u64),
                         }),
-                    }
+                    },
                 ],
                 layout: &gaussian_cloud_pipeline.sorted_layout,
-                label: Some("sorted_bind_group"),
+                label: Some("render_sorted_bind_group"),
             }),
         });
     }
-
-    // TODO: render pass bind group and compute pass bind group
 }
 
 
@@ -907,7 +979,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
         pass.draw(0..4, 0..gpu_gaussian_cloud.count as u32);
 
         // TODO: calculate proper DrawIndirect offset (5x u32 from end of sorting_global_buffer) - better, use a uniform for DrawIndirect
-        pass.draw_indirect(&gpu_gaussian_cloud.sorting_global_buffer, 0);
+        // pass.draw_indirect(&gpu_gaussian_cloud.sorting_global_buffer, 0);
 
         RenderCommandResult::Success
     }
