@@ -238,6 +238,7 @@ pub struct GaussianCloudPipeline {
     pub view_layout: BindGroupLayout,
     pub radix_sort_layout: BindGroupLayout,
     pub radix_sort_pipelines: [CachedComputePipelineId; 3],
+    pub temporal_sort_pipelines: [CachedComputePipelineId; 2],
     pub sorted_layout: BindGroupLayout,
 }
 
@@ -404,6 +405,25 @@ impl FromWorld for GaussianCloudPipeline {
             entry_point: "radix_sort_c".into(),
         });
 
+
+        let temporal_sort_flip = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+            label: Some("temporal_sort_flip".into()),
+            layout: compute_layout.clone(),
+            push_constant_ranges: vec![],
+            shader: shader.clone(),
+            shader_defs: shader_defs.clone(),
+            entry_point: "temporal_sort_flip".into(),
+        });
+
+        let temporal_sort_flop = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+            label: Some("temporal_sort_flop".into()),
+            layout: compute_layout.clone(),
+            push_constant_ranges: vec![],
+            shader: shader.clone(),
+            shader_defs: shader_defs.clone(),
+            entry_point: "temporal_sort_flop".into(),
+        });
+
         GaussianCloudPipeline {
             gaussian_cloud_layout,
             gaussian_uniform_layout,
@@ -414,6 +434,10 @@ impl FromWorld for GaussianCloudPipeline {
                 radix_sort_a,
                 radix_sort_b,
                 radix_sort_c,
+            ],
+            temporal_sort_pipelines: [
+                temporal_sort_flip,
+                temporal_sort_flop,
             ],
             sorted_layout,
         }
@@ -433,6 +457,8 @@ struct ShaderDefines {
     workgroup_entries_c: u32,
     max_tile_count_c: u32,
     sorting_buffer_size: usize,
+
+    temporal_sort_window_size: u32,
 }
 
 impl Default for ShaderDefines {
@@ -465,6 +491,8 @@ impl Default for ShaderDefines {
             workgroup_entries_c,
             max_tile_count_c,
             sorting_buffer_size,
+
+            temporal_sort_window_size: 16,
         }
     }
 }
@@ -485,6 +513,8 @@ fn shader_defs(
         ShaderDefVal::UInt("WORKGROUP_INVOCATIONS_C".into(), defines.workgroup_invocations_c),
         ShaderDefVal::UInt("WORKGROUP_ENTRIES_C".into(), defines.workgroup_entries_c),
         ShaderDefVal::UInt("MAX_TILE_COUNT_C".into(), defines.max_tile_count_c),
+
+        ShaderDefVal::UInt("TEMPORAL_SORT_WINDOW_SIZE".into(), defines.temporal_sort_window_size),
     ];
 
     if aabb {
@@ -876,7 +906,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
 
         pass.draw(0..4, 0..gpu_gaussian_cloud.count as u32);
 
-        // TODO: calculate proper DrawIndirect offset (5x u32 from end of sorting_global_buffer)
+        // TODO: calculate proper DrawIndirect offset (5x u32 from end of sorting_global_buffer) - better, use a uniform for DrawIndirect
         pass.draw_indirect(&gpu_gaussian_cloud.sorting_global_buffer, 0);
 
         RenderCommandResult::Success

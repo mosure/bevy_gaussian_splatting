@@ -163,7 +163,6 @@ fn exclusive_scan(local_invocation_index: u32, value: u32) -> u32 {
     return sorting_shared_c.scan[local_invocation_index + conflict_free_offset(local_invocation_index)];
 }
 
-// TODO: update to latest radix_sort_c
 @compute @workgroup_size(#{WORKGROUP_INVOCATIONS_C})
 fn radix_sort_c(
     @builtin(local_invocation_id) gl_LocalInvocationID: vec3<u32>,
@@ -264,6 +263,31 @@ fn radix_sort_c(
     }
 }
 
+@compute @workgroup_size(#{TEMPORAL_SORT_WINDOW_SIZE})
+fn temporal_sort_flip(
+    @builtin(local_invocation_id) gl_LocalInvocationID: vec3<u32>,
+    @builtin(global_invocation_id) gl_GlobalInvocationID: vec3<u32>,
+) {
+    // let start_index = gl_GlobalInvocationID.x * #{TEMPORAL_SORT_WINDOW_SIZE}u;
+    // let end_index = start_index + #{TEMPORAL_SORT_WINDOW_SIZE}u;
+}
+
+@compute @workgroup_size(#{TEMPORAL_SORT_WINDOW_SIZE})
+fn temporal_sort_flop(
+    @builtin(local_invocation_id) gl_LocalInvocationID: vec3<u32>,
+    @builtin(global_invocation_id) gl_GlobalInvocationID: vec3<u32>,
+) {
+    // // TODO: pad sorting buffers to 1.5 window size
+    // let start_index = gl_GlobalInvocationID.x * #{TEMPORAL_SORT_WINDOW_SIZE}u + #{TEMPORAL_SORT_WINDOW_SIZE}u / 2u;
+    // let end_index = start_index + #{TEMPORAL_SORT_WINDOW_SIZE}u;
+
+    // // pair sort entries in window size
+    // for (var i = start_index; i < end_index; i += 2u) {
+    //     let pos_a = points[input_entries[i][0]].position.xyz;
+    //     let depth_a = world_to_clip(pos_a).z;
+    // }
+}
+
 
 
 
@@ -317,7 +341,6 @@ fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>) -> 
         cov3d[2], cov3d[4], cov3d[5],
     );
 
-    // TODO: resolve metal vs directx differences
     var t = view.inverse_view * vec4<f32>(position, 1.0);
 
     let focal_x = 1900.0;
@@ -468,7 +491,7 @@ fn vs_points(
     }
 
     var quad_vertices = array<vec2<f32>, 4>(
-        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(-2.0, -1.0),
         vec2<f32>(-1.0,  1.0),
         vec2<f32>( 1.0, -1.0),
         vec2<f32>( 1.0,  1.0),

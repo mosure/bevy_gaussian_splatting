@@ -1,11 +1,13 @@
 use bevy::{
     prelude::*,
     app::AppExit,
+    asset::ChangeWatcher,
     core::Name,
     diagnostic::{
         DiagnosticsStore,
         FrameTimeDiagnosticsPlugin,
     },
+    utils::Duration,
 };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_panorbit_camera::{
@@ -49,6 +51,8 @@ fn setup_gaussian_cloud(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let cloud: Handle<GaussianCloud>;
     let settings = GaussianCloudSettings {
@@ -73,6 +77,13 @@ fn setup_gaussian_cloud(
         Name::new("gaussian_cloud"),
     ));
 
+    commands.spawn(PbrBundle {
+        mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
+        material: materials.add(Color::rgb(0.8, 0.3, 0.6).into()),
+        transform: Transform::from_xyz(0.0, 0.0, 0.0),
+        ..default()
+    });
+
     commands.spawn((
         Camera3dBundle {
             transform: Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
@@ -91,6 +102,10 @@ fn example_app() {
     app.insert_resource(ClearColor(Color::rgb_u8(0, 0, 0)));
     app.add_plugins(
         DefaultPlugins
+        .set(AssetPlugin {
+            watch_for_changes: ChangeWatcher::with_delay(Duration::from_millis(200)),
+            ..Default::default()
+        })
         .set(ImagePlugin::default_nearest())
         .set(WindowPlugin {
             primary_window: Some(Window {
