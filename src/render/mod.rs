@@ -290,7 +290,7 @@ impl FromWorld for GaussianCloudPipeline {
 
         let gaussian_uniform_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("gaussian_uniform_layout"),
-            entries: &vec![
+            entries: &[
                 BindGroupLayoutEntry {
                     binding: 0,
                     visibility: ShaderStages::all(),
@@ -306,7 +306,7 @@ impl FromWorld for GaussianCloudPipeline {
 
         let gaussian_cloud_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("gaussian_cloud_layout"),
-            entries: &vec![
+            entries: &[
                 BindGroupLayoutEntry {
                     binding: 0,
                     visibility: ShaderStages::all(),
@@ -333,7 +333,7 @@ impl FromWorld for GaussianCloudPipeline {
 
         let radix_sort_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("radix_sort_layout"),
-            entries: &vec![
+            entries: &[
                 BindGroupLayoutEntry {
                     binding: 0,
                     visibility: ShaderStages::COMPUTE,
@@ -766,7 +766,7 @@ pub fn queue_gaussian_bind_group(
                         BindGroupEntry {
                             binding: 2,
                             resource: BindingResource::Buffer(BufferBinding {
-                                buffer: if idx % 1 == 0 {
+                                buffer: if idx % 2 == 0 {
                                     &cloud.entry_buffer_a
                                 } else {
                                     &cloud.entry_buffer_b
@@ -778,7 +778,7 @@ pub fn queue_gaussian_bind_group(
                         BindGroupEntry {
                             binding: 3,
                             resource: BindingResource::Buffer(BufferBinding {
-                                buffer: if idx % 1 == 0 {
+                                buffer: if idx % 2 == 0 {
                                     &cloud.entry_buffer_b
                                 } else {
                                     &cloud.entry_buffer_a

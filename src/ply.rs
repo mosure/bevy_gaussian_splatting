@@ -60,9 +60,8 @@ pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, Error> {
     let mut cloud = Vec::new();
 
     for (_ignore_key, element) in &header.elements {
-        match element.name.as_ref() {
-            "vertex" => { cloud = gaussian_parser.read_payload_for_element(&mut reader, &element, &header)?; },
-            _ => {},
+        if element.name == "vertex" {
+            cloud = gaussian_parser.read_payload_for_element(&mut reader, element, &header)?;
         }
     }
 
@@ -77,9 +76,10 @@ pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, Error> {
                 .exp();
         }
 
-        let sh_src = gaussian.spherical_harmonic.coefficients.clone();
+        let sh_src = gaussian.spherical_harmonic.coefficients;
         let sh = &mut gaussian.spherical_harmonic.coefficients;
-        for i in SH_CHANNELS..sh_src.len() {
+
+        for (i, sh_src) in sh_src.iter().enumerate().skip(SH_CHANNELS) {
             let j = i - SH_CHANNELS;
 
             let channel = j / (MAX_SH_COEFF_COUNT_PER_CHANNEL - 1);
@@ -88,7 +88,7 @@ pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, Error> {
             let interleaved_idx = coefficient * SH_CHANNELS + channel;
             assert!(interleaved_idx >= SH_CHANNELS);
 
-            sh[interleaved_idx] = sh_src[i];
+            sh[interleaved_idx] = *sh_src;
         }
     }
 

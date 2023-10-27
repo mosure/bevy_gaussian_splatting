@@ -98,8 +98,9 @@ where
             A: serde::de::SeqAccess<'de>,
         {
             let mut coefficients = [0.0; MAX_SH_COEFF_COUNT];
-            for i in 0..MAX_SH_COEFF_COUNT {
-                coefficients[i] = seq
+
+            for (i, coefficient) in coefficients.iter_mut().enumerate().take(MAX_SH_COEFF_COUNT) {
+                *coefficient = seq
                     .next_element()?
                     .ok_or_else(|| serde::de::Error::invalid_length(i, &self))?;
             }
@@ -192,7 +193,7 @@ impl GaussianCloud {
         for &x in [-0.5, 0.5].iter() {
             for &y in [-0.5, 0.5].iter() {
                 for &z in [-0.5, 0.5].iter() {
-                    let mut g = origin.clone();
+                    let mut g = origin;
                     g.position = [x, y, z, 1.0];
                     cloud.0.push(g);
 
@@ -247,14 +248,16 @@ impl AssetLoader for GaussianCloudLoader {
                     let cloud = GaussianCloud(ply_cloud);
 
                     load_context.set_default_asset(LoadedAsset::new(cloud));
-                    return Ok(());
+
+                    Ok(())
                 },
                 Some(ext) if ext == "gcloud" => {
                     let decompressed = GzDecoder::new(bytes);
                     let cloud: GaussianCloud = deserialize_from(decompressed).expect("failed to decode cloud");
 
                     load_context.set_default_asset(LoadedAsset::new(cloud));
-                    return Ok(());
+
+                    Ok(())
                 },
                 _ => Ok(()),
             }
