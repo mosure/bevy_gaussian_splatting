@@ -517,7 +517,7 @@ fn vs_points(
     }
 
     var quad_vertices = array<vec2<f32>, 4>(
-        vec2<f32>(-2.0, -1.0),
+        vec2<f32>(-1.0, -1.0),
         vec2<f32>(-1.0,  1.0),
         vec2<f32>( 1.0, -1.0),
         vec2<f32>( 1.0,  1.0),
