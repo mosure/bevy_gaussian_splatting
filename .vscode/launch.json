@@ -29,15 +29,15 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'bevy_gaussian_splatting'",
+            "name": "Debug executable 'viewer'",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=bevy_gaussian_splatting",
+                    "--bin=viewer",
                     "--package=bevy_gaussian_splatting"
                 ],
                 "filter": {
-                    "name": "bevy_gaussian_splatting",
+                    "name": "viewer",
                     "kind": "bin"
                 }
             },
@@ -50,16 +50,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in executable 'bevy_gaussian_splatting'",
+            "name": "Debug unit tests in executable 'viewer'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
-                    "--bin=bevy_gaussian_splatting",
+                    "--bin=viewer",
                     "--package=bevy_gaussian_splatting"
                 ],
                 "filter": {
-                    "name": "bevy_gaussian_splatting",
+                    "name": "viewer",
                     "kind": "bin"
                 }
             },

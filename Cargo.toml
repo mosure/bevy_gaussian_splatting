@@ -12,11 +12,9 @@ repository = "https://github.com/mosure/bevy_gaussian_splatting"
 readme = "README.md"
 include = ["tools"]
 exclude = [".devcontainer", ".github", "docs", "dist", "build", "assets", "credits"]
-default-run = "bevy_gaussian_splatting"
+default-run = "viewer"
 
-# TODO: use minimal bevy features
 [dependencies]
-bevy = "0.11.3"
 bevy-inspector-egui = "0.20.0"
 bevy_panorbit_camera = "0.8.0"
 bincode2 = "2.0.1"
@@ -30,6 +28,16 @@ serde = "1.0.189"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1.7"
 wasm-bindgen = "0.2.87"
+
+
+# TODO: use minimal bevy features
+[dependencies.bevy]
+version = "0.11.3"
+default-features = true
+features = [
+  #"debug_asset_server"
+]
+
 
 [dependencies.web-sys]
 version = "0.3.4"
@@ -64,8 +72,8 @@ codegen-units = 1
 path = "src/lib.rs"
 
 [[bin]]
-name = "bevy_gaussian_splatting"
-path = "src/main.rs"
+name = "viewer"
+path = "viewer/viewer.rs"
 
 [[bin]]
 name = "ply_to_gcloud"
