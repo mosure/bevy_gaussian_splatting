@@ -33,7 +33,6 @@ struct DrawIndirect {
 struct SortingGlobal {
     status_counters: array<array<atomic<u32>, #{RADIX_BASE}>, #{MAX_TILE_COUNT_C}>,
     digit_histogram: array<array<atomic<u32>, #{RADIX_BASE}>, #{RADIX_DIGIT_PLACES}>,
-    draw_indirect: DrawIndirect,
     assignment_counter: atomic<u32>,
 }
 struct Entry {
@@ -51,9 +50,10 @@ struct Entry {
 
 @group(3) @binding(0) var<uniform> sorting_pass_index: u32;
 @group(3) @binding(1) var<storage, read_write> sorting: SortingGlobal;
-@group(3) @binding(2) var<storage, read_write> input_entries: array<Entry>;
-@group(3) @binding(3) var<storage, read_write> output_entries: array<Entry>;
-@group(3) @binding(4) var<storage, read> sorted_entries: array<Entry>;
+@group(3) @binding(2) var<storage, read_write> draw_indirect: DrawIndirect;
+@group(3) @binding(3) var<storage, read_write> input_entries: array<Entry>;
+@group(3) @binding(4) var<storage, read_write> output_entries: array<Entry>;
+@group(3) @binding(5) var<storage, read> sorted_entries: array<Entry>;
 
 struct SortingSharedA {
     digit_histogram: array<array<atomic<u32>, #{RADIX_BASE}>, #{RADIX_DIGIT_PLACES}>,
@@ -222,8 +222,8 @@ fn radix_sort_c(
     }
     atomicStore(&sorting.status_counters[assignment][gl_LocalInvocationID.x], 0x80000000u | (global_digit_count + local_digit_count));
     if(sorting_pass_index == #{RADIX_DIGIT_PLACES}u - 1u && gl_LocalInvocationID.x == #{WORKGROUP_INVOCATIONS_C}u - 2u && global_entry_offset + #{WORKGROUP_ENTRIES_C}u >= arrayLength(&points)) {
-        sorting.draw_indirect.vertex_count = 4u;
-        sorting.draw_indirect.instance_count = global_digit_count + local_digit_count;
+        draw_indirect.vertex_count = 4u;
+        draw_indirect.instance_count = global_digit_count + local_digit_count;
     }
 
     // Scatter keys inside shared memory
