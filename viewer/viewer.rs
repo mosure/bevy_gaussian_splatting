@@ -89,7 +89,10 @@ fn setup_gaussian_cloud(
             transform: Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
             ..default()
         },
-        PanOrbitCamera::default(),
+        PanOrbitCamera{
+            allow_upside_down: true,
+            ..default()
+        },
     ));
 }
 
