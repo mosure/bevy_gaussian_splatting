@@ -83,6 +83,7 @@ to build wasm run:
 - [dynamic-3d-gaussians](https://github.com/JonathonLuiten/Dynamic3DGaussians)
 - [ewa splatting](https://www.cs.umd.edu/~zwicker/publications/EWASplatting-TVCG02.pdf)
 - [gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting)
+- [gaussian-splatting-viewer](https://github.com/limacv/GaussianSplattingViewer/tree/main)
 - [gaussian-splatting-web](https://github.com/cvlab-epfl/gaussian-splatting-web)
 - [making gaussian splats smaller](https://aras-p.info/blog/2023/09/13/Making-Gaussian-Splats-smaller/)
 - [onesweep](https://arxiv.org/ftp/arxiv/papers/2206/2206.01784.pdf)
