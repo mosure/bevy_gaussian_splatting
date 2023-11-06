@@ -535,11 +535,9 @@ impl Default for ShaderDefines {
         let workgroup_entries_a = workgroup_invocations_a * entries_per_invocation_a;
         let workgroup_entries_c = workgroup_invocations_c * entries_per_invocation_c;
         let max_tile_count_c = (10000000 + workgroup_entries_c - 1) / workgroup_entries_c;
-        let sorting_buffer_size = (
-            radix_base as usize *
+        let sorting_buffer_size = radix_base as usize *
             (radix_digit_places as usize + max_tile_count_c as usize) *
-            std::mem::size_of::<u32>()
-        ) + std::mem::size_of::<u32>() * 5;
+            std::mem::size_of::<u32>() + 5 * std::mem::size_of::<u32>();
 
         Self {
             radix_bits_per_digit,
@@ -1126,11 +1124,19 @@ impl render_graph::Node for RadixSortNode {
 
                 let radix_digit_places = ShaderDefines::default().radix_digit_places;
 
-                command_encoder.clear_buffer(
-                    &cloud.sorting_global_buffer,
-                    0,
-                    None,
-                );
+                {
+                    command_encoder.clear_buffer(
+                        &cloud.sorting_global_buffer,
+                        0,
+                        None,
+                    );
+
+                    command_encoder.clear_buffer(
+                        &cloud.draw_indirect_buffer,
+                        0,
+                        None,
+                    );
+                }
 
                 {
                     let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
@@ -1171,11 +1177,12 @@ impl render_graph::Node for RadixSortNode {
 
                 for pass_idx in 0..radix_digit_places {
                     if pass_idx > 0 {
-                        let size = ShaderDefines::default().radix_base * ShaderDefines::default().max_tile_count_c * std::mem::size_of::<u32>() as u32;
+                        // clear SortingGlobal.status_counters
+                        let size = (ShaderDefines::default().radix_base * ShaderDefines::default().max_tile_count_c) as u64 * std::mem::size_of::<u32>() as u64;
                         command_encoder.clear_buffer(
                             &cloud.sorting_global_buffer,
                             0,
-                            std::num::NonZeroU64::new(size as u64).unwrap().into()
+                            std::num::NonZeroU64::new(size).unwrap().into()
                         );
                     }
 
