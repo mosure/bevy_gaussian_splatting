@@ -34,7 +34,7 @@ impl Plugin for GaussianSplattingPlugin {
         // TODO: allow hot reloading of GaussianCloud handle through inspector UI
         app.register_type::<SphericalHarmonicCoefficients>();
         app.register_type::<GaussianCloud>();
-        app.add_asset::<GaussianCloud>();
+        app.init_asset::<GaussianCloud>();
         app.register_asset_reflect::<GaussianCloud>();
 
         app.init_asset_loader::<GaussianCloudLoader>();

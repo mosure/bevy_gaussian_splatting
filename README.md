@@ -12,7 +12,7 @@
 
 bevy gaussian splatting render pipeline plugin
 
-`cargo run -- {path to ply or gcloud file}`
+`cargo run -- scenes/icecream.gcloud`
 
 ## capabilities
 
