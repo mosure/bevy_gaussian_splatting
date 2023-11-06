@@ -16,7 +16,7 @@ default-run = "bevy_gaussian_splatting"
 
 # TODO: use minimal bevy features
 [dependencies]
-bevy = "0.11.3"
+bevy = "0.12.0"
 bevy-inspector-egui = "0.20.0"
 bevy_panorbit_camera = "0.8.0"
 bincode2 = "2.0.1"
