@@ -1,7 +1,7 @@
 [package]
 name = "bevy_gaussian_splatting"
 description = "bevy gaussian splatting render pipeline plugin"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["mosure <mitchell@mosure.me>"]
 license = "MIT"
@@ -14,15 +14,15 @@ exclude = [".devcontainer", ".github", "docs", "dist", "build", "assets", "credi
 default-run = "viewer"
 
 [dependencies]
-bevy-inspector-egui = "0.20.0"
-bevy_panorbit_camera = "0.8.0"
+bevy-inspector-egui = "0.21"
+bevy_panorbit_camera = "0.9.0"
 bincode2 = "2.0.1"
 bytemuck = "1.14.0"
 flate2 = "1.0.28"
 ply-rs = "0.1.3"
 rand = "0.8.5"
 serde = "1.0.189"
-wgpu = "0.16.0"
+wgpu = "0.17.1"
 
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -32,7 +32,7 @@ wasm-bindgen = "0.2.87"
 
 # TODO: use minimal bevy features
 [dependencies.bevy]
-version = "0.11.3"
+version = "0.12"
 default-features = true
 
 

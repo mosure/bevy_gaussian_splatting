@@ -1,6 +1,5 @@
 use std::io::BufRead;
 
-use bevy::asset::Error;
 use ply_rs::{
     ply::{
         Property,
@@ -53,7 +52,7 @@ impl PropertyAccess for Gaussian {
     }
 }
 
-pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, Error> {
+pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, std::io::Error> {
     let gaussian_parser = Parser::<Gaussian>::new();
     let header = gaussian_parser.read_header(&mut reader)?;
 

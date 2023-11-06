@@ -4,7 +4,6 @@ use bevy::{
     prelude::*,
     asset::{
         load_internal_asset,
-        HandleUntyped,
         LoadState,
     },
     core_pipeline::core_3d::{
@@ -18,7 +17,6 @@ use bevy::{
         },
         query::ROQueryItem,
     },
-    reflect::TypeUuid,
     render::{
         Extract,
         extract_component::{
@@ -75,8 +73,8 @@ use crate::gaussian::{
 };
 
 
-const GAUSSIAN_SHADER_HANDLE: HandleUntyped = HandleUntyped::weak_from_u64(Shader::TYPE_UUID, 68294581);
-const SPHERICAL_HARMONICS_SHADER_HANDLE: HandleUntyped = HandleUntyped::weak_from_u64(Shader::TYPE_UUID, 834667312);
+const GAUSSIAN_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(68294581);
+const SPHERICAL_HARMONICS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(834667312);
 
 pub mod node {
     pub const RADIX_SORT: &str = "radix_sort";
@@ -124,9 +122,9 @@ impl Plugin for RenderPipelinePlugin {
                 .add_systems(
                     Render,
                     (
-                        queue_gaussian_bind_group.in_set(RenderSet::Queue),
-                        queue_gaussian_view_bind_groups.in_set(RenderSet::Queue),
-                        queue_gaussians.in_set(RenderSet::Queue),
+                        queue_gaussian_bind_group.in_set(RenderSet::QueueMeshes),
+                        queue_gaussian_view_bind_groups.in_set(RenderSet::QueueMeshes),
+                        queue_gaussians.in_set(RenderSet::QueueMeshes),
                     ),
                 );
         }
@@ -237,6 +235,7 @@ impl RenderAsset for GaussianCloud {
 
 #[allow(clippy::too_many_arguments)]
 fn queue_gaussians(
+    gaussian_cloud_uniform: Res<ComponentUniforms<GaussianCloudUniform>>,
     transparent_3d_draw_functions: Res<DrawFunctions<Transparent3d>>,
     custom_pipeline: Res<GaussianCloudPipeline>,
     mut pipelines: ResMut<SpecializedRenderPipelines<GaussianCloudPipeline>>,
@@ -252,6 +251,11 @@ fn queue_gaussians(
         &mut RenderPhase<Transparent3d>,
     )>,
 ) {
+    // TODO: condition this system based on GaussianCloudBindGroup attachment
+    if gaussian_cloud_uniform.buffer().is_none() {
+        return;
+    };
+
     let draw_custom = transparent_3d_draw_functions.read().id::<DrawGaussians>();
 
     for (_view, mut transparent_phase) in &mut views {
@@ -264,11 +268,18 @@ fn queue_gaussians(
 
                 let pipeline = pipelines.specialize(&pipeline_cache, &custom_pipeline, key);
 
+                // // TODO: distance to gaussian cloud centroid
+                // let rangefinder = view.rangefinder3d();
+
                 transparent_phase.add(Transparent3d {
                     entity,
                     draw_function: draw_custom,
                     distance: 0.0,
+                    // distance: rangefinder
+                    //     .distance_translation(&mesh_instance.transforms.transform.translation),
                     pipeline,
+                    batch_range: 0..1,
+                    dynamic_offset: None,
                 });
             }
         }
@@ -436,7 +447,7 @@ impl FromWorld for GaussianCloudPipeline {
             gaussian_cloud_layout.clone(),
             radix_sort_layout.clone(),
         ];
-        let shader = GAUSSIAN_SHADER_HANDLE.typed();
+        let shader = GAUSSIAN_SHADER_HANDLE;
         let shader_defs = shader_defs(false, false);
 
         let pipeline_cache = render_world.resource::<PipelineCache>();
@@ -754,10 +765,10 @@ pub fn queue_gaussian_bind_group(
         return;
     };
 
-    assert!(model.size() == std::mem::size_of::<GaussianCloudUniform>() as u64);
-
-    groups.base_bind_group = Some(render_device.create_bind_group(&BindGroupDescriptor {
-        entries: &[
+    groups.base_bind_group = Some(render_device.create_bind_group(
+        "gaussian_uniform_bind_group",
+        &gaussian_cloud_pipeline.gaussian_uniform_layout,
+        &[
             BindGroupEntry {
                 binding: 0,
                 resource: BindingResource::Buffer(BufferBinding {
@@ -767,16 +778,15 @@ pub fn queue_gaussian_bind_group(
                 }),
             },
         ],
-        layout: &gaussian_cloud_pipeline.gaussian_uniform_layout,
-        label: Some("gaussian_uniform_bind_group"),
-    }));
+    ));
 
     for (entity, cloud_handle) in gaussian_clouds.iter() {
-        if asset_server.get_load_state(cloud_handle) == LoadState::Loading {
+        // TODO: add asset loading indicator (and maybe streamed loading)
+        if Some(LoadState::Loading) == asset_server.get_load_state(cloud_handle) {
             continue;
         }
 
-        if !gaussian_cloud_res.contains_key(cloud_handle) {
+        if gaussian_cloud_res.get(cloud_handle).is_none() {
             continue;
         }
 
@@ -802,10 +812,10 @@ pub fn queue_gaussian_bind_group(
 
         let radix_sort_bind_groups: [BindGroup; 4] = (0..4)
             .map(|idx| {
-                render_device.create_bind_group(&BindGroupDescriptor {
-                    label: format!("radix_sort_bind_group {}", idx).as_str().into(),
-                    layout: &gaussian_cloud_pipeline.radix_sort_layout,
-                    entries: &[
+                render_device.create_bind_group(
+                    format!("radix_sort_bind_group {}", idx).as_str(),
+                    &gaussian_cloud_pipeline.radix_sort_layout,
+                    &[
                         BindGroupEntry {
                             binding: 0,
                             resource: BindingResource::Buffer(BufferBinding {
@@ -841,15 +851,17 @@ pub fn queue_gaussian_bind_group(
                             }),
                         },
                     ],
-                })
+                )
             })
             .collect::<Vec<BindGroup>>()
             .try_into()
             .unwrap();
 
         commands.entity(entity).insert(GaussianCloudBindGroup {
-            cloud_bind_group: render_device.create_bind_group(&BindGroupDescriptor {
-                entries: &[
+            cloud_bind_group: render_device.create_bind_group(
+                "gaussian_cloud_bind_group",
+                &gaussian_cloud_pipeline.gaussian_cloud_layout,
+                &[
                     BindGroupEntry {
                         binding: 0,
                         resource: BindingResource::Buffer(BufferBinding {
@@ -859,12 +871,12 @@ pub fn queue_gaussian_bind_group(
                         }),
                     },
                 ],
-                layout: &gaussian_cloud_pipeline.gaussian_cloud_layout,
-                label: Some("gaussian_cloud_bind_group"),
-            }),
+            ),
             radix_sort_bind_groups,
-            sorted_bind_group: render_device.create_bind_group(&BindGroupDescriptor {
-                entries: &[
+            sorted_bind_group: render_device.create_bind_group(
+                "render_sorted_bind_group",
+                &gaussian_cloud_pipeline.sorted_layout,
+                &[
                     BindGroupEntry {
                         binding: 5,
                         resource: BindingResource::Buffer(BufferBinding {
@@ -874,9 +886,7 @@ pub fn queue_gaussian_bind_group(
                         }),
                     },
                 ],
-                layout: &gaussian_cloud_pipeline.sorted_layout,
-                label: Some("render_sorted_bind_group"),
-            }),
+            ),
         });
     }
 }
@@ -925,11 +935,11 @@ pub fn queue_gaussian_view_bind_groups(
                 },
             ];
 
-            let view_bind_group = render_device.create_bind_group(&BindGroupDescriptor {
-                entries: &entries,
-                label: Some("gaussian_view_bind_group"),
+            let view_bind_group = render_device.create_bind_group(
+                "gaussian_view_bind_group",
                 layout,
-            });
+                &entries,
+            );
 
 
             commands.entity(entity).insert(GaussianViewBindGroup {

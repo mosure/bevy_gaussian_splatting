@@ -13,7 +13,7 @@ bevy gaussian splatting render pipeline plugin
 ![Alt text](docs/notferris.png)
 ![Alt text](docs/bike.png)
 
-`cargo run -- {path to ply or gcloud file}`
+`cargo run -- scenes/icecream.gcloud`
 
 ## capabilities
 
@@ -70,6 +70,7 @@ to build wasm run:
 
 | `bevy_gaussian_splatting` | `bevy` |
 | :--           | :--    |
+| `0.4`         | `0.12` |
 | `0.1 - 0.3`         | `0.11` |
 
 

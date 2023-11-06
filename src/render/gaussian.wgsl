@@ -1,7 +1,7 @@
-#import bevy_render::globals    Globals
-#import bevy_render::view       View
+#import bevy_render::globals::Globals
+#import bevy_render::view::View
 
-#import bevy_gaussian_splatting::spherical_harmonics    spherical_harmonics_lookup
+#import bevy_gaussian_splatting::spherical_harmonics::spherical_harmonics_lookup
 
 
 struct GaussianInput {

@@ -3,6 +3,7 @@ use std::{
     io::{
         BufReader,
         Cursor,
+        ErrorKind,
     },
     marker::Copy,
 };
@@ -11,8 +12,9 @@ use bevy::{
     prelude::*,
     asset::{
         AssetLoader,
+        AsyncReadExt,
         LoadContext,
-        LoadedAsset,
+        io::Reader,
     },
     reflect::TypeUuid,
     render::render_resource::ShaderType,
@@ -136,6 +138,7 @@ pub struct Gaussian {
 }
 
 #[derive(
+    Asset,
     Clone,
     Debug,
     Reflect,
@@ -233,12 +236,21 @@ impl Default for GaussianCloudSettings {
 pub struct GaussianCloudLoader;
 
 impl AssetLoader for GaussianCloudLoader {
+    type Asset = GaussianCloud;
+    type Settings = ();
+    type Error = std::io::Error;
+
     fn load<'a>(
         &'a self,
-        bytes: &'a [u8],
+        reader: &'a mut Reader,
+        _settings: &'a Self::Settings,
         load_context: &'a mut LoadContext,
-    ) -> BoxedFuture<'a, Result<(), bevy::asset::Error>> {
+    ) -> BoxedFuture<'a, Result<Self::Asset, Self::Error>> {
+
         Box::pin(async move {
+            let mut bytes = Vec::new();
+            reader.read_to_end(&mut bytes).await?;
+
             match load_context.path().extension() {
                 Some(ext) if ext == "ply" => {
                     let cursor = Cursor::new(bytes);
@@ -247,19 +259,15 @@ impl AssetLoader for GaussianCloudLoader {
                     let ply_cloud = parse_ply(&mut f)?;
                     let cloud = GaussianCloud(ply_cloud);
 
-                    load_context.set_default_asset(LoadedAsset::new(cloud));
-
-                    Ok(())
+                    Ok(cloud)
                 },
                 Some(ext) if ext == "gcloud" => {
-                    let decompressed = GzDecoder::new(bytes);
+                    let decompressed = GzDecoder::new(bytes.as_slice());
                     let cloud: GaussianCloud = deserialize_from(decompressed).expect("failed to decode cloud");
 
-                    load_context.set_default_asset(LoadedAsset::new(cloud));
-
-                    Ok(())
+                    Ok(cloud)
                 },
-                _ => Ok(()),
+                _ => Err(std::io::Error::new(ErrorKind::Other, "only .ply and .gcloud supported")),
             }
         })
     }
