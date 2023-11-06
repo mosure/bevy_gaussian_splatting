@@ -15,7 +15,7 @@ default-run = "viewer"
 
 [dependencies]
 bevy-inspector-egui = "0.21"
-bevy_panorbit_camera = { git = "https://github.com/mosure/bevy_panorbit_camera.git", rev = "5b0dcb0" }
+bevy_panorbit_camera = "0.9.0"
 bincode2 = "2.0.1"
 bytemuck = "1.14.0"
 flate2 = "1.0.28"
