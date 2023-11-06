@@ -70,6 +70,7 @@ to build wasm run:
 
 | `bevy_gaussian_splatting` | `bevy` |
 | :--           | :--    |
+| `0.4`         | `0.12` |
 | `0.1 - 0.3`         | `0.11` |
 
 
