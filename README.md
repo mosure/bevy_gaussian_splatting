@@ -8,9 +8,10 @@
 [![Average time to resolve an issue](https://isitmaintained.com/badge/resolution/mosure/bevy_gaussian_splatting.svg)](http://isitmaintained.com/project/mosure/bevy_gaussian_splatting)
 [![crates.io](https://img.shields.io/crates/v/bevy_gaussian_splatting.svg)](https://crates.io/crates/bevy_gaussian_splatting)
 
-![Alt text](docs/notferris.png)
-
 bevy gaussian splatting render pipeline plugin
+
+![Alt text](docs/notferris.png)
+![Alt text](docs\bike.png)
 
 `cargo run -- {path to ply or gcloud file}`
 
