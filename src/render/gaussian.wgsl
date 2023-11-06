@@ -60,6 +60,7 @@ struct SortingSharedA {
 }
 var<workgroup> sorting_shared_a: SortingSharedA;
 
+// TODO: resolve flickering (maybe more radix passes?)
 @compute @workgroup_size(#{RADIX_BASE}, #{RADIX_DIGIT_PLACES})
 fn radix_sort_a(
     @builtin(local_invocation_id) gl_LocalInvocationID: vec3<u32>,
@@ -76,10 +77,11 @@ fn radix_sort_a(
             continue;
         }
         var key: u32 = 0xFFFFFFFFu; // Stream compaction for frustum culling
-        let clip_space_pos = world_to_clip(points[entry_index].position.xyz);
+        let transformed_position = (uniforms.global_transform * points[entry_index].position).xyz;
+        let clip_space_pos = world_to_clip(transformed_position);
         if(in_frustum(clip_space_pos.xyz)) {
-            // key = bitcast<u32>(clip_space_pos.z);
-            key = u32(clip_space_pos.z * 0xFFFF.0) << 16u;
+            // key = bitcast<u32>(1.0 - clip_space_pos.z);
+            key = u32((1.0 - clip_space_pos.z) * 0xFFFF.0) << 16u;
             key |= u32((clip_space_pos.x * 0.5 + 0.5) * 0xFF.0) << 8u;
             key |= u32((clip_space_pos.y * 0.5 + 0.5) * 0xFF.0);
         }
@@ -118,7 +120,7 @@ var<workgroup> sorting_shared_c: SortingSharedC;
 const NUM_BANKS: u32 = 16u;
 const LOG_NUM_BANKS: u32 = 4u;
 fn conflict_free_offset(n: u32) -> u32 {
-    return 0u; // n >> NUM_BANKS + n >> (2u * LOG_NUM_BANKS);
+    return n >> NUM_BANKS + n >> (2u * LOG_NUM_BANKS);
 }
 
 fn exclusive_scan(local_invocation_index: u32, value: u32) -> u32 {
@@ -375,9 +377,9 @@ fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>) -> 
 #ifdef USE_AABB
     let W = transpose(
         mat3x3<f32>(
-            view.projection.x.xyz,
-            view.projection.y.xyz,
-            view.projection.z.xyz,
+            view.inverse_view.x.xyz,
+            view.inverse_view.y.xyz,
+            view.inverse_view.z.xyz,
         )
     );
 #endif
@@ -385,9 +387,9 @@ fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>) -> 
 #ifdef USE_OBB
     let W = transpose(
         mat3x3<f32>(
-            view.projection.x.xyz,
-            view.projection.y.xyz,
-            view.projection.z.xyz,
+            view.inverse_view.x.xyz,
+            view.inverse_view.y.xyz,
+            view.inverse_view.z.xyz,
         )
     );
 #endif
@@ -395,8 +397,8 @@ fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>) -> 
     let T = W * J;
 
     var cov = transpose(T) * transpose(Vrk) * T;
-    // cov[0][0] += 0.3f;
-    // cov[1][1] += 0.3f;
+    cov[0][0] += 0.3f;
+    cov[1][1] += 0.3f;
 
     return vec3<f32>(cov[0][0], cov[0][1], cov[1][1]);
 }
@@ -498,14 +500,13 @@ fn vs_points(
     @builtin(vertex_index) vertex_index: u32,
 ) -> GaussianOutput {
     var output: GaussianOutput;
-    let splat_index = instance_index;
-    // let splat_index = sorted_entries[instance_index][1];
+    let splat_index = sorted_entries[instance_index][1];
 
-    // let discard_quad = sorted_entries[instance_index][0] == 0xFFFFFFFFu;
-    // if (discard_quad) {
-    //     output.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
-    //     return output;
-    // }
+    let discard_quad = sorted_entries[instance_index][0] == 0xFFFFFFFFu;
+    if (discard_quad) {
+        output.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        return output;
+    }
 
     let point = points[splat_index];
     let transformed_position = (uniforms.global_transform * point.position).xyz;
@@ -513,6 +514,7 @@ fn vs_points(
     let projected_position = world_to_clip(transformed_position);
     if (!in_frustum(projected_position.xyz)) {
         output.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        output.position = vec4<f32>(0.0, 0.0, 0.0, 0.0);
         return output;
     }
 

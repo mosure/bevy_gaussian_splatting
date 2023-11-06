@@ -51,8 +51,8 @@ fn setup_gaussian_cloud(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    // mut meshes: ResMut<Assets<Mesh>>,
+    // mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let cloud: Handle<GaussianCloud>;
     let settings = GaussianCloudSettings {
@@ -77,12 +77,12 @@ fn setup_gaussian_cloud(
         Name::new("gaussian_cloud"),
     ));
 
-    commands.spawn(PbrBundle {
-        mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
-        material: materials.add(Color::rgb(0.8, 0.3, 0.6).into()),
-        transform: Transform::from_xyz(0.0, 0.0, 0.0),
-        ..default()
-    });
+    // commands.spawn(PbrBundle {
+    //     mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
+    //     material: materials.add(Color::rgb(0.8, 0.3, 0.6).into()),
+    //     transform: Transform::from_xyz(0.0, 0.0, 0.0),
+    //     ..default()
+    // });
 
     commands.spawn((
         Camera3dBundle {
