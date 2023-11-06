@@ -11,7 +11,7 @@
 bevy gaussian splatting render pipeline plugin
 
 ![Alt text](docs/notferris.png)
-![Alt text](docs\bike.png)
+![Alt text](docs/bike.png)
 
 `cargo run -- {path to ply or gcloud file}`
 

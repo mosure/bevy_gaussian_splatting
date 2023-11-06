@@ -1135,7 +1135,6 @@ impl render_graph::Node for RadixSortNode {
                 {
                     let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
 
-                    // TODO: view/global
                     pass.set_bind_group(
                         0,
                         &view_bind_group.value,
