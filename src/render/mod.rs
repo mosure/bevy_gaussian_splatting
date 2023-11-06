@@ -122,9 +122,9 @@ impl Plugin for RenderPipelinePlugin {
                 .add_systems(
                     Render,
                     (
-                        queue_gaussian_bind_group.in_set(RenderSet::Queue),
-                        queue_gaussian_view_bind_groups.in_set(RenderSet::Queue),
-                        queue_gaussians.in_set(RenderSet::Queue),
+                        queue_gaussian_bind_group.in_set(RenderSet::QueueMeshes),
+                        queue_gaussian_view_bind_groups.in_set(RenderSet::QueueMeshes),
+                        queue_gaussians.in_set(RenderSet::QueueMeshes),
                     ),
                 );
         }
@@ -235,6 +235,7 @@ impl RenderAsset for GaussianCloud {
 
 #[allow(clippy::too_many_arguments)]
 fn queue_gaussians(
+    gaussian_cloud_uniform: Res<ComponentUniforms<GaussianCloudUniform>>,
     transparent_3d_draw_functions: Res<DrawFunctions<Transparent3d>>,
     custom_pipeline: Res<GaussianCloudPipeline>,
     mut pipelines: ResMut<SpecializedRenderPipelines<GaussianCloudPipeline>>,
@@ -250,6 +251,11 @@ fn queue_gaussians(
         &mut RenderPhase<Transparent3d>,
     )>,
 ) {
+    // TODO: condition this system based on GaussianCloudBindGroup attachment
+    if gaussian_cloud_uniform.buffer().is_none() {
+        return;
+    };
+
     let draw_custom = transparent_3d_draw_functions.read().id::<DrawGaussians>();
 
     for (_view, mut transparent_phase) in &mut views {
@@ -262,10 +268,15 @@ fn queue_gaussians(
 
                 let pipeline = pipelines.specialize(&pipeline_cache, &custom_pipeline, key);
 
+                // // TODO: distance to gaussian cloud centroid
+                // let rangefinder = view.rangefinder3d();
+
                 transparent_phase.add(Transparent3d {
                     entity,
                     draw_function: draw_custom,
                     distance: 0.0,
+                    // distance: rangefinder
+                    //     .distance_translation(&mesh_instance.transforms.transform.translation),
                     pipeline,
                     batch_range: 0..1,
                     dynamic_offset: None,
@@ -754,8 +765,6 @@ pub fn queue_gaussian_bind_group(
         return;
     };
 
-    assert!(model.size() == std::mem::size_of::<GaussianCloudUniform>() as u64);
-
     groups.base_bind_group = Some(render_device.create_bind_group(
         "gaussian_uniform_bind_group",
         &gaussian_cloud_pipeline.gaussian_uniform_layout,
@@ -772,6 +781,7 @@ pub fn queue_gaussian_bind_group(
     ));
 
     for (entity, cloud_handle) in gaussian_clouds.iter() {
+        // TODO: add asset loading indicator (and maybe streamed loading)
         if Some(LoadState::Loading) == asset_server.get_load_state(cloud_handle) {
             continue;
         }
