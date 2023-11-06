@@ -296,7 +296,11 @@ fn temporal_sort_flop(
 // https://github.com/cvlab-epfl/gaussian-splatting-web/blob/905b3c0fb8961e42c79ef97e64609e82383ca1c2/src/shaders.ts#L185
 // TODO: precompute
 fn compute_cov3d(scale: vec3<f32>, rotation: vec4<f32>) -> array<f32, 6> {
-    let S = scale * uniforms.global_scale;
+    let S = mat3x3<f32>(
+        scale.x * uniforms.global_scale, 0.0, 0.0,
+        0.0, scale.y * uniforms.global_scale, 0.0,
+        0.0, 0.0, scale.z * uniforms.global_scale,
+    );
 
     let r = rotation.x;
     let x = rotation.y;
@@ -317,12 +321,7 @@ fn compute_cov3d(scale: vec3<f32>, rotation: vec4<f32>) -> array<f32, 6> {
         1.0 - 2.0 * (x * x + y * y),
     );
 
-    let M = mat3x3<f32>(
-        S[0] * R.x,
-        S[1] * R.y,
-        S[2] * R.z,
-    );
-
+    let M = S * R;
     let Sigma = transpose(M) * M;
 
     return array<f32, 6>(
@@ -345,18 +344,16 @@ fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>) -> 
 
     var t = view.inverse_view * vec4<f32>(position, 1.0);
 
-#ifdef USE_AABB
-    let focal_x = view.viewport.z / (2.0 * view.projection[0][0]);
-    let focal_y = view.viewport.w / (2.0 * view.projection[1][1]);
-#endif
+    let focal_x = 600.0;
+    let focal_y = 600.0;
 
-#ifdef USE_OBB
-    let focal_x = view.viewport.z / (2.0 * view.inverse_projection[0][0]);
-    let focal_y = view.viewport.w / (2.0 * view.inverse_projection[1][1]);
-#endif
+    let fovy = 2.0 * atan(1.0 / view.projection[1][1]);
+    let fovx = 2.0 * atan(1.0 / view.projection[0][0]);
+    let tan_fovy = tan(fovy * 0.5);
+    let tan_fovx = tan(fovx * 0.5);
 
-    let limx = 1.3 * 0.5 * view.viewport.z / focal_x;
-    let limy = 1.3 * 0.5 * view.viewport.w / focal_y;
+    let limx = 1.3 * tan_fovx;
+    let limy = 1.3 * tan_fovy;
     let txtz = t.x / t.z;
     let tytz = t.y / t.z;
     t.x = min(limx, max(-limx, txtz)) * t.z;
@@ -368,13 +365,12 @@ fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>) -> 
         -(focal_x * t.x) / (t.z * t.z),
 
         0.0,
-        focal_y / t.z,
-        -(focal_y * t.y) / (t.z * t.z),
+        -focal_y / t.z,
+        (focal_y * t.y) / (t.z * t.z),
 
         0.0, 0.0, 0.0,
     );
 
-#ifdef USE_AABB
     let W = transpose(
         mat3x3<f32>(
             view.inverse_view.x.xyz,
@@ -382,17 +378,6 @@ fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>) -> 
             view.inverse_view.z.xyz,
         )
     );
-#endif
-
-#ifdef USE_OBB
-    let W = transpose(
-        mat3x3<f32>(
-            view.inverse_view.x.xyz,
-            view.inverse_view.y.xyz,
-            view.inverse_view.z.xyz,
-        )
-    );
-#endif
 
     let T = W * J;
 
