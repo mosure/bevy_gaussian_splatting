@@ -6,6 +6,7 @@ pub use gaussian::{
     GaussianCloudLoader,
     GaussianCloudSettings,
     SphericalHarmonicCoefficients,
+    random_gaussians,
 };
 
 use render::RenderPipelinePlugin;

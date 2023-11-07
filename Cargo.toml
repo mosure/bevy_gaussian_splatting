@@ -13,6 +13,8 @@ readme = "README.md"
 exclude = [".devcontainer", ".github", "docs", "dist", "build", "assets", "credits"]
 default-run = "viewer"
 
+
+# TODO: separate dev-dependencies
 [dependencies]
 bevy-inspector-egui = "0.21"
 bevy_panorbit_camera = "0.9.0"

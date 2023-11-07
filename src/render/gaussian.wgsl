@@ -407,21 +407,21 @@ fn get_bounding_box_corner(
 ) -> vec4<f32> {
     // return vec4<f32>(offset, uv);
 
-    let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
-    let mid = 0.5 * (cov2d.x + cov2d.z);
-    let lambda1 = mid + sqrt(max(0.1, mid * mid - det));
-    let lambda2 = mid - sqrt(max(0.1, mid * mid - det));
-    let x_axis_length = sqrt(lambda1);
-    let y_axis_length = sqrt(lambda2);
-
     // let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
     // let mid = 0.5 * (cov2d.x + cov2d.z);
-    // var discriminant = max(0.0, mid * mid - det);
-
-    // let lambda1 = mid + sqrt(discriminant);
-    // let lambda2 = mid - sqrt(discriminant);
+    // let lambda1 = mid + sqrt(max(0.1, mid * mid - det));
+    // let lambda2 = mid - sqrt(max(0.1, mid * mid - det));
     // let x_axis_length = sqrt(lambda1);
     // let y_axis_length = sqrt(lambda2);
+
+    let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
+    let mid = 0.5 * (cov2d.x + cov2d.z);
+    var discriminant = max(0.0, mid * mid - det);
+
+    let lambda1 = mid + sqrt(discriminant);
+    let lambda2 = mid - sqrt(discriminant);
+    let x_axis_length = sqrt(lambda1);
+    let y_axis_length = sqrt(lambda2);
 
 
 #ifdef USE_AABB
@@ -439,8 +439,7 @@ fn get_bounding_box_corner(
 #endif
 
 #ifdef USE_OBB
-    // TODO: shouldn't require 3.5 stdevs
-    let bounds = vec2<f32>(
+    let bounds = 3.5 * vec2<f32>(
         x_axis_length,
         y_axis_length,
     );
@@ -456,6 +455,7 @@ fn get_bounding_box_corner(
         );
     }
 
+
     let eigvec1 = normalize(vec2<f32>(
         cov2d.y,
         lambda1 - cov2d.x
@@ -464,16 +464,16 @@ fn get_bounding_box_corner(
         -eigvec1.y,
         eigvec1.x
     );
+
     let rotation_matrix = mat2x2(
         eigvec1.x, eigvec2.x,
         eigvec1.y, eigvec2.y
     );
 
     let scaled_vertex = direction * bounds;
-
     return vec4<f32>(
-        (scaled_vertex / view.viewport.z) * rotation_matrix,
-        scaled_vertex
+        scaled_vertex * rotation_matrix / view.viewport.zw,
+        0.0, 0.0,
     );
 #endif
 }

@@ -18,6 +18,7 @@ use bevy_gaussian_splatting::{
     GaussianCloudSettings,
     GaussianSplattingBundle,
     GaussianSplattingPlugin,
+    random_gaussians,
     utils::setup_hooks,
 };
 
@@ -58,7 +59,11 @@ fn setup_gaussian_cloud(
     };
 
     let file_arg = std::env::args().nth(1);
-    if let Some(filename) = file_arg {
+
+    if let Some(n) = file_arg.clone().and_then(|s| s.parse::<usize>().ok()) {
+        println!("generating {} gaussians", n);
+        cloud = gaussian_assets.add(random_gaussians(n));
+    } else if let Some(filename) = file_arg {
         println!("loading {}", filename);
         cloud = asset_server.load(filename.to_string());
     } else {

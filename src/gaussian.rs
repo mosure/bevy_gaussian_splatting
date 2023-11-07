@@ -1,4 +1,4 @@
-use rand::seq::SliceRandom;
+use rand::{seq::SliceRandom, prelude::Distribution, Rng};
 use std::{
     io::{
         BufReader,
@@ -275,4 +275,48 @@ impl AssetLoader for GaussianCloudLoader {
     fn extensions(&self) -> &[&str] {
         &["ply", "gcloud"]
     }
+}
+
+
+impl Distribution<Gaussian> for rand::distributions::Standard {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Gaussian {
+        Gaussian {
+            rotation: [
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+            ],
+            position: [
+                rng.gen_range(-20.0..20.0),
+                rng.gen_range(-20.0..20.0),
+                rng.gen_range(-20.0..20.0),
+                rng.gen_range(-1.0..1.0),
+            ],
+            scale_opacity: [
+                rng.gen_range(0.0..0.25),
+                rng.gen_range(0.0..0.25),
+                rng.gen_range(0.0..0.25),
+                rng.gen_range(0.0..0.8),
+            ],
+            spherical_harmonic: SphericalHarmonicCoefficients {
+                coefficients: {
+                    let mut coefficients = [0.0; MAX_SH_COEFF_COUNT];
+                    for coefficient in coefficients.iter_mut() {
+                        *coefficient = rng.gen_range(-1.0..1.0);
+                    }
+                    coefficients
+                },
+            },
+        }
+    }
+}
+
+pub fn random_gaussians(n: usize) -> GaussianCloud {
+    let mut rng = rand::thread_rng();
+    let mut gaussians = Vec::with_capacity(n);
+    for _ in 0..n {
+        gaussians.push(rng.gen());
+    }
+    GaussianCloud(gaussians)
 }
