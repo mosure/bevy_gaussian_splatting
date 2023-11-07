@@ -120,7 +120,7 @@ var<workgroup> sorting_shared_c: SortingSharedC;
 const NUM_BANKS: u32 = 16u;
 const LOG_NUM_BANKS: u32 = 4u;
 fn conflict_free_offset(n: u32) -> u32 {
-    return n >> NUM_BANKS + n >> (2u * LOG_NUM_BANKS);
+    return 0u;//n >> NUM_BANKS + n >> (2u * LOG_NUM_BANKS);
 }
 
 fn exclusive_scan(local_invocation_index: u32, value: u32) -> u32 {
@@ -495,7 +495,6 @@ fn vs_points(
 
     let point = points[splat_index];
     let transformed_position = (uniforms.global_transform * point.position).xyz;
-
     let projected_position = world_to_clip(transformed_position);
     if (!in_frustum(projected_position.xyz)) {
         output.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);

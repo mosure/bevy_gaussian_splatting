@@ -57,7 +57,7 @@ fn setup_gaussian_cloud(
 ## tools
 
 - [ply to gcloud converter](tools/README.md#ply-to-gcloud-converter)
-- [] gaussian cloud training tool
+- [ ] gaussian cloud training tool
 
 ## wasm support
 

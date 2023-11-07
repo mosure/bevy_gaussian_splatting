@@ -58,8 +58,8 @@ fn setup_gaussian_cloud(
         ..default()
     };
 
+    // TODO: add proper GaussianSplattingViewer argument parsing
     let file_arg = std::env::args().nth(1);
-
     if let Some(n) = file_arg.clone().and_then(|s| s.parse::<usize>().ok()) {
         println!("generating {} gaussians", n);
         cloud = gaussian_assets.add(random_gaussians(n));
