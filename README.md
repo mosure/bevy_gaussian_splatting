@@ -24,6 +24,9 @@ bevy gaussian splatting render pipeline plugin
 - [ ] temporal depth sorting
 - [ ] f16 and f32 gcloud support
 - [ ] 4D gaussian clouds via morph targets
+- [ ] grouping and skeletons
+- [ ] volume masks
+- [ ] gaussian cloud particle effects (accelerated spatial queries)
 - [ ] bevy_openxr support
 - [ ] bevy 3D camera to gaussian cloud pipeline
 
@@ -88,6 +91,7 @@ to build wasm run:
 - [gaussian-splatting-viewer](https://github.com/limacv/GaussianSplattingViewer/tree/main)
 - [gaussian-splatting-web](https://github.com/cvlab-epfl/gaussian-splatting-web)
 - [making gaussian splats smaller](https://aras-p.info/blog/2023/09/13/Making-Gaussian-Splats-smaller/)
+- [masked-spacetime-hashing](https://github.com/masked-spacetime-hashing/msth)
 - [onesweep](https://arxiv.org/ftp/arxiv/papers/2206/2206.01784.pdf)
 - [point-visualizer](https://github.com/mosure/point-visualizer)
 - [rusty-automata](https://github.com/mosure/rusty-automata)
