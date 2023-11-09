@@ -24,7 +24,7 @@ bevy gaussian splatting render pipeline plugin
 - [ ] temporal depth sorting
 - [ ] f16 and f32 gcloud support
 - [ ] 4D gaussian clouds via morph targets
-- [ ] grouping and skeletons
+- [ ] skeletons
 - [ ] volume masks
 - [ ] gaussian cloud particle effects (accelerated spatial queries)
 - [ ] bevy_openxr support
