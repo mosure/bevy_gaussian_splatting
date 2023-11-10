@@ -20,12 +20,11 @@ use bevy::{
     render::render_resource::ShaderType,
     utils::BoxedFuture,
 };
-use bincode2::deserialize_from;
 use bytemuck::{
     Pod,
     Zeroable,
 };
-use flate2::read::GzDecoder;
+use flexbuffers::Reader as FlexReader;
 use serde::{
     Deserialize,
     Serialize,
@@ -262,8 +261,8 @@ impl AssetLoader for GaussianCloudLoader {
                     Ok(cloud)
                 },
                 Some(ext) if ext == "gcloud" => {
-                    let decompressed = GzDecoder::new(bytes.as_slice());
-                    let cloud: GaussianCloud = deserialize_from(decompressed).expect("failed to decode cloud");
+                    let reader = FlexReader::get_root(bytes.as_slice()).expect("failed to read flexbuffer");
+                    let cloud = GaussianCloud::deserialize(reader).expect("deserialization failed");
 
                     Ok(cloud)
                 },
