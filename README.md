@@ -73,9 +73,9 @@ to build wasm run:
 ## compatible bevy versions
 
 | `bevy_gaussian_splatting` | `bevy` |
-| :--           | :--    |
-| `0.4`         | `0.12` |
-| `0.1 - 0.3`         | `0.11` |
+| :--                       | :--    |
+| `0.4`                     | `0.12` |
+| `0.1 - 0.3`               | `0.11` |
 
 
 # credits
