@@ -26,6 +26,7 @@ bevy gaussian splatting render pipeline plugin
 - [ ] 4D gaussian clouds via morph targets
 - [ ] grouping and skeletons
 - [ ] volume masks
+- [ ] level of detail
 - [ ] gaussian cloud particle effects (accelerated spatial queries)
 - [ ] bevy_openxr support
 - [ ] bevy 3D camera to gaussian cloud pipeline
