@@ -1,4 +1,4 @@
-name: test
+name: bench
 
 on:
   pull_request:
