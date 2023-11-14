@@ -17,18 +17,19 @@ default-run = "viewer"
 [features]
 default = ["io_flexbuffers"]
 
-io_bincode2 = []
+io_bincode2 = ["bincode2", "flate2"]
 io_capnp = []
-io_flexbuffers = []
+io_flexbuffers = ["flexbuffers"]
 
 
-# TODO: separate dev-dependencies
 [dependencies]
 bevy-inspector-egui = "0.21"
 bevy_panorbit_camera = "0.9"
+bincode2 = { version = "2.0", optional = true }
 byte-unit = "4.0"
 bytemuck = "1.14"
-flexbuffers = "2.0"
+flate2  = { version = "1.0", optional = true }
+flexbuffers = { version = "2.0", optional = true }
 ply-rs = "0.1"
 rand = "0.8"
 serde = "1.0"
