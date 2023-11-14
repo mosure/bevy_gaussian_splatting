@@ -81,17 +81,14 @@ codegen-units = 1
 
 [lib]
 path = "src/lib.rs"
-bench = false
 
 [[bin]]
 name = "viewer"
 path = "viewer/viewer.rs"
-bench = false
 
 [[bin]]
 name = "ply_to_gcloud"
 path = "tools/ply_to_gcloud.rs"
-bench = false
 
 
 [[bench]]
