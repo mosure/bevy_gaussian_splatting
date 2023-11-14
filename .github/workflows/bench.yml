@@ -1,9 +1,8 @@
 name: test
 
 on:
-  push:
-    branches: [ "main" ]
   pull_request:
+    types: [ labeled ]
     branches: [ "main" ]
 
 env:
@@ -11,7 +10,8 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  build:
+  bench:
+    if: ${{ github.event.label.name == 'bench' }}
 
     strategy:
       fail-fast: false
@@ -33,17 +33,8 @@ jobs:
           target/
         key: ${{ runner.os }}-cargo-build-stable-${{ hashFiles('**/Cargo.toml') }}
 
-    - name: check
-      run: cargo check
-
-    - name: build
-      run: cargo build
-
-    - name: build_tools
-      run: cargo build --bin ply_to_gcloud
-
-    - name: lint
-      run: cargo clippy
-
-    - name: test
-      run: cargo test
+    - name: criterion compare
+      uses: boa-dev/criterion-compare-action@v3.2.4
+      with:
+        branchName: ${{ github.base_ref }}
+        token: ${{ secrets.GITHUB_TOKEN }}

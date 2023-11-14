@@ -1,38 +1,25 @@
-use rand::{seq::SliceRandom, prelude::Distribution, Rng};
-use std::{
-    io::{
-        BufReader,
-        Cursor,
-        ErrorKind,
-    },
-    marker::Copy,
+use rand::{
+    seq::SliceRandom,
+    prelude::Distribution,
+    Rng,
 };
+use std::marker::Copy;
 
 use bevy::{
     prelude::*,
-    asset::{
-        AssetLoader,
-        AsyncReadExt,
-        LoadContext,
-        io::Reader,
-    },
     reflect::TypeUuid,
     render::render_resource::ShaderType,
-    utils::BoxedFuture,
 };
 use bytemuck::{
     Pod,
     Zeroable,
 };
-use flexbuffers::Reader as FlexReader;
 use serde::{
     Deserialize,
     Serialize,
     Serializer,
     ser::SerializeTuple,
 };
-
-use crate::ply::parse_ply;
 
 
 const fn num_sh_coefficients(degree: usize) -> usize {
@@ -229,53 +216,6 @@ impl Default for GaussianCloudSettings {
         }
     }
 }
-
-
-#[derive(Default)]
-pub struct GaussianCloudLoader;
-
-impl AssetLoader for GaussianCloudLoader {
-    type Asset = GaussianCloud;
-    type Settings = ();
-    type Error = std::io::Error;
-
-    fn load<'a>(
-        &'a self,
-        reader: &'a mut Reader,
-        _settings: &'a Self::Settings,
-        load_context: &'a mut LoadContext,
-    ) -> BoxedFuture<'a, Result<Self::Asset, Self::Error>> {
-
-        Box::pin(async move {
-            let mut bytes = Vec::new();
-            reader.read_to_end(&mut bytes).await?;
-
-            match load_context.path().extension() {
-                Some(ext) if ext == "ply" => {
-                    let cursor = Cursor::new(bytes);
-                    let mut f = BufReader::new(cursor);
-
-                    let ply_cloud = parse_ply(&mut f)?;
-                    let cloud = GaussianCloud(ply_cloud);
-
-                    Ok(cloud)
-                },
-                Some(ext) if ext == "gcloud" => {
-                    let reader = FlexReader::get_root(bytes.as_slice()).expect("failed to read flexbuffer");
-                    let cloud = GaussianCloud::deserialize(reader).expect("deserialization failed");
-
-                    Ok(cloud)
-                },
-                _ => Err(std::io::Error::new(ErrorKind::Other, "only .ply and .gcloud supported")),
-            }
-        })
-    }
-
-    fn extensions(&self) -> &[&str] {
-        &["ply", "gcloud"]
-    }
-}
-
 
 impl Distribution<Gaussian> for rand::distributions::Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Gaussian {

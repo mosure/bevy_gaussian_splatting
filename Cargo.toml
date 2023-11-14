@@ -14,6 +14,14 @@ exclude = [".devcontainer", ".github", "docs", "dist", "build", "assets", "credi
 default-run = "viewer"
 
 
+[features]
+default = ["io_flexbuffers"]
+
+io_bincode2 = []
+io_capnp = []
+io_flexbuffers = []
+
+
 # TODO: separate dev-dependencies
 [dependencies]
 bevy-inspector-egui = "0.21"
@@ -49,6 +57,10 @@ features = [
 ]
 
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+
 [profile.dev.package."*"]
 opt-level = 3
 
@@ -77,3 +89,8 @@ path = "viewer/viewer.rs"
 [[bin]]
 name = "ply_to_gcloud"
 path = "tools/ply_to_gcloud.rs"
+
+
+[[bench]]
+name = "io"
+harness = false
