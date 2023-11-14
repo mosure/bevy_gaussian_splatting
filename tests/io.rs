@@ -1,18 +1,17 @@
 use bevy_gaussian_splatting::{
-    Gaussian,
-    io,
+    GaussianCloud,
+    io::codec::GaussianCloudCodec,
     random_gaussians,
 };
 
 
 #[test]
-fn test_encode() {
-    let gaussians = random_gaussians(100);
+fn test_codec() {
+    let count = 100;
+
+    let gaussians = random_gaussians(count);
     let encoded = gaussians.encode();
-    assert_eq!(encoded.len(), 100 * std::mem::size_of::<Gaussian>());
-}
+    let decoded = GaussianCloud::decode(encoded.as_slice());
 
-#[test]
-fn test_decode() {
-
+    assert_eq!(gaussians, decoded);
 }
