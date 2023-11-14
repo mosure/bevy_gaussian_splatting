@@ -33,9 +33,8 @@ jobs:
           target/
         key: ${{ runner.os }}-cargo-build-stable-${{ hashFiles('**/Cargo.toml') }}
 
-    - name: IO benchmark
+    - name: benchmark
       uses: boa-dev/criterion-compare-action@v3.2.4
       with:
-        benchName: "io"
         branchName: ${{ github.base_ref }}
         token: ${{ secrets.GITHUB_TOKEN }}
