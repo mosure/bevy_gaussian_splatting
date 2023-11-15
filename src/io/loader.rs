@@ -16,10 +16,7 @@ use bevy::{
 
 use crate::{
     GaussianCloud,
-    io::{
-        codec::GaussianCloudCodec,
-        ply::parse_ply,
-    },
+    io::codec::GaussianCloudCodec,
 };
 
 
@@ -44,13 +41,21 @@ impl AssetLoader for GaussianCloudLoader {
 
             match load_context.path().extension() {
                 Some(ext) if ext == "ply" => {
-                    let cursor = Cursor::new(bytes);
-                    let mut f = BufReader::new(cursor);
+                    #[cfg(feature = "io_ply")]
+                    {
+                        let cursor = Cursor::new(bytes);
+                        let mut f = BufReader::new(cursor);
 
-                    let ply_cloud = parse_ply(&mut f)?;
-                    let cloud = GaussianCloud(ply_cloud);
+                        let ply_cloud = crate::io::ply::parse_ply(&mut f)?;
+                        let cloud = GaussianCloud(ply_cloud);
 
-                    Ok(cloud)
+                        Ok(cloud)
+                    }
+
+                    #[cfg(not(feature = "io_ply"))]
+                    {
+                        Err(std::io::Error::new(ErrorKind::Other, "ply support not enabled, enable with io_ply feature"))
+                    }
                 },
                 Some(ext) if ext == "gcloud" => {
                     let cloud = GaussianCloud::decode(bytes.as_slice());
