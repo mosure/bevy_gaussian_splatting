@@ -27,6 +27,7 @@ bevy gaussian splatting render pipeline plugin
 - [ ] skeletons
 - [ ] volume masks
 - [ ] level of detail
+- [ ] lighting and shadows
 - [ ] gaussian cloud particle effects (accelerated spatial queries)
 - [ ] bevy_openxr support
 - [ ] bevy 3D camera to gaussian cloud pipeline
@@ -94,6 +95,7 @@ to build wasm run:
 - [making gaussian splats smaller](https://aras-p.info/blog/2023/09/13/Making-Gaussian-Splats-smaller/)
 - [masked-spacetime-hashing](https://github.com/masked-spacetime-hashing/msth)
 - [onesweep](https://arxiv.org/ftp/arxiv/papers/2206/2206.01784.pdf)
+- [pasture](https://github.com/Mortano/pasture)
 - [point-visualizer](https://github.com/mosure/point-visualizer)
 - [rusty-automata](https://github.com/mosure/rusty-automata)
 - [splat](https://github.com/antimatter15/splat)

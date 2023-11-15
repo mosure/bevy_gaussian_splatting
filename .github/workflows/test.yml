@@ -33,8 +33,14 @@ jobs:
           target/
         key: ${{ runner.os }}-cargo-build-stable-${{ hashFiles('**/Cargo.toml') }}
 
+    - name: check
+      run: cargo check
+
     - name: build
       run: cargo build
+
+    - name: build_tools
+      run: cargo build --bin ply_to_gcloud
 
     - name: lint
       run: cargo clippy

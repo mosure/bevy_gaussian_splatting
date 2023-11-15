@@ -1,0 +1,41 @@
+name: bench
+
+on:
+  pull_request:
+    types: [ labeled, synchronize ]
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  bench:
+    if: contains(github.event.pull_request.labels.*.name, 'bench')
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-build-stable-${{ hashFiles('**/Cargo.toml') }}
+
+    - name: io benchmark
+      uses: boa-dev/criterion-compare-action@v3.2.4
+      with:
+        benchName: "io"
+        branchName: ${{ github.base_ref }}
+        token: ${{ secrets.GITHUB_TOKEN }}

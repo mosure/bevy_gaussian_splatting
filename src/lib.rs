@@ -3,16 +3,17 @@ use bevy::prelude::*;
 pub use gaussian::{
     Gaussian,
     GaussianCloud,
-    GaussianCloudLoader,
     GaussianCloudSettings,
     SphericalHarmonicCoefficients,
     random_gaussians,
 };
 
+use io::loader::GaussianCloudLoader;
+
 use render::RenderPipelinePlugin;
 
 pub mod gaussian;
-pub mod ply;
+pub mod io;
 pub mod render;
 pub mod utils;
 
