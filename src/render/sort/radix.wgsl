@@ -10,6 +10,10 @@
     output_entries,
     sorted_entries,
 }
+#import bevy_gaussian_splatting::transform::{
+    world_to_clip,
+    in_frustum,
+}
 
 
 struct SortingSharedA {

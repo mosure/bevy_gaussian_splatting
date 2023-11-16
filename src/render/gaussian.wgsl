@@ -9,8 +9,13 @@
     input_entries,
     output_entries,
     sorted_entries,
+    GaussianOutput,
 }
 #import bevy_gaussian_splatting::spherical_harmonics::spherical_harmonics_lookup
+#import bevy_gaussian_splatting::transform::{
+    world_to_clip,
+    in_frustum,
+}
 
 
 // https://github.com/cvlab-epfl/gaussian-splatting-web/blob/905b3c0fb8961e42c79ef97e64609e82383ca1c2/src/shaders.ts#L185
@@ -106,18 +111,6 @@ fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>) -> 
     cov[1][1] += 0.3f;
 
     return vec3<f32>(cov[0][0], cov[0][1], cov[1][1]);
-}
-
-
-fn world_to_clip(world_pos: vec3<f32>) -> vec4<f32> {
-    let homogenous_pos = view.projection * view.inverse_view * vec4<f32>(world_pos, 1.0);
-    return homogenous_pos / (homogenous_pos.w + 0.000000001);
-}
-
-fn in_frustum(clip_space_pos: vec3<f32>) -> bool {
-    return abs(clip_space_pos.x) < 1.1
-        && abs(clip_space_pos.y) < 1.1
-        && abs(clip_space_pos.z - 0.5) < 0.5;
 }
 
 
