@@ -1,7 +1,7 @@
 #import bevy_gaussian_splatting::bindings::{
     view,
     globals,
-    uniforms,
+    gaussian_uniforms,
     points,
     sorting_pass_index,
     sorting,
@@ -22,9 +22,9 @@
 // TODO: precompute
 fn compute_cov3d(scale: vec3<f32>, rotation: vec4<f32>) -> array<f32, 6> {
     let S = mat3x3<f32>(
-        scale.x * uniforms.global_scale, 0.0, 0.0,
-        0.0, scale.y * uniforms.global_scale, 0.0,
-        0.0, 0.0, scale.z * uniforms.global_scale,
+        scale.x * gaussian_uniforms.global_scale, 0.0, 0.0,
+        0.0, scale.y * gaussian_uniforms.global_scale, 0.0,
+        0.0, 0.0, scale.z * gaussian_uniforms.global_scale,
     );
 
     let r = rotation.x;
@@ -207,7 +207,7 @@ fn vs_points(
     }
 
     let point = points[splat_index];
-    let transformed_position = (uniforms.global_transform * point.position).xyz;
+    let transformed_position = (gaussian_uniforms.global_transform * point.position).xyz;
     let projected_position = world_to_clip(transformed_position);
     if (!in_frustum(projected_position.xyz)) {
         output.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
@@ -230,6 +230,8 @@ fn vs_points(
         spherical_harmonics_lookup(ray_direction, point.sh),
         point.scale_opacity.a
     );
+
+    // TODO: add depth color visualization
 
     let cov2d = compute_cov2d(transformed_position, point.scale_opacity.rgb, point.rotation);
 

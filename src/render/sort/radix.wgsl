@@ -1,7 +1,7 @@
 #import bevy_gaussian_splatting::bindings::{
     view,
     globals,
-    uniforms,
+    gaussian_uniforms,
     points,
     sorting_pass_index,
     sorting,
@@ -38,7 +38,7 @@ fn radix_sort_a(
             continue;
         }
         var key: u32 = 0xFFFFFFFFu; // Stream compaction for frustum culling
-        let transformed_position = (uniforms.global_transform * points[entry_index].position).xyz;
+        let transformed_position = (gaussian_uniforms.global_transform * points[entry_index].position).xyz;
         let clip_space_pos = world_to_clip(transformed_position);
         if(in_frustum(clip_space_pos.xyz)) {
             // key = bitcast<u32>(1.0 - clip_space_pos.z);

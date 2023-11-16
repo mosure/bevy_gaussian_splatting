@@ -125,10 +125,65 @@ pub struct Gaussian {
     pub spherical_harmonic: SphericalHarmonicCoefficients,
 }
 
+
+// #[derive(
+//     Asset,
+//     Clone,
+//     Debug,
+//     PartialEq,
+//     Reflect,
+//     TypeUuid,
+//     Serialize,
+//     Deserialize,
+// )]
+// #[uuid = "ac2f08eb-7543-2346-ff21-51571ea332d5"]
+// pub struct MorphGaussianCurve {
+//     pub indicies: Vec<u32>,
+//     pub keyframe_timestamps: Vec<f32>,
+//     pub keyframes: Vec<Gaussian>,
+// }
+
+// pub struct MorphGaussianWavelet {
+//     pub indicies: Vec<u32>,
+//     pub keyframe_timestamps: Vec<f32>,
+//     pub coefficients: Vec<Gaussian>,
+// }
+
+#[derive(
+    Clone,
+    Debug,
+    Copy,
+    PartialEq,
+    Reflect,
+    ShaderType,
+    Pod,
+    Zeroable,
+    Serialize,
+    Deserialize,
+)]
+#[repr(C)]
+pub struct ParticleBehavior {
+    pub indicies: [i32; 4],
+    pub velocity: [f32; 4],
+    pub acceleration: [f32; 4],
+}
+
+impl Default for ParticleBehavior {
+    fn default() -> Self {
+        Self {
+            indicies: [-1, -1, -1, -1],
+            velocity: [0.0, 0.0, 0.0, 0.0],
+            acceleration: [0.0, 0.0, 0.0, 0.0],
+        }
+    }
+}
+
+
 #[derive(
     Asset,
     Clone,
     Debug,
+    Default,
     PartialEq,
     Reflect,
     TypeUuid,
@@ -136,7 +191,10 @@ pub struct Gaussian {
     Deserialize,
 )]
 #[uuid = "ac2f08eb-bc32-aabb-ff21-51571ea332d5"]
-pub struct GaussianCloud(pub Vec<Gaussian>);
+pub struct GaussianCloud {
+    pub gaussians: Vec<Gaussian>,
+    pub particle_behaviors: Option<Vec<ParticleBehavior>>,
+}
 
 impl GaussianCloud {
     pub fn test_model() -> Self {
@@ -159,7 +217,7 @@ impl GaussianCloud {
                 0.5,
                 0.5,
             ],
-            spherical_harmonic: SphericalHarmonicCoefficients{
+            spherical_harmonic: SphericalHarmonicCoefficients {
                 coefficients: [
                     1.0, 0.0, 1.0,
                     0.0, 0.5, 0.0,
@@ -180,17 +238,20 @@ impl GaussianCloud {
                 ],
             },
         };
-        let mut cloud = GaussianCloud(Vec::new());
+        let mut cloud = GaussianCloud {
+            gaussians: Vec::new(),
+            ..default()
+        };
 
         for &x in [-0.5, 0.5].iter() {
             for &y in [-0.5, 0.5].iter() {
                 for &z in [-0.5, 0.5].iter() {
                     let mut g = origin;
                     g.position = [x, y, z, 1.0];
-                    cloud.0.push(g);
+                    cloud.gaussians.push(g);
 
                     let mut rng = rand::thread_rng();
-                    cloud.0.last_mut().unwrap().spherical_harmonic.coefficients.shuffle(&mut rng);
+                    cloud.gaussians.last_mut().unwrap().spherical_harmonic.coefficients.shuffle(&mut rng);
                 }
             }
         }
@@ -260,5 +321,8 @@ pub fn random_gaussians(n: usize) -> GaussianCloud {
     for _ in 0..n {
         gaussians.push(rng.gen());
     }
-    GaussianCloud(gaussians)
+    GaussianCloud {
+        gaussians,
+        ..default()
+    }
 }
