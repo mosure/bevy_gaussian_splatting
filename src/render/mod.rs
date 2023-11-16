@@ -73,8 +73,13 @@ use crate::gaussian::{
 };
 
 
+// TODO: separate sort and render pipelines into separate files
+const BINDINGS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(675257236);
 const GAUSSIAN_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(68294581);
+const RADIX_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(6234673214);
 const SPHERICAL_HARMONICS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(834667312);
+const TEMPORAL_SORT_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(1634543224);
+const TRANSFORM_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(734523534);
 
 pub mod node {
     pub const RADIX_SORT: &str = "radix_sort";
@@ -88,6 +93,13 @@ impl Plugin for RenderPipelinePlugin {
     fn build(&self, app: &mut App) {
         load_internal_asset!(
             app,
+            BINDINGS_SHADER_HANDLE,
+            "bindings.wgsl",
+            Shader::from_wgsl
+        );
+
+        load_internal_asset!(
+            app,
             GAUSSIAN_SHADER_HANDLE,
             "gaussian.wgsl",
             Shader::from_wgsl
@@ -95,8 +107,29 @@ impl Plugin for RenderPipelinePlugin {
 
         load_internal_asset!(
             app,
+            RADIX_SHADER_HANDLE,
+            "sort/radix.wgsl",
+            Shader::from_wgsl
+        );
+
+        load_internal_asset!(
+            app,
             SPHERICAL_HARMONICS_SHADER_HANDLE,
             "spherical_harmonics.wgsl",
+            Shader::from_wgsl
+        );
+
+        load_internal_asset!(
+            app,
+            TEMPORAL_SORT_SHADER_HANDLE,
+            "sort/temporal.wgsl",
+            Shader::from_wgsl
+        );
+
+        load_internal_asset!(
+            app,
+            TRANSFORM_SHADER_HANDLE,
+            "transform.wgsl",
             Shader::from_wgsl
         );
 
@@ -447,7 +480,6 @@ impl FromWorld for GaussianCloudPipeline {
             gaussian_cloud_layout.clone(),
             radix_sort_layout.clone(),
         ];
-        let shader = GAUSSIAN_SHADER_HANDLE;
         let shader_defs = shader_defs(false, false);
 
         let pipeline_cache = render_world.resource::<PipelineCache>();
@@ -455,7 +487,7 @@ impl FromWorld for GaussianCloudPipeline {
             label: Some("radix_sort_a".into()),
             layout: compute_layout.clone(),
             push_constant_ranges: vec![],
-            shader: shader.clone(),
+            shader: RADIX_SHADER_HANDLE,
             shader_defs: shader_defs.clone(),
             entry_point: "radix_sort_a".into(),
         });
@@ -464,7 +496,7 @@ impl FromWorld for GaussianCloudPipeline {
             label: Some("radix_sort_b".into()),
             layout: compute_layout.clone(),
             push_constant_ranges: vec![],
-            shader: shader.clone(),
+            shader: RADIX_SHADER_HANDLE,
             shader_defs: shader_defs.clone(),
             entry_point: "radix_sort_b".into(),
         });
@@ -473,7 +505,7 @@ impl FromWorld for GaussianCloudPipeline {
             label: Some("radix_sort_c".into()),
             layout: compute_layout.clone(),
             push_constant_ranges: vec![],
-            shader: shader.clone(),
+            shader: RADIX_SHADER_HANDLE,
             shader_defs: shader_defs.clone(),
             entry_point: "radix_sort_c".into(),
         });
@@ -483,7 +515,7 @@ impl FromWorld for GaussianCloudPipeline {
             label: Some("temporal_sort_flip".into()),
             layout: compute_layout.clone(),
             push_constant_ranges: vec![],
-            shader: shader.clone(),
+            shader: TEMPORAL_SORT_SHADER_HANDLE,
             shader_defs: shader_defs.clone(),
             entry_point: "temporal_sort_flip".into(),
         });
@@ -492,7 +524,7 @@ impl FromWorld for GaussianCloudPipeline {
             label: Some("temporal_sort_flop".into()),
             layout: compute_layout.clone(),
             push_constant_ranges: vec![],
-            shader: shader.clone(),
+            shader: TEMPORAL_SORT_SHADER_HANDLE,
             shader_defs: shader_defs.clone(),
             entry_point: "temporal_sort_flop".into(),
         });
@@ -501,7 +533,7 @@ impl FromWorld for GaussianCloudPipeline {
             gaussian_cloud_layout,
             gaussian_uniform_layout,
             view_layout,
-            shader: shader.clone(),
+            shader: GAUSSIAN_SHADER_HANDLE,
             radix_sort_layout,
             radix_sort_pipelines: [
                 radix_sort_a,
