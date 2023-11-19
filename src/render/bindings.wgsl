@@ -19,7 +19,7 @@ struct Gaussian {
     @location(2) scale_opacity: vec4<f32>,
     sh: array<f32, #{MAX_SH_COEFF_COUNT}>,
 };
-@group(2) @binding(0) var<storage, read> points: array<Gaussian>;
+@group(2) @binding(0) var<storage, read_write> points: array<Gaussian>;
 
 
 struct DrawIndirect {
@@ -47,8 +47,8 @@ struct Entry {
 
 struct ParticleBehavior {
     @location(0) indicies: vec4<i32>,
-    @location(1) velocity: Gaussian,
-    @location(2) acceleration: Gaussian,
+    @location(1) velocity: vec4<f32>,
+    @location(2) acceleration: vec4<f32>,
 }
 
 // struct WaveletBehavior {

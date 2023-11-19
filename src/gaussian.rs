@@ -166,6 +166,7 @@ pub struct ParticleBehavior {
     pub indicies: [i32; 4],
     pub velocity: [f32; 4],
     pub acceleration: [f32; 4],
+    pub jerk: [f32; 4],
 }
 
 impl Default for ParticleBehavior {
@@ -174,6 +175,7 @@ impl Default for ParticleBehavior {
             indicies: [-1, -1, -1, -1],
             velocity: [0.0, 0.0, 0.0, 0.0],
             acceleration: [0.0, 0.0, 0.0, 0.0],
+            jerk: [0.0, 0.0, 0.0, 0.0],
         }
     }
 }
@@ -195,6 +197,9 @@ pub struct GaussianCloud {
     pub gaussians: Vec<Gaussian>,
     pub particle_behaviors: Option<Vec<ParticleBehavior>>,
 }
+
+// TODO: split GaussianCloud and MorphTargets to be a bundle (to avoid Option leaking)
+
 
 impl GaussianCloud {
     pub fn test_model() -> Self {

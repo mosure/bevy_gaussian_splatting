@@ -31,7 +31,6 @@ pub struct RadixSortNode {
         &'static GaussianCloudBindGroup,
     )>,
     initialized: bool,
-    pipeline_idx: Option<u32>,
     view_bind_group: QueryState<(
         &'static GaussianViewBindGroup,
         &'static ViewUniformOffset,
@@ -44,7 +43,6 @@ impl FromWorld for RadixSortNode {
         Self {
             gaussian_clouds: world.query(),
             initialized: false,
-            pipeline_idx: None,
             view_bind_group: world.query(),
         }
     }
@@ -74,12 +72,6 @@ impl Node for RadixSortNode {
             }
         }
 
-        if self.pipeline_idx.is_none() {
-            self.pipeline_idx = Some(0);
-        } else {
-            self.pipeline_idx = Some((self.pipeline_idx.unwrap() + 1) % pipeline.radix_sort_pipelines.len() as u32);
-        }
-
         self.gaussian_clouds.update_archetypes(world);
         self.view_bind_group.update_archetypes(world);
     }
@@ -90,11 +82,9 @@ impl Node for RadixSortNode {
         render_context: &mut RenderContext,
         world: &World,
     ) -> Result<(), NodeRunError> {
-        if !self.initialized || self.pipeline_idx.is_none() {
+        if !self.initialized {
             return Ok(());
         }
-
-        let _idx = self.pipeline_idx.unwrap() as usize; // TODO: temporal sort
 
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = world.resource::<GaussianCloudPipeline>();
