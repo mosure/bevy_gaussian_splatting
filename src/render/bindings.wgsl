@@ -31,6 +31,7 @@ struct DrawIndirect {
     base_instance: u32,
 }
 struct SortingGlobal {
+    // TODO: move status_counters to unique binding
     status_counters: array<array<atomic<u32>, #{RADIX_BASE}>, #{MAX_TILE_COUNT_C}>,
     digit_histogram: array<array<atomic<u32>, #{RADIX_BASE}>, #{RADIX_DIGIT_PLACES}>,
     assignment_counter: atomic<u32>,

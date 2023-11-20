@@ -183,7 +183,7 @@ pub struct GpuGaussianSplattingBundle {
 #[derive(Debug, Clone)]
 pub struct GpuGaussianCloud {
     pub gaussian_buffer: Buffer,
-    pub count: u32,
+    pub count: usize,
 
     pub draw_indirect_buffer: Buffer,
     pub sorting_global_buffer: Buffer,
@@ -210,12 +210,11 @@ impl RenderAsset for GaussianCloud {
             usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::STORAGE,
         });
 
-        let count = gaussian_cloud.0.len() as u32;
+        let count = gaussian_cloud.0.len();
 
-        // TODO: derive sorting_buffer_size from cloud count (with possible rounding to next power of 2)
         let sorting_global_buffer = render_device.create_buffer(&BufferDescriptor {
             label: Some("sorting global buffer"),
-            size: ShaderDefines::default().sorting_buffer_size as u64,
+            size: ShaderDefines::default().sorting_buffer_size(count) as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -241,14 +240,14 @@ impl RenderAsset for GaussianCloud {
 
         let entry_buffer_a = render_device.create_buffer(&BufferDescriptor {
             label: Some("entry buffer a"),
-            size: (count as usize * std::mem::size_of::<(u32, u32)>()) as u64,
+            size: (count * std::mem::size_of::<(u32, u32)>()) as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
         let entry_buffer_b = render_device.create_buffer(&BufferDescriptor {
             label: Some("entry buffer b"),
-            size: (count as usize * std::mem::size_of::<(u32, u32)>()) as u64,
+            size: (count * std::mem::size_of::<(u32, u32)>()) as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -404,7 +403,7 @@ impl FromWorld for GaussianCloudPipeline {
             ty: BindingType::Buffer {
                 ty: BufferBindingType::Storage { read_only: false },
                 has_dynamic_offset: false,
-                min_binding_size: BufferSize::new(ShaderDefines::default().sorting_buffer_size as u64),
+                min_binding_size: BufferSize::new(ShaderDefines::default().sorting_buffer_size(1) as u64),
             },
             count: None,
         };
@@ -560,10 +559,20 @@ struct ShaderDefines {
     workgroup_invocations_c: u32,
     workgroup_entries_a: u32,
     workgroup_entries_c: u32,
-    max_tile_count_c: u32,
-    sorting_buffer_size: usize,
 
     temporal_sort_window_size: u32,
+}
+
+impl ShaderDefines {
+    fn max_tile_count(&self, count: usize) -> u32 {
+        (count as u32 + self.workgroup_entries_c - 1) / self.workgroup_entries_c
+    }
+
+    fn sorting_buffer_size(&self, count: usize) -> usize {
+        self.radix_base as usize *
+            (self.radix_digit_places as usize + self.max_tile_count(count) as usize) *
+            std::mem::size_of::<u32>() + 5 * std::mem::size_of::<u32>()
+    }
 }
 
 impl Default for ShaderDefines {
@@ -577,10 +586,6 @@ impl Default for ShaderDefines {
         let workgroup_invocations_c = radix_base;
         let workgroup_entries_a = workgroup_invocations_a * entries_per_invocation_a;
         let workgroup_entries_c = workgroup_invocations_c * entries_per_invocation_c;
-        let max_tile_count_c = (10000000 + workgroup_entries_c - 1) / workgroup_entries_c;
-        let sorting_buffer_size = radix_base as usize *
-            (radix_digit_places as usize + max_tile_count_c as usize) *
-            std::mem::size_of::<u32>() + 5 * std::mem::size_of::<u32>();
 
         Self {
             radix_bits_per_digit,
@@ -592,8 +597,6 @@ impl Default for ShaderDefines {
             workgroup_invocations_c,
             workgroup_entries_a,
             workgroup_entries_c,
-            max_tile_count_c,
-            sorting_buffer_size,
 
             temporal_sort_window_size: 16,
         }
@@ -615,6 +618,7 @@ fn shader_defs(
         ShaderDefVal::UInt("WORKGROUP_INVOCATIONS_A".into(), defines.workgroup_invocations_a),
         ShaderDefVal::UInt("WORKGROUP_INVOCATIONS_C".into(), defines.workgroup_invocations_c),
         ShaderDefVal::UInt("WORKGROUP_ENTRIES_C".into(), defines.workgroup_entries_c),
+        // TODO: remove dependence of MAX_TILE_COUNT_C by moving to unique buffer
         ShaderDefVal::UInt("MAX_TILE_COUNT_C".into(), defines.max_tile_count_c),
 
         ShaderDefVal::UInt("TEMPORAL_SORT_WINDOW_SIZE".into(), defines.temporal_sort_window_size),
