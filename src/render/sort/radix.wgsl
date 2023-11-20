@@ -21,7 +21,6 @@ struct SortingSharedA {
 }
 var<workgroup> sorting_shared_a: SortingSharedA;
 
-// TODO: resolve flickering (maybe more radix passes?)
 @compute @workgroup_size(#{RADIX_BASE}, #{RADIX_DIGIT_PLACES})
 fn radix_sort_a(
     @builtin(local_invocation_id) gl_LocalInvocationID: vec3<u32>,
@@ -42,7 +41,9 @@ fn radix_sort_a(
         let clip_space_pos = world_to_clip(transformed_position);
         if(in_frustum(clip_space_pos.xyz)) {
             // key = bitcast<u32>(1.0 - clip_space_pos.z);
-            key = u32((1.0 - clip_space_pos.z) * 0xFFFF.0) << 16u;
+            // key = u32(clip_space_pos.z * 0xFFFF.0) << 16u;
+            let normalized_depth = (1.0 - clip_space_pos.z) * 0.5;
+            key = u32(normalized_depth * 0xFFFF.0) << 16u;
             key |= u32((clip_space_pos.x * 0.5 + 0.5) * 0xFF.0) << 8u;
             key |= u32((clip_space_pos.y * 0.5 + 0.5) * 0xFF.0);
         }
