@@ -209,25 +209,7 @@ fn radix_sort_c(
         let key = sorting_shared_c.entries[#{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x];
         let digit = (key >> (sorting_pass_index * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
         keys[entry_index] = digit;
-        output_entries[sorting_shared_c.scan[digit + conflict_free_offset(digit)] + #{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x][0] = key;
-    }
-    workgroupBarrier();
-
-    // Store keys from shared memory into global memory
-    for(var entry_index = 0u; entry_index < #{ENTRIES_PER_INVOCATION_C}u; entry_index += 1u) {
-        let key = sorting_shared_c.entries[#{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x];
-
-        let digit = (key >> (sorting_pass_index * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
-        let global_index = sorting_shared_c.scan[digit + conflict_free_offset(digit)] + #{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x;
-
-        if (key != 0xFFFFFFFFu) {
-            keys[entry_index] = digit;
-            output_entries[global_index][0] = key;
-            output_entries[global_index][1] = entry_index;
-        } else {
-            keys[entry_index] = 0xFFFFFFFFu;
-            output_entries[global_index][0] = 0xFFFFFFFFu;
-        }
+        output_entries[sorting_shared_c.scan[digit + conflict_free_offset(digit)] + #{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x].key = key;
     }
     workgroupBarrier();
 
