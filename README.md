@@ -63,6 +63,7 @@ fn setup_gaussian_cloud(
 
 - [ply to gcloud converter](tools/README.md#ply-to-gcloud-converter)
 - [ ] gaussian cloud training tool
+- aabb vs. obb gaussian comparison via `cargo run --bin compare_aabb_obb`
 
 ## wasm support
 

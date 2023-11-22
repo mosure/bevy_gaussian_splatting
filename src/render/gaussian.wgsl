@@ -59,7 +59,11 @@ fn compute_cov3d(scale: vec3<f32>, rotation: vec4<f32>) -> array<f32, 6> {
     );
 }
 
-fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>) -> vec3<f32> {
+fn compute_cov2d(
+    position: vec3<f32>,
+    scale: vec3<f32>,
+    rotation: vec4<f32>
+) -> vec3<f32> {
     let cov3d = compute_cov3d(scale, rotation);
     let Vrk = mat3x3(
         cov3d[0], cov3d[1], cov3d[2],
@@ -69,30 +73,16 @@ fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>) -> 
 
     var t = view.inverse_view * vec4<f32>(position, 1.0);
 
-    let focal_x = 600.0;
-    let focal_y = 600.0;
+    let device_pixel_ratio = 1.0;
+    let focal = vec2<f32>(
+        view.projection.x.x * device_pixel_ratio * view.viewport.z * 0.45,
+        view.projection.y.y * device_pixel_ratio * view.viewport.w * 0.45,
+    );
 
-    let fovy = 2.0 * atan(1.0 / view.projection[1][1]);
-    let fovx = 2.0 * atan(1.0 / view.projection[0][0]);
-    let tan_fovy = tan(fovy * 0.5);
-    let tan_fovx = tan(fovx * 0.5);
-
-    let limx = 1.3 * tan_fovx;
-    let limy = 1.3 * tan_fovy;
-    let txtz = t.x / t.z;
-    let tytz = t.y / t.z;
-    t.x = min(limx, max(-limx, txtz)) * t.z;
-    t.y = min(limy, max(-limy, tytz)) * t.z;
-
+    let s = 1.0 / (t.z * t.z);
     let J = mat3x3(
-        focal_x / t.z,
-        0.0,
-        -(focal_x * t.x) / (t.z * t.z),
-
-        0.0,
-        -focal_y / t.z,
-        (focal_y * t.y) / (t.z * t.z),
-
+        focal.x / t.z, 0.0, -(focal.x * t.x) * s,
+        0.0, -focal.y / t.z, (focal.y * t.y) * s,
         0.0, 0.0, 0.0,
     );
 
@@ -113,26 +103,22 @@ fn compute_cov2d(position: vec3<f32>, scale: vec3<f32>, rotation: vec4<f32>) -> 
     return vec3<f32>(cov[0][0], cov[0][1], cov[1][1]);
 }
 
-
 fn get_bounding_box(
     cov2d: vec3<f32>,
     direction: vec2<f32>,
 ) -> vec4<f32> {
     // return vec4<f32>(offset, uv);
 
-    // let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
-    // let mid = 0.5 * (cov2d.x + cov2d.z);
-    // let lambda1 = mid + sqrt(max(0.1, mid * mid - det));
-    // let lambda2 = mid - sqrt(max(0.1, mid * mid - det));
-    // let x_axis_length = sqrt(lambda1);
-    // let y_axis_length = sqrt(lambda2);
-
     let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
-    let mid = 0.5 * (cov2d.x + cov2d.z);
-    var discriminant = max(0.0, mid * mid - det);
+    let trace = cov2d.x + cov2d.z;
+    let mid = 0.5 * trace;
+    let discriminant = max(0.0, mid * mid - det);
 
-    let lambda1 = mid + sqrt(discriminant);
-    let lambda2 = mid - sqrt(discriminant);
+    let term = sqrt(discriminant);
+
+    let lambda1 = mid + term;
+    let lambda2 = max(mid - term, 0.0);
+
     let x_axis_length = sqrt(lambda1);
     let y_axis_length = sqrt(lambda2);
 
@@ -146,7 +132,7 @@ fn get_bounding_box(
     );
 
     return vec4<f32>(
-        2.0 * radius_ndc * direction,
+        radius_ndc * direction,
         radius_px * direction,
     );
 #endif
@@ -161,31 +147,37 @@ fn get_bounding_box(
     // collapse unstable eigenvectors to circle
     let threshold = 0.1;
     if (abs(lambda1 - lambda2) < threshold) {
-        let circle = direction * max(x_axis_length, y_axis_length);
+        let circle = direction * max(bounds.x, bounds.y);
         return vec4<f32>(
             circle / view.viewport.zw,
             circle
         );
     }
 
-
     let eigvec1 = normalize(vec2<f32>(
-        cov2d.y,
-        lambda1 - cov2d.x
+        -cov2d.y,
+        lambda1 - cov2d.x,
     ));
-    let eigvec2 = vec2<f32>(
-        -eigvec1.y,
-        eigvec1.x
+    let eigvec2 = normalize(vec2<f32>(
+        -cov2d.y,
+        lambda2 - cov2d.x,
+    ));
+    // let eigvec2 = vec2<f32>(
+    //     eigvec1.y,
+    //     -eigvec1.x
+    // );
+
+    let rotation_matrix = transpose(
+        mat2x2(
+            eigvec1,
+            eigvec2,
+        )
     );
 
-    let rotation_matrix = mat2x2(
-        eigvec1.x, eigvec2.x,
-        eigvec1.y, eigvec2.y
-    );
-
-    let scaled_vertex = direction * bounds;
+    let scaling_factor = 1.0 / (0.5 * (view.viewport.z + view.viewport.w));
+    let scaled_vertex = direction * bounds * scaling_factor;
     return vec4<f32>(
-        scaled_vertex * rotation_matrix / view.viewport.zw,
+        scaled_vertex * rotation_matrix,
         0.0, 0.0,
     );
 #endif
@@ -234,7 +226,6 @@ fn vs_points(
 
     let cov2d = compute_cov2d(transformed_position, point.scale_opacity.rgb, point.rotation);
 
-    // TODO: remove conic when OBB is used
     let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
     let det_inv = 1.0 / det;
     let conic = vec3<f32>(
