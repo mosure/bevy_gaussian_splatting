@@ -65,10 +65,9 @@ use crate::{
         GaussianCloud,
         GaussianCloudSettings,
         MAX_SH_COEFF_COUNT,
-        ParticleBehavior,
     },
     render::{
-        morph::MorphNode,
+        morph::MorphPlugin,
         sort::RadixSortNode,
     },
 };
@@ -80,14 +79,12 @@ pub mod sort;
 // TODO: separate sort and render pipelines into separate files
 const BINDINGS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(675257236);
 const GAUSSIAN_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(68294581);
-const MORPH_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(234553453455);
 const RADIX_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(6234673214);
 const SPHERICAL_HARMONICS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(834667312);
 const TEMPORAL_SORT_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(1634543224);
 const TRANSFORM_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(734523534);
 
 pub mod node {
-    pub const MORPH: &str = "morph";
     pub const RADIX_SORT: &str = "radix_sort";
 }
 
@@ -108,13 +105,6 @@ impl Plugin for RenderPipelinePlugin {
             app,
             GAUSSIAN_SHADER_HANDLE,
             "gaussian.wgsl",
-            Shader::from_wgsl
-        );
-
-        load_internal_asset!(
-            app,
-            MORPH_SHADER_HANDLE,
-            "morph/morph.wgsl",
             Shader::from_wgsl
         );
 
@@ -148,18 +138,10 @@ impl Plugin for RenderPipelinePlugin {
 
         app.add_plugins(RenderAssetPlugin::<GaussianCloud>::default());
         app.add_plugins(UniformComponentPlugin::<GaussianCloudUniform>::default());
+        app.add_plugins(MorphPlugin);
 
         if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
-                .add_render_graph_node::<MorphNode>(
-                    CORE_3D,
-                    node::MORPH,
-                )
-                .add_render_graph_edge(
-                    CORE_3D,
-                    node::MORPH,
-                    bevy::core_pipeline::core_3d::graph::node::PREPASS,
-                )
                 .add_render_graph_node::<RadixSortNode>(
                     CORE_3D,
                     node::RADIX_SORT,
@@ -213,9 +195,6 @@ pub struct GpuGaussianCloud {
     pub sorting_pass_buffers: [Buffer; 4],
     pub entry_buffer_a: Buffer,
     pub entry_buffer_b: Buffer,
-
-    pub morph_count: u32,
-    pub particle_behavior_buffer: Buffer,
 }
 impl RenderAsset for GaussianCloud {
     type ExtractedAsset = GaussianCloud;
@@ -235,29 +214,6 @@ impl RenderAsset for GaussianCloud {
             contents: bytemuck::cast_slice(gaussian_cloud.gaussians.as_slice()),
             usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::STORAGE,
         });
-
-        let (morph_count, particle_behavior_buffer) = match &gaussian_cloud.particle_behaviors {
-            Some(behaviors) =>  (
-                behaviors.len() as u32,
-                render_device.create_buffer_with_data(&BufferInitDescriptor {
-                    label: Some("particle behavior buffer"),
-                    contents: bytemuck::cast_slice(
-                        behaviors.as_slice()
-                    ),
-                    usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::STORAGE,
-                })
-            ),
-            None => (
-                0,
-                render_device.create_buffer_with_data(&BufferInitDescriptor {
-                    label: Some("particle behavior buffer"),
-                    contents: bytemuck::cast_slice(
-                        vec![ParticleBehavior::default()].as_slice()
-                    ),
-                    usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::STORAGE,
-                })
-            ),
-        };
 
         let count = gaussian_cloud.gaussians.len();
 
@@ -317,8 +273,6 @@ impl RenderAsset for GaussianCloud {
             sorting_pass_buffers,
             entry_buffer_a,
             entry_buffer_b,
-            morph_count,
-            particle_behavior_buffer,
         })
     }
 }
@@ -390,8 +344,6 @@ pub struct GaussianCloudPipeline {
     pub radix_sort_pipelines: [CachedComputePipelineId; 3],
     pub temporal_sort_pipelines: [CachedComputePipelineId; 2],
     pub sorted_layout: BindGroupLayout,
-    pub morph_layout: BindGroupLayout,
-    pub particle_behavior_pipeline: CachedComputePipelineId,
 }
 
 impl FromWorld for GaussianCloudPipeline {
@@ -546,22 +498,6 @@ impl FromWorld for GaussianCloudPipeline {
             ],
         });
 
-        let morph_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("morph_layout"),
-            entries: &[
-                BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: ShaderStages::COMPUTE,
-                    ty: BindingType::Buffer {
-                        ty: BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(std::mem::size_of::<ParticleBehavior>() as u64),
-                    },
-                    count: None,
-                },
-            ],
-        });
-
         let sorting_layout = vec![
             view_layout.clone(),
             gaussian_uniform_layout.clone(),
@@ -617,21 +553,6 @@ impl FromWorld for GaussianCloudPipeline {
             entry_point: "temporal_sort_flop".into(),
         });
 
-        let particle_behavior_pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
-            label: Some("particle_behavior_pipeline".into()),
-            layout: vec![
-                view_layout.clone(),
-                gaussian_uniform_layout.clone(),
-                gaussian_cloud_layout.clone(),
-                radix_sort_layout.clone(),
-                morph_layout.clone(),
-            ],
-            push_constant_ranges: vec![],
-            shader: MORPH_SHADER_HANDLE,
-            shader_defs: shader_defs.clone(),
-            entry_point: "apply_particle_behaviors".into(),
-        });
-
         GaussianCloudPipeline {
             gaussian_cloud_layout,
             gaussian_uniform_layout,
@@ -648,8 +569,6 @@ impl FromWorld for GaussianCloudPipeline {
                 temporal_sort_flop,
             ],
             sorted_layout,
-            morph_layout,
-            particle_behavior_pipeline,
         }
     }
 }
@@ -888,7 +807,6 @@ pub struct GaussianCloudBindGroup {
     pub cloud_bind_group: BindGroup,
     pub radix_sort_bind_groups: [BindGroup; 4],
     pub sorted_bind_group: BindGroup,
-    pub morph_bindgroup: BindGroup,
 }
 
 pub fn queue_gaussian_bind_group(
@@ -1010,21 +928,6 @@ pub fn queue_gaussian_bind_group(
             .try_into()
             .unwrap();
 
-        let morph_bindgroup = render_device.create_bind_group(
-            "morph_bind_group",
-            &gaussian_cloud_pipeline.morph_layout,
-            &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::Buffer(BufferBinding {
-                        buffer: &cloud.particle_behavior_buffer,
-                        offset: 0,
-                        size: BufferSize::new(cloud.particle_behavior_buffer.size()),
-                    }),
-                },
-            ],
-        );
-
         commands.entity(entity).insert(GaussianCloudBindGroup {
             cloud_bind_group: render_device.create_bind_group(
                 "gaussian_cloud_bind_group",
@@ -1055,7 +958,6 @@ pub fn queue_gaussian_bind_group(
                     },
                 ],
             ),
-            morph_bindgroup,
         });
     }
 }

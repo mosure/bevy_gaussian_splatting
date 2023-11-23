@@ -126,61 +126,6 @@ pub struct Gaussian {
 }
 
 
-// #[derive(
-//     Asset,
-//     Clone,
-//     Debug,
-//     PartialEq,
-//     Reflect,
-//     TypeUuid,
-//     Serialize,
-//     Deserialize,
-// )]
-// #[uuid = "ac2f08eb-7543-2346-ff21-51571ea332d5"]
-// pub struct MorphGaussianCurve {
-//     pub indicies: Vec<u32>,
-//     pub keyframe_timestamps: Vec<f32>,
-//     pub keyframes: Vec<Gaussian>,
-// }
-
-// pub struct MorphGaussianWavelet {
-//     pub indicies: Vec<u32>,
-//     pub keyframe_timestamps: Vec<f32>,
-//     pub coefficients: Vec<Gaussian>,
-// }
-
-#[derive(
-    Clone,
-    Debug,
-    Copy,
-    PartialEq,
-    Reflect,
-    ShaderType,
-    Pod,
-    Zeroable,
-    Serialize,
-    Deserialize,
-)]
-#[repr(C)]
-pub struct ParticleBehavior {
-    pub indicies: [i32; 4],
-    pub velocity: [f32; 4],
-    pub acceleration: [f32; 4],
-    pub jerk: [f32; 4],
-}
-
-impl Default for ParticleBehavior {
-    fn default() -> Self {
-        Self {
-            indicies: [-1, -1, -1, -1],
-            velocity: [0.0, 0.0, 0.0, 0.0],
-            acceleration: [0.0, 0.0, 0.0, 0.0],
-            jerk: [0.0, 0.0, 0.0, 0.0],
-        }
-    }
-}
-
-
 #[derive(
     Asset,
     Clone,
@@ -195,7 +140,6 @@ impl Default for ParticleBehavior {
 #[uuid = "ac2f08eb-bc32-aabb-ff21-51571ea332d5"]
 pub struct GaussianCloud {
     pub gaussians: Vec<Gaussian>,
-    pub particle_behaviors: Option<Vec<ParticleBehavior>>,
 }
 
 // TODO: split GaussianCloud and MorphTargets to be a bundle (to avoid Option leaking)

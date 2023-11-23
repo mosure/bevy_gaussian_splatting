@@ -1,14 +1,23 @@
+#define_import_path bevy_gaussian_splatting::morph::particle
+
 #import bevy_gaussian_splatting::bindings::{
     globals,
     points,
-    particle_behaviors,
-    ParticleBehavior,
 }
 #import bevy_gaussian_splatting::spherical_harmonics::spherical_harmonics_lookup
 #import bevy_gaussian_splatting::transform::{
     world_to_clip,
     in_frustum,
 }
+
+
+struct ParticleBehavior {
+    @location(0) indicies: vec4<i32>,
+    @location(1) velocity: vec4<f32>,
+    @location(2) acceleration: vec4<f32>,
+}
+
+@group(3) @binding(0) var<storage, read_write> particle_behaviors: array<ParticleBehavior>;
 
 
 @compute @workgroup_size(16)

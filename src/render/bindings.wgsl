@@ -45,24 +45,6 @@ struct Entry {
 @group(3) @binding(6) var<storage, read> sorted_entries: array<Entry>;
 
 
-struct ParticleBehavior {
-    @location(0) indicies: vec4<i32>,
-    @location(1) velocity: vec4<f32>,
-    @location(2) acceleration: vec4<f32>,
-}
-
-// struct WaveletBehavior {
-//     @location(0) index: u32,
-//     @location(1) wavelet: array<f32, #{MAX_WAVELET_COEFF_COUNT}>,
-// }
-
-// newtonian behavior
-@group(4) @binding(0) var<storage, read_write> particle_behaviors: array<ParticleBehavior>;
-
-// // wavelet behavior
-// @group(4) @binding(1) var<storage, read_write> morph_wavelets: array<WaveletInput>;
-
-
 struct GaussianOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) @interpolate(flat) color: vec4<f32>,
