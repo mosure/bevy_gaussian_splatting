@@ -19,6 +19,7 @@ use serde::{
 };
 
 
+// TODO: add more particle system functionality (e.g. lifetime, color)
 #[derive(
     Clone,
     Debug,
@@ -69,16 +70,16 @@ impl Distribution<ParticleBehavior> for rand::distributions::Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> ParticleBehavior {
         ParticleBehavior {
             acceleration: [
-                rng.gen_range(-0.1..0.1),
-                rng.gen_range(-0.1..0.1),
-                rng.gen_range(-0.1..0.1),
-                rng.gen_range(-0.1..0.1),
+                rng.gen_range(-0.01..0.01),
+                rng.gen_range(-0.01..0.01),
+                rng.gen_range(-0.01..0.01),
+                rng.gen_range(-0.01..0.01),
             ],
             jerk: [
-                rng.gen_range(-0.01..0.01),
-                rng.gen_range(-0.01..0.01),
-                rng.gen_range(-0.01..0.01),
-                rng.gen_range(-0.01..0.01),
+                rng.gen_range(-0.0001..0.0001),
+                rng.gen_range(-0.0001..0.0001),
+                rng.gen_range(-0.0001..0.0001),
+                rng.gen_range(-0.0001..0.0001),
             ],
             velocity: [
                 rng.gen_range(-1.0..1.0),

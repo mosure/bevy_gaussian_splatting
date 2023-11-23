@@ -246,9 +246,9 @@ impl Distribution<Gaussian> for rand::distributions::Standard {
                 rng.gen_range(-1.0..1.0),
             ],
             scale_opacity: [
-                rng.gen_range(0.0..0.25),
-                rng.gen_range(0.0..0.25),
-                rng.gen_range(0.0..0.25),
+                rng.gen_range(0.0..1.0),
+                rng.gen_range(0.0..1.0),
+                rng.gen_range(0.0..1.0),
                 rng.gen_range(0.0..0.8),
             ],
             spherical_harmonic: SphericalHarmonicCoefficients {

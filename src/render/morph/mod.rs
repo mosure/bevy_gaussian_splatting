@@ -38,6 +38,7 @@ use bevy::{
 use crate::render::{
     GaussianCloudBindGroup,
     GaussianCloudPipeline,
+    GaussianUniformBindGroups,
     GaussianViewBindGroup,
     shader_defs,
 };
@@ -181,7 +182,7 @@ impl FromWorld for MorphPipeline {
             label: Some("gaussian_cloud_morph_layout"),
             entries: &[
                 BindGroupLayoutEntry {
-                    binding: 0,
+                    binding: 7,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: false },
@@ -251,7 +252,7 @@ pub fn queue_morph_bind_group(
             &morph_pipeline.morph_layout,
             &[
                 BindGroupEntry {
-                    binding: 0,
+                    binding: 7,
                     resource: BindingResource::Buffer(BufferBinding {
                         buffer: &behaviors.particle_behavior_buffer,
                         offset: 0,
@@ -340,6 +341,7 @@ impl Node for MorphNode {
                 morph_bind_group,
             ) in self.gaussian_clouds.iter_manual(world) {
                 let behaviors = world.get_resource::<RenderAssets<ParticleBehaviors>>().unwrap().get(behaviors_handle).unwrap();
+                let gaussian_uniforms = world.resource::<GaussianUniformBindGroups>();
 
                 {
                     let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
@@ -350,19 +352,24 @@ impl Node for MorphNode {
                         &[view_uniform_offset.offset],
                     );
                     pass.set_bind_group(
+                        1,
+                        gaussian_uniforms.base_bind_group.as_ref().unwrap(),
+                        &[0],
+                    );
+                    pass.set_bind_group(
                         2,
                         &cloud_bind_group.cloud_bind_group,
                         &[]
                     );
                     pass.set_bind_group(
-                        4,
+                        3,
                         &morph_bind_group.morph_bindgroup,
                         &[],
                     );
 
                     let particle_behavior = pipeline_cache.get_compute_pipeline(pipeline.particle_behavior_pipeline).unwrap();
                     pass.set_pipeline(particle_behavior);
-                    pass.dispatch_workgroups(behaviors.morph_count, 1, 1);
+                    pass.dispatch_workgroups(behaviors.morph_count / 32, 32, 1);
                 }
             }
         }

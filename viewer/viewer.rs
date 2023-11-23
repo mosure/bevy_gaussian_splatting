@@ -71,7 +71,11 @@ fn setup_gaussian_cloud(
         println!("generating {} gaussians", n);
         cloud = gaussian_assets.add(random_gaussians(n));
 
-        particle_behaviors = particle_behavior_assets.add(random_particle_behaviors(n)).into();
+        let behavior_arg = std::env::args().nth(2);
+        if let Some(k) = behavior_arg.clone().and_then(|s| s.parse::<usize>().ok()) {
+            println!("generating {} particle behaviors", k);
+            particle_behaviors = particle_behavior_assets.add(random_particle_behaviors(k)).into();
+        }
     } else if let Some(filename) = file_arg {
         println!("loading {}", filename);
         cloud = asset_server.load(filename.to_string());
