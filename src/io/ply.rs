@@ -11,10 +11,11 @@ use ply_rs::{
 use crate::gaussian::{
     Gaussian,
     MAX_SH_COEFF_COUNT_PER_CHANNEL,
-    MAX_SIZE_VARIANCE,
     SH_CHANNELS,
 };
 
+
+pub const MAX_SIZE_VARIANCE: f32 = 5.0;
 
 impl PropertyAccess for Gaussian {
     fn new() -> Self {

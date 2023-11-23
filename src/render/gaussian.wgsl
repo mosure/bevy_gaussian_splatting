@@ -150,7 +150,7 @@ fn get_bounding_box(
         let circle = direction * max(bounds.x, bounds.y);
         return vec4<f32>(
             circle / view.viewport.zw,
-            circle
+            circle,
         );
     }
 
@@ -158,14 +158,10 @@ fn get_bounding_box(
         -cov2d.y,
         lambda1 - cov2d.x,
     ));
-    let eigvec2 = normalize(vec2<f32>(
-        -cov2d.y,
-        lambda2 - cov2d.x,
-    ));
-    // let eigvec2 = vec2<f32>(
-    //     eigvec1.y,
-    //     -eigvec1.x
-    // );
+    let eigvec2 = vec2<f32>(
+        eigvec1.y,
+        -eigvec1.x
+    );
 
     let rotation_matrix = transpose(
         mat2x2(
@@ -175,10 +171,10 @@ fn get_bounding_box(
     );
 
     let scaling_factor = 1.0 / (0.5 * (view.viewport.z + view.viewport.w));
-    let scaled_vertex = direction * bounds * scaling_factor;
+    let scaled_vertex = direction * bounds;
     return vec4<f32>(
+        scaled_vertex * rotation_matrix * scaling_factor,
         scaled_vertex * rotation_matrix,
-        0.0, 0.0,
     );
 #endif
 }
