@@ -37,7 +37,6 @@ pub struct RadixSortNode {
     )>,
 }
 
-
 impl FromWorld for RadixSortNode {
     fn from_world(world: &mut World) -> Self {
         Self {
@@ -112,6 +111,12 @@ impl Node for RadixSortNode {
                     );
 
                     command_encoder.clear_buffer(
+                        &cloud.sorting_status_counter_buffer,
+                        0,
+                        None,
+                    );
+
+                    command_encoder.clear_buffer(
                         &cloud.draw_indirect_buffer,
                         0,
                         None,
@@ -146,7 +151,7 @@ impl Node for RadixSortNode {
                     pass.set_pipeline(radix_sort_a);
 
                     let workgroup_entries_a = ShaderDefines::default().workgroup_entries_a;
-                    pass.dispatch_workgroups((cloud.count + workgroup_entries_a - 1) / workgroup_entries_a, 1, 1);
+                    pass.dispatch_workgroups((cloud.count as u32 + workgroup_entries_a - 1) / workgroup_entries_a, 1, 1);
 
 
                     let radix_sort_b = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[1]).unwrap();
@@ -157,12 +162,10 @@ impl Node for RadixSortNode {
 
                 for pass_idx in 0..radix_digit_places {
                     if pass_idx > 0 {
-                        // clear SortingGlobal.status_counters
-                        let size = (ShaderDefines::default().radix_base * ShaderDefines::default().max_tile_count_c) as u64 * std::mem::size_of::<u32>() as u64;
                         command_encoder.clear_buffer(
-                            &cloud.sorting_global_buffer,
+                            &cloud.sorting_status_counter_buffer,
                             0,
-                            std::num::NonZeroU64::new(size).unwrap().into()
+                            None,
                         );
                     }
 
@@ -193,7 +196,7 @@ impl Node for RadixSortNode {
                     );
 
                     let workgroup_entries_c = ShaderDefines::default().workgroup_entries_c;
-                    pass.dispatch_workgroups(1, (cloud.count + workgroup_entries_c - 1) / workgroup_entries_c, 1);
+                    pass.dispatch_workgroups(1, (cloud.count as u32 + workgroup_entries_c - 1) / workgroup_entries_c, 1);
                 }
             }
         }
