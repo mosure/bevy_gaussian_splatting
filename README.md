@@ -21,7 +21,8 @@ bevy gaussian splatting render pipeline plugin
 - [X] gcloud and ply asset loaders
 - [X] bevy gaussian cloud render pipeline
 - [X] 4D gaussian clouds via morph targets
-- [X] gaussian cloud particle effects (accelerated spatial queries)
+- [X] gaussian cloud particle effects
+- [ ] accelerated spatial queries
 - [ ] wasm support /w [live demo](https://mosure.github.io/bevy_gaussian_splatting)
 - [ ] temporal depth sorting
 - [ ] f16 and f32 gcloud support
