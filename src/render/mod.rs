@@ -205,10 +205,11 @@ pub struct GpuGaussianSplattingBundle {
 #[derive(Debug, Clone)]
 pub struct GpuGaussianCloud {
     pub gaussian_buffer: Buffer,
-    pub count: u32,
+    pub count: usize,
 
     pub draw_indirect_buffer: Buffer,
     pub sorting_global_buffer: Buffer,
+    pub sorting_status_counter_buffer: Buffer,
     pub sorting_pass_buffers: [Buffer; 4],
     pub entry_buffer_a: Buffer,
     pub entry_buffer_b: Buffer,
@@ -258,12 +259,18 @@ impl RenderAsset for GaussianCloud {
             ),
         };
 
-        let count = gaussian_cloud.gaussians.len() as u32;
+        let count = gaussian_cloud.gaussians.len();
 
-        // TODO: derive sorting_buffer_size from cloud count (with possible rounding to next power of 2)
         let sorting_global_buffer = render_device.create_buffer(&BufferDescriptor {
             label: Some("sorting global buffer"),
             size: ShaderDefines::default().sorting_buffer_size as u64,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        let sorting_status_counter_buffer = render_device.create_buffer(&BufferDescriptor {
+            label: Some("status counters buffer"),
+            size: ShaderDefines::default().sorting_status_counters_buffer_size(count) as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -289,14 +296,14 @@ impl RenderAsset for GaussianCloud {
 
         let entry_buffer_a = render_device.create_buffer(&BufferDescriptor {
             label: Some("entry buffer a"),
-            size: (count as usize * std::mem::size_of::<(u32, u32)>()) as u64,
+            size: (count * std::mem::size_of::<(u32, u32)>()) as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
         let entry_buffer_b = render_device.create_buffer(&BufferDescriptor {
             label: Some("entry buffer b"),
-            size: (count as usize * std::mem::size_of::<(u32, u32)>()) as u64,
+            size: (count * std::mem::size_of::<(u32, u32)>()) as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -306,6 +313,7 @@ impl RenderAsset for GaussianCloud {
             count,
             draw_indirect_buffer,
             sorting_global_buffer,
+            sorting_status_counter_buffer,
             sorting_pass_buffers,
             entry_buffer_a,
             entry_buffer_b,
@@ -461,8 +469,19 @@ impl FromWorld for GaussianCloudPipeline {
             count: None,
         };
 
-        let draw_indirect_buffer_entry = BindGroupLayoutEntry {
+        let sorting_status_counters_buffer_entry = BindGroupLayoutEntry {
             binding: 2,
+            visibility: ShaderStages::COMPUTE,
+            ty: BindingType::Buffer {
+                ty: BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size: BufferSize::new(ShaderDefines::default().sorting_status_counters_buffer_size(1) as u64),
+            },
+            count: None,
+        };
+
+        let draw_indirect_buffer_entry = BindGroupLayoutEntry {
+            binding: 3,
             visibility: ShaderStages::COMPUTE,
             ty: BindingType::Buffer {
                 ty: BufferBindingType::Storage { read_only: false },
@@ -486,9 +505,10 @@ impl FromWorld for GaussianCloudPipeline {
                     count: None,
                 },
                 sorting_buffer_entry,
+                sorting_status_counters_buffer_entry,
                 draw_indirect_buffer_entry,
                 BindGroupLayoutEntry {
-                    binding: 3,
+                    binding: 4,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: false },
@@ -498,7 +518,7 @@ impl FromWorld for GaussianCloudPipeline {
                     count: None,
                 },
                 BindGroupLayoutEntry {
-                    binding: 4,
+                    binding: 5,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: false },
@@ -514,7 +534,7 @@ impl FromWorld for GaussianCloudPipeline {
             label: Some("sorted_layout"),
             entries: &vec![
                 BindGroupLayoutEntry {
-                    binding: 5,
+                    binding: 6,
                     visibility: ShaderStages::VERTEX_FRAGMENT,
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: true },
@@ -542,7 +562,7 @@ impl FromWorld for GaussianCloudPipeline {
             ],
         });
 
-        let compute_layout = vec![
+        let sorting_layout = vec![
             view_layout.clone(),
             gaussian_uniform_layout.clone(),
             gaussian_cloud_layout.clone(),
@@ -553,7 +573,7 @@ impl FromWorld for GaussianCloudPipeline {
         let pipeline_cache = render_world.resource::<PipelineCache>();
         let radix_sort_a = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("radix_sort_a".into()),
-            layout: compute_layout.clone(),
+            layout: sorting_layout.clone(),
             push_constant_ranges: vec![],
             shader: RADIX_SHADER_HANDLE,
             shader_defs: shader_defs.clone(),
@@ -562,7 +582,7 @@ impl FromWorld for GaussianCloudPipeline {
 
         let radix_sort_b = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("radix_sort_b".into()),
-            layout: compute_layout.clone(),
+            layout: sorting_layout.clone(),
             push_constant_ranges: vec![],
             shader: RADIX_SHADER_HANDLE,
             shader_defs: shader_defs.clone(),
@@ -571,7 +591,7 @@ impl FromWorld for GaussianCloudPipeline {
 
         let radix_sort_c = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("radix_sort_c".into()),
-            layout: compute_layout.clone(),
+            layout: sorting_layout.clone(),
             push_constant_ranges: vec![],
             shader: RADIX_SHADER_HANDLE,
             shader_defs: shader_defs.clone(),
@@ -581,7 +601,7 @@ impl FromWorld for GaussianCloudPipeline {
 
         let temporal_sort_flip = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("temporal_sort_flip".into()),
-            layout: compute_layout.clone(),
+            layout: sorting_layout.clone(),
             push_constant_ranges: vec![],
             shader: TEMPORAL_SORT_SHADER_HANDLE,
             shader_defs: shader_defs.clone(),
@@ -590,7 +610,7 @@ impl FromWorld for GaussianCloudPipeline {
 
         let temporal_sort_flop = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("temporal_sort_flop".into()),
-            layout: compute_layout.clone(),
+            layout: sorting_layout.clone(),
             push_constant_ranges: vec![],
             shader: TEMPORAL_SORT_SHADER_HANDLE,
             shader_defs: shader_defs.clone(),
@@ -645,10 +665,19 @@ struct ShaderDefines {
     workgroup_invocations_c: u32,
     workgroup_entries_a: u32,
     workgroup_entries_c: u32,
-    max_tile_count_c: u32,
-    sorting_buffer_size: usize,
+    sorting_buffer_size: u32,
 
     temporal_sort_window_size: u32,
+}
+
+impl ShaderDefines {
+    fn max_tile_count(&self, count: usize) -> u32 {
+        (count as u32 + self.workgroup_entries_c - 1) / self.workgroup_entries_c
+    }
+
+    fn sorting_status_counters_buffer_size(&self, count: usize) -> usize {
+        self.radix_base as usize * self.max_tile_count(count) as usize * std::mem::size_of::<u32>()
+    }
 }
 
 impl Default for ShaderDefines {
@@ -662,10 +691,8 @@ impl Default for ShaderDefines {
         let workgroup_invocations_c = radix_base;
         let workgroup_entries_a = workgroup_invocations_a * entries_per_invocation_a;
         let workgroup_entries_c = workgroup_invocations_c * entries_per_invocation_c;
-        let max_tile_count_c = (10000000 + workgroup_entries_c - 1) / workgroup_entries_c;
-        let sorting_buffer_size = radix_base as usize *
-            (radix_digit_places as usize + max_tile_count_c as usize) *
-            std::mem::size_of::<u32>() + 5 * std::mem::size_of::<u32>();
+        let sorting_buffer_size = radix_base * radix_digit_places *
+            std::mem::size_of::<u32>() as u32 + 5 * std::mem::size_of::<u32>() as u32;
 
         Self {
             radix_bits_per_digit,
@@ -677,7 +704,6 @@ impl Default for ShaderDefines {
             workgroup_invocations_c,
             workgroup_entries_a,
             workgroup_entries_c,
-            max_tile_count_c,
             sorting_buffer_size,
 
             temporal_sort_window_size: 16,
@@ -700,7 +726,6 @@ fn shader_defs(
         ShaderDefVal::UInt("WORKGROUP_INVOCATIONS_A".into(), defines.workgroup_invocations_a),
         ShaderDefVal::UInt("WORKGROUP_INVOCATIONS_C".into(), defines.workgroup_invocations_c),
         ShaderDefVal::UInt("WORKGROUP_ENTRIES_C".into(), defines.workgroup_entries_c),
-        ShaderDefVal::UInt("MAX_TILE_COUNT_C".into(), defines.max_tile_count_c),
 
         ShaderDefVal::UInt("TEMPORAL_SORT_WINDOW_SIZE".into(), defines.temporal_sort_window_size),
     ];
@@ -919,8 +944,17 @@ pub fn queue_gaussian_bind_group(
             }),
         };
 
-        let draw_indirect_entry = BindGroupEntry {
+        let sorting_status_counters_entry = BindGroupEntry {
             binding: 2,
+            resource: BindingResource::Buffer(BufferBinding {
+                buffer: &cloud.sorting_status_counter_buffer,
+                offset: 0,
+                size: BufferSize::new(cloud.sorting_status_counter_buffer.size()),
+            }),
+        };
+
+        let draw_indirect_entry = BindGroupEntry {
+            binding: 3,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: &cloud.draw_indirect_buffer,
                 offset: 0,
@@ -943,9 +977,10 @@ pub fn queue_gaussian_bind_group(
                             }),
                         },
                         sorting_global_entry.clone(),
+                        sorting_status_counters_entry.clone(),
                         draw_indirect_entry.clone(),
                         BindGroupEntry {
-                            binding: 3,
+                            binding: 4,
                             resource: BindingResource::Buffer(BufferBinding {
                                 buffer: if idx % 2 == 0 {
                                     &cloud.entry_buffer_a
@@ -957,7 +992,7 @@ pub fn queue_gaussian_bind_group(
                             }),
                         },
                         BindGroupEntry {
-                            binding: 4,
+                            binding: 5,
                             resource: BindingResource::Buffer(BufferBinding {
                                 buffer: if idx % 2 == 0 {
                                     &cloud.entry_buffer_b
@@ -1011,7 +1046,7 @@ pub fn queue_gaussian_bind_group(
                 &gaussian_cloud_pipeline.sorted_layout,
                 &[
                     BindGroupEntry {
-                        binding: 5,
+                        binding: 6,
                         resource: BindingResource::Buffer(BufferBinding {
                             buffer: &cloud.entry_buffer_a,
                             offset: 0,

@@ -200,9 +200,10 @@ fn vs_points(
     var output: GaussianOutput;
     let splat_index = sorted_entries[instance_index][1];
 
-    let discard_quad = sorted_entries[instance_index][0] == 0xFFFFFFFFu;
+    let discard_quad = sorted_entries[instance_index][0] == 0xFFFFFFFFu || splat_index == 0u;
     if (discard_quad) {
         output.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        output.position = vec4<f32>(0.0, 0.0, 0.0, 0.0);
         return output;
     }
 

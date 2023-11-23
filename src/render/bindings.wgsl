@@ -29,7 +29,6 @@ struct DrawIndirect {
     base_instance: u32,
 }
 struct SortingGlobal {
-    status_counters: array<array<atomic<u32>, #{RADIX_BASE}>, #{MAX_TILE_COUNT_C}>,
     digit_histogram: array<array<atomic<u32>, #{RADIX_BASE}>, #{RADIX_DIGIT_PLACES}>,
     assignment_counter: atomic<u32>,
 }
@@ -39,10 +38,11 @@ struct Entry {
 }
 @group(3) @binding(0) var<uniform> sorting_pass_index: u32;
 @group(3) @binding(1) var<storage, read_write> sorting: SortingGlobal;
-@group(3) @binding(2) var<storage, read_write> draw_indirect: DrawIndirect;
-@group(3) @binding(3) var<storage, read_write> input_entries: array<Entry>;
-@group(3) @binding(4) var<storage, read_write> output_entries: array<Entry>;
-@group(3) @binding(5) var<storage, read> sorted_entries: array<Entry>;
+@group(3) @binding(2) var<storage, read_write> status_counters: array<array<atomic<u32>, #{RADIX_BASE}>>;
+@group(3) @binding(3) var<storage, read_write> draw_indirect: DrawIndirect;
+@group(3) @binding(4) var<storage, read_write> input_entries: array<Entry>;
+@group(3) @binding(5) var<storage, read_write> output_entries: array<Entry>;
+@group(3) @binding(6) var<storage, read> sorted_entries: array<Entry>;
 
 
 struct ParticleBehavior {

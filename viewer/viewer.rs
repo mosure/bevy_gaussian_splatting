@@ -74,6 +74,7 @@ fn setup_gaussian_cloud(
         GaussianSplattingBundle {
             cloud,
             settings,
+            ..default()
         },
         Name::new("gaussian_cloud"),
     ));

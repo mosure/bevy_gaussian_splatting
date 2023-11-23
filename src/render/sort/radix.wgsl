@@ -5,6 +5,7 @@
     points,
     sorting_pass_index,
     sorting,
+    status_counters,
     draw_indirect,
     input_entries,
     output_entries,
@@ -21,7 +22,6 @@ struct SortingSharedA {
 }
 var<workgroup> sorting_shared_a: SortingSharedA;
 
-// TODO: resolve flickering (maybe more radix passes?)
 @compute @workgroup_size(#{RADIX_BASE}, #{RADIX_DIGIT_PLACES})
 fn radix_sort_a(
     @builtin(local_invocation_id) gl_LocalInvocationID: vec3<u32>,
@@ -42,7 +42,9 @@ fn radix_sort_a(
         let clip_space_pos = world_to_clip(transformed_position);
         if(in_frustum(clip_space_pos.xyz)) {
             // key = bitcast<u32>(1.0 - clip_space_pos.z);
-            key = u32((1.0 - clip_space_pos.z) * 0xFFFF.0) << 16u;
+            // key = u32(clip_space_pos.z * 0xFFFF.0) << 16u;
+            let normalized_depth = (1.0 - clip_space_pos.z) * 0.5;
+            key = u32(normalized_depth * 0xFFFF.0) << 16u;
             key |= u32((clip_space_pos.x * 0.5 + 0.5) * 0xFF.0) << 8u;
             key |= u32((clip_space_pos.y * 0.5 + 0.5) * 0xFF.0);
         }
@@ -152,7 +154,7 @@ fn radix_sort_c(
     var keys: array<u32, #{ENTRIES_PER_INVOCATION_C}>;
     var ranks: array<u32, #{ENTRIES_PER_INVOCATION_C}>;
     for(var entry_index = 0u; entry_index < #{ENTRIES_PER_INVOCATION_C}u; entry_index += 1u) {
-        keys[entry_index] = input_entries[global_entry_offset + #{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x][0];
+        keys[entry_index] = input_entries[global_entry_offset + #{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x].key;
         let digit = (keys[entry_index] >> (sorting_pass_index * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
         // TODO: Implement warp-level multi-split (WLMS) once WebGPU supports subgroup operations
         ranks[entry_index] = atomicAdd(&sorting_shared_c.scan[digit + conflict_free_offset(digit)], 1u);
@@ -165,7 +167,7 @@ fn radix_sort_c(
     sorting_shared_c.scan[gl_LocalInvocationID.x + conflict_free_offset(gl_LocalInvocationID.x)] = local_digit_offset;
 
     // Chained decoupling lookback
-    atomicStore(&sorting.status_counters[assignment][gl_LocalInvocationID.x], 0x40000000u | local_digit_count);
+    atomicStore(&status_counters[assignment][gl_LocalInvocationID.x], 0x40000000u | local_digit_count);
     var global_digit_count = 0u;
     var previous_tile = assignment;
     while true {
@@ -176,14 +178,14 @@ fn radix_sort_c(
         previous_tile -= 1u;
         var status_counter = 0u;
         while((status_counter & 0xC0000000u) == 0u) {
-            status_counter = atomicLoad(&sorting.status_counters[previous_tile][gl_LocalInvocationID.x]);
+            status_counter = atomicLoad(&status_counters[previous_tile][gl_LocalInvocationID.x]);
         }
         global_digit_count += status_counter & 0x3FFFFFFFu;
         if((status_counter & 0x80000000u) != 0u) {
             break;
         }
     }
-    atomicStore(&sorting.status_counters[assignment][gl_LocalInvocationID.x], 0x80000000u | (global_digit_count + local_digit_count));
+    atomicStore(&status_counters[assignment][gl_LocalInvocationID.x], 0x80000000u | (global_digit_count + local_digit_count));
     if(sorting_pass_index == #{RADIX_DIGIT_PLACES}u - 1u && gl_LocalInvocationID.x == #{WORKGROUP_INVOCATIONS_C}u - 2u && global_entry_offset + #{WORKGROUP_ENTRIES_C}u >= arrayLength(&points)) {
         draw_indirect.vertex_count = 4u;
         draw_indirect.instance_count = global_digit_count + local_digit_count;
@@ -207,13 +209,13 @@ fn radix_sort_c(
         let key = sorting_shared_c.entries[#{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x];
         let digit = (key >> (sorting_pass_index * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
         keys[entry_index] = digit;
-        output_entries[sorting_shared_c.scan[digit + conflict_free_offset(digit)] + #{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x][0] = key;
+        output_entries[sorting_shared_c.scan[digit + conflict_free_offset(digit)] + #{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x].key = key;
     }
     workgroupBarrier();
 
     // Load values from global memory and scatter them inside shared memory
     for(var entry_index = 0u; entry_index < #{ENTRIES_PER_INVOCATION_C}u; entry_index += 1u) {
-        let value = input_entries[global_entry_offset + #{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x][1];
+        let value = input_entries[global_entry_offset + #{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x].value;
         sorting_shared_c.entries[ranks[entry_index]] = value;
     }
     workgroupBarrier();
