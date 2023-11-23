@@ -18,6 +18,10 @@ use bevy_gaussian_splatting::{
     GaussianCloudSettings,
     GaussianSplattingBundle,
     GaussianSplattingPlugin,
+    render::morph::{
+        ParticleBehaviors,
+        random_particle_behaviors,
+    },
     random_gaussians,
     utils::setup_hooks,
 };
@@ -50,6 +54,7 @@ fn setup_gaussian_cloud(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
+    mut particle_behavior_assets: ResMut<Assets<ParticleBehaviors>>,
 ) {
     let cloud: Handle<GaussianCloud>;
     let settings = GaussianCloudSettings {
@@ -58,11 +63,15 @@ fn setup_gaussian_cloud(
         ..default()
     };
 
+    let mut particle_behaviors = None;
+
     // TODO: add proper GaussianSplattingViewer argument parsing
     let file_arg = std::env::args().nth(1);
     if let Some(n) = file_arg.clone().and_then(|s| s.parse::<usize>().ok()) {
         println!("generating {} gaussians", n);
         cloud = gaussian_assets.add(random_gaussians(n));
+
+        particle_behaviors = particle_behavior_assets.add(random_particle_behaviors(n)).into();
     } else if let Some(filename) = file_arg {
         println!("loading {}", filename);
         cloud = asset_server.load(filename.to_string());
@@ -70,7 +79,7 @@ fn setup_gaussian_cloud(
         cloud = gaussian_assets.add(GaussianCloud::test_model());
     }
 
-    commands.spawn((
+    let mut entity = commands.spawn((
         GaussianSplattingBundle {
             cloud,
             settings,
@@ -78,6 +87,10 @@ fn setup_gaussian_cloud(
         },
         Name::new("gaussian_cloud"),
     ));
+
+    if let Some(particle_behaviors) = particle_behaviors {
+        entity.insert(particle_behaviors);
+    }
 
     commands.spawn((
         Camera3dBundle {

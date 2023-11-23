@@ -10,10 +10,12 @@ use bevy::{
         SystemParamItem,
     },
     render::{
+        Extract,
         render_asset::{
-            RenderAssets,
-            RenderAsset,
             PrepareAssetError,
+            RenderAsset,
+            RenderAssets,
+            RenderAssetPlugin,
         },
         render_resource::*,
         renderer::{
@@ -26,7 +28,9 @@ use bevy::{
             RenderGraphApp,
             RenderGraphContext,
         },
+        Render,
         RenderApp,
+        RenderSet,
         view::ViewUniformOffset,
     },
 };
@@ -38,9 +42,10 @@ use crate::render::{
     shader_defs,
 };
 
-use particle::{
+pub use particle::{
     ParticleBehavior,
     ParticleBehaviors,
+    random_particle_behaviors,
 };
 
 pub mod particle;
@@ -64,6 +69,11 @@ impl Plugin for MorphPlugin {
             Shader::from_wgsl
         );
 
+        app.register_type::<ParticleBehaviors>();
+        app.init_asset::<ParticleBehaviors>();
+        app.register_asset_reflect::<ParticleBehaviors>();
+        app.add_plugins(RenderAssetPlugin::<ParticleBehaviors>::default());
+
         if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .add_render_graph_node::<MorphNode>(
@@ -75,6 +85,15 @@ impl Plugin for MorphPlugin {
                     node::MORPH,
                     bevy::core_pipeline::core_3d::graph::node::PREPASS,
                 );
+
+            render_app
+                .add_systems(ExtractSchedule, extract_particle_behaviors)
+                .add_systems(
+                    Render,
+                    (
+                        queue_morph_bind_group.in_set(RenderSet::QueueMeshes),
+                    ),
+                );
         }
     }
 
@@ -84,6 +103,29 @@ impl Plugin for MorphPlugin {
                 .init_resource::<MorphPipeline>();
         }
     }
+}
+
+
+pub fn extract_particle_behaviors(
+    mut commands: Commands,
+    mut prev_commands_len: Local<usize>,
+    gaussians_query: Extract<
+        Query<(
+            Entity,
+            &Handle<ParticleBehaviors>,
+        )>,
+    >,
+) {
+    let mut commands_list = Vec::with_capacity(*prev_commands_len);
+
+    for (entity, behaviors) in gaussians_query.iter() {
+        commands_list.push((
+            entity,
+            behaviors.clone(),
+        ));
+    }
+    *prev_commands_len = commands_list.len();
+    commands.insert_or_spawn_batch(commands_list);
 }
 
 
