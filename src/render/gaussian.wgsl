@@ -174,11 +174,15 @@ fn get_bounding_box(
         )
     );
 
+    let scaled_vertex = direction * bounds;
+    let rotated_vertex = scaled_vertex * rotation_matrix;
+
     let scaling_factor = 1.0 / view.viewport.zw;
-    let scaled_vertex = direction * bounds * scaling_factor;
+    let ndc_vertex = rotated_vertex * scaling_factor;
+
     return vec4<f32>(
-        scaled_vertex * rotation_matrix,
-        scaled_vertex * rotation_matrix,
+        ndc_vertex,
+        rotated_vertex,
     );
 #endif
 }
@@ -252,8 +256,6 @@ fn vs_points(
 
 @fragment
 fn fs_main(input: GaussianOutput) -> @location(0) vec4<f32> {
-    // TODO: draw gaussian without conic (OBB)
-
 #ifdef USE_AABB
     let d = -input.major_minor;
     let conic = input.conic;
