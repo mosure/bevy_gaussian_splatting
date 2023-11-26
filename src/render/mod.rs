@@ -766,6 +766,7 @@ pub fn extract_gaussians(
         Query<(
             Entity,
             // &ComputedVisibility,
+            &Visibility,
             &Handle<GaussianCloud>,
             &GaussianCloudSettings,
         )>,
@@ -774,7 +775,16 @@ pub fn extract_gaussians(
     let mut commands_list = Vec::with_capacity(*prev_commands_len);
     // let visible_gaussians = gaussians_query.iter().filter(|(_, vis, ..)| vis.is_visible());
 
-    for (entity, verticies, settings) in gaussians_query.iter() {
+    for (
+        entity,
+        visibility,
+        verticies,
+        settings,
+    ) in gaussians_query.iter() {
+        if visibility == Visibility::Hidden {
+            continue;
+        }
+
         let settings_uniform = GaussianCloudUniform {
             transform: settings.global_transform.compute_matrix(),
             global_scale: settings.global_scale,
@@ -805,7 +815,7 @@ pub struct GaussianCloudBindGroup {
     pub sorted_bind_group: BindGroup,
 }
 
-pub fn queue_gaussian_bind_group(
+fn queue_gaussian_bind_group(
     mut commands: Commands,
     mut groups: ResMut<GaussianUniformBindGroups>,
     gaussian_cloud_pipeline: Res<GaussianCloudPipeline>,
@@ -831,7 +841,7 @@ pub fn queue_gaussian_bind_group(
                 resource: BindingResource::Buffer(BufferBinding {
                     buffer: model,
                     offset: 0,
-                    size: BufferSize::new(model.size()),
+                    size: GaussianCloudUniform::min_size().into(),
                 }),
             },
         ],
@@ -957,7 +967,6 @@ pub fn queue_gaussian_bind_group(
         });
     }
 }
-
 
 #[derive(Component)]
 pub struct GaussianViewBindGroup {

@@ -2,10 +2,6 @@ use bevy::{
     prelude::*,
     app::AppExit,
     core::Name,
-    diagnostic::{
-        DiagnosticsStore,
-        FrameTimeDiagnosticsPlugin,
-    },
 };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_panorbit_camera::{
@@ -14,14 +10,16 @@ use bevy_panorbit_camera::{
 };
 
 use bevy_gaussian_splatting::{
+    Gaussian,
     GaussianCloud,
+    GaussianCloudSettings,
     GaussianSplattingBundle,
     GaussianSplattingPlugin,
-    random_gaussians,
-    utils::setup_hooks,
+    utils::setup_hooks, SphericalHarmonicCoefficients,
 };
 
 
+// TODO: move to editor crate
 pub struct GaussianSplattingViewer {
     pub editor: bool,
     pub esc_close: bool,
@@ -45,36 +43,64 @@ impl Default for GaussianSplattingViewer {
 }
 
 
-fn setup_gaussian_cloud(
+pub fn setup_aabb_obb_compare(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
     mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
 ) {
-    let cloud: Handle<GaussianCloud>;
+    let mut blue_sh = SphericalHarmonicCoefficients::default();
+    blue_sh.coefficients[2] = 5.0;
 
-    // TODO: add proper GaussianSplattingViewer argument parsing
-    let file_arg = std::env::args().nth(1);
-    if let Some(n) = file_arg.clone().and_then(|s| s.parse::<usize>().ok()) {
-        println!("generating {} gaussians", n);
-        cloud = gaussian_assets.add(random_gaussians(n));
-    } else if let Some(filename) = file_arg {
-        if filename == "--help".to_string() {
-            println!("usage: cargo run -- [filename | n]");
-            return;
-        }
-
-        println!("loading {}", filename);
-        cloud = asset_server.load(filename.to_string());
-    } else {
-        cloud = gaussian_assets.add(GaussianCloud::test_model());
-    }
+    let blue_aabb_gaussian = Gaussian {
+        position: [0.0, 0.0, 0.0, 1.0],
+        rotation: [0.89, 0.0, -0.432, 0.144],
+        scale_opacity: [10.0, 1.0, 1.0, 0.5],
+        spherical_harmonic: blue_sh,
+    };
 
     commands.spawn((
         GaussianSplattingBundle {
-            cloud,
+            cloud: gaussian_assets.add(
+                GaussianCloud(vec![
+                    blue_aabb_gaussian,
+                    blue_aabb_gaussian,
+                ])
+            ),
+            settings: GaussianCloudSettings {
+                aabb: true,
+                visualize_bounding_box: true,
+                ..default()
+            },
             ..default()
         },
-        Name::new("gaussian_cloud"),
+        Name::new("gaussian_cloud_aabb"),
+    ));
+
+    let mut red_sh = SphericalHarmonicCoefficients::default();
+    red_sh.coefficients[0] = 5.0;
+
+    let red_obb_gaussian = Gaussian {
+        position: [0.0, 0.0, 0.0, 1.0],
+        rotation: [0.89, 0.0, -0.432, 0.144],
+        scale_opacity: [10.0, 1.0, 1.0, 0.5],
+        spherical_harmonic: red_sh,
+    };
+
+    commands.spawn((
+        GaussianSplattingBundle {
+            cloud: gaussian_assets.add(
+                GaussianCloud(vec![
+                    red_obb_gaussian,
+                    red_obb_gaussian,
+                ])
+            ),
+            settings: GaussianCloudSettings {
+                aabb: false,
+                visualize_bounding_box: true,
+                ..default()
+            },
+            ..default()
+        },
+        Name::new("gaussian_cloud_obb"),
     ));
 
     commands.spawn((
@@ -89,8 +115,7 @@ fn setup_gaussian_cloud(
     ));
 }
 
-
-fn example_app() {
+fn compare_aabb_obb_app() {
     let config = GaussianSplattingViewer::default();
     let mut app = App::new();
 
@@ -124,20 +149,12 @@ fn example_app() {
         app.add_systems(Update, esc_close);
     }
 
-    if config.show_fps {
-        app.add_plugins(FrameTimeDiagnosticsPlugin::default());
-        app.add_systems(Startup, fps_display_setup);
-        app.add_systems(Update, fps_update_system);
-    }
-
-
     // setup for gaussian splatting
     app.add_plugins(GaussianSplattingPlugin);
-    app.add_systems(Startup, setup_gaussian_cloud);
+    app.add_systems(Startup, setup_aabb_obb_compare);
 
     app.run();
 }
-
 
 pub fn esc_close(
     keys: Res<Input<KeyCode>>,
@@ -148,53 +165,7 @@ pub fn esc_close(
     }
 }
 
-fn fps_display_setup(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-) {
-    commands.spawn((
-        TextBundle::from_sections([
-            TextSection::new(
-                "fps: ",
-                TextStyle {
-                    font: asset_server.load("fonts/Caveat-Bold.ttf"),
-                    font_size: 60.0,
-                    color: Color::WHITE,
-                },
-            ),
-            TextSection::from_style(TextStyle {
-                font: asset_server.load("fonts/Caveat-Medium.ttf"),
-                font_size: 60.0,
-                color: Color::GOLD,
-            }),
-        ]).with_style(Style {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(5.0),
-            left: Val::Px(15.0),
-            ..default()
-        }),
-        FpsText,
-    ));
-}
-
-#[derive(Component)]
-struct FpsText;
-
-fn fps_update_system(
-    diagnostics: Res<DiagnosticsStore>,
-    mut query: Query<&mut Text, With<FpsText>>,
-) {
-    for mut text in &mut query {
-        if let Some(fps) = diagnostics.get(FrameTimeDiagnosticsPlugin::FPS) {
-            if let Some(value) = fps.smoothed() {
-                text.sections[1].value = format!("{value:.2}");
-            }
-        }
-    }
-}
-
-
 pub fn main() {
     setup_hooks();
-    example_app();
+    compare_aabb_obb_app();
 }
