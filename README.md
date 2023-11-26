@@ -11,9 +11,12 @@
 bevy gaussian splatting render pipeline plugin
 
 ![Alt text](docs/notferris.png)
+![Alt text](docs/cactus.gif)
 ![Alt text](docs/bike.png)
 
-`cargo run -- scenes/icecream.gcloud`
+download [cactus.gcloud](https://mitchell.mosure.me/cactus.gcloud)
+
+`cargo run -- scenes/cactus.gcloud`
 
 ## capabilities
 
