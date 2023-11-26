@@ -10,6 +10,7 @@
     input_entries,
     output_entries,
     sorted_entries,
+    DrawIndirect,
     Entry,
 }
 #import bevy_gaussian_splatting::transform::{
