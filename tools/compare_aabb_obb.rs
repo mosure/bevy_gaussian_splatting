@@ -60,10 +60,12 @@ pub fn setup_aabb_obb_compare(
     commands.spawn((
         GaussianSplattingBundle {
             cloud: gaussian_assets.add(
-                GaussianCloud(vec![
-                    blue_aabb_gaussian,
-                    blue_aabb_gaussian,
-                ])
+                GaussianCloud {
+                    gaussians: vec![
+                        blue_aabb_gaussian,
+                        blue_aabb_gaussian,
+                    ],
+                }
             ),
             settings: GaussianCloudSettings {
                 aabb: true,
@@ -88,10 +90,12 @@ pub fn setup_aabb_obb_compare(
     commands.spawn((
         GaussianSplattingBundle {
             cloud: gaussian_assets.add(
-                GaussianCloud(vec![
-                    red_obb_gaussian,
-                    red_obb_gaussian,
-                ])
+                GaussianCloud {
+                    gaussians: vec![
+                        red_obb_gaussian,
+                        red_obb_gaussian,
+                    ],
+                }
             ),
             settings: GaussianCloudSettings {
                 aabb: false,

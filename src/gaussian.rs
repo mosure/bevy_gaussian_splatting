@@ -123,10 +123,12 @@ pub struct Gaussian {
     pub spherical_harmonic: SphericalHarmonicCoefficients,
 }
 
+
 #[derive(
     Asset,
     Clone,
     Debug,
+    Default,
     PartialEq,
     Reflect,
     TypeUuid,
@@ -134,7 +136,9 @@ pub struct Gaussian {
     Deserialize,
 )]
 #[uuid = "ac2f08eb-bc32-aabb-ff21-51571ea332d5"]
-pub struct GaussianCloud(pub Vec<Gaussian>);
+pub struct GaussianCloud {
+    pub gaussians: Vec<Gaussian>,
+}
 
 impl GaussianCloud {
     pub fn test_model() -> Self {
@@ -157,7 +161,7 @@ impl GaussianCloud {
                 0.5,
                 0.5,
             ],
-            spherical_harmonic: SphericalHarmonicCoefficients{
+            spherical_harmonic: SphericalHarmonicCoefficients {
                 coefficients: [
                     1.0, 0.0, 1.0,
                     0.0, 0.5, 0.0,
@@ -178,22 +182,25 @@ impl GaussianCloud {
                 ],
             },
         };
-        let mut cloud = GaussianCloud(Vec::new());
+        let mut cloud = GaussianCloud {
+            gaussians: Vec::new(),
+            ..default()
+        };
 
         for &x in [-0.5, 0.5].iter() {
             for &y in [-0.5, 0.5].iter() {
                 for &z in [-0.5, 0.5].iter() {
                     let mut g = origin;
                     g.position = [x, y, z, 1.0];
-                    cloud.0.push(g);
+                    cloud.gaussians.push(g);
 
                     let mut rng = rand::thread_rng();
-                    cloud.0.last_mut().unwrap().spherical_harmonic.coefficients.shuffle(&mut rng);
+                    cloud.gaussians.last_mut().unwrap().spherical_harmonic.coefficients.shuffle(&mut rng);
                 }
             }
         }
 
-        cloud.0.push(cloud.0[0]);
+        cloud.gaussians.push(cloud.gaussians[0]);
 
         cloud
     }
@@ -236,9 +243,9 @@ impl Distribution<Gaussian> for rand::distributions::Standard {
                 rng.gen_range(-1.0..1.0),
             ],
             scale_opacity: [
-                rng.gen_range(0.0..0.25),
-                rng.gen_range(0.0..0.25),
-                rng.gen_range(0.0..0.25),
+                rng.gen_range(0.0..1.0),
+                rng.gen_range(0.0..1.0),
+                rng.gen_range(0.0..1.0),
                 rng.gen_range(0.0..0.8),
             ],
             spherical_harmonic: SphericalHarmonicCoefficients {
@@ -260,5 +267,8 @@ pub fn random_gaussians(n: usize) -> GaussianCloud {
     for _ in 0..n {
         gaussians.push(rng.gen());
     }
-    GaussianCloud(gaussians)
+    GaussianCloud {
+        gaussians,
+        ..default()
+    }
 }

@@ -19,7 +19,10 @@ fn main() {
     let file = std::fs::File::open(&filename).expect("failed to open file");
     let mut reader = std::io::BufReader::new(file);
 
-    let cloud = GaussianCloud(parse_ply(&mut reader).expect("failed to parse ply file"));
+    let cloud = GaussianCloud {
+        gaussians: parse_ply(&mut reader).expect("failed to parse ply file"),
+        ..Default::default()
+    };
 
     let base_filename = filename.split('.').next().expect("no extension").to_string();
     let gcloud_filename = base_filename + ".gcloud";

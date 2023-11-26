@@ -1,15 +1,14 @@
 #import bevy_gaussian_splatting::bindings::{
     view,
     globals,
-    uniforms,
+    gaussian_uniforms,
     points,
     sorting_pass_index,
     sorting,
     draw_indirect,
     input_entries,
     output_entries,
-    sorted_entries,
-    GaussianOutput,
+    Entry,
 }
 #import bevy_gaussian_splatting::spherical_harmonics::spherical_harmonics_lookup
 #import bevy_gaussian_splatting::transform::{
@@ -18,13 +17,24 @@
 }
 
 
+@group(3) @binding(0) var<storage, read> sorted_entries: array<Entry>;
+
+struct GaussianVertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) @interpolate(flat) color: vec4<f32>,
+    @location(1) @interpolate(flat) conic: vec3<f32>,
+    @location(2) @interpolate(linear) uv: vec2<f32>,
+    @location(3) @interpolate(linear) major_minor: vec2<f32>,
+};
+
+
 // https://github.com/cvlab-epfl/gaussian-splatting-web/blob/905b3c0fb8961e42c79ef97e64609e82383ca1c2/src/shaders.ts#L185
 // TODO: precompute
 fn compute_cov3d(scale: vec3<f32>, rotation: vec4<f32>) -> array<f32, 6> {
     let S = mat3x3<f32>(
-        scale.x * uniforms.global_scale, 0.0, 0.0,
-        0.0, scale.y * uniforms.global_scale, 0.0,
-        0.0, 0.0, scale.z * uniforms.global_scale,
+        scale.x * gaussian_uniforms.global_scale, 0.0, 0.0,
+        0.0, scale.y * gaussian_uniforms.global_scale, 0.0,
+        0.0, 0.0, scale.z * gaussian_uniforms.global_scale,
     );
 
     let r = rotation.x;
@@ -192,8 +202,8 @@ fn get_bounding_box(
 fn vs_points(
     @builtin(instance_index) instance_index: u32,
     @builtin(vertex_index) vertex_index: u32,
-) -> GaussianOutput {
-    var output: GaussianOutput;
+) -> GaussianVertexOutput {
+    var output: GaussianVertexOutput;
     let splat_index = sorted_entries[instance_index][1];
 
     let discard_quad = sorted_entries[instance_index][0] == 0xFFFFFFFFu || splat_index == 0u;
@@ -204,7 +214,7 @@ fn vs_points(
     }
 
     let point = points[splat_index];
-    let transformed_position = (uniforms.global_transform * point.position).xyz;
+    let transformed_position = (gaussian_uniforms.global_transform * point.position).xyz;
     let projected_position = world_to_clip(transformed_position);
     if (!in_frustum(projected_position.xyz)) {
         output.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
@@ -227,6 +237,8 @@ fn vs_points(
         spherical_harmonics_lookup(ray_direction, point.sh),
         point.scale_opacity.a
     );
+
+    // TODO: add depth color visualization
 
     let cov2d = compute_cov2d(transformed_position, point.scale_opacity.rgb, point.rotation);
 
@@ -255,7 +267,7 @@ fn vs_points(
 }
 
 @fragment
-fn fs_main(input: GaussianOutput) -> @location(0) vec4<f32> {
+fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
 #ifdef USE_AABB
     let d = -input.major_minor;
     let conic = input.conic;

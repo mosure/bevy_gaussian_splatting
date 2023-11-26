@@ -1,7 +1,7 @@
 #import bevy_gaussian_splatting::bindings::{
     view,
     globals,
-    uniforms,
+    gaussian_uniforms,
     points,
     sorting_pass_index,
     sorting,
@@ -10,11 +10,26 @@
     input_entries,
     output_entries,
     sorted_entries,
+    DrawIndirect,
+    Entry,
 }
 #import bevy_gaussian_splatting::transform::{
     world_to_clip,
     in_frustum,
 }
+
+
+struct SortingGlobal {
+    digit_histogram: array<array<atomic<u32>, #{RADIX_BASE}>, #{RADIX_DIGIT_PLACES}>,
+    assignment_counter: atomic<u32>,
+}
+
+@group(3) @binding(0) var<uniform> sorting_pass_index: u32;
+@group(3) @binding(1) var<storage, read_write> sorting: SortingGlobal;
+@group(3) @binding(2) var<storage, read_write> status_counters: array<array<atomic<u32>, #{RADIX_BASE}>>;
+@group(3) @binding(3) var<storage, read_write> draw_indirect: DrawIndirect;
+@group(3) @binding(4) var<storage, read_write> input_entries: array<Entry>;
+@group(3) @binding(5) var<storage, read_write> output_entries: array<Entry>;
 
 
 struct SortingSharedA {
@@ -38,7 +53,7 @@ fn radix_sort_a(
             continue;
         }
         var key: u32 = 0xFFFFFFFFu; // Stream compaction for frustum culling
-        let transformed_position = (uniforms.global_transform * points[entry_index].position).xyz;
+        let transformed_position = (gaussian_uniforms.global_transform * points[entry_index].position).xyz;
         let clip_space_pos = world_to_clip(transformed_position);
         if(in_frustum(clip_space_pos.xyz)) {
             // key = bitcast<u32>(1.0 - clip_space_pos.z);

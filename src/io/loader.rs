@@ -46,8 +46,11 @@ impl AssetLoader for GaussianCloudLoader {
                         let cursor = Cursor::new(bytes);
                         let mut f = BufReader::new(cursor);
 
-                        let ply_cloud = crate::io::ply::parse_ply(&mut f)?;
-                        let cloud = GaussianCloud(ply_cloud);
+                        let gaussians = crate::io::ply::parse_ply(&mut f)?;
+                        let cloud = GaussianCloud {
+                            gaussians,
+                            ..Default::default()
+                        };
 
                         Ok(cloud)
                     }

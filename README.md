@@ -11,24 +11,28 @@
 bevy gaussian splatting render pipeline plugin
 
 ![Alt text](docs/notferris.png)
+![Alt text](docs/cactus.gif)
 ![Alt text](docs/bike.png)
 
-`cargo run -- scenes/icecream.gcloud`
+download [cactus.gcloud](https://mitchell.mosure.me/cactus.gcloud)
+
+`cargo run -- scenes/cactus.gcloud`
 
 ## capabilities
 
 - [X] ply to gcloud converter
 - [X] gcloud and ply asset loaders
 - [X] bevy gaussian cloud render pipeline
+- [X] 4D gaussian cloud wavelet compression
+- [X] gaussian cloud particle effects
+- [ ] accelerated spatial queries
 - [ ] wasm support /w [live demo](https://mosure.github.io/bevy_gaussian_splatting)
 - [ ] temporal depth sorting
 - [ ] f16 and f32 gcloud support
-- [ ] 4D gaussian clouds via morph targets
 - [ ] skeletons
 - [ ] volume masks
 - [ ] level of detail
 - [ ] lighting and shadows
-- [ ] gaussian cloud particle effects (accelerated spatial queries)
 - [ ] bevy_openxr support
 - [ ] bevy 3D camera to gaussian cloud pipeline
 
@@ -62,7 +66,7 @@ fn setup_gaussian_cloud(
 ## tools
 
 - [ply to gcloud converter](tools/README.md#ply-to-gcloud-converter)
-- [ ] gaussian cloud training tool
+- [gaussian cloud training pipeline](https://github.com/mosure/burn_gaussian_splatting)
 - aabb vs. obb gaussian comparison via `cargo run --bin compare_aabb_obb`
 
 ## wasm support
@@ -85,6 +89,7 @@ to build wasm run:
 - [4d gaussians](https://github.com/hustvl/4DGaussians)
 - [bevy](https://github.com/bevyengine/bevy)
 - [bevy-hanabi](https://github.com/djeedai/bevy_hanabi)
+- [d3ga](https://zielon.github.io/d3ga/)
 - [deformable-3d-gaussians](https://github.com/ingra14m/Deformable-3D-Gaussians)
 - [diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization)
 - [dreamgaussian](https://github.com/dreamgaussian/dreamgaussian)
@@ -97,6 +102,7 @@ to build wasm run:
 - [masked-spacetime-hashing](https://github.com/masked-spacetime-hashing/msth)
 - [onesweep](https://arxiv.org/ftp/arxiv/papers/2206/2206.01784.pdf)
 - [pasture](https://github.com/Mortano/pasture)
+- [phys-gaussian](https://xpandora.github.io/PhysGaussian/)
 - [point-visualizer](https://github.com/mosure/point-visualizer)
 - [rusty-automata](https://github.com/mosure/rusty-automata)
 - [splat](https://github.com/antimatter15/splat)

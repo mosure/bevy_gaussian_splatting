@@ -46,6 +46,15 @@ wasm-bindgen = "0.2"
 version = "0.12"
 default-features = true
 
+[dev-dependencies.bevy]
+version = "0.12"
+default-features = true
+features = [
+  'bevy_ci_testing',
+  'debug_glam_assert',
+]
+
+
 
 [dependencies.web-sys]
 version = "0.3.4"
