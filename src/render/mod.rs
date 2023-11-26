@@ -183,7 +183,6 @@ impl RenderAsset for GaussianCloud {
 
         let count = gaussian_cloud.gaussians.len();
 
-        // TODO: keep draw_indirect at the gaussian cloud level
         let draw_indirect_buffer = render_device.create_buffer(&BufferDescriptor {
             label: Some("draw indirect buffer"),
             size: std::mem::size_of::<wgpu::util::DrawIndirect>() as u64,
