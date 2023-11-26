@@ -140,9 +140,6 @@ pub struct GaussianCloud {
     pub gaussians: Vec<Gaussian>,
 }
 
-// TODO: split GaussianCloud and MorphTargets to be a bundle (to avoid Option leaking)
-
-
 impl GaussianCloud {
     pub fn test_model() -> Self {
         let origin = Gaussian {

@@ -8,14 +8,24 @@
     draw_indirect,
     input_entries,
     output_entries,
-    sorted_entries,
-    GaussianOutput,
+    Entry,
 }
 #import bevy_gaussian_splatting::spherical_harmonics::spherical_harmonics_lookup
 #import bevy_gaussian_splatting::transform::{
     world_to_clip,
     in_frustum,
 }
+
+
+@group(3) @binding(0) var<storage, read> sorted_entries: array<Entry>;
+
+struct GaussianVertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) @interpolate(flat) color: vec4<f32>,
+    @location(1) @interpolate(flat) conic: vec3<f32>,
+    @location(2) @interpolate(linear) uv: vec2<f32>,
+    @location(3) @interpolate(linear) major_minor: vec2<f32>,
+};
 
 
 // https://github.com/cvlab-epfl/gaussian-splatting-web/blob/905b3c0fb8961e42c79ef97e64609e82383ca1c2/src/shaders.ts#L185
@@ -192,8 +202,8 @@ fn get_bounding_box(
 fn vs_points(
     @builtin(instance_index) instance_index: u32,
     @builtin(vertex_index) vertex_index: u32,
-) -> GaussianOutput {
-    var output: GaussianOutput;
+) -> GaussianVertexOutput {
+    var output: GaussianVertexOutput;
     let splat_index = sorted_entries[instance_index][1];
 
     let discard_quad = sorted_entries[instance_index][0] == 0xFFFFFFFFu || splat_index == 0u;
@@ -257,7 +267,7 @@ fn vs_points(
 }
 
 @fragment
-fn fs_main(input: GaussianOutput) -> @location(0) vec4<f32> {
+fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
 #ifdef USE_AABB
     let d = -input.major_minor;
     let conic = input.conic;
