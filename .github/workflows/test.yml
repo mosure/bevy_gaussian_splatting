@@ -33,9 +33,6 @@ jobs:
           target/
         key: ${{ runner.os }}-cargo-build-stable-${{ hashFiles('**/Cargo.toml') }}
 
-    - name: check
-      run: cargo check
-
     - name: build
       run: cargo build
 

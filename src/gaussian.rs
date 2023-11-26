@@ -203,7 +203,7 @@ impl GaussianCloud {
             }
         }
 
-        cloud.0.push(cloud.0[0]);
+        cloud.gaussians.push(cloud.gaussians[0]);
 
         cloud
     }
