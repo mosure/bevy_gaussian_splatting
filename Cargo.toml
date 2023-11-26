@@ -102,6 +102,11 @@ path = "tools/ply_to_gcloud.rs"
 required-features = ["io_ply"]
 
 
+[[bin]]
+name = "compare_aabb_obb"
+path = "tools/compare_aabb_obb.rs"
+
+
 [[bench]]
 name = "io"
 harness = false

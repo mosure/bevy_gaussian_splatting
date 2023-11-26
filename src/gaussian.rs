@@ -101,8 +101,6 @@ where
 }
 
 
-pub const MAX_SIZE_VARIANCE: f32 = 5.0;
-
 #[derive(
     Clone,
     Debug,
@@ -205,6 +203,8 @@ impl GaussianCloud {
             }
         }
 
+        cloud.0.push(cloud.0[0]);
+
         cloud
     }
 }
@@ -223,7 +223,7 @@ impl Default for GaussianCloudSettings {
     fn default() -> Self {
         Self {
             aabb: false,
-            global_scale: 1.0,
+            global_scale: 2.0,
             global_transform: Transform::IDENTITY.into(),
             visualize_bounding_box: false,
         }

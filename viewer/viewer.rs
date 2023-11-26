@@ -15,7 +15,6 @@ use bevy_panorbit_camera::{
 
 use bevy_gaussian_splatting::{
     GaussianCloud,
-    GaussianCloudSettings,
     GaussianSplattingBundle,
     GaussianSplattingPlugin,
     render::morph::{
@@ -57,11 +56,6 @@ fn setup_gaussian_cloud(
     mut particle_behavior_assets: ResMut<Assets<ParticleBehaviors>>,
 ) {
     let cloud: Handle<GaussianCloud>;
-    let settings = GaussianCloudSettings {
-        aabb: true,
-        visualize_bounding_box: false,
-        ..default()
-    };
 
     let mut particle_behaviors = None;
 
@@ -77,6 +71,11 @@ fn setup_gaussian_cloud(
             particle_behaviors = particle_behavior_assets.add(random_particle_behaviors(k)).into();
         }
     } else if let Some(filename) = file_arg {
+        if filename == "--help".to_string() {
+            println!("usage: cargo run -- [filename | n]");
+            return;
+        }
+
         println!("loading {}", filename);
         cloud = asset_server.load(filename.to_string());
     } else {
@@ -86,7 +85,6 @@ fn setup_gaussian_cloud(
     let mut entity = commands.spawn((
         GaussianSplattingBundle {
             cloud,
-            settings,
             ..default()
         },
         Name::new("gaussian_cloud"),

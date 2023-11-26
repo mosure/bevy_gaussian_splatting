@@ -22,6 +22,7 @@ pub mod utils;
 pub struct GaussianSplattingBundle {
     pub settings: GaussianCloudSettings,
     pub cloud: Handle<GaussianCloud>,
+    pub visibility: Visibility,
 }
 
 
