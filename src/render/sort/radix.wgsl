@@ -57,9 +57,7 @@ fn radix_sort_a(
         let clip_space_pos = world_to_clip(transformed_position);
         if(in_frustum(clip_space_pos.xyz)) {
             // key = bitcast<u32>(1.0 - clip_space_pos.z);
-            // key = u32(clip_space_pos.z * 0xFFFF.0) << 16u;
-            let normalized_depth = (1.0 - clip_space_pos.z) * 0.5;
-            key = u32(normalized_depth * 0xFFFF.0) << 16u;
+            key = u32(clip_space_pos.z * 0xFFFF.0) << 16u;
             key |= u32((clip_space_pos.x * 0.5 + 0.5) * 0xFF.0) << 8u;
             key |= u32((clip_space_pos.y * 0.5 + 0.5) * 0xFF.0);
         }

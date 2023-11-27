@@ -484,8 +484,8 @@ impl SpecializedRenderPipeline for GaussianCloudPipeline {
                     format: TextureFormat::Rgba8UnormSrgb,
                     blend: Some(BlendState {
                         color: BlendComponent {
-                            src_factor: BlendFactor::DstAlpha,
-                            dst_factor: BlendFactor::One,
+                            src_factor: BlendFactor::One,
+                            dst_factor: BlendFactor::OneMinusSrcAlpha,
                             operation: BlendOperation::Add,
                         },
                         alpha: BlendComponent {
