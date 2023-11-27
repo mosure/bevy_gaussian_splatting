@@ -20,6 +20,18 @@ const shc = array<f32, 16>(
     -0.5900435899266435,
 );
 
+fn srgb_to_linear(srgb_color: vec3<f32>) -> vec3<f32> {
+    var linear_color: vec3<f32>;
+    for (var i = 0u; i < 3u; i = i + 1u) {
+        if (srgb_color[i] <= 0.04045) {
+            linear_color[i] = srgb_color[i] / 12.92;
+        } else {
+            linear_color[i] = pow((srgb_color[i] + 0.055) / 1.055, 2.4);
+        }
+    }
+    return linear_color;
+}
+
 fn spherical_harmonics_lookup(
     ray_direction: vec3<f32>,
     sh: array<f32, #{MAX_SH_COEFF_COUNT}>,
@@ -47,5 +59,5 @@ fn spherical_harmonics_lookup(
     color += shc[14] * vec3<f32>(sh[42], sh[43], sh[44]) * ray_direction.z * (rds.x - rds.y);
     color += shc[15] * vec3<f32>(sh[45], sh[46], sh[47]) * ray_direction.x * (rds.x - 3.0 * rds.y);
 
-    return color;
+    return srgb_to_linear(color);
 }
