@@ -23,8 +23,8 @@ download [cactus.gcloud](https://mitchell.mosure.me/cactus.gcloud)
 - [X] ply to gcloud converter
 - [X] gcloud and ply asset loaders
 - [X] bevy gaussian cloud render pipeline
-- [X] 4D gaussian cloud wavelet compression
 - [X] gaussian cloud particle effects
+- [ ] 4D gaussian cloud wavelet compression
 - [ ] accelerated spatial queries
 - [ ] wasm support /w [live demo](https://mosure.github.io/bevy_gaussian_splatting)
 - [ ] temporal depth sorting
