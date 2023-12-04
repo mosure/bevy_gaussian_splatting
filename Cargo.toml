@@ -50,7 +50,6 @@ default-features = true
 version = "0.12"
 default-features = true
 features = [
-  'bevy_ci_testing',
   'debug_glam_assert',
 ]
 
