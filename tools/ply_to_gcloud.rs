@@ -1,6 +1,9 @@
 use std::io::Write;
 
-use byte_unit::Byte;
+use byte_unit::{
+    Byte,
+    UnitType,
+};
 
 use bevy_gaussian_splatting::{
     GaussianCloud,
@@ -33,6 +36,6 @@ fn main() {
     let data = cloud.encode();
     gcloud_writer.write_all(data.as_slice()).expect("failed to write to gcloud file");
 
-    let post_encode_bytes = Byte::from_bytes(std::fs::metadata(&gcloud_filename).expect("failed to get metadata").len() as u128);
-    println!("output file size: {}", post_encode_bytes.get_appropriate_unit(true).to_string());
+    let post_encode_bytes = Byte::from_u64(std::fs::metadata(&gcloud_filename).expect("failed to get metadata").len());
+    println!("output file size: {}", post_encode_bytes.get_appropriate_unit(UnitType::Decimal).to_string());
 }
