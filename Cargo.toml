@@ -109,6 +109,14 @@ required-features = ["io_ply"]
 name = "compare_aabb_obb"
 path = "tools/compare_aabb_obb.rs"
 
+[[bin]]
+name = "test_gaussian"
+path = "tests/gpu/gaussian.rs"
+
+[[bin]]
+name = "test_radix"
+path = "tests/gpu/radix.rs"
+
 
 [[bench]]
 name = "io"

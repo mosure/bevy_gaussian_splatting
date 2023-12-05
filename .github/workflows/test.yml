@@ -44,3 +44,6 @@ jobs:
 
     - name: test
       run: cargo test
+
+    - name: gaussian render test
+      run: cargo run --bin test_gaussian
