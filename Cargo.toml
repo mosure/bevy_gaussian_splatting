@@ -21,6 +21,8 @@ io_bincode2 = ["bincode2", "flate2"]
 io_flexbuffers = ["flexbuffers"]
 io_ply = ["ply-rs"]
 
+debug_gpu = []
+
 
 [dependencies]
 bevy-inspector-egui = "0.21"
@@ -69,10 +71,6 @@ features = [
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 
-
-# remove after close: https://github.com/jakobhellermann/bevy-inspector-egui/issues/163
-[profile.dev.package."bevy-inspector-egui"]
-opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3

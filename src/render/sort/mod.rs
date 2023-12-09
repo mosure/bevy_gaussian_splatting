@@ -15,6 +15,7 @@ use bevy::{
         renderer::{
             RenderContext,
             RenderDevice,
+            RenderQueue,
         },
         render_graph::{
             Node,
@@ -476,7 +477,7 @@ impl Node for RadixSortNode {
         let pipeline = world.resource::<RadixSortPipeline>();
         let gaussian_uniforms = world.resource::<GaussianUniformBindGroups>();
 
-        let command_encoder = render_context.command_encoder();
+        // let device = render_context.render_device();
 
         for (
             view_bind_group,
@@ -489,102 +490,137 @@ impl Node for RadixSortNode {
             ) in self.gaussian_clouds.iter_manual(world) {
                 let cloud = world.get_resource::<RenderAssets<GaussianCloud>>().unwrap().get(cloud_handle).unwrap();
 
-                let radix_digit_places = ShaderDefines::default().radix_digit_places;
-
                 {
-                    command_encoder.clear_buffer(
-                        &cloud.radix_sort_buffers.sorting_global_buffer,
-                        0,
-                        None,
-                    );
+                    let command_encoder = render_context.command_encoder();
+                    let radix_digit_places = ShaderDefines::default().radix_digit_places;
 
-                    command_encoder.clear_buffer(
-                        &cloud.radix_sort_buffers.sorting_status_counter_buffer,
-                        0,
-                        None,
-                    );
+                    {
+                        command_encoder.clear_buffer(
+                            &cloud.radix_sort_buffers.sorting_global_buffer,
+                            0,
+                            None,
+                        );
 
-                    command_encoder.clear_buffer(
-                        &cloud.draw_indirect_buffer,
-                        0,
-                        None,
-                    );
-                }
-
-                {
-                    let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
-
-                    pass.set_bind_group(
-                        0,
-                        &view_bind_group.value,
-                        &[view_uniform_offset.offset],
-                    );
-                    pass.set_bind_group(
-                        1,
-                        gaussian_uniforms.base_bind_group.as_ref().unwrap(),
-                        &[0], // TODO: fix transforms - dynamic offset using DynamicUniformIndex
-                    );
-                    pass.set_bind_group(
-                        2,
-                        &cloud_bind_group.cloud_bind_group,
-                        &[]
-                    );
-                    pass.set_bind_group(
-                        3,
-                        &radix_bind_group.radix_sort_bind_groups[1],
-                        &[],
-                    );
-
-                    let radix_sort_a = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[0]).unwrap();
-                    pass.set_pipeline(radix_sort_a);
-
-                    let workgroup_entries_a = ShaderDefines::default().workgroup_entries_a;
-                    pass.dispatch_workgroups((cloud.count as u32 + workgroup_entries_a - 1) / workgroup_entries_a, 1, 1);
-
-
-                    let radix_sort_b = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[1]).unwrap();
-                    pass.set_pipeline(radix_sort_b);
-
-                    pass.dispatch_workgroups(1, radix_digit_places, 1);
-                }
-
-                for pass_idx in 0..radix_digit_places {
-                    if pass_idx > 0 {
                         command_encoder.clear_buffer(
                             &cloud.radix_sort_buffers.sorting_status_counter_buffer,
                             0,
                             None,
                         );
+
+                        command_encoder.clear_buffer(
+                            &cloud.draw_indirect_buffer,
+                            0,
+                            None,
+                        );
                     }
 
-                    let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
+                    {
+                        let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
 
-                    let radix_sort_c = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[2]).unwrap();
-                    pass.set_pipeline(&radix_sort_c);
+                        pass.set_bind_group(
+                            0,
+                            &view_bind_group.value,
+                            &[view_uniform_offset.offset],
+                        );
+                        pass.set_bind_group(
+                            1,
+                            gaussian_uniforms.base_bind_group.as_ref().unwrap(),
+                            &[0], // TODO: fix transforms - dynamic offset using DynamicUniformIndex
+                        );
+                        pass.set_bind_group(
+                            2,
+                            &cloud_bind_group.cloud_bind_group,
+                            &[]
+                        );
+                        pass.set_bind_group(
+                            3,
+                            &radix_bind_group.radix_sort_bind_groups[1],
+                            &[],
+                        );
 
-                    pass.set_bind_group(
-                        0,
-                        &view_bind_group.value,
-                        &[view_uniform_offset.offset],
-                    );
-                    pass.set_bind_group(
-                        1,
-                        gaussian_uniforms.base_bind_group.as_ref().unwrap(),
-                        &[0], // TODO: fix transforms - dynamic offset using DynamicUniformIndex
-                    );
-                    pass.set_bind_group(
-                        2,
-                        &cloud_bind_group.cloud_bind_group,
-                        &[]
-                    );
-                    pass.set_bind_group(
-                        3,
-                        &radix_bind_group.radix_sort_bind_groups[pass_idx as usize],
-                        &[],
-                    );
+                        let radix_sort_a = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[0]).unwrap();
+                        pass.set_pipeline(radix_sort_a);
 
-                    let workgroup_entries_c = ShaderDefines::default().workgroup_entries_c;
-                    pass.dispatch_workgroups(1, (cloud.count as u32 + workgroup_entries_c - 1) / workgroup_entries_c, 1);
+                        let workgroup_entries_a = ShaderDefines::default().workgroup_entries_a;
+                        pass.dispatch_workgroups((cloud.count as u32 + workgroup_entries_a - 1) / workgroup_entries_a, 1, 1);
+
+
+                        let radix_sort_b = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[1]).unwrap();
+                        pass.set_pipeline(radix_sort_b);
+
+                        pass.dispatch_workgroups(1, radix_digit_places, 1);
+                    }
+
+                    for pass_idx in 0..radix_digit_places {
+                        if pass_idx > 0 {
+                            command_encoder.clear_buffer(
+                                &cloud.radix_sort_buffers.sorting_status_counter_buffer,
+                                0,
+                                None,
+                            );
+                        }
+
+                        let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
+
+                        let radix_sort_c = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[2]).unwrap();
+                        pass.set_pipeline(&radix_sort_c);
+
+                        pass.set_bind_group(
+                            0,
+                            &view_bind_group.value,
+                            &[view_uniform_offset.offset],
+                        );
+                        pass.set_bind_group(
+                            1,
+                            gaussian_uniforms.base_bind_group.as_ref().unwrap(),
+                            &[0], // TODO: fix transforms - dynamic offset using DynamicUniformIndex
+                        );
+                        pass.set_bind_group(
+                            2,
+                            &cloud_bind_group.cloud_bind_group,
+                            &[]
+                        );
+                        pass.set_bind_group(
+                            3,
+                            &radix_bind_group.radix_sort_bind_groups[pass_idx as usize],
+                            &[],
+                        );
+
+                        let workgroup_entries_c = ShaderDefines::default().workgroup_entries_c;
+                        pass.dispatch_workgroups(1, (cloud.count as u32 + workgroup_entries_c - 1) / workgroup_entries_c, 1);
+                    }
+                }
+
+                // TODO: move to test_radix
+                // #[cfg(feature = "debug_gpu")]
+                {
+                    wgpu::util::DownloadBuffer::read_buffer(
+                        render_context.render_device().wgpu_device(),
+                        world.get_resource::<RenderQueue>().unwrap().0.as_ref(),
+                        &cloud.radix_sort_buffers.entry_buffer_a.slice(
+                            0..cloud.radix_sort_buffers.entry_buffer_a.size()
+                        ),
+                        |buffer: Result<wgpu::util::DownloadBuffer, wgpu::BufferAsyncError>| {
+                            // println!("{:X?}", transmute_slice::<u8, u32>(&*buffer.unwrap()));
+                        }
+                    );
+                    // wgpu::util::DownloadBuffer::read_buffer(
+                    //     render_context.render_device().wgpu_device(),
+                    //     queue,
+                    //     &self.sorting_buffer.slice(0..self.sorting_buffer_size as u64 - 4 * 5),
+                    //     |buffer: Result<wgpu::util::DownloadBuffer, wgpu::BufferAsyncError>| {
+                    //         println!("{:X?}", transmute_slice::<u8, [u32; 256]>(&*buffer.unwrap()));
+                    //     }
+                    // );
+                    // wgpu::util::DownloadBuffer::read_buffer(
+                    //     render_context.render_device().wgpu_device(),
+                    //     queue,
+                    //     &self.entry_buffer_a.slice(..),
+                    //     |buffer: Result<wgpu::util::DownloadBuffer, wgpu::BufferAsyncError>| {
+                    //         println!("{:X?}", transmute_slice::<u8, [(u32, u32); 2048]>(&*buffer.unwrap()));
+                    //         println!("{:X?}", transmute_slice::<u8, [(u32, u32); 1024]>(&*buffer.unwrap()));
+                    //     }
+                    // );
                 }
             }
         }
