@@ -48,12 +48,14 @@ pub fn test_harness_app(
 
 
 pub struct TestState {
+    pub test_loaded: bool,
     pub test_completed: bool,
 }
 
 impl Default for TestState {
     fn default() -> Self {
         TestState {
+            test_loaded: false,
             test_completed: false,
         }
     }

@@ -15,7 +15,6 @@ use bevy::{
         renderer::{
             RenderContext,
             RenderDevice,
-            RenderQueue,
         },
         render_graph::{
             Node,
@@ -514,6 +513,7 @@ impl Node for RadixSortNode {
                         );
                     }
 
+                    // TODO: add options to only complete a fraction of the sorting process
                     {
                         let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
 
@@ -594,19 +594,21 @@ impl Node for RadixSortNode {
                 // TODO: move to test_radix
                 // #[cfg(feature = "debug_gpu")]
                 {
-                    wgpu::util::DownloadBuffer::read_buffer(
-                        render_context.render_device().wgpu_device(),
-                        world.get_resource::<RenderQueue>().unwrap().0.as_ref(),
-                        &cloud.radix_sort_buffers.entry_buffer_a.slice(
-                            0..cloud.radix_sort_buffers.entry_buffer_a.size()
-                        ),
-                        |buffer: Result<wgpu::util::DownloadBuffer, wgpu::BufferAsyncError>| {
-                            // println!("{:X?}", transmute_slice::<u8, u32>(&*buffer.unwrap()));
-                        }
-                    );
                     // wgpu::util::DownloadBuffer::read_buffer(
                     //     render_context.render_device().wgpu_device(),
-                    //     queue,
+                    //     world.get_resource::<RenderQueue>().unwrap().0.as_ref(),
+                    //     &cloud.radix_sort_buffers.entry_buffer_a.slice(
+                    //         0..cloud.radix_sort_buffers.entry_buffer_a.size()
+                    //     ),
+                    //     |buffer: Result<wgpu::util::DownloadBuffer, wgpu::BufferAsyncError>| {
+                    //         let binding = buffer.unwrap();
+                    //         let u32_muck = bytemuck::cast_slice::<u8, u32>(&*binding);
+                    //         println!("{:X?}", &u32_muck);
+                    //     }
+                    // );
+                    // wgpu::util::DownloadBuffer::read_buffer(
+                    //     render_context.render_device().wgpu_device(),
+                    //     world.get_resource::<RenderQueue>().unwrap().0.as_ref(),
                     //     &self.sorting_buffer.slice(0..self.sorting_buffer_size as u64 - 4 * 5),
                     //     |buffer: Result<wgpu::util::DownloadBuffer, wgpu::BufferAsyncError>| {
                     //         println!("{:X?}", transmute_slice::<u8, [u32; 256]>(&*buffer.unwrap()));
@@ -614,7 +616,7 @@ impl Node for RadixSortNode {
                     // );
                     // wgpu::util::DownloadBuffer::read_buffer(
                     //     render_context.render_device().wgpu_device(),
-                    //     queue,
+                    //     world.get_resource::<RenderQueue>().unwrap().0.as_ref(),
                     //     &self.entry_buffer_a.slice(..),
                     //     |buffer: Result<wgpu::util::DownloadBuffer, wgpu::BufferAsyncError>| {
                     //         println!("{:X?}", transmute_slice::<u8, [(u32, u32); 2048]>(&*buffer.unwrap()));

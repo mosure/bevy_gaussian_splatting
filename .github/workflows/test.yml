@@ -47,3 +47,6 @@ jobs:
 
     - name: gaussian render test
       run: cargo run --bin test_gaussian
+
+    - name: radix sort test
+      run: cargo run --bin test_radix --features="debug_gpu"

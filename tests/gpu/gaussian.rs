@@ -131,7 +131,9 @@ fn capture_ready(
     let state_clone = Arc::clone(&state);
     let buffer_clone = Arc::clone(&buffer);
 
-    let state = state.lock().unwrap();
+    let mut state = state.lock().unwrap();
+    state.test_loaded = true;
+
     if state.test_completed {
         {
             let captures = buffer.lock().unwrap();
@@ -141,6 +143,7 @@ fn capture_ready(
 
         save_captures(buffer.clone());
         test_stability(buffer);
+        // TODO: add correctness test (use CPU gaussian pipeline?)
 
         // TODO: add post-frame test registration
 

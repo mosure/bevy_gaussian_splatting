@@ -161,6 +161,9 @@ pub struct GpuGaussianCloud {
     pub draw_indirect_buffer: Buffer,
 
     pub radix_sort_buffers: GpuRadixBuffers,
+
+    #[cfg(feature = "debug_gpu")]
+    pub debug_gpu: GaussianCloud,
 }
 impl RenderAsset for GaussianCloud {
     type ExtractedAsset = GaussianCloud;
@@ -195,6 +198,7 @@ impl RenderAsset for GaussianCloud {
             count,
             draw_indirect_buffer,
             radix_sort_buffers: GpuRadixBuffers::new(count, render_device),
+            debug_gpu: gaussian_cloud,
         })
     }
 }
