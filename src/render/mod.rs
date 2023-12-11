@@ -198,6 +198,7 @@ impl RenderAsset for GaussianCloud {
             count,
             draw_indirect_buffer,
             radix_sort_buffers: GpuRadixBuffers::new(count, render_device),
+            #[cfg(feature = "debug_gpu")]
             debug_gpu: gaussian_cloud,
         })
     }
