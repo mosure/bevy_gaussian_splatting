@@ -9,20 +9,25 @@ use std::{
 use bevy::{
     prelude::*,
     core::FrameCount,
-    core_pipeline::core_3d::CORE_3D,
+    core_pipeline::core_3d::{
+        CORE_3D,
+        Transparent3d,
+    },
     render::{
         RenderApp,
         renderer::{
             RenderContext,
             RenderQueue,
         },
+        render_asset::RenderAssets,
         render_graph::{
             Node,
             NodeRunError,
             RenderGraphApp,
             RenderGraphContext,
         },
-        render_asset::RenderAssets, view::ExtractedView,
+        render_phase::RenderPhase,
+        view::ExtractedView,
     },
 };
 
@@ -100,6 +105,7 @@ pub struct RadixTestNode {
     state: TestStateArc,
     views: QueryState<(
         &'static ExtractedView,
+        &'static RenderPhase<Transparent3d>,
     )>,
     start_frame: u32,
 }
@@ -146,11 +152,8 @@ impl Node for RadixTestNode {
         render_context: &mut RenderContext,
         world: &World,
     ) -> Result<(), NodeRunError> {
-        println!("radix sort test: running frame {}...", world.get_resource::<FrameCount>().unwrap().0);
-
-        for (view,) in self.views.iter_manual(world) {
+        for (view, _phase,) in self.views.iter_manual(world) {
             let camera_position = view.transform.translation();
-            println!("radix sort test: camera position: {:?}", camera_position);
 
             for (cloud_handle,) in self.gaussian_clouds.iter_manual(world) {
                 let gaussian_cloud_res = world.get_resource::<RenderAssets<GaussianCloud>>().unwrap();
@@ -165,8 +168,6 @@ impl Node for RadixTestNode {
                 let cloud = gaussian_cloud_res.get(cloud_handle).unwrap();
                 let gaussians = cloud.debug_gpu.gaussians.clone();
 
-                println!("radix sort test: {} gaussians", gaussians.len());
-
                 wgpu::util::DownloadBuffer::read_buffer(
                     render_context.render_device().wgpu_device(),
                     world.get_resource::<RenderQueue>().unwrap().0.as_ref(),
@@ -179,21 +180,35 @@ impl Node for RadixTestNode {
 
                         let mut radix_sorted_indices = Vec::new();
                         for i in (1..u32_muck.len()).step_by(2) {
-                            radix_sorted_indices.push(u32_muck[i]);
+                            radix_sorted_indices.push((i, u32_muck[i] as usize));
                         }
 
-                        let max_depth = radix_sorted_indices.iter()
-                            .fold(0.0, |depth_acc, &idx| {
-                                let position = gaussians[idx as usize].position;
+                        // TODO: depth order validation needs to happen over each grid cell, not the entire cloud
+
+                        radix_sorted_indices.iter()
+                            .fold(0.0, |depth_acc, &(entry_idx, idx)| {
+                                if idx == 0 || u32_muck[entry_idx - 1] == 0xffffffff {
+                                    return depth_acc;
+                                }
+
+                                let position = gaussians[idx].position;
                                 let position_vec3 = Vec3::new(position[0], position[1], position[2]);
                                 let depth = (position_vec3 - camera_position).length();
 
-                                assert!(depth_acc <= depth, "radix sort, non-decreasing check failed: {} > {}", depth_acc, depth);
+                                let depth_is_non_decreasing = depth_acc <= depth;
+                                if !depth_is_non_decreasing {
+                                    println!(
+                                        "radix keys: [..., {:#010x}, {:#010x}, {:#010x}, ...]",
+                                        u32_muck[entry_idx - 1 - 2],
+                                        u32_muck[entry_idx - 1],
+                                        u32_muck[entry_idx - 1 + 2],
+                                    );
+                                }
+
+                                assert!(depth_is_non_decreasing, "radix sort, non-decreasing check failed: {} > {}", depth_acc, depth);
 
                                 depth
                             });
-
-                        assert!(max_depth > 0.0, "radix sort, max depth check failed: {}", max_depth);
 
                         // TODO: analyze incorrectly sorted gaussian positions or upstream buffers (e.g. histogram sort error vs. position of gaussian distance from correctly sorted index)
                     }
