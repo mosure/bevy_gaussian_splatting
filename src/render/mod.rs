@@ -64,11 +64,12 @@ use crate::{
     },
     render::{
         morph::MorphPlugin,
-        sort::RadixSortPlugin,
+        sort::radix::RadixSortPlugin,
     },
 };
 
-use self::sort::GpuRadixBuffers;
+// TODO: move to radix module (requires 2-stage GaussianCloud extraction due to gaussian count being required)
+use self::sort::radix::GpuRadixBuffers;
 
 pub mod morph;
 pub mod sort;

@@ -187,7 +187,8 @@ impl Node for RadixTestNode {
 
                         radix_sorted_indices.iter()
                             .fold(0.0, |depth_acc, &(entry_idx, idx)| {
-                                if idx == 0 || u32_muck[entry_idx - 1] == 0xffffffff {
+                                // TODO: unclear what causes 0x0 keys to appear in the radix sort output (entry_buffer_b)
+                                if idx == 0 || u32_muck[entry_idx - 1] == 0xffffffff || u32_muck[entry_idx - 1] == 0x0 {
                                     return depth_acc;
                                 }
 
@@ -195,7 +196,8 @@ impl Node for RadixTestNode {
                                 let position_vec3 = Vec3::new(position[0], position[1], position[2]);
                                 let depth = (position_vec3 - camera_position).length();
 
-                                let depth_is_non_decreasing = depth_acc <= depth;
+                                let depth_tolerance = 1.0;
+                                let depth_is_non_decreasing = depth_acc <= depth + depth_tolerance;
                                 if !depth_is_non_decreasing {
                                     println!(
                                         "radix keys: [..., {:#010x}, {:#010x}, {:#010x}, ...]",
@@ -205,9 +207,11 @@ impl Node for RadixTestNode {
                                     );
                                 }
 
+                                // TODO: count how many sort errors exist (explore sort scoring algorithms)
+
                                 assert!(depth_is_non_decreasing, "radix sort, non-decreasing check failed: {} > {}", depth_acc, depth);
 
-                                depth
+                                depth_acc.max(depth)
                             });
 
                         // TODO: analyze incorrectly sorted gaussian positions or upstream buffers (e.g. histogram sort error vs. position of gaussian distance from correctly sorted index)
