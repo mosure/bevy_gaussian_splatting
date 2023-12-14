@@ -64,7 +64,10 @@ use crate::{
     },
     render::{
         morph::MorphPlugin,
-        sort::radix::RadixSortPlugin,
+        sort::{
+            GpuSortedEntry,
+            SortPlugin,
+        },
     },
 };
 
@@ -118,7 +121,7 @@ impl Plugin for RenderPipelinePlugin {
         app.add_plugins(UniformComponentPlugin::<GaussianCloudUniform>::default());
         app.add_plugins((
             MorphPlugin,
-            RadixSortPlugin,
+            SortPlugin,
         ));
 
         if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
@@ -162,6 +165,7 @@ pub struct GpuGaussianCloud {
     pub draw_indirect_buffer: Buffer,
 
     pub radix_sort_buffers: GpuRadixBuffers,
+    pub sorted_entries: GpuSortedEntry,
 
     #[cfg(feature = "debug_gpu")]
     pub debug_gpu: GaussianCloud,
@@ -199,6 +203,7 @@ impl RenderAsset for GaussianCloud {
             count,
             draw_indirect_buffer,
             radix_sort_buffers: GpuRadixBuffers::new(count, render_device),
+            sorted_entries: GpuSortedEntry::new(count, render_device),
             #[cfg(feature = "debug_gpu")]
             debug_gpu: gaussian_cloud,
         })
@@ -662,7 +667,7 @@ fn queue_gaussian_bind_group(
                     BindGroupEntry {
                         binding: 0,
                         resource: BindingResource::Buffer(BufferBinding {
-                            buffer: &cloud.radix_sort_buffers.entry_buffer_a,
+                            buffer: &cloud.sorted_entries.sorted_entry_buffer,
                             offset: 0,
                             size: BufferSize::new((cloud.count as usize * std::mem::size_of::<(u32, u32)>()) as u64),
                         }),

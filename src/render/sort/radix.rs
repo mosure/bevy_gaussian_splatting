@@ -38,6 +38,7 @@ use crate::{
         GaussianViewBindGroup,
         ShaderDefines,
         shader_defs,
+        sort::SortEntry,
     },
 };
 
@@ -104,11 +105,10 @@ pub struct GpuRadixBuffers {
     pub sorting_global_buffer: Buffer,
     pub sorting_status_counter_buffer: Buffer,
     pub sorting_pass_buffers: [Buffer; 4],
-    pub entry_buffer_a: Buffer, // TODO: entry_buffer_a should exist at render level or generic sorted `sort::GpuSortedEntry::sorted_entry_buffer`
     pub entry_buffer_b: Buffer,
 }
 impl GpuRadixBuffers {
-    // TODO: move into a 2nd order extraction system (one frame)
+    // TODO: move into a 2nd order asset system
     pub fn new(
         count: usize,
         render_device: &mut SystemParamItem<SRes<RenderDevice>>,
@@ -139,16 +139,9 @@ impl GpuRadixBuffers {
             .try_into()
             .unwrap();
 
-        let entry_buffer_a = render_device.create_buffer(&BufferDescriptor {
-            label: Some("entry buffer a"),
-            size: (count * std::mem::size_of::<(u32, u32)>()) as u64,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
         let entry_buffer_b = render_device.create_buffer(&BufferDescriptor {
             label: Some("entry buffer b"),
-            size: (count * std::mem::size_of::<(u32, u32)>()) as u64,
+            size: (count * std::mem::size_of::<SortEntry>()) as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -157,7 +150,6 @@ impl GpuRadixBuffers {
             sorting_global_buffer,
             sorting_status_counter_buffer,
             sorting_pass_buffers,
-            entry_buffer_a,
             entry_buffer_b,
         }
     }
@@ -230,7 +222,7 @@ impl FromWorld for RadixSortPipeline {
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(std::mem::size_of::<(u32, u32)>() as u64),
+                        min_binding_size: BufferSize::new(std::mem::size_of::<SortEntry>() as u64),
                     },
                     count: None,
                 },
@@ -240,7 +232,7 @@ impl FromWorld for RadixSortPipeline {
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(std::mem::size_of::<(u32, u32)>() as u64),
+                        min_binding_size: BufferSize::new(std::mem::size_of::<SortEntry>() as u64),
                     },
                     count: None,
                 },
@@ -371,12 +363,12 @@ pub fn queue_radix_bind_group(
                             binding: 4,
                             resource: BindingResource::Buffer(BufferBinding {
                                 buffer: if idx % 2 == 0 {
-                                    &cloud.radix_sort_buffers.entry_buffer_a
+                                    &cloud.sorted_entries.sorted_entry_buffer
                                 } else {
                                     &cloud.radix_sort_buffers.entry_buffer_b
                                 },
                                 offset: 0,
-                                size: BufferSize::new((cloud.count as usize * std::mem::size_of::<(u32, u32)>()) as u64),
+                                size: BufferSize::new((cloud.count as usize * std::mem::size_of::<SortEntry>()) as u64),
                             }),
                         },
                         BindGroupEntry {
@@ -385,10 +377,10 @@ pub fn queue_radix_bind_group(
                                 buffer: if idx % 2 == 0 {
                                     &cloud.radix_sort_buffers.entry_buffer_b
                                 } else {
-                                    &cloud.radix_sort_buffers.entry_buffer_a
+                                    &cloud.sorted_entries.sorted_entry_buffer
                                 },
                                 offset: 0,
-                                size: BufferSize::new((cloud.count as usize * std::mem::size_of::<(u32, u32)>()) as u64),
+                                size: BufferSize::new((cloud.count as usize * std::mem::size_of::<SortEntry>()) as u64),
                             }),
                         },
                     ],
@@ -405,10 +397,6 @@ pub fn queue_radix_bind_group(
 }
 
 
-
-
-
-
 pub struct RadixSortNode {
     gaussian_clouds: QueryState<(
         &'static Handle<GaussianCloud>,
@@ -416,6 +404,7 @@ pub struct RadixSortNode {
         &'static RadixBindGroup,
     )>,
     initialized: bool,
+    // TODO: view parameter should be a single view (this allows RadixSortNode to be placed in a view specific path, allowing sort + draw per view using the same buffer)
     view_bind_group: QueryState<(
         &'static GaussianViewBindGroup,
         &'static ViewUniformOffset,
@@ -473,8 +462,6 @@ impl Node for RadixSortNode {
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = world.resource::<RadixSortPipeline>();
         let gaussian_uniforms = world.resource::<GaussianUniformBindGroups>();
-
-        // let device = render_context.render_device();
 
         for (
             view_bind_group,

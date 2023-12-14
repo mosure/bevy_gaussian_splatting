@@ -171,8 +171,8 @@ impl Node for RadixTestNode {
                 wgpu::util::DownloadBuffer::read_buffer(
                     render_context.render_device().wgpu_device(),
                     world.get_resource::<RenderQueue>().unwrap().0.as_ref(),
-                    &cloud.radix_sort_buffers.entry_buffer_a.slice(
-                        0..cloud.radix_sort_buffers.entry_buffer_a.size()
+                    &cloud.sorted_entries.sorted_entry_buffer.slice(
+                        0..cloud.sorted_entries.sorted_entry_buffer.size()
                     ),
                     move |buffer: Result<wgpu::util::DownloadBuffer, wgpu::BufferAsyncError>| {
                         let binding = buffer.unwrap();

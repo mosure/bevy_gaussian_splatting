@@ -1,4 +1,14 @@
-use bevy::prelude::*;
+use bevy::{
+    prelude::*,
+    ecs::system::{
+        lifetimeless::SRes,
+        SystemParamItem,
+    },
+    render::{
+        render_resource::*,
+        renderer::RenderDevice,
+    },
+};
 
 use static_assertions::assert_cfg;
 
@@ -34,14 +44,54 @@ impl Default for SortMode {
     #[allow(unreachable_code)]
     fn default() -> Self {
         #[cfg(feature = "sort_rayon")]
-        { return Self::Rayon; }
+        return Self::Rayon;
 
         #[cfg(feature = "sort_radix")]
-        { return Self::Radix; }
+        return Self::Radix;
 
         Self::None
     }
 }
 
 
-// TODO: add SortPlugin to manage sub-sort plugin registration
+#[derive(Default)]
+pub struct SortPlugin;
+
+impl Plugin for SortPlugin {
+    fn build(&self, app: &mut App) {
+        #[cfg(feature = "sort_radix")]
+        app.add_plugins(radix::RadixSortPlugin);
+
+        #[cfg(feature = "sort_rayon")]
+        app.add_plugin(rayon::RayonSortPlugin);
+    }
+}
+
+
+pub struct SortEntry {
+    pub key: u32,  // TODO: CPU sort doesn't require radix keys, figure out how to efficiently remove to save VRAM in CPU sort mode
+    pub index: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct GpuSortedEntry {
+    pub sorted_entry_buffer: Buffer,
+}
+impl GpuSortedEntry {
+    // TODO: move into a 2nd order asset system
+    pub fn new(
+        count: usize,
+        render_device: &mut SystemParamItem<SRes<RenderDevice>>,
+    ) -> Self {
+        let sorted_entry_buffer = render_device.create_buffer(&BufferDescriptor {
+            label: Some("sorted_entry_buffer"),
+            size: (count * std::mem::size_of::<SortEntry>()) as u64,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        GpuSortedEntry {
+            sorted_entry_buffer,
+        }
+    }
+}
