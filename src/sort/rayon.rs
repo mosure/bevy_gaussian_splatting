@@ -48,8 +48,6 @@ pub fn rayon_sort(
         }
     }
 
-    *last_sort_time = Some(Instant::now());
-
     // TODO: move sort to render world, use extracted views and update the existing buffer instead of creating new
 
     for (
@@ -60,7 +58,6 @@ pub fn rayon_sort(
         if *last_camera_position == camera_position {
             return;
         }
-        *last_camera_position = camera_position;
 
         for (
             gaussian_cloud_handle,
@@ -83,6 +80,10 @@ pub fn rayon_sort(
                 if let Some(sorted_entries) = sorted_entries_res.get_mut(sorted_entries_handle) {
                     assert_eq!(gaussian_cloud.gaussians.len(), sorted_entries.sorted.len());
 
+                    *last_camera_position = camera_position;
+                    *last_sort_time = Some(Instant::now());
+
+                    // TODO: async CPU sort
                     gaussian_cloud.gaussians.par_iter()
                         .zip(sorted_entries.sorted.par_iter_mut())
                         .enumerate()
