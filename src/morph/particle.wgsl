@@ -30,10 +30,6 @@ fn apply_particle_behaviors(
     let behavior_index = gl_GlobalInvocationID.x * 32u + gl_GlobalInvocationID.y;
     let behavior = particle_behaviors[behavior_index];
 
-    if (behavior.indicies.x < 0) {
-        return;
-    }
-
     let point_index = behavior.indicies.x;
     let point = points[point_index];
 
@@ -46,6 +42,10 @@ fn apply_particle_behaviors(
     let new_acceleration = behavior.acceleration + delta_acceleration;
 
     workgroupBarrier();
+
+    if (behavior.indicies.x < 0) {
+        return;
+    }
 
     points[point_index].position = new_position;
     particle_behaviors[behavior_index].velocity = new_velocity;

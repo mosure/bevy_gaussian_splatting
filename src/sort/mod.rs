@@ -34,11 +34,15 @@ pub mod radix;
 #[cfg(feature = "sort_rayon")]
 pub mod rayon;
 
+#[cfg(feature = "sort_std")]
+pub mod std;
+
 
 assert_cfg!(
     any(
         feature = "sort_radix",
         feature = "sort_rayon",
+        feature = "sort_std",
     ),
     "no sort mode enabled",
 );
@@ -59,6 +63,9 @@ pub enum SortMode {
 
     #[cfg(feature = "sort_rayon")]
     Rayon,
+
+    #[cfg(feature = "sort_std")]
+    Std,
 }
 
 impl Default for SortMode {
@@ -69,6 +76,9 @@ impl Default for SortMode {
 
         #[cfg(feature = "sort_radix")]
         return Self::Radix;
+
+        #[cfg(feature = "sort_std")]
+        return Self::Std;
 
         Self::None
     }
@@ -85,6 +95,9 @@ impl Plugin for SortPlugin {
 
         #[cfg(feature = "sort_rayon")]
         app.add_plugins(rayon::RayonSortPlugin);
+
+        #[cfg(feature = "sort_std")]
+        app.add_plugins(std::StdSortPlugin);
 
 
         app.register_type::<SortedEntries>();

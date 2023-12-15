@@ -9,9 +9,12 @@ use std::{
 use bevy::{
     prelude::*,
     core::FrameCount,
-    core_pipeline::core_3d::{
-        CORE_3D,
-        Transparent3d,
+    core_pipeline::{
+        core_3d::{
+            CORE_3D,
+            Transparent3d,
+        },
+        tonemapping::Tonemapping,
     },
     render::{
         RenderApp,
@@ -97,6 +100,7 @@ fn setup(
     commands.spawn((
         Camera3dBundle {
             transform: Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
+            tonemapping: Tonemapping::None,
             ..default()
         },
     ));

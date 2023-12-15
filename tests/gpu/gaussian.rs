@@ -7,6 +7,7 @@ use bevy::{
     prelude::*,
     app::AppExit,
     core::FrameCount,
+    core_pipeline::tonemapping::Tonemapping,
     render::view::screenshot::ScreenshotManager,
     window::PrimaryWindow,
 };
@@ -54,6 +55,7 @@ fn setup(
     commands.spawn((
         Camera3dBundle {
             transform: Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
+            tonemapping: Tonemapping::None,
             ..default()
         },
     ));

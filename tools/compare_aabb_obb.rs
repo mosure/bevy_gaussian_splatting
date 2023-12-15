@@ -2,6 +2,7 @@ use bevy::{
     prelude::*,
     app::AppExit,
     core::Name,
+    core_pipeline::tonemapping::Tonemapping,
 };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_panorbit_camera::{
@@ -110,6 +111,7 @@ pub fn setup_aabb_obb_compare(
     commands.spawn((
         Camera3dBundle {
             transform: Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
+            tonemapping: Tonemapping::None,
             ..default()
         },
         PanOrbitCamera{

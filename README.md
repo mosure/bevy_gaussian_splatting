@@ -24,9 +24,9 @@ download [cactus.gcloud](https://mitchell.mosure.me/cactus.gcloud)
 - [X] gcloud and ply asset loaders
 - [X] bevy gaussian cloud render pipeline
 - [X] gaussian cloud particle effects
+- [X] wasm support /w [live demo](https://mosure.github.io/bevy_gaussian_splatting/index.html?arg1=icecream.gcloud)
 - [ ] 4D gaussian cloud wavelet compression
 - [ ] accelerated spatial queries
-- [ ] wasm support /w [live demo](https://mosure.github.io/bevy_gaussian_splatting)
 - [ ] temporal depth sorting
 - [ ] f16 and f32 gcloud support
 - [ ] skeletons
@@ -69,18 +69,12 @@ fn setup_gaussian_cloud(
 - [gaussian cloud training pipeline](https://github.com/mosure/burn_gaussian_splatting)
 - aabb vs. obb gaussian comparison via `cargo run --bin compare_aabb_obb`
 
-## wasm support
-
-to build wasm run:
-- `cargo build --target wasm32-unknown-unknown --release`
-- `wasm-bindgen --out-dir ./out/ --target web ./target/`
-
 
 ## compatible bevy versions
 
 | `bevy_gaussian_splatting` | `bevy` |
 | :--                       | :--    |
-| `0.4`                     | `0.12` |
+| `0.4 - 0.5`               | `0.12` |
 | `0.1 - 0.3`               | `0.11` |
 
 

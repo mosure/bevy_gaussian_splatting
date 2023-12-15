@@ -19,7 +19,12 @@ struct Gaussian {
     @location(2) scale_opacity: vec4<f32>,
     sh: array<f32, #{MAX_SH_COEFF_COUNT}>,
 };
+
+#ifdef READ_WRITE_POINTS
 @group(2) @binding(0) var<storage, read_write> points: array<Gaussian>;
+#else
+@group(2) @binding(0) var<storage, read> points: array<Gaussian>;
+#endif
 
 
 struct DrawIndirect {
