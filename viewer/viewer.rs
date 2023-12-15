@@ -17,7 +17,7 @@ use bevy_gaussian_splatting::{
     GaussianCloud,
     GaussianSplattingBundle,
     GaussianSplattingPlugin,
-    render::morph::{
+    morph::{
         ParticleBehaviors,
         random_particle_behaviors,
     },

@@ -35,6 +35,7 @@ use bevy_gaussian_splatting::{
     GaussianCloud,
     GaussianSplattingBundle,
     random_gaussians,
+    sort::SortedEntries,
 };
 
 use _harness::{
@@ -101,6 +102,7 @@ fn setup(
 pub struct RadixTestNode {
     gaussian_clouds: QueryState<(
         &'static Handle<GaussianCloud>,
+        &'static Handle<SortedEntries>,
     )>,
     state: TestStateArc,
     views: QueryState<(
@@ -155,24 +157,29 @@ impl Node for RadixTestNode {
         for (view, _phase,) in self.views.iter_manual(world) {
             let camera_position = view.transform.translation();
 
-            for (cloud_handle,) in self.gaussian_clouds.iter_manual(world) {
+            for (
+                cloud_handle,
+                sorted_entries_handle,
+            ) in self.gaussian_clouds.iter_manual(world) {
                 let gaussian_cloud_res = world.get_resource::<RenderAssets<GaussianCloud>>().unwrap();
+                let sorted_entries_res = world.get_resource::<RenderAssets<SortedEntries>>().unwrap();
 
                 let mut state = self.state.lock().unwrap();
-                if gaussian_cloud_res.get(cloud_handle).is_none() {
+                if gaussian_cloud_res.get(cloud_handle).is_none() || sorted_entries_res.get(sorted_entries_handle).is_none() {
                     continue;
                 } else if !state.test_loaded {
                     state.test_loaded = true;
                 }
 
                 let cloud = gaussian_cloud_res.get(cloud_handle).unwrap();
+                let sorted_entries = sorted_entries_res.get(sorted_entries_handle).unwrap();
                 let gaussians = cloud.debug_gpu.gaussians.clone();
 
                 wgpu::util::DownloadBuffer::read_buffer(
                     render_context.render_device().wgpu_device(),
                     world.get_resource::<RenderQueue>().unwrap().0.as_ref(),
-                    &cloud.sorted_entries.sorted_entry_buffer.slice(
-                        0..cloud.sorted_entries.sorted_entry_buffer.size()
+                    &sorted_entries.sorted_entry_buffer.slice(
+                        0..sorted_entries.sorted_entry_buffer.size()
                     ),
                     move |buffer: Result<wgpu::util::DownloadBuffer, wgpu::BufferAsyncError>| {
                         let binding = buffer.unwrap();

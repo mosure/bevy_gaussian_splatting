@@ -14,7 +14,9 @@ use render::RenderPipelinePlugin;
 
 pub mod gaussian;
 pub mod io;
+pub mod morph;
 pub mod render;
+pub mod sort;
 pub mod utils;
 
 
