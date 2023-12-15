@@ -1,5 +1,6 @@
 debug/
 target/
+out/
 Cargo.lock
 **/*.rs.bk
 *.pdb
@@ -10,3 +11,5 @@ Cargo.lock
 *.gcloud
 
 .DS_Store
+
+www/assets/

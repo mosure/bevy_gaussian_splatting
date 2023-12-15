@@ -69,18 +69,12 @@ fn setup_gaussian_cloud(
 - [gaussian cloud training pipeline](https://github.com/mosure/burn_gaussian_splatting)
 - aabb vs. obb gaussian comparison via `cargo run --bin compare_aabb_obb`
 
-## wasm support
-
-to build wasm run:
-- `cargo build --target wasm32-unknown-unknown --release`
-- `wasm-bindgen --out-dir ./out/ --target web ./target/`
-
 
 ## compatible bevy versions
 
 | `bevy_gaussian_splatting` | `bevy` |
 | :--                       | :--    |
-| `0.4`                     | `0.12` |
+| `0.4 - 0.5`               | `0.12` |
 | `0.1 - 0.3`               | `0.11` |
 
 

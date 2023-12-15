@@ -7,5 +7,7 @@
 			"path": "../../bevy"
 		}
 	],
-	"settings": {}
+	"settings": {
+		"liveServer.settings.multiRootWorkspaceName": "bevy_gaussian_splatting"
+	}
 }

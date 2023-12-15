@@ -2,6 +2,7 @@ use bevy::{
     prelude::*,
     app::AppExit,
     core::Name,
+    core_pipeline::tonemapping::Tonemapping,
     diagnostic::{
         DiagnosticsStore,
         FrameTimeDiagnosticsPlugin,
@@ -17,12 +18,17 @@ use bevy_gaussian_splatting::{
     GaussianCloud,
     GaussianSplattingBundle,
     GaussianSplattingPlugin,
-    morph::{
-        ParticleBehaviors,
-        random_particle_behaviors,
-    },
     random_gaussians,
-    utils::setup_hooks,
+    utils::{
+        get_arg,
+        setup_hooks,
+    },
+};
+
+#[cfg(feature = "morph_particles")]
+use bevy_gaussian_splatting::morph::particle::{
+    ParticleBehaviors,
+    random_particle_behaviors,
 };
 
 
@@ -53,23 +59,14 @@ fn setup_gaussian_cloud(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
-    mut particle_behavior_assets: ResMut<Assets<ParticleBehaviors>>,
 ) {
     let cloud: Handle<GaussianCloud>;
 
-    let mut particle_behaviors = None;
-
     // TODO: add proper GaussianSplattingViewer argument parsing
-    let file_arg = std::env::args().nth(1);
+    let file_arg = get_arg(1);
     if let Some(n) = file_arg.clone().and_then(|s| s.parse::<usize>().ok()) {
         println!("generating {} gaussians", n);
         cloud = gaussian_assets.add(random_gaussians(n));
-
-        let behavior_arg = std::env::args().nth(2);
-        if let Some(k) = behavior_arg.clone().and_then(|s| s.parse::<usize>().ok()) {
-            println!("generating {} particle behaviors", k);
-            particle_behaviors = particle_behavior_assets.add(random_particle_behaviors(k)).into();
-        }
     } else if let Some(filename) = file_arg {
         if filename == "--help".to_string() {
             println!("usage: cargo run -- [filename | n]");
@@ -82,7 +79,7 @@ fn setup_gaussian_cloud(
         cloud = gaussian_assets.add(GaussianCloud::test_model());
     }
 
-    let mut entity = commands.spawn((
+    commands.spawn((
         GaussianSplattingBundle {
             cloud,
             ..default()
@@ -90,13 +87,10 @@ fn setup_gaussian_cloud(
         Name::new("gaussian_cloud"),
     ));
 
-    if let Some(particle_behaviors) = particle_behaviors {
-        entity.insert(particle_behaviors);
-    }
-
     commands.spawn((
         Camera3dBundle {
             transform: Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
+            tonemapping: Tonemapping::None,
             ..default()
         },
         PanOrbitCamera{
@@ -107,9 +101,62 @@ fn setup_gaussian_cloud(
 }
 
 
+#[cfg(feature = "morph_particles")]
+fn setup_particle_behavior(
+    mut commands: Commands,
+    mut particle_behavior_assets: ResMut<Assets<ParticleBehaviors>>,
+    gaussian_cloud: Query<(
+        Entity,
+        &Handle<GaussianCloud>,
+        Without<Handle<ParticleBehaviors>>,
+    )>,
+) {
+    if gaussian_cloud.is_empty() {
+        return;
+    }
+
+    let mut particle_behaviors = None;
+
+    let file_arg = get_arg(1);
+    if let Some(_n) = file_arg.clone().and_then(|s| s.parse::<usize>().ok()) {
+        let behavior_arg = get_arg(2);
+        if let Some(k) = behavior_arg.clone().and_then(|s| s.parse::<usize>().ok()) {
+            println!("generating {} particle behaviors", k);
+            particle_behaviors = particle_behavior_assets.add(random_particle_behaviors(k)).into();
+        }
+    }
+
+    if let Some(particle_behaviors) = particle_behaviors {
+        commands.entity(gaussian_cloud.single().0)
+            .insert(particle_behaviors);
+    }
+}
+
+
 fn example_app() {
     let config = GaussianSplattingViewer::default();
     let mut app = App::new();
+
+    #[cfg(target_arch = "wasm32")]
+    let primary_window = Some(Window {
+        fit_canvas_to_parent: true,
+        mode: bevy::window::WindowMode::Windowed,
+        present_mode: bevy::window::PresentMode::AutoVsync,
+        prevent_default_event_handling: true,
+        title: config.name.clone(),
+        ..default()
+    });
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let primary_window = Some(Window {
+        fit_canvas_to_parent: true,
+        mode: bevy::window::WindowMode::Windowed,
+        present_mode: bevy::window::PresentMode::AutoVsync,
+        prevent_default_event_handling: false,
+        resolution: (config.width, config.height).into(),
+        title: config.name.clone(),
+        ..default()
+    });
 
     // setup for gaussian viewer app
     app.insert_resource(ClearColor(Color::rgb_u8(0, 0, 0)));
@@ -117,15 +164,7 @@ fn example_app() {
         DefaultPlugins
         .set(ImagePlugin::default_nearest())
         .set(WindowPlugin {
-            primary_window: Some(Window {
-                fit_canvas_to_parent: false,
-                mode: bevy::window::WindowMode::Windowed,
-                present_mode: bevy::window::PresentMode::AutoVsync,
-                prevent_default_event_handling: false,
-                resolution: (config.width, config.height).into(),
-                title: config.name.clone(),
-                ..default()
-            }),
+            primary_window,
             ..default()
         }),
     );
@@ -151,6 +190,9 @@ fn example_app() {
     // setup for gaussian splatting
     app.add_plugins(GaussianSplattingPlugin);
     app.add_systems(Startup, setup_gaussian_cloud);
+
+    #[cfg(feature = "morph_particles")]
+    app.add_systems(Update, setup_particle_behavior);
 
     app.run();
 }
