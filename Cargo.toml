@@ -159,7 +159,7 @@ path = "tests/gpu/gaussian.rs"
 [[bin]]
 name = "test_radix"
 path = "tests/gpu/radix.rs"
-required-features = ["debug_gpu"]
+required-features = ["debug_gpu", "sort_radix"]
 
 
 [[bench]]

@@ -85,6 +85,10 @@ fn setup(
     commands.spawn((
         GaussianSplattingBundle {
             cloud,
+            settings: GaussianCloudSettings {
+                sort_mode: SortMode::Radix,
+                ..default()
+            },
             ..default()
         },
         Name::new("gaussian_cloud"),
@@ -203,8 +207,7 @@ impl Node for RadixTestNode {
                                 let position_vec3 = Vec3::new(position[0], position[1], position[2]);
                                 let depth = (position_vec3 - camera_position).length();
 
-                                let depth_tolerance = 1.0;
-                                let depth_is_non_decreasing = depth_acc <= depth + depth_tolerance;
+                                let depth_is_non_decreasing = depth_acc <= depth;
                                 if !depth_is_non_decreasing {
                                     println!(
                                         "radix keys: [..., {:#010x}, {:#010x}, {:#010x}, ...]",
