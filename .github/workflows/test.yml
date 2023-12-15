@@ -50,3 +50,6 @@ jobs:
 
     # - name: radix sort test
     #   run: cargo run --bin test_radix --features="debug_gpu"
+
+
+    # TODO: test wasm build, deploy, and run
