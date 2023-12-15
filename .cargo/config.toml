@@ -2,7 +2,11 @@
 
 [target.wasm32-unknown-unknown]
 runner = "wasm-server-runner"
-rustflags = ["--cfg=web_sys_unstable_apis"]
+rustflags = [
+    "--cfg=web_sys_unstable_apis",
+    # "-C",
+    # "target-feature=+atomics,+bulk-memory,+mutable-globals",  # for wasm-bindgen-rayon
+]
 
 
 # fix spurious network error on windows

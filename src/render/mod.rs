@@ -334,6 +334,12 @@ impl FromWorld for GaussianCloudPipeline {
             ],
         });
 
+        #[cfg(not(feature = "morph_particles"))]
+        let read_only = true;
+
+        #[cfg(feature = "morph_particles")]
+        let read_only = false;
+
         let gaussian_cloud_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("gaussian_cloud_layout"),
             entries: &[
@@ -341,7 +347,7 @@ impl FromWorld for GaussianCloudPipeline {
                     binding: 0,
                     visibility: ShaderStages::all(),
                     ty: BindingType::Buffer {
-                        ty: BufferBindingType::Storage { read_only: false },
+                        ty: BufferBindingType::Storage { read_only },
                         has_dynamic_offset: false,
                         min_binding_size: BufferSize::new(std::mem::size_of::<Gaussian>() as u64),
                     },
@@ -464,6 +470,9 @@ pub fn shader_defs(
     if visualize_bounding_box {
         shader_defs.push("VISUALIZE_BOUNDING_BOX".into());
     }
+
+    #[cfg(feature = "morph_particles")]
+    shader_defs.push("READ_WRITE_POINTS".into());
 
     shader_defs
 }
