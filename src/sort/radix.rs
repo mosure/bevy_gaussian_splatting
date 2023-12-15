@@ -347,7 +347,7 @@ pub fn queue_radix_bind_group(
             continue;
         }
 
-        // TODO: deduplicate this code
+        // TODO: deduplicate asset load checks
         if Some(LoadState::Loading) == asset_server.get_load_state(cloud_handle) {
             continue;
         }

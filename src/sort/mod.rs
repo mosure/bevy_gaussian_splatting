@@ -121,7 +121,6 @@ fn auto_insert_sorted_entries(
         //     continue;
         // }
 
-        // TODO: wait until gaussian_cloud is loaded, then insert sorted_entries
         if Some(LoadState::Loading) == asset_server.get_load_state(gaussian_cloud_handle) {
             continue;
         }
@@ -163,7 +162,7 @@ fn auto_insert_sorted_entries(
 )]
 #[repr(C)]
 pub struct SortEntry {
-    pub key: u32,  // TODO: CPU sort doesn't require radix keys, figure out how to efficiently remove to save VRAM in CPU sort mode
+    pub key: u32,
     pub index: u32,
 }
 

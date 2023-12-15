@@ -143,9 +143,7 @@ fn capture_ready(
 
         save_captures(buffer.clone());
         test_stability(buffer);
-        // TODO: add correctness test (use CPU gaussian pipeline?)
-
-        // TODO: add post-frame test registration
+        // TODO: add correctness test (use CPU gaussian pipeline to compare results)
 
         exit.send(AppExit);
         return;
@@ -153,7 +151,6 @@ fn capture_ready(
 
     if let Ok(window_entity) = main_window.get_single() {
         screenshot_manager.take_screenshot(window_entity, move |image: Image| {
-            // TODO: add per-frame test registration
             let has_non_zero_data = image.data.iter().fold(false, |non_zero, &x| non_zero || x != 0);
             assert!(has_non_zero_data, "screenshot is all zeros");
 

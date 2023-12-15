@@ -27,7 +27,7 @@ impl Plugin for RayonSortPlugin {
 
 pub fn rayon_sort(
     asset_server: Res<AssetServer>,
-    mut gaussian_clouds_res: ResMut<Assets<GaussianCloud>>,
+    gaussian_clouds_res: Res<Assets<GaussianCloud>>,
     mut sorted_entries_res: ResMut<Assets<SortedEntries>>,
     gaussian_clouds: Query<(
         &Handle<GaussianCloud>,
@@ -97,6 +97,8 @@ pub fn rayon_sort(
                     sorted_entries.sorted.par_sort_unstable_by(|a, b| {
                         bytemuck::cast::<u32, f32>(b.key).partial_cmp(&bytemuck::cast::<u32, f32>(a.key)).unwrap()
                     });
+
+                    // TODO: update DrawIndirect buffer during sort phase (GPU sort will override default DrawIndirect)
                 }
             }
         }

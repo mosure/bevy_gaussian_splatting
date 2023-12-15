@@ -5,10 +5,9 @@ use bevy::prelude::*;
 use bevy_gaussian_splatting::GaussianSplattingPlugin;
 
 
-// scraping this for now until bevy ci testing is more stable
-// #[test] and main thread limitations exist
+// scraping this in CI for now until bevy ci testing is more stable
+// #[test] + main thread, and windowless screenshot limitations exist
 // see: https://github.com/anchpop/endless-sea/blob/3b8481f1152293907794d60e920d4cc5a7ca8f40/src/tests/helpers.rs#L69-L83
-
 
 
 #[derive(Resource)]
@@ -46,7 +45,6 @@ pub fn test_harness_app(
 }
 
 
-
 pub struct TestState {
     pub test_loaded: bool,
     pub test_completed: bool,
@@ -62,20 +60,3 @@ impl Default for TestState {
 }
 
 pub type TestStateArc = Arc<Mutex<TestState>>;
-
-
-// use bevy::{
-//     render::view::screenshot::ScreenshotManager,
-//     window::PrimaryWindow,
-// };
-
-// pub fn capture_example(
-//     main_window: Query<Entity, With<PrimaryWindow>>,
-//     mut screenshot_manager: ResMut<ScreenshotManager>,
-// ) {
-//     if let Ok(window_entity) = main_window.get_single() {
-//         screenshot_manager.take_screenshot(window_entity, move |image: Image| {
-//             // TODO: assert that the image is correct
-//         }).unwrap();
-//     }
-// }

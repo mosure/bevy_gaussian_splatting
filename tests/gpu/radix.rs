@@ -194,11 +194,10 @@ impl Node for RadixTestNode {
                             radix_sorted_indices.push((i, u32_muck[i] as usize));
                         }
 
-                        // TODO: depth order validation needs to happen over each grid cell, not the entire cloud
+                        // TODO: depth order validation over ndc cells
 
                         radix_sorted_indices.iter()
                             .fold(0.0, |depth_acc, &(entry_idx, idx)| {
-                                // TODO: unclear what causes 0x0 keys to appear in the radix sort output (entry_buffer_b)
                                 if idx == 0 || u32_muck[entry_idx - 1] == 0xffffffff || u32_muck[entry_idx - 1] == 0x0 {
                                     return depth_acc;
                                 }
@@ -217,14 +216,10 @@ impl Node for RadixTestNode {
                                     );
                                 }
 
-                                // TODO: count how many sort errors exist (explore sort scoring algorithms)
-
                                 assert!(depth_is_non_decreasing, "radix sort, non-decreasing check failed: {} > {}", depth_acc, depth);
 
                                 depth_acc.max(depth)
                             });
-
-                        // TODO: analyze incorrectly sorted gaussian positions or upstream buffers (e.g. histogram sort error vs. position of gaussian distance from correctly sorted index)
                     }
                 );
             }
