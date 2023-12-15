@@ -41,7 +41,7 @@ pub fn rayon_sort(
     mut last_camera_position: Local<Vec3>,
     mut last_sort_time: Local<Option<Instant>>,
 ) {
-    let period = std::time::Duration::from_millis(1000);
+    let period = std::time::Duration::from_millis(100);
     if let Some(last_sort_time) = last_sort_time.as_ref() {
         if last_sort_time.elapsed() < period {
             return;
@@ -76,14 +76,13 @@ pub fn rayon_sort(
                 continue;
             }
 
-            if let Some(gaussian_cloud) = gaussian_clouds_res.get_mut(gaussian_cloud_handle) {
+            if let Some(gaussian_cloud) = gaussian_clouds_res.get(gaussian_cloud_handle) {
                 if let Some(sorted_entries) = sorted_entries_res.get_mut(sorted_entries_handle) {
                     assert_eq!(gaussian_cloud.gaussians.len(), sorted_entries.sorted.len());
 
                     *last_camera_position = camera_position;
                     *last_sort_time = Some(Instant::now());
 
-                    // TODO: async CPU sort
                     gaussian_cloud.gaussians.par_iter()
                         .zip(sorted_entries.sorted.par_iter_mut())
                         .enumerate()
