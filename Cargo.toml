@@ -1,44 +1,90 @@
 [package]
 name = "bevy_gaussian_splatting"
 description = "bevy gaussian splatting render pipeline plugin"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 authors = ["mosure <mitchell@mosure.me>"]
 license = "MIT"
-keywords = ["bevy", "gaussian-splatting", "render-pipeline", "ply"]
-categories = ["computer-vision", "graphics", "rendering", "rendering::data-formats"]
+keywords = [
+  "bevy",
+  "gaussian-splatting",
+  "render-pipeline",
+  "ply",
+]
+categories = [
+  "computer-vision",
+  "graphics",
+  "rendering",
+  "rendering::data-formats",
+]
 homepage = "https://github.com/mosure/bevy_gaussian_splatting"
 repository = "https://github.com/mosure/bevy_gaussian_splatting"
 readme = "README.md"
-exclude = [".devcontainer", ".github", "docs", "dist", "build", "assets", "credits"]
+exclude = [
+  ".devcontainer",
+  ".github",
+  "docs",
+  "dist",
+  "build",
+  "assets",
+  "credits",
+]
 default-run = "viewer"
 
 
 [features]
-default = ["io_flexbuffers", "io_ply"]
+default = [
+  "io_flexbuffers",
+  "io_ply",
+  "sort_radix",
+  "sort_rayon",
+  "tooling",
+  "viewer",
+]
+
+debug_gpu = []
 
 io_bincode2 = ["bincode2", "flate2"]
 io_flexbuffers = ["flexbuffers"]
 io_ply = ["ply-rs"]
 
+sort_radix = []
+sort_rayon = [
+  "rayon",
+  "wasm-bindgen-rayon",
+]
+
+tooling = [
+  "byte-unit",
+]
+
+viewer = [
+  "bevy-inspector-egui",
+  "bevy_panorbit_camera",
+]
+
+
 
 [dependencies]
-bevy-inspector-egui = "0.21"
-bevy_panorbit_camera = "0.9"
+bevy-inspector-egui = { version = "0.21", optional = true }
+bevy_panorbit_camera = { version = "0.9", optional = true }
 bincode2 = { version = "2.0", optional = true }
-byte-unit = "5.0.3"
+byte-unit = { version = "5.0", optional = true }
 bytemuck = "1.14"
 flate2  = { version = "1.0", optional = true }
 flexbuffers = { version = "2.0", optional = true }
 ply-rs = { version = "0.1", optional = true }
 rand = "0.8"
+rayon = { version = "1.8", optional = true }
 serde = "1.0"
+static_assertions = "1.1"
 wgpu = "0.17.1"
 
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"
 wasm-bindgen = "0.2"
+wasm-bindgen-rayon = { version = "1.0", optional = true }
 
 
 # TODO: use minimal bevy features
@@ -50,7 +96,6 @@ default-features = true
 version = "0.12"
 default-features = true
 features = [
-  'bevy_ci_testing',
   'debug_glam_assert',
 ]
 
@@ -70,10 +115,6 @@ features = [
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 
-
-# remove after close: https://github.com/jakobhellermann/bevy-inspector-egui/issues/163
-[profile.dev.package."bevy-inspector-egui"]
-opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
@@ -99,16 +140,26 @@ path = "src/lib.rs"
 [[bin]]
 name = "viewer"
 path = "viewer/viewer.rs"
+required-features = ["viewer"]
 
 [[bin]]
 name = "ply_to_gcloud"
 path = "tools/ply_to_gcloud.rs"
-required-features = ["io_ply"]
+required-features = ["io_ply", "tooling"]
 
 
 [[bin]]
 name = "compare_aabb_obb"
 path = "tools/compare_aabb_obb.rs"
+
+[[bin]]
+name = "test_gaussian"
+path = "tests/gpu/gaussian.rs"
+
+[[bin]]
+name = "test_radix"
+path = "tests/gpu/radix.rs"
+required-features = ["debug_gpu", "sort_radix"]
 
 
 [[bench]]

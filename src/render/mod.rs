@@ -62,16 +62,12 @@ use crate::{
         GaussianCloudSettings,
         MAX_SH_COEFF_COUNT,
     },
-    render::{
-        morph::MorphPlugin,
-        sort::RadixSortPlugin,
+    morph::MorphPlugin,
+    sort::{
+        SortPlugin,
+        SortedEntries,
     },
 };
-
-use self::sort::GpuRadixBuffers;
-
-pub mod morph;
-pub mod sort;
 
 
 const BINDINGS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(675257236);
@@ -117,7 +113,7 @@ impl Plugin for RenderPipelinePlugin {
         app.add_plugins(UniformComponentPlugin::<GaussianCloudUniform>::default());
         app.add_plugins((
             MorphPlugin,
-            RadixSortPlugin,
+            SortPlugin,
         ));
 
         if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
@@ -150,6 +146,7 @@ impl Plugin for RenderPipelinePlugin {
 pub struct GpuGaussianSplattingBundle {
     pub settings: GaussianCloudSettings,
     pub settings_uniform: GaussianCloudUniform,
+    pub sorted_entries: Handle<SortedEntries>,
     pub verticies: Handle<GaussianCloud>,
 }
 
@@ -160,7 +157,8 @@ pub struct GpuGaussianCloud {
 
     pub draw_indirect_buffer: Buffer,
 
-    pub radix_sort_buffers: GpuRadixBuffers,
+    #[cfg(feature = "debug_gpu")]
+    pub debug_gpu: GaussianCloud,
 }
 impl RenderAsset for GaussianCloud {
     type ExtractedAsset = GaussianCloud;
@@ -183,18 +181,25 @@ impl RenderAsset for GaussianCloud {
 
         let count = gaussian_cloud.gaussians.len();
 
-        let draw_indirect_buffer = render_device.create_buffer(&BufferDescriptor {
+        // let draw_indirect_buffer = render_device.create_buffer(&BufferDescriptor {
+        //     label: Some("draw indirect buffer"),
+        //     size: std::mem::size_of::<wgpu::util::DrawIndirect>() as u64,
+        //     usage: BufferUsages::INDIRECT | BufferUsages::COPY_DST | BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        //     mapped_at_creation: false,
+        // });
+
+        let draw_indirect_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("draw indirect buffer"),
-            size: std::mem::size_of::<wgpu::util::DrawIndirect>() as u64,
+            contents: bytemuck::cast_ref::<[u32; 4], [u8; 16]>(&[4, count as u32, 0, 0]),
             usage: BufferUsages::INDIRECT | BufferUsages::COPY_DST | BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
         });
 
         Ok(GpuGaussianCloud {
             gaussian_buffer,
             count,
             draw_indirect_buffer,
-            radix_sort_buffers: GpuRadixBuffers::new(count, render_device),
+            #[cfg(feature = "debug_gpu")]
+            debug_gpu: gaussian_cloud,
         })
     }
 }
@@ -208,9 +213,11 @@ fn queue_gaussians(
     mut pipelines: ResMut<SpecializedRenderPipelines<GaussianCloudPipeline>>,
     pipeline_cache: Res<PipelineCache>,
     gaussian_clouds: Res<RenderAssets<GaussianCloud>>,
+    sorted_entries: Res<RenderAssets<SortedEntries>>,
     gaussian_splatting_bundles: Query<(
         Entity,
         &Handle<GaussianCloud>,
+        &Handle<SortedEntries>,
         &GaussianCloudSettings,
     )>,
     mut views: Query<(
@@ -225,30 +232,44 @@ fn queue_gaussians(
 
     let draw_custom = transparent_3d_draw_functions.read().id::<DrawGaussians>();
 
-    for (_view, mut transparent_phase) in &mut views {
-        for (entity, cloud, settings) in &gaussian_splatting_bundles {
-            if let Some(_cloud) = gaussian_clouds.get(cloud) {
-                let key = GaussianCloudPipelineKey {
-                    aabb: settings.aabb,
-                    visualize_bounding_box: settings.visualize_bounding_box,
-                };
-
-                let pipeline = pipelines.specialize(&pipeline_cache, &custom_pipeline, key);
-
-                // // TODO: distance to gaussian cloud centroid
-                // let rangefinder = view.rangefinder3d();
-
-                transparent_phase.add(Transparent3d {
-                    entity,
-                    draw_function: draw_custom,
-                    distance: 0.0,
-                    // distance: rangefinder
-                    //     .distance_translation(&mesh_instance.transforms.transform.translation),
-                    pipeline,
-                    batch_range: 0..1,
-                    dynamic_offset: None,
-                });
+    for (
+        _view,
+        mut transparent_phase,
+    ) in &mut views {
+        for (
+            entity,
+            cloud_handle,
+            sorted_entries_handle,
+            settings,
+        ) in &gaussian_splatting_bundles {
+            if gaussian_clouds.get(cloud_handle).is_none() {
+                return;
             }
+
+            if sorted_entries.get(sorted_entries_handle).is_none() {
+                return;
+            }
+
+            let key = GaussianCloudPipelineKey {
+                aabb: settings.aabb,
+                visualize_bounding_box: settings.visualize_bounding_box,
+            };
+
+            let pipeline = pipelines.specialize(&pipeline_cache, &custom_pipeline, key);
+
+            // // TODO: distance to gaussian cloud centroid
+            // let rangefinder = view.rangefinder3d();
+
+            transparent_phase.add(Transparent3d {
+                entity,
+                draw_function: draw_custom,
+                distance: 0.0,
+                // distance: rangefinder
+                //     .distance_translation(&mesh_instance.transforms.transform.translation),
+                pipeline,
+                batch_range: 0..1,
+                dynamic_offset: None,
+            });
         }
     }
 }
@@ -357,27 +378,27 @@ impl FromWorld for GaussianCloudPipeline {
 
 // TODO: allow setting shader defines via API
 // TODO: separate shader defines for each pipeline
-struct ShaderDefines {
-    radix_bits_per_digit: u32,
-    radix_digit_places: u32,
-    radix_base: u32,
-    entries_per_invocation_a: u32,
-    entries_per_invocation_c: u32,
-    workgroup_invocations_a: u32,
-    workgroup_invocations_c: u32,
-    workgroup_entries_a: u32,
-    workgroup_entries_c: u32,
-    sorting_buffer_size: u32,
+pub struct ShaderDefines {
+    pub radix_bits_per_digit: u32,
+    pub radix_digit_places: u32,
+    pub radix_base: u32,
+    pub entries_per_invocation_a: u32,
+    pub entries_per_invocation_c: u32,
+    pub workgroup_invocations_a: u32,
+    pub workgroup_invocations_c: u32,
+    pub workgroup_entries_a: u32,
+    pub workgroup_entries_c: u32,
+    pub sorting_buffer_size: u32,
 
-    temporal_sort_window_size: u32,
+    pub temporal_sort_window_size: u32,
 }
 
 impl ShaderDefines {
-    fn max_tile_count(&self, count: usize) -> u32 {
+    pub fn max_tile_count(&self, count: usize) -> u32 {
         (count as u32 + self.workgroup_entries_c - 1) / self.workgroup_entries_c
     }
 
-    fn sorting_status_counters_buffer_size(&self, count: usize) -> usize {
+    pub fn sorting_status_counters_buffer_size(&self, count: usize) -> usize {
         self.radix_base as usize * self.max_tile_count(count) as usize * std::mem::size_of::<u32>()
     }
 }
@@ -413,7 +434,7 @@ impl Default for ShaderDefines {
     }
 }
 
-fn shader_defs(
+pub fn shader_defs(
     aabb: bool,
     visualize_bounding_box: bool,
 ) -> Vec<ShaderDefVal> {
@@ -544,6 +565,7 @@ pub fn extract_gaussians(
             // &ComputedVisibility,
             &Visibility,
             &Handle<GaussianCloud>,
+            &Handle<SortedEntries>,
             &GaussianCloudSettings,
         )>,
     >,
@@ -555,6 +577,7 @@ pub fn extract_gaussians(
         entity,
         visibility,
         verticies,
+        sorted_entries,
         settings,
     ) in gaussians_query.iter() {
         if visibility == Visibility::Hidden {
@@ -570,6 +593,7 @@ pub fn extract_gaussians(
             GpuGaussianSplattingBundle {
                 settings: settings.clone(),
                 settings_uniform,
+                sorted_entries: sorted_entries.clone(),
                 verticies: verticies.clone(),
             },
         ));
@@ -581,7 +605,7 @@ pub fn extract_gaussians(
 
 #[derive(Resource, Default)]
 pub struct GaussianUniformBindGroups {
-    base_bind_group: Option<BindGroup>,
+    pub base_bind_group: Option<BindGroup>,
 }
 
 #[derive(Component)]
@@ -598,9 +622,11 @@ fn queue_gaussian_bind_group(
     gaussian_uniforms: Res<ComponentUniforms<GaussianCloudUniform>>,
     asset_server: Res<AssetServer>,
     gaussian_cloud_res: Res<RenderAssets<GaussianCloud>>,
+    sorted_entries_res: Res<RenderAssets<SortedEntries>>,
     gaussian_clouds: Query<(
         Entity,
         &Handle<GaussianCloud>,
+        &Handle<SortedEntries>,
     )>,
 ) {
     let Some(model) = gaussian_uniforms.buffer() else {
@@ -622,9 +648,13 @@ fn queue_gaussian_bind_group(
         ],
     ));
 
-    for (entity, cloud_handle) in gaussian_clouds.iter() {
+    for (
+        entity,
+        cloud_handle,
+        sorted_entries_handle,
+    ) in gaussian_clouds.iter() {
         // TODO: add asset loading indicator (and maybe streamed loading)
-        if Some(LoadState::Loading) == asset_server.get_load_state(cloud_handle) {
+        if Some(LoadState::Loading) == asset_server.get_load_state(cloud_handle){
             continue;
         }
 
@@ -632,7 +662,16 @@ fn queue_gaussian_bind_group(
             continue;
         }
 
-        let cloud = gaussian_cloud_res.get(cloud_handle).unwrap();
+        if Some(LoadState::Loading) == asset_server.get_load_state(sorted_entries_handle) {
+            continue;
+        }
+
+        if sorted_entries_res.get(sorted_entries_handle).is_none() {
+            continue;
+        }
+
+        let cloud: &GpuGaussianCloud = gaussian_cloud_res.get(cloud_handle).unwrap();
+        let sorted_entries = sorted_entries_res.get(sorted_entries_handle).unwrap();
 
         commands.entity(entity).insert(GaussianCloudBindGroup {
             cloud_bind_group: render_device.create_bind_group(
@@ -656,7 +695,7 @@ fn queue_gaussian_bind_group(
                     BindGroupEntry {
                         binding: 0,
                         resource: BindingResource::Buffer(BufferBinding {
-                            buffer: &cloud.radix_sort_buffers.entry_buffer_a,
+                            buffer: &sorted_entries.sorted_entry_buffer,
                             offset: 0,
                             size: BufferSize::new((cloud.count as usize * std::mem::size_of::<(u32, u32)>()) as u64),
                         }),

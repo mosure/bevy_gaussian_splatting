@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use bevy::{
     prelude::*,
     asset::{
@@ -5,10 +7,6 @@ use bevy::{
         LoadState,
     },
     core_pipeline::core_3d::CORE_3D,
-    ecs::system::{
-        lifetimeless::SRes,
-        SystemParamItem,
-    },
     render::{
         render_asset::RenderAssets,
         render_resource::*,
@@ -31,6 +29,7 @@ use bevy::{
 
 use crate::{
     gaussian::GaussianCloud,
+    GaussianCloudSettings,
     render::{
         GaussianCloudBindGroup,
         GaussianCloudPipeline,
@@ -38,6 +37,11 @@ use crate::{
         GaussianViewBindGroup,
         ShaderDefines,
         shader_defs,
+    },
+    sort::{
+        SortEntry,
+        SortedEntries,
+        SortMode,
     },
 };
 
@@ -48,7 +52,6 @@ const TEMPORAL_SORT_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(16345
 pub mod node {
     pub const RADIX_SORT: &str = "radix_sort";
 }
-
 
 #[derive(Default)]
 pub struct RadixSortPlugin;
@@ -88,6 +91,9 @@ impl Plugin for RadixSortPlugin {
                         queue_radix_bind_group.in_set(RenderSet::QueueMeshes),
                     ),
                 );
+
+            render_app.init_resource::<RadixSortBuffers>();
+            render_app.add_systems(ExtractSchedule, update_sort_buffers);
         }
     }
 
@@ -99,21 +105,25 @@ impl Plugin for RadixSortPlugin {
     }
 }
 
+#[derive(Resource, Default)]
+pub struct RadixSortBuffers {
+    pub asset_map: HashMap<
+        AssetId<GaussianCloud>,
+        GpuRadixBuffers,
+    >,
+}
 
-// TODO: allow swapping of sort backends
-//      requires GaussianCloud RenderAsset dependency
 #[derive(Debug, Clone)]
 pub struct GpuRadixBuffers {
     pub sorting_global_buffer: Buffer,
     pub sorting_status_counter_buffer: Buffer,
     pub sorting_pass_buffers: [Buffer; 4],
-    pub entry_buffer_a: Buffer,
     pub entry_buffer_b: Buffer,
 }
 impl GpuRadixBuffers {
     pub fn new(
         count: usize,
-        render_device: &mut SystemParamItem<SRes<RenderDevice>>,
+        render_device: &RenderDevice,
     ) -> Self {
         let sorting_global_buffer = render_device.create_buffer(&BufferDescriptor {
             label: Some("sorting global buffer"),
@@ -141,16 +151,9 @@ impl GpuRadixBuffers {
             .try_into()
             .unwrap();
 
-        let entry_buffer_a = render_device.create_buffer(&BufferDescriptor {
-            label: Some("entry buffer a"),
-            size: (count * std::mem::size_of::<(u32, u32)>()) as u64,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
         let entry_buffer_b = render_device.create_buffer(&BufferDescriptor {
             label: Some("entry buffer b"),
-            size: (count * std::mem::size_of::<(u32, u32)>()) as u64,
+            size: (count * std::mem::size_of::<SortEntry>()) as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -159,9 +162,25 @@ impl GpuRadixBuffers {
             sorting_global_buffer,
             sorting_status_counter_buffer,
             sorting_pass_buffers,
-            entry_buffer_a,
             entry_buffer_b,
         }
+    }
+}
+
+
+fn update_sort_buffers(
+    gpu_gaussian_clouds: Res<RenderAssets<GaussianCloud>>,
+    mut sort_buffers: ResMut<RadixSortBuffers>,
+    render_device: Res<RenderDevice>,
+) {
+    for (asset_id, cloud,) in gpu_gaussian_clouds.iter() {
+        // TODO: handle cloud resize operations and resolve leaked stale buffers
+        if sort_buffers.asset_map.contains_key(&asset_id) {
+            continue;
+        }
+
+        let gpu_radix_buffers = GpuRadixBuffers::new(cloud.count, &render_device);
+        sort_buffers.asset_map.insert(asset_id, gpu_radix_buffers);
     }
 }
 
@@ -232,7 +251,7 @@ impl FromWorld for RadixSortPipeline {
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(std::mem::size_of::<(u32, u32)>() as u64),
+                        min_binding_size: BufferSize::new(std::mem::size_of::<SortEntry>() as u64),
                     },
                     count: None,
                 },
@@ -242,7 +261,7 @@ impl FromWorld for RadixSortPipeline {
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(std::mem::size_of::<(u32, u32)>() as u64),
+                        min_binding_size: BufferSize::new(std::mem::size_of::<SortEntry>() as u64),
                     },
                     count: None,
                 },
@@ -309,12 +328,26 @@ pub fn queue_radix_bind_group(
     render_device: Res<RenderDevice>,
     asset_server: Res<AssetServer>,
     gaussian_cloud_res: Res<RenderAssets<GaussianCloud>>,
+    sorted_entries_res: Res<RenderAssets<SortedEntries>>,
     gaussian_clouds: Query<(
         Entity,
         &Handle<GaussianCloud>,
+        &Handle<SortedEntries>,
+        &GaussianCloudSettings,
     )>,
+    sort_buffers: Res<RadixSortBuffers>,
 ) {
-    for (entity, cloud_handle) in gaussian_clouds.iter() {
+    for (
+        entity,
+        cloud_handle,
+        sorted_entries_handle,
+        settings,
+    ) in gaussian_clouds.iter() {
+        if settings.sort_mode != SortMode::Radix {
+            continue;
+        }
+
+        // TODO: deduplicate asset load checks
         if Some(LoadState::Loading) == asset_server.get_load_state(cloud_handle) {
             continue;
         }
@@ -323,23 +356,37 @@ pub fn queue_radix_bind_group(
             continue;
         }
 
+        if Some(LoadState::Loading) == asset_server.get_load_state(sorted_entries_handle) {
+            continue;
+        }
+
+        if sorted_entries_res.get(sorted_entries_handle).is_none() {
+            continue;
+        }
+
+        if !sort_buffers.asset_map.contains_key(&cloud_handle.id()) {
+            continue;
+        }
+
         let cloud = gaussian_cloud_res.get(cloud_handle).unwrap();
+        let sorted_entries = sorted_entries_res.get(sorted_entries_handle).unwrap();
+        let sorting_assets = &sort_buffers.asset_map[&cloud_handle.id()];
 
         let sorting_global_entry = BindGroupEntry {
             binding: 1,
             resource: BindingResource::Buffer(BufferBinding {
-                buffer: &cloud.radix_sort_buffers.sorting_global_buffer,
+                buffer: &sorting_assets.sorting_global_buffer,
                 offset: 0,
-                size: BufferSize::new(cloud.radix_sort_buffers.sorting_global_buffer.size()),
+                size: BufferSize::new(sorting_assets.sorting_global_buffer.size()),
             }),
         };
 
         let sorting_status_counters_entry = BindGroupEntry {
             binding: 2,
             resource: BindingResource::Buffer(BufferBinding {
-                buffer: &cloud.radix_sort_buffers.sorting_status_counter_buffer,
+                buffer: &sorting_assets.sorting_status_counter_buffer,
                 offset: 0,
-                size: BufferSize::new(cloud.radix_sort_buffers.sorting_status_counter_buffer.size()),
+                size: BufferSize::new(sorting_assets.sorting_status_counter_buffer.size()),
             }),
         };
 
@@ -361,7 +408,7 @@ pub fn queue_radix_bind_group(
                         BindGroupEntry {
                             binding: 0,
                             resource: BindingResource::Buffer(BufferBinding {
-                                buffer: &cloud.radix_sort_buffers.sorting_pass_buffers[idx],
+                                buffer: &sorting_assets.sorting_pass_buffers[idx],
                                 offset: 0,
                                 size: BufferSize::new(std::mem::size_of::<u32>() as u64),
                             }),
@@ -373,24 +420,24 @@ pub fn queue_radix_bind_group(
                             binding: 4,
                             resource: BindingResource::Buffer(BufferBinding {
                                 buffer: if idx % 2 == 0 {
-                                    &cloud.radix_sort_buffers.entry_buffer_a
+                                    &sorted_entries.sorted_entry_buffer
                                 } else {
-                                    &cloud.radix_sort_buffers.entry_buffer_b
+                                    &sorting_assets.entry_buffer_b
                                 },
                                 offset: 0,
-                                size: BufferSize::new((cloud.count as usize * std::mem::size_of::<(u32, u32)>()) as u64),
+                                size: BufferSize::new((cloud.count as usize * std::mem::size_of::<SortEntry>()) as u64),
                             }),
                         },
                         BindGroupEntry {
                             binding: 5,
                             resource: BindingResource::Buffer(BufferBinding {
                                 buffer: if idx % 2 == 0 {
-                                    &cloud.radix_sort_buffers.entry_buffer_b
+                                    &sorting_assets.entry_buffer_b
                                 } else {
-                                    &cloud.radix_sort_buffers.entry_buffer_a
+                                    &sorted_entries.sorted_entry_buffer
                                 },
                                 offset: 0,
-                                size: BufferSize::new((cloud.count as usize * std::mem::size_of::<(u32, u32)>()) as u64),
+                                size: BufferSize::new((cloud.count as usize * std::mem::size_of::<SortEntry>()) as u64),
                             }),
                         },
                     ],
@@ -405,10 +452,6 @@ pub fn queue_radix_bind_group(
         });
     }
 }
-
-
-
-
 
 
 pub struct RadixSortNode {
@@ -475,8 +518,7 @@ impl Node for RadixSortNode {
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = world.resource::<RadixSortPipeline>();
         let gaussian_uniforms = world.resource::<GaussianUniformBindGroups>();
-
-        let command_encoder = render_context.command_encoder();
+        let sort_buffers = world.resource::<RadixSortBuffers>();
 
         for (
             view_bind_group,
@@ -489,102 +531,109 @@ impl Node for RadixSortNode {
             ) in self.gaussian_clouds.iter_manual(world) {
                 let cloud = world.get_resource::<RenderAssets<GaussianCloud>>().unwrap().get(cloud_handle).unwrap();
 
-                let radix_digit_places = ShaderDefines::default().radix_digit_places;
+                assert!(sort_buffers.asset_map.contains_key(&cloud_handle.id()));
+                let sorting_assets = &sort_buffers.asset_map[&cloud_handle.id()];
 
                 {
-                    command_encoder.clear_buffer(
-                        &cloud.radix_sort_buffers.sorting_global_buffer,
-                        0,
-                        None,
-                    );
+                    let command_encoder = render_context.command_encoder();
+                    let radix_digit_places = ShaderDefines::default().radix_digit_places;
 
-                    command_encoder.clear_buffer(
-                        &cloud.radix_sort_buffers.sorting_status_counter_buffer,
-                        0,
-                        None,
-                    );
-
-                    command_encoder.clear_buffer(
-                        &cloud.draw_indirect_buffer,
-                        0,
-                        None,
-                    );
-                }
-
-                {
-                    let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
-
-                    pass.set_bind_group(
-                        0,
-                        &view_bind_group.value,
-                        &[view_uniform_offset.offset],
-                    );
-                    pass.set_bind_group(
-                        1,
-                        gaussian_uniforms.base_bind_group.as_ref().unwrap(),
-                        &[0], // TODO: fix transforms - dynamic offset using DynamicUniformIndex
-                    );
-                    pass.set_bind_group(
-                        2,
-                        &cloud_bind_group.cloud_bind_group,
-                        &[]
-                    );
-                    pass.set_bind_group(
-                        3,
-                        &radix_bind_group.radix_sort_bind_groups[1],
-                        &[],
-                    );
-
-                    let radix_sort_a = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[0]).unwrap();
-                    pass.set_pipeline(radix_sort_a);
-
-                    let workgroup_entries_a = ShaderDefines::default().workgroup_entries_a;
-                    pass.dispatch_workgroups((cloud.count as u32 + workgroup_entries_a - 1) / workgroup_entries_a, 1, 1);
-
-
-                    let radix_sort_b = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[1]).unwrap();
-                    pass.set_pipeline(radix_sort_b);
-
-                    pass.dispatch_workgroups(1, radix_digit_places, 1);
-                }
-
-                for pass_idx in 0..radix_digit_places {
-                    if pass_idx > 0 {
+                    {
                         command_encoder.clear_buffer(
-                            &cloud.radix_sort_buffers.sorting_status_counter_buffer,
+                            &sorting_assets.sorting_global_buffer,
+                            0,
+                            None,
+                        );
+
+                        command_encoder.clear_buffer(
+                            &sorting_assets.sorting_status_counter_buffer,
+                            0,
+                            None,
+                        );
+
+                        command_encoder.clear_buffer(
+                            &cloud.draw_indirect_buffer,
                             0,
                             None,
                         );
                     }
 
-                    let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
+                    // TODO: add options to only complete a fraction of the sorting process
+                    {
+                        let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
 
-                    let radix_sort_c = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[2]).unwrap();
-                    pass.set_pipeline(&radix_sort_c);
+                        pass.set_bind_group(
+                            0,
+                            &view_bind_group.value,
+                            &[view_uniform_offset.offset],
+                        );
+                        pass.set_bind_group(
+                            1,
+                            gaussian_uniforms.base_bind_group.as_ref().unwrap(),
+                            &[0], // TODO: fix transforms - dynamic offset using DynamicUniformIndex
+                        );
+                        pass.set_bind_group(
+                            2,
+                            &cloud_bind_group.cloud_bind_group,
+                            &[]
+                        );
+                        pass.set_bind_group(
+                            3,
+                            &radix_bind_group.radix_sort_bind_groups[1],
+                            &[],
+                        );
 
-                    pass.set_bind_group(
-                        0,
-                        &view_bind_group.value,
-                        &[view_uniform_offset.offset],
-                    );
-                    pass.set_bind_group(
-                        1,
-                        gaussian_uniforms.base_bind_group.as_ref().unwrap(),
-                        &[0], // TODO: fix transforms - dynamic offset using DynamicUniformIndex
-                    );
-                    pass.set_bind_group(
-                        2,
-                        &cloud_bind_group.cloud_bind_group,
-                        &[]
-                    );
-                    pass.set_bind_group(
-                        3,
-                        &radix_bind_group.radix_sort_bind_groups[pass_idx as usize],
-                        &[],
-                    );
+                        let radix_sort_a = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[0]).unwrap();
+                        pass.set_pipeline(radix_sort_a);
 
-                    let workgroup_entries_c = ShaderDefines::default().workgroup_entries_c;
-                    pass.dispatch_workgroups(1, (cloud.count as u32 + workgroup_entries_c - 1) / workgroup_entries_c, 1);
+                        let workgroup_entries_a = ShaderDefines::default().workgroup_entries_a;
+                        pass.dispatch_workgroups((cloud.count as u32 + workgroup_entries_a - 1) / workgroup_entries_a, 1, 1);
+
+
+                        let radix_sort_b = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[1]).unwrap();
+                        pass.set_pipeline(radix_sort_b);
+
+                        pass.dispatch_workgroups(1, radix_digit_places, 1);
+                    }
+
+                    for pass_idx in 0..radix_digit_places {
+                        if pass_idx > 0 {
+                            command_encoder.clear_buffer(
+                                &sorting_assets.sorting_status_counter_buffer,
+                                0,
+                                None,
+                            );
+                        }
+
+                        let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
+
+                        let radix_sort_c = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[2]).unwrap();
+                        pass.set_pipeline(&radix_sort_c);
+
+                        pass.set_bind_group(
+                            0,
+                            &view_bind_group.value,
+                            &[view_uniform_offset.offset],
+                        );
+                        pass.set_bind_group(
+                            1,
+                            gaussian_uniforms.base_bind_group.as_ref().unwrap(),
+                            &[0], // TODO: fix transforms - dynamic offset using DynamicUniformIndex
+                        );
+                        pass.set_bind_group(
+                            2,
+                            &cloud_bind_group.cloud_bind_group,
+                            &[]
+                        );
+                        pass.set_bind_group(
+                            3,
+                            &radix_bind_group.radix_sort_bind_groups[pass_idx as usize],
+                            &[],
+                        );
+
+                        let workgroup_entries_c = ShaderDefines::default().workgroup_entries_c;
+                        pass.dispatch_workgroups(1, (cloud.count as u32 + workgroup_entries_c - 1) / workgroup_entries_c, 1);
+                    }
                 }
             }
         }
