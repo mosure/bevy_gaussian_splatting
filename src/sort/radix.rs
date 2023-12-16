@@ -274,7 +274,7 @@ impl FromWorld for RadixSortPipeline {
             gaussian_cloud_pipeline.gaussian_cloud_layout.clone(),
             radix_sort_layout.clone(),
         ];
-        let shader_defs = shader_defs(false, false);
+        let shader_defs = shader_defs(false, false, false);
 
         let pipeline_cache = render_world.resource::<PipelineCache>();
         let radix_sort_a = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {

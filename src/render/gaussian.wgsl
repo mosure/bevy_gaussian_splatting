@@ -10,6 +10,9 @@
     output_entries,
     Entry,
 }
+#import bevy_gaussian_splatting::color::{
+    depth_to_rgb,
+}
 #import bevy_gaussian_splatting::spherical_harmonics::spherical_harmonics_lookup
 #import bevy_gaussian_splatting::transform::{
     world_to_clip,
@@ -233,8 +236,28 @@ fn vs_points(
     let quad_offset = quad_vertices[quad_index];
 
     let ray_direction = normalize(transformed_position - view.world_position);
+
+#ifdef VISUALIZE_DEPTH
+    let min_position = (gaussian_uniforms.global_transform * points[sorted_entries[1][1]].position).xyz;
+    let max_position = (gaussian_uniforms.global_transform * points[sorted_entries[gaussian_uniforms.count - 1u][1]].position).xyz;
+
+    let camera_position = view.world_position;
+
+    let min_distance = length(min_position - camera_position);
+    let max_distance = length(max_position - camera_position);
+
+    let depth = length(transformed_position - camera_position);
+    let rgb = depth_to_rgb(
+        depth,
+        min_distance,
+        max_distance,
+    );
+#else
+    let rgb = spherical_harmonics_lookup(ray_direction, point.sh);
+#endif
+
     output.color = vec4<f32>(
-        spherical_harmonics_lookup(ray_direction, point.sh),
+        rgb,
         point.scale_opacity.a
     );
 

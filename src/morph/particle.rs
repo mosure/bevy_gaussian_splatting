@@ -201,7 +201,7 @@ impl FromWorld for ParticleBehaviorPipeline {
             ],
         });
 
-        let shader_defs = shader_defs(false, false);
+        let shader_defs = shader_defs(false, false, false);
         let pipeline_cache = render_world.resource::<PipelineCache>();
 
         let particle_behavior_pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {

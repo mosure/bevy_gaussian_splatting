@@ -216,6 +216,7 @@ pub struct GaussianCloudSettings {
     pub global_scale: f32,
     pub global_transform: GlobalTransform,
     pub visualize_bounding_box: bool,
+    pub visualize_depth: bool,
     pub sort_mode: SortMode,
 }
 
@@ -226,6 +227,7 @@ impl Default for GaussianCloudSettings {
             global_scale: 2.0,
             global_transform: Transform::IDENTITY.into(),
             visualize_bounding_box: false,
+            visualize_depth: false,
             sort_mode: SortMode::default(),
         }
     }
