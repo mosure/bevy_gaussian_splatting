@@ -71,6 +71,7 @@ use crate::{
 
 
 const BINDINGS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(675257236);
+const COLOR_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(51234253);
 const GAUSSIAN_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(68294581);
 const SPHERICAL_HARMONICS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(834667312);
 const TRANSFORM_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(734523534);
@@ -85,6 +86,13 @@ impl Plugin for RenderPipelinePlugin {
             app,
             BINDINGS_SHADER_HANDLE,
             "bindings.wgsl",
+            Shader::from_wgsl
+        );
+
+        load_internal_asset!(
+            app,
+            COLOR_SHADER_HANDLE,
+            "color.wgsl",
             Shader::from_wgsl
         );
 
@@ -147,7 +155,7 @@ pub struct GpuGaussianSplattingBundle {
     pub settings: GaussianCloudSettings,
     pub settings_uniform: GaussianCloudUniform,
     pub sorted_entries: Handle<SortedEntries>,
-    pub verticies: Handle<GaussianCloud>,
+    pub cloud_handle: Handle<GaussianCloud>,
 }
 
 #[derive(Debug, Clone)]
@@ -253,6 +261,7 @@ fn queue_gaussians(
             let key = GaussianCloudPipelineKey {
                 aabb: settings.aabb,
                 visualize_bounding_box: settings.visualize_bounding_box,
+                visualize_depth: settings.visualize_depth,
             };
 
             let pipeline = pipelines.specialize(&pipeline_cache, &custom_pipeline, key);
@@ -443,6 +452,7 @@ impl Default for ShaderDefines {
 pub fn shader_defs(
     aabb: bool,
     visualize_bounding_box: bool,
+    visualize_depth: bool,
 ) -> Vec<ShaderDefVal> {
     let defines = ShaderDefines::default();
     let mut shader_defs = vec![
@@ -474,6 +484,10 @@ pub fn shader_defs(
     #[cfg(feature = "morph_particles")]
     shader_defs.push("READ_WRITE_POINTS".into());
 
+    if visualize_depth {
+        shader_defs.push("VISUALIZE_DEPTH".into());
+    }
+
     shader_defs
 }
 
@@ -481,6 +495,7 @@ pub fn shader_defs(
 pub struct GaussianCloudPipelineKey {
     pub aabb: bool,
     pub visualize_bounding_box: bool,
+    pub visualize_depth: bool,
 }
 
 impl SpecializedRenderPipeline for GaussianCloudPipeline {
@@ -490,6 +505,7 @@ impl SpecializedRenderPipeline for GaussianCloudPipeline {
         let shader_defs = shader_defs(
             key.aabb,
             key.visualize_bounding_box,
+            key.visualize_depth,
         );
 
         RenderPipelineDescriptor {
@@ -563,11 +579,14 @@ type DrawGaussians = (
 pub struct GaussianCloudUniform {
     pub transform: Mat4,
     pub global_scale: f32,
+    pub count: u32,
 }
 
 pub fn extract_gaussians(
     mut commands: Commands,
     mut prev_commands_len: Local<usize>,
+    asset_server: Res<AssetServer>,
+    gaussian_cloud_res: Res<RenderAssets<GaussianCloud>>,
     gaussians_query: Extract<
         Query<(
             Entity,
@@ -585,7 +604,7 @@ pub fn extract_gaussians(
     for (
         entity,
         visibility,
-        verticies,
+        cloud_handle,
         sorted_entries,
         settings,
     ) in gaussians_query.iter() {
@@ -593,9 +612,20 @@ pub fn extract_gaussians(
             continue;
         }
 
+        if Some(LoadState::Loading) == asset_server.get_load_state(cloud_handle){
+            continue;
+        }
+
+        if gaussian_cloud_res.get(cloud_handle).is_none() {
+            continue;
+        }
+
+        let cloud = gaussian_cloud_res.get(cloud_handle).unwrap();
+
         let settings_uniform = GaussianCloudUniform {
             transform: settings.global_transform.compute_matrix(),
             global_scale: settings.global_scale,
+            count: cloud.count as u32,
         };
         commands_list.push((
             entity,
@@ -603,7 +633,7 @@ pub fn extract_gaussians(
                 settings: settings.clone(),
                 settings_uniform,
                 sorted_entries: sorted_entries.clone(),
-                verticies: verticies.clone(),
+                cloud_handle: cloud_handle.clone(),
             },
         ));
     }

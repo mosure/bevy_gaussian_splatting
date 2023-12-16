@@ -25,6 +25,7 @@ download [cactus.gcloud](https://mitchell.mosure.me/cactus.gcloud)
 - [X] bevy gaussian cloud render pipeline
 - [X] gaussian cloud particle effects
 - [X] wasm support /w [live demo](https://mosure.github.io/bevy_gaussian_splatting/index.html?arg1=icecream.gcloud)
+- [X] depth colorization
 - [ ] 4D gaussian cloud wavelet compression
 - [ ] accelerated spatial queries
 - [ ] temporal depth sorting
@@ -74,7 +75,7 @@ fn setup_gaussian_cloud(
 
 | `bevy_gaussian_splatting` | `bevy` |
 | :--                       | :--    |
-| `0.4 - 0.5`               | `0.12` |
+| `0.4 - 1.0`               | `0.12` |
 | `0.1 - 0.3`               | `0.11` |
 
 

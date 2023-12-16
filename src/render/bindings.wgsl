@@ -10,6 +10,7 @@
 struct GaussianUniforms {
     global_transform: mat4x4<f32>,
     global_scale: f32,
+    count: u32,
 };
 @group(1) @binding(0) var<uniform> gaussian_uniforms: GaussianUniforms;
 
