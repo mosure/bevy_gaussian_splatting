@@ -6,6 +6,9 @@ pub mod raycast;
 #[cfg(feature = "query_select")]
 pub mod select;
 
+#[cfg(feature = "query_sparse")]
+pub mod sparse;
+
 
 #[derive(Default)]
 pub struct QueryPlugin;
@@ -18,5 +21,8 @@ impl Plugin for QueryPlugin {
 
         #[cfg(feature = "query_select")]
         app.add_plugins(select::SelectPlugin);
+
+        #[cfg(feature = "query_sparse")]
+        app.add_plugins(sparse::SparsePlugin);
     }
 }

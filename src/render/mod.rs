@@ -59,6 +59,7 @@ use crate::{
     gaussian::{
         Gaussian,
         GaussianCloud,
+        GaussianCloudDrawMode,
         GaussianCloudSettings,
         MAX_SH_COEFF_COUNT,
     },
@@ -262,6 +263,7 @@ fn queue_gaussians(
                 aabb: settings.aabb,
                 visualize_bounding_box: settings.visualize_bounding_box,
                 visualize_depth: settings.visualize_depth,
+                draw_mode: settings.draw_mode,
             };
 
             let pipeline = pipelines.specialize(&pipeline_cache, &custom_pipeline, key);
@@ -450,9 +452,7 @@ impl Default for ShaderDefines {
 }
 
 pub fn shader_defs(
-    aabb: bool,
-    visualize_bounding_box: bool,
-    visualize_depth: bool,
+    key: GaussianCloudPipelineKey,
 ) -> Vec<ShaderDefVal> {
     let defines = ShaderDefines::default();
     let mut shader_defs = vec![
@@ -469,44 +469,46 @@ pub fn shader_defs(
         ShaderDefVal::UInt("TEMPORAL_SORT_WINDOW_SIZE".into(), defines.temporal_sort_window_size),
     ];
 
-    if aabb {
+    if key.aabb {
         shader_defs.push("USE_AABB".into());
     }
 
-    if !aabb {
+    if !key.aabb {
         shader_defs.push("USE_OBB".into());
     }
 
-    if visualize_bounding_box {
+    if key.visualize_bounding_box {
         shader_defs.push("VISUALIZE_BOUNDING_BOX".into());
     }
 
     #[cfg(feature = "morph_particles")]
     shader_defs.push("READ_WRITE_POINTS".into());
 
-    if visualize_depth {
+    if key.visualize_depth {
         shader_defs.push("VISUALIZE_DEPTH".into());
+    }
+
+    match key.draw_mode {
+        GaussianCloudDrawMode::Selected => shader_defs.push("DRAW_SELECTED".into()),
+        GaussianCloudDrawMode::HighlightSelected => shader_defs.push("HIGHLIGHT_SELECTED".into()),
     }
 
     shader_defs
 }
 
-#[derive(PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Default)]
 pub struct GaussianCloudPipelineKey {
     pub aabb: bool,
     pub visualize_bounding_box: bool,
     pub visualize_depth: bool,
+    pub draw_mode: GaussianCloudDrawMode,
 }
 
 impl SpecializedRenderPipeline for GaussianCloudPipeline {
     type Key = GaussianCloudPipelineKey;
 
     fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
-        let shader_defs = shader_defs(
-            key.aabb,
-            key.visualize_bounding_box,
-            key.visualize_depth,
-        );
+        let shader_defs = shader_defs(key);
 
         RenderPipelineDescriptor {
             label: Some("gaussian cloud render pipeline".into()),

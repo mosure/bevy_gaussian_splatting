@@ -209,17 +209,21 @@ fn vs_points(
     var output: GaussianVertexOutput;
     let splat_index = sorted_entries[instance_index][1];
 
-    let discard_quad = sorted_entries[instance_index][0] == 0xFFFFFFFFu || splat_index == 0u;
-    if (discard_quad) {
-        output.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
-        output.position = vec4<f32>(0.0, 0.0, 0.0, 0.0);
-        return output;
-    }
+    var discard_quad = false;
+
+    discard_quad |= sorted_entries[instance_index][0] == 0xFFFFFFFFu || splat_index == 0u;
 
     let point = points[splat_index];
     let transformed_position = (gaussian_uniforms.global_transform * point.position_visibility).xyz;
     let projected_position = world_to_clip(transformed_position);
-    if (!in_frustum(projected_position.xyz) || point.position_visibility.w < 0.0) {
+
+    discard_quad |= !in_frustum(projected_position.xyz);
+
+#ifdef DRAW_SELECTED
+    discard_quad |= point.position_visibility.w < 0.5;
+#endif
+
+    if (discard_quad) {
         output.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
         output.position = vec4<f32>(0.0, 0.0, 0.0, 0.0);
         return output;
@@ -237,6 +241,8 @@ fn vs_points(
 
     let ray_direction = normalize(transformed_position - view.world_position);
 
+    var rgb = vec3<f32>(0.0);
+
 #ifdef VISUALIZE_DEPTH
     let min_position = (gaussian_uniforms.global_transform * points[sorted_entries[1][1]].position_visibility).xyz;
     let max_position = (gaussian_uniforms.global_transform * points[sorted_entries[gaussian_uniforms.count - 1u][1]].position_visibility).xyz;
@@ -247,13 +253,13 @@ fn vs_points(
     let max_distance = length(max_position - camera_position);
 
     let depth = length(transformed_position - camera_position);
-    let rgb = depth_to_rgb(
+    rgb = depth_to_rgb(
         depth,
         min_distance,
         max_distance,
     );
 #else
-    let rgb = spherical_harmonics_lookup(ray_direction, point.sh);
+    rgb = spherical_harmonics_lookup(ray_direction, point.sh);
 #endif
 
     output.color = vec4<f32>(
@@ -261,7 +267,11 @@ fn vs_points(
         point.scale_opacity.a
     );
 
-    // TODO: add depth color visualization
+#ifdef HIGHLIGHT_SELECTED
+    if (point.position_visibility.w > 0.5) {
+        output.color = vec4<f32>(0.3, 1.0, 0.1, 1.0);
+    }
+#endif
 
     let cov2d = compute_cov2d(transformed_position, point.scale_opacity.rgb, point.rotation);
 

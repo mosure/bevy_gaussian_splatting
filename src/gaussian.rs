@@ -209,6 +209,22 @@ impl GaussianCloud {
 }
 
 
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    Hash,
+    PartialEq,
+    Reflect,
+)]
+pub enum GaussianCloudDrawMode {
+    #[default]
+    Selected,
+    HighlightSelected,
+}
+
 #[derive(Component, Reflect, Clone)]
 #[reflect(Component)]
 pub struct GaussianCloudSettings {
@@ -218,6 +234,7 @@ pub struct GaussianCloudSettings {
     pub visualize_bounding_box: bool,
     pub visualize_depth: bool,
     pub sort_mode: SortMode,
+    pub draw_mode: GaussianCloudDrawMode,
 }
 
 impl Default for GaussianCloudSettings {
@@ -229,6 +246,7 @@ impl Default for GaussianCloudSettings {
             visualize_bounding_box: false,
             visualize_depth: false,
             sort_mode: SortMode::default(),
+            draw_mode: GaussianCloudDrawMode::default(),
         }
     }
 }
