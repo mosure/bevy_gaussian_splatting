@@ -87,7 +87,7 @@ pub fn rayon_sort(
                         .zip(sorted_entries.sorted.par_iter_mut())
                         .enumerate()
                         .for_each(|(idx, (gaussian, sort_entry))| {
-                            let position = Vec3::from_slice(gaussian.position.as_ref());
+                            let position = Vec3::from_slice(gaussian.position_visibility.as_ref());
                             let delta = camera_position - position;
 
                             sort_entry.key = bytemuck::cast(delta.length_squared());

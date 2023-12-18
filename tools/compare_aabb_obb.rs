@@ -52,7 +52,7 @@ pub fn setup_aabb_obb_compare(
     blue_sh.coefficients[2] = 5.0;
 
     let blue_aabb_gaussian = Gaussian {
-        position: [0.0, 0.0, 0.0, 1.0],
+        position_visibility: [0.0, 0.0, 0.0, 1.0],
         rotation: [0.89, 0.0, -0.432, 0.144],
         scale_opacity: [10.0, 1.0, 1.0, 0.5],
         spherical_harmonic: blue_sh,
@@ -82,7 +82,7 @@ pub fn setup_aabb_obb_compare(
     red_sh.coefficients[0] = 5.0;
 
     let red_obb_gaussian = Gaussian {
-        position: [0.0, 0.0, 0.0, 1.0],
+        position_visibility: [0.0, 0.0, 0.0, 1.0],
         rotation: [0.89, 0.0, -0.432, 0.144],
         scale_opacity: [10.0, 1.0, 1.0, 0.5],
         spherical_harmonic: red_sh,

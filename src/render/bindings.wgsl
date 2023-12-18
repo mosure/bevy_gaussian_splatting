@@ -16,7 +16,7 @@ struct GaussianUniforms {
 
 struct Gaussian {
     @location(0) rotation: vec4<f32>,
-    @location(1) position: vec4<f32>,
+    @location(1) position_visibility: vec4<f32>,
     @location(2) scale_opacity: vec4<f32>,
     sh: array<f32, #{MAX_SH_COEFF_COUNT}>,
 };

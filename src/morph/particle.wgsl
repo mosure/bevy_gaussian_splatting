@@ -37,7 +37,7 @@ fn apply_particle_behaviors(
     let delta_velocity = behavior.acceleration * globals.delta_time + 0.5 * behavior.jerk * globals.delta_time * globals.delta_time;
     let delta_acceleration = behavior.jerk * globals.delta_time;
 
-    let new_position = point.position + delta_position;
+    let new_position = point.position_visibility + delta_position;
     let new_velocity = behavior.velocity + delta_velocity;
     let new_acceleration = behavior.acceleration + delta_acceleration;
 
@@ -47,7 +47,7 @@ fn apply_particle_behaviors(
         return;
     }
 
-    points[point_index].position = new_position;
+    points[point_index].position_visibility = new_position;
     particle_behaviors[behavior_index].velocity = new_velocity;
     particle_behaviors[behavior_index].acceleration = new_acceleration;
 }

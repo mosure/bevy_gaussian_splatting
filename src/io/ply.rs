@@ -24,9 +24,9 @@ impl PropertyAccess for Gaussian {
 
     fn set_property(&mut self, key: String, property: Property) {
         match (key.as_ref(), property) {
-            ("x", Property::Float(v))           => self.position[0] = v,
-            ("y", Property::Float(v))           => self.position[1] = v,
-            ("z", Property::Float(v))           => self.position[2] = v,
+            ("x", Property::Float(v))           => self.position_visibility[0] = v,
+            ("y", Property::Float(v))           => self.position_visibility[1] = v,
+            ("z", Property::Float(v))           => self.position_visibility[2] = v,
             ("f_dc_0", Property::Float(v))      => self.spherical_harmonic.coefficients[0] = v,
             ("f_dc_1", Property::Float(v))      => self.spherical_harmonic.coefficients[1] = v,
             ("f_dc_2", Property::Float(v))      => self.spherical_harmonic.coefficients[2] = v,
@@ -66,7 +66,7 @@ pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, std::io:
     }
 
     for gaussian in &mut cloud {
-        gaussian.position[3] = 1.0;
+        gaussian.position_visibility[3] = 1.0;
 
         let mean_scale = (gaussian.scale_opacity[0] + gaussian.scale_opacity[1] + gaussian.scale_opacity[2]) / 3.0;
         for i in 0..3 {

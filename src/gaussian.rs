@@ -120,7 +120,7 @@ where
 // TODO: support f16 gaussian clouds (shader and asset loader)
 pub struct Gaussian {
     pub rotation: [f32; 4],
-    pub position: [f32; 4],
+    pub position_visibility: [f32; 4],
     pub scale_opacity: [f32; 4],
     pub spherical_harmonic: SphericalHarmonicCoefficients,
 }
@@ -151,7 +151,7 @@ impl GaussianCloud {
                 0.0,
                 0.0,
             ],
-            position: [
+            position_visibility: [
                 0.0,
                 0.0,
                 0.0,
@@ -193,7 +193,7 @@ impl GaussianCloud {
             for &y in [-0.5, 0.5].iter() {
                 for &z in [-0.5, 0.5].iter() {
                     let mut g = origin;
-                    g.position = [x, y, z, 1.0];
+                    g.position_visibility = [x, y, z, 1.0];
                     cloud.gaussians.push(g);
 
                     let mut rng = rand::thread_rng();
@@ -242,11 +242,11 @@ impl Distribution<Gaussian> for rand::distributions::Standard {
                 rng.gen_range(-1.0..1.0),
                 rng.gen_range(-1.0..1.0),
             ],
-            position: [
+            position_visibility: [
                 rng.gen_range(-20.0..20.0),
                 rng.gen_range(-20.0..20.0),
                 rng.gen_range(-20.0..20.0),
-                rng.gen_range(-1.0..1.0),
+                1.0,
             ],
             scale_opacity: [
                 rng.gen_range(0.0..1.0),

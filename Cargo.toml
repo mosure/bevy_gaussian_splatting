@@ -36,7 +36,10 @@ default-run = "viewer"
 default = [
   "io_flexbuffers",
   "io_ply",
+  "material_noise",
   "morph_particles",
+  "noise",
+  "query_select",
   "sort_radix",
   "sort_rayon",
   "sort_std",
@@ -50,7 +53,14 @@ io_bincode2 = ["bincode2", "flate2"]
 io_flexbuffers = ["flexbuffers"]
 io_ply = ["ply-rs"]
 
+material_noise = []
+
 morph_particles = []
+
+noise = []
+
+query_raycast = []
+query_select = []
 
 sort_radix = []
 sort_rayon = [
@@ -65,12 +75,15 @@ tooling = [
 viewer = [
   "bevy-inspector-egui",
   "bevy_panorbit_camera",
+  "bevy_transform_gizmo",
 ]
 
 
 [dependencies]
 bevy-inspector-egui = { version = "0.21", optional = true }
+bevy_mod_picking = { version = "0.17.0", optional = true }
 bevy_panorbit_camera = { version = "0.9", optional = true }
+bevy_transform_gizmo = { version = "0.9.0", optional = true }
 bincode2 = { version = "2.0", optional = true }
 byte-unit = { version = "5.0", optional = true }
 bytemuck = "1.14"
@@ -98,6 +111,7 @@ features = [
   "bevy_core_pipeline",
   "bevy_render",
   "bevy_winit",
+  "webgl2",
 ]
 
 

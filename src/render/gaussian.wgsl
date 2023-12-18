@@ -217,9 +217,9 @@ fn vs_points(
     }
 
     let point = points[splat_index];
-    let transformed_position = (gaussian_uniforms.global_transform * point.position).xyz;
+    let transformed_position = (gaussian_uniforms.global_transform * point.position_visibility).xyz;
     let projected_position = world_to_clip(transformed_position);
-    if (!in_frustum(projected_position.xyz)) {
+    if (!in_frustum(projected_position.xyz) || point.position_visibility.w < 0.0) {
         output.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
         output.position = vec4<f32>(0.0, 0.0, 0.0, 0.0);
         return output;
@@ -238,8 +238,8 @@ fn vs_points(
     let ray_direction = normalize(transformed_position - view.world_position);
 
 #ifdef VISUALIZE_DEPTH
-    let min_position = (gaussian_uniforms.global_transform * points[sorted_entries[1][1]].position).xyz;
-    let max_position = (gaussian_uniforms.global_transform * points[sorted_entries[gaussian_uniforms.count - 1u][1]].position).xyz;
+    let min_position = (gaussian_uniforms.global_transform * points[sorted_entries[1][1]].position_visibility).xyz;
+    let max_position = (gaussian_uniforms.global_transform * points[sorted_entries[gaussian_uniforms.count - 1u][1]].position_visibility).xyz;
 
     let camera_position = view.world_position;
 

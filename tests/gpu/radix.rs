@@ -206,7 +206,7 @@ impl Node for RadixTestNode {
                                     return depth_acc;
                                 }
 
-                                let position = gaussians[idx].position;
+                                let position = gaussians[idx].position_visibility;
                                 let position_vec3 = Vec3::new(position[0], position[1], position[2]);
                                 let depth = (position_vec3 - camera_position).length();
 

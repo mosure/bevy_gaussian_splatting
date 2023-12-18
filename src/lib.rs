@@ -14,10 +14,15 @@ use render::RenderPipelinePlugin;
 
 pub mod gaussian;
 pub mod io;
+pub mod material;
 pub mod morph;
+pub mod query;
 pub mod render;
 pub mod sort;
 pub mod utils;
+
+#[cfg(feature = "noise")]
+pub mod noise;
 
 
 #[derive(Bundle, Default, Reflect)]
@@ -49,6 +54,11 @@ impl Plugin for GaussianSplattingPlugin {
 
         app.add_plugins((
             RenderPipelinePlugin,
+            material::MaterialPlugin,
+            query::QueryPlugin,
         ));
+
+        #[cfg(feature = "noise")]
+        app.add_plugins(noise::NoisePlugin);
     }
 }
