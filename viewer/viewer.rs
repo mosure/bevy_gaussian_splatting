@@ -178,7 +178,10 @@ fn setup_sparse_select(
     }
 
     commands.entity(gaussian_cloud.single().0)
-        .insert(SparseSelect::default());
+        .insert(SparseSelect {
+            completed: true,
+            ..default()
+        });
 }
 
 
