@@ -489,6 +489,7 @@ pub fn shader_defs(
     }
 
     match key.draw_mode {
+        GaussianCloudDrawMode::All => {},
         GaussianCloudDrawMode::Selected => shader_defs.push("DRAW_SELECTED".into()),
         GaussianCloudDrawMode::HighlightSelected => shader_defs.push("HIGHLIGHT_SELECTED".into()),
     }

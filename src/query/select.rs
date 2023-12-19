@@ -1,14 +1,24 @@
+use std::iter::FromIterator;
+
 use bevy::{
     prelude::*,
     asset::LoadState,
 };
 
-use crate::GaussianCloud;
+use crate::{GaussianCloud, io::writer::write_gaussian_cloud_to_file};
 
 
 #[derive(Component, Debug, Default, Reflect)]
 pub struct Select {
     pub indicies: Vec<usize>,
+    pub completed: bool,
+}
+
+impl FromIterator<usize> for Select {
+    fn from_iter<I: IntoIterator<Item=usize>>(iter: I) -> Self {
+        let indicies = iter.into_iter().collect::<Vec<usize>>();
+        Select { indicies, ..Default::default() }
+    }
 }
 
 
@@ -17,27 +27,35 @@ pub struct SelectPlugin;
 
 impl Plugin for SelectPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, apply_selection);
+        app.register_type::<Select>();
+
+        app.add_event::<InvertSelectionEvent>();
+        app.add_event::<SaveSelectionEvent>();
+
+        app.add_systems(Update, (
+            apply_selection,
+            invert_selection,
+            save_selection,
+        ));
     }
 }
 
 
 fn apply_selection(
-    mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut gaussian_clouds_res: ResMut<Assets<GaussianCloud>>,
     mut selections: Query<(
         Entity,
         &Handle<GaussianCloud>,
-        &Select,
+        &mut Select,
     )>,
 ) {
     for (
-        entity,
+        _entity,
         cloud_handle,
-        select,
+        mut select,
     ) in selections.iter_mut() {
-        if select.indicies.is_empty() {
+        if select.indicies.is_empty() || select.completed {
             continue;
         }
 
@@ -61,6 +79,93 @@ fn apply_selection(
                 cloud.gaussians[*index].position_visibility[3] = 1.0;
             });
 
-        commands.entity(entity).remove::<Select>();
+        select.completed = true;
+    }
+}
+
+
+
+#[derive(Event, Debug, Reflect)]
+pub struct InvertSelectionEvent;
+
+fn invert_selection(
+    mut events: EventReader<InvertSelectionEvent>,
+    mut gaussian_clouds_res: ResMut<Assets<GaussianCloud>>,
+    mut selections: Query<(
+        Entity,
+        &Handle<GaussianCloud>,
+        &mut Select,
+    )>,
+) {
+    if events.len() == 0 {
+        return;
+    }
+    events.clear();
+
+    for (
+        _entity,
+        cloud_handle,
+        mut select,
+    ) in selections.iter_mut() {
+        if select.indicies.is_empty() {
+            continue;
+        }
+
+        let cloud = gaussian_clouds_res.get_mut(cloud_handle).unwrap();
+
+        let mut new_indicies = Vec::new();
+        new_indicies.reserve(cloud.gaussians.len() - select.indicies.len());
+
+        cloud.gaussians.iter_mut()
+            .enumerate()
+            .for_each(|(idx, gaussian)| {
+                if gaussian.position_visibility[3] == 0.0 {
+                    new_indicies.push(idx);
+                }
+
+                gaussian.position_visibility[3] = 1.0;
+            });
+
+        select.indicies.iter()
+            .for_each(|index| {
+                cloud.gaussians[*index].position_visibility[3] = 0.0;
+            });
+
+        select.indicies = new_indicies;
+    }
+}
+
+
+#[derive(Event, Debug, Reflect)]
+pub struct SaveSelectionEvent;
+
+pub fn save_selection(
+    mut events: EventReader<SaveSelectionEvent>,
+    mut gaussian_clouds_res: ResMut<Assets<GaussianCloud>>,
+    mut selections: Query<(
+        Entity,
+        &Handle<GaussianCloud>,
+        &Select,
+    )>,
+) {
+    if events.len() == 0 {
+        return;
+    }
+    events.clear();
+
+    for (
+        _entity,
+        cloud_handle,
+        select,
+    ) in selections.iter_mut() {
+        let cloud = gaussian_clouds_res.get_mut(cloud_handle).unwrap();
+
+        let selected = select.indicies.iter()
+            .map(|index| cloud.gaussians[*index].clone())
+            .collect::<GaussianCloud>();
+
+        // TODO: prefix with null gaussian
+
+        write_gaussian_cloud_to_file(&selected, "live_output.gcloud");
     }
 }

@@ -93,6 +93,7 @@ rand = "0.8"
 rayon = { version = "1.8", optional = true }
 serde = "1.0"
 static_assertions = "1.1"
+typenum = "1.17.0"
 wgpu = "0.17.1"
 
 

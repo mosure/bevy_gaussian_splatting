@@ -3,7 +3,10 @@ use rand::{
     prelude::Distribution,
     Rng,
 };
-use std::marker::Copy;
+use std::{
+    iter::FromIterator,
+    marker::Copy,
+};
 
 use bevy::{
     prelude::*,
@@ -208,6 +211,13 @@ impl GaussianCloud {
     }
 }
 
+impl FromIterator<Gaussian> for GaussianCloud {
+    fn from_iter<I: IntoIterator<Item=Gaussian>>(iter: I) -> Self {
+        let gaussians = iter.into_iter().collect::<Vec<Gaussian>>();
+        GaussianCloud { gaussians, ..Default::default() }
+    }
+}
+
 
 #[derive(
     Clone,
@@ -221,6 +231,7 @@ impl GaussianCloud {
 )]
 pub enum GaussianCloudDrawMode {
     #[default]
+    All,
     Selected,
     HighlightSelected,
 }

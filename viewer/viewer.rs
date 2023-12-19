@@ -31,6 +31,15 @@ use bevy_gaussian_splatting::morph::particle::{
     random_particle_behaviors,
 };
 
+#[cfg(feature = "query_select")]
+use bevy_gaussian_splatting::query::select::{
+    InvertSelectionEvent,
+    SaveSelectionEvent,
+};
+
+#[cfg(feature = "query_sparse")]
+use bevy_gaussian_splatting::query::sparse::SparseSelect;
+
 
 pub struct GaussianSplattingViewer {
     pub editor: bool,
@@ -132,6 +141,46 @@ fn setup_particle_behavior(
     }
 }
 
+#[cfg(feature = "query_select")]
+fn press_i_invert_selection(
+    keys: Res<Input<KeyCode>>,
+    mut select_inverse_events: EventWriter<InvertSelectionEvent>,
+) {
+    if keys.just_pressed(KeyCode::I) {
+        println!("inverting selection");
+        select_inverse_events.send(InvertSelectionEvent);
+    }
+}
+
+#[cfg(feature = "query_select")]
+fn press_o_save_selection(
+    keys: Res<Input<KeyCode>>,
+    mut select_inverse_events: EventWriter<SaveSelectionEvent>,
+) {
+    if keys.just_pressed(KeyCode::O) {
+        println!("saving selection");
+        select_inverse_events.send(SaveSelectionEvent);
+    }
+}
+
+
+#[cfg(feature = "query_sparse")]
+fn setup_sparse_select(
+    mut commands: Commands,
+    gaussian_cloud: Query<(
+        Entity,
+        &Handle<GaussianCloud>,
+        Without<SparseSelect>,
+    )>,
+) {
+    if gaussian_cloud.is_empty() {
+        return;
+    }
+
+    commands.entity(gaussian_cloud.single().0)
+        .insert(SparseSelect::default());
+}
+
 
 fn example_app() {
     let config = GaussianSplattingViewer::default();
@@ -193,6 +242,15 @@ fn example_app() {
 
     #[cfg(feature = "morph_particles")]
     app.add_systems(Update, setup_particle_behavior);
+
+    #[cfg(feature = "query_select")]
+    {
+        app.add_systems(Update, press_i_invert_selection);
+        app.add_systems(Update, press_o_save_selection);
+    }
+
+    #[cfg(feature = "query_sparse")]
+    app.add_systems(Update, setup_sparse_select);
 
     app.run();
 }
