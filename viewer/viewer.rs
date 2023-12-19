@@ -1,5 +1,6 @@
 use bevy::{
     prelude::*,
+    asset::LoadState,
     app::AppExit,
     core::Name,
     core_pipeline::tonemapping::Tonemapping,
@@ -24,6 +25,9 @@ use bevy_gaussian_splatting::{
         setup_hooks,
     },
 };
+
+#[cfg(feature = "material_noise")]
+use bevy_gaussian_splatting::material::noise::NoiseMaterial;
 
 #[cfg(feature = "morph_particles")]
 use bevy_gaussian_splatting::morph::particle::{
@@ -141,6 +145,35 @@ fn setup_particle_behavior(
     }
 }
 
+#[cfg(feature = "material_noise")]
+fn setup_noise_material(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    gaussian_clouds: Query<(
+        Entity,
+        &Handle<GaussianCloud>,
+        Without<NoiseMaterial>,
+    )>,
+) {
+    if gaussian_clouds.is_empty() {
+        return;
+    }
+
+    for (
+        entity,
+        cloud_handle,
+        _
+    ) in gaussian_clouds.iter() {
+        if Some(LoadState::Loading) == asset_server.get_load_state(cloud_handle) {
+            continue;
+        }
+
+        commands.entity(entity)
+            .insert(NoiseMaterial::default());
+    }
+}
+
+
 #[cfg(feature = "query_select")]
 fn press_i_invert_selection(
     keys: Res<Input<KeyCode>>,
@@ -242,6 +275,9 @@ fn example_app() {
     // setup for gaussian splatting
     app.add_plugins(GaussianSplattingPlugin);
     app.add_systems(Startup, setup_gaussian_cloud);
+
+    #[cfg(feature = "material_noise")]
+    app.add_systems(Update, setup_noise_material);
 
     #[cfg(feature = "morph_particles")]
     app.add_systems(Update, setup_particle_behavior);
