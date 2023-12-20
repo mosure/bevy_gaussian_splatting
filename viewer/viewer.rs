@@ -1,6 +1,5 @@
 use bevy::{
     prelude::*,
-    asset::LoadState,
     app::AppExit,
     core::Name,
     core_pipeline::tonemapping::Tonemapping,
@@ -164,7 +163,7 @@ fn setup_noise_material(
         cloud_handle,
         _
     ) in gaussian_clouds.iter() {
-        if Some(LoadState::Loading) == asset_server.get_load_state(cloud_handle) {
+        if Some(bevy::asset::LoadState::Loading) == asset_server.get_load_state(cloud_handle) {
             continue;
         }
 
