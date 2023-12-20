@@ -93,6 +93,7 @@ fn setup_gaussian_cloud(
 - [gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting)
 - [gaussian-splatting-viewer](https://github.com/limacv/GaussianSplattingViewer/tree/main)
 - [gaussian-splatting-web](https://github.com/cvlab-epfl/gaussian-splatting-web)
+- [gir](https://3dgir.github.io/)
 - [making gaussian splats smaller](https://aras-p.info/blog/2023/09/13/Making-Gaussian-Splats-smaller/)
 - [masked-spacetime-hashing](https://github.com/masked-spacetime-hashing/msth)
 - [onesweep](https://arxiv.org/ftp/arxiv/papers/2206/2206.01784.pdf)
@@ -103,4 +104,5 @@ fn setup_gaussian_cloud(
 - [splat](https://github.com/antimatter15/splat)
 - [splatter](https://github.com/Lichtso/splatter)
 - [sturdy-dollop](https://github.com/mosure/sturdy-dollop)
+- [sugar](https://github.com/Anttwo/SuGaR)
 - [taichi_3d_gaussian_splatting](https://github.com/wanmeihuali/taichi_3d_gaussian_splatting)
