@@ -37,7 +37,7 @@ const fn num_sh_coefficients(degree: usize) -> usize {
 const SH_DEGREE: usize = 3;
 pub const SH_CHANNELS: usize = 3;
 pub const MAX_SH_COEFF_COUNT_PER_CHANNEL: usize = num_sh_coefficients(SH_DEGREE);
-pub const MAX_SH_COEFF_COUNT: usize = MAX_SH_COEFF_COUNT_PER_CHANNEL * SH_CHANNELS;
+pub const MAX_SH_COEFF_COUNT: usize = (MAX_SH_COEFF_COUNT_PER_CHANNEL * SH_CHANNELS + 3) & !3;
 #[derive(
     Clone,
     Copy,
@@ -167,24 +167,16 @@ impl GaussianCloud {
                 0.5,
             ],
             spherical_harmonic: SphericalHarmonicCoefficients {
-                coefficients: [
-                    1.0, 0.0, 1.0,
-                    0.0, 0.5, 0.0,
-                    0.3, 0.2, 0.0,
-                    0.4, 0.0, 0.2,
-                    0.1, 0.0, 0.0,
-                    0.0, 0.3, 0.3,
-                    0.0, 1.0, 1.0,
-                    0.3, 0.0, 0.0,
-                    0.0, 0.0, 0.0,
-                    0.0, 0.3, 1.0,
-                    0.5, 0.3, 0.0,
-                    0.2, 0.3, 0.1,
-                    0.6, 0.3, 0.1,
-                    0.0, 0.3, 0.2,
-                    0.0, 0.5, 0.3,
-                    0.6, 0.1, 0.2,
-                ],
+                coefficients: {
+                    let mut rng = rand::thread_rng();
+                    let mut coefficients = [0.0; MAX_SH_COEFF_COUNT];
+
+                    for coefficient in coefficients.iter_mut() {
+                        *coefficient = rng.gen_range(-1.0..1.0);
+                    }
+
+                    coefficients
+                },
             },
         };
         let mut cloud = GaussianCloud {

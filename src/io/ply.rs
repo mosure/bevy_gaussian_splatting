@@ -82,8 +82,12 @@ pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, std::io:
         for (i, sh_src) in sh_src.iter().enumerate().skip(SH_CHANNELS) {
             let j = i - SH_CHANNELS;
 
-            let channel = j / (MAX_SH_COEFF_COUNT_PER_CHANNEL - 1);
-            let coefficient = (j % (MAX_SH_COEFF_COUNT_PER_CHANNEL - 1)) + 1;
+            let channel = j / MAX_SH_COEFF_COUNT_PER_CHANNEL;
+            let coefficient = if MAX_SH_COEFF_COUNT_PER_CHANNEL == 1 {
+                1
+            } else {
+                (j % (MAX_SH_COEFF_COUNT_PER_CHANNEL - 1)) + 1
+            };
 
             let interleaved_idx = coefficient * SH_CHANNELS + channel;
             assert!(interleaved_idx >= SH_CHANNELS);
