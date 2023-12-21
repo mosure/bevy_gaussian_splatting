@@ -36,13 +36,14 @@ default-run = "viewer"
 default = [
   "io_flexbuffers",
   "io_ply",
-  # "material_noise",
-  "morph_particles",
+
   "query_select",
   "query_sparse",
+
   "sort_radix",
   "sort_rayon",
   "sort_std",
+
   "tooling",
   "viewer",
 ]
