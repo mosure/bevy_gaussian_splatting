@@ -10,7 +10,7 @@
     output_entries,
     Entry,
 }
-#import bevy_gaussian_splatting::color::{
+#import bevy_gaussian_splatting::depth::{
     depth_to_rgb,
 }
 #import bevy_gaussian_splatting::spherical_harmonics::spherical_harmonics_lookup
@@ -211,7 +211,7 @@ fn vs_points(
 
     var discard_quad = false;
 
-    discard_quad |= sorted_entries[instance_index][0] == 0xFFFFFFFFu || splat_index == 0u;
+    discard_quad |= sorted_entries[instance_index][0] == 0xFFFFFFFFu; // || splat_index == 0u;
 
     let point = points[splat_index];
     let transformed_position = (gaussian_uniforms.global_transform * point.position_visibility).xyz;

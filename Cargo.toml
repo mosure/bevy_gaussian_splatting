@@ -37,6 +37,8 @@ default = [
   "io_flexbuffers",
   "io_ply",
 
+  # "precision_half",
+
   "query_select",
   "query_sparse",
 
@@ -59,6 +61,8 @@ material_noise = ["noise", "dep:noise"]
 morph_particles = []
 
 noise = []
+
+precision_half = ["half"]
 
 query_raycast = []
 query_select = []
@@ -87,6 +91,7 @@ byte-unit = { version = "5.0", optional = true }
 bytemuck = "1.14"
 flate2  = { version = "1.0", optional = true }
 flexbuffers = { version = "2.0", optional = true }
+half = { version = "2.3.1", optional = true, features = ["serde"] }
 kd-tree = { version = "0.5", optional = true }
 noise = { version = "0.8.2", optional = true }
 ply-rs = { version = "0.1", optional = true }
@@ -176,6 +181,10 @@ path = "tests/gpu/gaussian.rs"
 name = "test_radix"
 path = "tests/gpu/radix.rs"
 required-features = ["debug_gpu", "sort_radix"]
+
+[[example]]
+name = "minimal"
+path = "examples/minimal.rs"
 
 
 [[bench]]

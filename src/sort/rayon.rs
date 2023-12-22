@@ -78,16 +78,16 @@ pub fn rayon_sort(
 
             if let Some(gaussian_cloud) = gaussian_clouds_res.get(gaussian_cloud_handle) {
                 if let Some(sorted_entries) = sorted_entries_res.get_mut(sorted_entries_handle) {
-                    assert_eq!(gaussian_cloud.gaussians.len(), sorted_entries.sorted.len());
+                    assert_eq!(gaussian_cloud.len(), sorted_entries.sorted.len());
 
                     *last_camera_position = camera_position;
                     *last_sort_time = Some(Instant::now());
 
-                    gaussian_cloud.gaussians.par_iter()
+                    gaussian_cloud.position_par_iter()
                         .zip(sorted_entries.sorted.par_iter_mut())
                         .enumerate()
-                        .for_each(|(idx, (gaussian, sort_entry))| {
-                            let position = Vec3::from_slice(gaussian.position_visibility.as_ref());
+                        .for_each(|(idx, (position, sort_entry))| {
+                            let position = Vec3::from_slice(position.as_ref());
                             let delta = camera_position - position;
 
                             sort_entry.key = bytemuck::cast(delta.length_squared());

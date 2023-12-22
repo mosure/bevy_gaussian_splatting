@@ -111,6 +111,7 @@ impl Plugin for SortPlugin {
 }
 
 
+#[allow(clippy::type_complexity)]
 fn auto_insert_sorted_entries(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -146,7 +147,7 @@ fn auto_insert_sorted_entries(
 
         // TODO: move gaussian_cloud and sorted_entry assets into an asset bundle
         let sorted_entries = sorted_entries_res.add(SortedEntries {
-            sorted: (0..cloud.gaussians.len())
+            sorted: (0..cloud.len())
                 .map(|idx| {
                     SortEntry {
                         key: 1,

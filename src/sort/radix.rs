@@ -28,7 +28,7 @@ use bevy::{
 };
 
 use crate::{
-    gaussian::GaussianCloud,
+    gaussian::cloud::GaussianCloud,
     GaussianCloudSettings,
     render::{
         GaussianCloudBindGroup,
@@ -323,6 +323,7 @@ pub struct RadixBindGroup {
     pub radix_sort_bind_groups: [BindGroup; 4],
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn queue_radix_bind_group(
     mut commands: Commands,
     radix_pipeline: Res<RadixSortPipeline>,
@@ -426,7 +427,7 @@ pub fn queue_radix_bind_group(
                                     &sorting_assets.entry_buffer_b
                                 },
                                 offset: 0,
-                                size: BufferSize::new((cloud.count as usize * std::mem::size_of::<SortEntry>()) as u64),
+                                size: BufferSize::new((cloud.count * std::mem::size_of::<SortEntry>()) as u64),
                             }),
                         },
                         BindGroupEntry {
@@ -438,7 +439,7 @@ pub fn queue_radix_bind_group(
                                     &sorted_entries.sorted_entry_buffer
                                 },
                                 offset: 0,
-                                size: BufferSize::new((cloud.count as usize * std::mem::size_of::<SortEntry>()) as u64),
+                                size: BufferSize::new((cloud.count * std::mem::size_of::<SortEntry>()) as u64),
                             }),
                         },
                     ],
@@ -609,7 +610,7 @@ impl Node for RadixSortNode {
                         let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
 
                         let radix_sort_c = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[2]).unwrap();
-                        pass.set_pipeline(&radix_sort_c);
+                        pass.set_pipeline(radix_sort_c);
 
                         pass.set_bind_group(
                             0,

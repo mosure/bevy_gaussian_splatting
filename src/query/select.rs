@@ -69,14 +69,14 @@ fn apply_selection(
 
         let cloud = gaussian_clouds_res.get_mut(cloud_handle).unwrap();
 
-        cloud.gaussians.iter_mut()
-            .for_each(|gaussian| {
-                gaussian.position_visibility[3] = 0.0;
+        (0..cloud.len())
+            .for_each(|index| {
+                *cloud.visibility_mut(index) = 0.0;
             });
 
         select.indicies.iter()
             .for_each(|index| {
-                cloud.gaussians[*index].position_visibility[3] = 1.0;
+                *cloud.visibility_mut(*index) = 1.0;
             });
 
         select.completed = true;
@@ -97,7 +97,7 @@ fn invert_selection(
         &mut Select,
     )>,
 ) {
-    if events.len() == 0 {
+    if events.is_empty() {
         return;
     }
     events.clear();
@@ -113,22 +113,20 @@ fn invert_selection(
 
         let cloud = gaussian_clouds_res.get_mut(cloud_handle).unwrap();
 
-        let mut new_indicies = Vec::new();
-        new_indicies.reserve(cloud.gaussians.len() - select.indicies.len());
+        let mut new_indicies = Vec::with_capacity(cloud.len() - select.indicies.len());
 
-        cloud.gaussians.iter_mut()
-            .enumerate()
-            .for_each(|(idx, gaussian)| {
-                if gaussian.position_visibility[3] == 0.0 {
-                    new_indicies.push(idx);
+        (0..cloud.len())
+            .for_each(|index| {
+                if cloud.visibility(index) == 0.0 {
+                    new_indicies.push(index);
                 }
 
-                gaussian.position_visibility[3] = 1.0;
+                *cloud.visibility_mut(index) = 1.0;
             });
 
         select.indicies.iter()
             .for_each(|index| {
-                cloud.gaussians[*index].position_visibility[3] = 0.0;
+                *cloud.visibility_mut(*index) = 0.0;
             });
 
         select.indicies = new_indicies;
@@ -148,7 +146,7 @@ pub fn save_selection(
         &Select,
     )>,
 ) {
-    if events.len() == 0 {
+    if events.is_empty() {
         return;
     }
     events.clear();
@@ -160,11 +158,7 @@ pub fn save_selection(
     ) in selections.iter_mut() {
         let cloud = gaussian_clouds_res.get_mut(cloud_handle).unwrap();
 
-        let selected = select.indicies.iter()
-            .map(|index| cloud.gaussians[*index].clone())
-            .collect::<GaussianCloud>();
-
-        // TODO: prefix with null gaussian
+        let selected = cloud.subset(select.indicies.as_slice());
 
         write_gaussian_cloud_to_file(&selected, "live_output.gcloud");
     }

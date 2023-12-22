@@ -50,7 +50,7 @@ impl KdPoint for Gaussian {
     type Dim = U3;
 
     fn at(&self, i: usize) -> Self::Scalar {
-        self.position_visibility[i]
+        self.position_visibility.position[i]
     }
 }
 
@@ -84,12 +84,12 @@ fn select_sparse(
         select.completed = true;
 
         let cloud = gaussian_clouds_res.get(cloud_handle).unwrap();
-        let tree = KdTree::build_by_ordered_float(cloud.gaussians.clone());
+        let tree = KdTree::build_by_ordered_float(cloud.gaussian_iter().collect());
 
-        let new_selection = cloud.gaussians.iter()
+        let new_selection = cloud.gaussian_iter()
             .enumerate()
             .filter(|(_idx, gaussian)| {
-                let neighbors = tree.within_radius(*gaussian, select.radius);
+                let neighbors = tree.within_radius(gaussian, select.radius);
 
                 neighbors.len() < select.neighbor_threshold
             })

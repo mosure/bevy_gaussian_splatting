@@ -57,12 +57,14 @@ use bevy::{
 
 use crate::{
     gaussian::{
-        Gaussian,
-        GaussianCloud,
-        GaussianCloudDrawMode,
-        GaussianCloudSettings,
-        MAX_SH_COEFF_COUNT,
+        packed::Gaussian,
+        cloud::GaussianCloud,
+        settings::{
+            GaussianCloudDrawMode,
+            GaussianCloudSettings,
+        },
     },
+    material::spherical_harmonics::MAX_SH_COEFF_COUNT,
     morph::MorphPlugin,
     sort::{
         SortPlugin,
@@ -72,9 +74,7 @@ use crate::{
 
 
 const BINDINGS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(675257236);
-const COLOR_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(51234253);
 const GAUSSIAN_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(68294581);
-const SPHERICAL_HARMONICS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(834667312);
 const TRANSFORM_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(734523534);
 
 
@@ -90,12 +90,12 @@ impl Plugin for RenderPipelinePlugin {
             Shader::from_wgsl
         );
 
-        load_internal_asset!(
-            app,
-            COLOR_SHADER_HANDLE,
-            "color.wgsl",
-            Shader::from_wgsl
-        );
+        // load_internal_asset!(
+        //     app,
+        //     COLOR_SHADER_HANDLE,
+        //     "color.wgsl",
+        //     Shader::from_wgsl
+        // );
 
         load_internal_asset!(
             app,
@@ -104,12 +104,12 @@ impl Plugin for RenderPipelinePlugin {
             Shader::from_wgsl
         );
 
-        load_internal_asset!(
-            app,
-            SPHERICAL_HARMONICS_SHADER_HANDLE,
-            "spherical_harmonics.wgsl",
-            Shader::from_wgsl
-        );
+        // load_internal_asset!(
+        //     app,
+        //     SPHERICAL_HARMONICS_SHADER_HANDLE,
+        //     "spherical_harmonics.wgsl",
+        //     Shader::from_wgsl
+        // );
 
         load_internal_asset!(
             app,
@@ -184,11 +184,11 @@ impl RenderAsset for GaussianCloud {
     ) -> Result<Self::PreparedAsset, PrepareAssetError<Self::ExtractedAsset>> {
         let gaussian_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("gaussian cloud buffer"),
-            contents: bytemuck::cast_slice(gaussian_cloud.gaussians.as_slice()),
+            contents: bytemuck::cast_slice(gaussian_cloud.gaussian_iter().collect::<Vec<Gaussian>>().as_slice()),
             usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::STORAGE,
         });
 
-        let count = gaussian_cloud.gaussians.len();
+        let count = gaussian_cloud.len();
 
         // let draw_indirect_buffer = render_device.create_buffer(&BufferDescriptor {
         //     label: Some("draw indirect buffer"),
@@ -369,7 +369,7 @@ impl FromWorld for GaussianCloudPipeline {
 
         let sorted_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("sorted_layout"),
-            entries: &vec![
+            entries: &[
                 BindGroupLayoutEntry {
                     binding: 0,
                     visibility: ShaderStages::VERTEX_FRAGMENT,
@@ -585,6 +585,7 @@ pub struct GaussianCloudUniform {
     pub count: u32,
 }
 
+#[allow(clippy::type_complexity)]
 pub fn extract_gaussians(
     mut commands: Commands,
     mut prev_commands_len: Local<usize>,
@@ -656,6 +657,7 @@ pub struct GaussianCloudBindGroup {
     pub sorted_bind_group: BindGroup,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn queue_gaussian_bind_group(
     mut commands: Commands,
     mut groups: ResMut<GaussianUniformBindGroups>,
@@ -739,7 +741,7 @@ fn queue_gaussian_bind_group(
                         resource: BindingResource::Buffer(BufferBinding {
                             buffer: &sorted_entries.sorted_entry_buffer,
                             offset: 0,
-                            size: BufferSize::new((cloud.count as usize * std::mem::size_of::<(u32, u32)>()) as u64),
+                            size: BufferSize::new((cloud.count * std::mem::size_of::<(u32, u32)>()) as u64),
                         }),
                     },
                 ],

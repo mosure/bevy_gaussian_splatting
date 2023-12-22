@@ -8,10 +8,12 @@ use ply_rs::{
     parser::Parser,
 };
 
-use crate::gaussian::{
-    Gaussian,
-    MAX_SH_COEFF_COUNT_PER_CHANNEL,
-    SH_CHANNELS,
+use crate::{
+    material::spherical_harmonics::{
+        MAX_SH_COEFF_COUNT_PER_CHANNEL,
+        SH_CHANNELS,
+    },
+    gaussian::packed::Gaussian,
 };
 
 
@@ -24,20 +26,20 @@ impl PropertyAccess for Gaussian {
 
     fn set_property(&mut self, key: String, property: Property) {
         match (key.as_ref(), property) {
-            ("x", Property::Float(v))           => self.position_visibility[0] = v,
-            ("y", Property::Float(v))           => self.position_visibility[1] = v,
-            ("z", Property::Float(v))           => self.position_visibility[2] = v,
+            ("x", Property::Float(v))           => self.position_visibility.position[0] = v,
+            ("y", Property::Float(v))           => self.position_visibility.position[1] = v,
+            ("z", Property::Float(v))           => self.position_visibility.position[2] = v,
             ("f_dc_0", Property::Float(v))      => self.spherical_harmonic.coefficients[0] = v,
             ("f_dc_1", Property::Float(v))      => self.spherical_harmonic.coefficients[1] = v,
             ("f_dc_2", Property::Float(v))      => self.spherical_harmonic.coefficients[2] = v,
-            ("scale_0", Property::Float(v))     => self.scale_opacity[0] = v,
-            ("scale_1", Property::Float(v))     => self.scale_opacity[1] = v,
-            ("scale_2", Property::Float(v))     => self.scale_opacity[2] = v,
-            ("opacity", Property::Float(v))     => self.scale_opacity[3] = 1.0 / (1.0 + (-v).exp()),
-            ("rot_0", Property::Float(v))       => self.rotation[0] = v,
-            ("rot_1", Property::Float(v))       => self.rotation[1] = v,
-            ("rot_2", Property::Float(v))       => self.rotation[2] = v,
-            ("rot_3", Property::Float(v))       => self.rotation[3] = v,
+            ("scale_0", Property::Float(v))     => self.scale_opacity.scale[0] = v,
+            ("scale_1", Property::Float(v))     => self.scale_opacity.scale[1] = v,
+            ("scale_2", Property::Float(v))     => self.scale_opacity.scale[2] = v,
+            ("opacity", Property::Float(v))     => self.scale_opacity.opacity = 1.0 / (1.0 + (-v).exp()),
+            ("rot_0", Property::Float(v))       => self.rotation.rotation[0] = v,
+            ("rot_1", Property::Float(v))       => self.rotation.rotation[1] = v,
+            ("rot_2", Property::Float(v))       => self.rotation.rotation[2] = v,
+            ("rot_3", Property::Float(v))       => self.rotation.rotation[3] = v,
             (_, Property::Float(v)) if key.starts_with("f_rest_") => {
                 let i = key[7..].parse::<usize>().unwrap();
 
@@ -66,11 +68,11 @@ pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, std::io:
     }
 
     for gaussian in &mut cloud {
-        gaussian.position_visibility[3] = 1.0;
+        gaussian.position_visibility.visibility = 1.0;
 
-        let mean_scale = (gaussian.scale_opacity[0] + gaussian.scale_opacity[1] + gaussian.scale_opacity[2]) / 3.0;
+        let mean_scale = (gaussian.scale_opacity.scale[0] + gaussian.scale_opacity.scale[1] + gaussian.scale_opacity.scale[2]) / 3.0;
         for i in 0..3 {
-            gaussian.scale_opacity[i] = gaussian.scale_opacity[i]
+            gaussian.scale_opacity.scale[i] = gaussian.scale_opacity.scale[i]
                 .max(mean_scale - MAX_SIZE_VARIANCE)
                 .min(mean_scale + MAX_SIZE_VARIANCE)
                 .exp();

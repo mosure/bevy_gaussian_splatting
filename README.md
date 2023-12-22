@@ -90,6 +90,7 @@ fn setup_gaussian_cloud(
 - [dreamgaussian](https://github.com/dreamgaussian/dreamgaussian)
 - [dynamic-3d-gaussians](https://github.com/JonathonLuiten/Dynamic3DGaussians)
 - [ewa splatting](https://www.cs.umd.edu/~zwicker/publications/EWASplatting-TVCG02.pdf)
+- [gaussian-grouping](https://github.com/lkeab/gaussian-grouping)
 - [gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting)
 - [gaussian-splatting-viewer](https://github.com/limacv/GaussianSplattingViewer/tree/main)
 - [gaussian-splatting-web](https://github.com/cvlab-epfl/gaussian-splatting-web)

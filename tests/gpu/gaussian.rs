@@ -77,20 +77,16 @@ fn check_image_equality(image: &Image, other: &Image) -> bool {
 
 fn test_stability(captures: Arc<Mutex<Vec<Image>>>) {
     let all_frames_similar = captures.lock().unwrap().iter()
-        .fold(Some(None), |acc, image| {
+        .try_fold(None, |acc, image| {
             match acc {
                 Some(acc_image) => {
-                    if let Some(acc_image) = acc_image {
-                        if check_image_equality(acc_image, image) {
-                            Some(Some(acc_image))
-                        } else {
-                            None
-                        }
+                    if check_image_equality(acc_image, image) {
+                        Some(Some(acc_image))
                     } else {
-                        Some(Some(image))
+                        None
                     }
                 },
-                None => None,
+                None => Some(Some(image)),
             }
         }).is_some();
     assert!(all_frames_similar, "all frames are not the same");
@@ -153,7 +149,7 @@ fn capture_ready(
 
     if let Ok(window_entity) = main_window.get_single() {
         screenshot_manager.take_screenshot(window_entity, move |image: Image| {
-            let has_non_zero_data = image.data.iter().fold(false, |non_zero, &x| non_zero || x != 0);
+            let has_non_zero_data = image.data.iter().any(|&x| x != 0);
             assert!(has_non_zero_data, "screenshot is all zeros");
 
             let mut buffer = buffer_clone.lock().unwrap();

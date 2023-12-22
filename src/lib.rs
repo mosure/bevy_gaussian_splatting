@@ -1,12 +1,13 @@
 use bevy::prelude::*;
 
 pub use gaussian::{
-    Gaussian,
-    GaussianCloud,
-    GaussianCloudSettings,
-    SphericalHarmonicCoefficients,
-    random_gaussians,
+    packed::Gaussian,
+    cloud::GaussianCloud,
+    rand::random_gaussians,
+    settings::GaussianCloudSettings,
 };
+
+pub use material::spherical_harmonics::SphericalHarmonicCoefficients;
 
 use io::loader::GaussianCloudLoader;
 

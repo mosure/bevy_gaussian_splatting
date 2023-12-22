@@ -80,7 +80,7 @@ fn setup_gaussian_cloud(
         println!("generating {} gaussians", n);
         cloud = gaussian_assets.add(random_gaussians(n));
     } else if let Some(filename) = file_arg {
-        if filename == "--help".to_string() {
+        if filename == "--help" {
             println!("usage: cargo run -- [filename | n]");
             return;
         }
@@ -265,7 +265,7 @@ fn example_app() {
     }
 
     if config.show_fps {
-        app.add_plugins(FrameTimeDiagnosticsPlugin::default());
+        app.add_plugins(FrameTimeDiagnosticsPlugin);
         app.add_systems(Startup, fps_display_setup);
         app.add_systems(Update, fps_update_system);
     }

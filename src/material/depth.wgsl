@@ -1,4 +1,4 @@
-#define_import_path bevy_gaussian_splatting::color
+#define_import_path bevy_gaussian_splatting::depth
 
 
 fn depth_to_rgb(depth: f32, min_depth: f32, max_depth: f32) -> vec3<f32> {
