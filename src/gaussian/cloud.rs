@@ -27,12 +27,12 @@ use crate::{
         packed::Gaussian,
     },
     material::spherical_harmonics::{
-        MAX_SH_COEFF_COUNT,
+        SH_COEFF_COUNT,
         SphericalHarmonicCoefficients,
     },
 };
 
-#[cfg(feature = "precision_half")]
+#[cfg(feature = "f16")]
 use crate::gaussian::f16::RotationScaleOpacityPacked128;
 
 
@@ -53,12 +53,12 @@ pub struct GaussianCloud {
 
     spherical_harmonic: Vec<SphericalHarmonicCoefficients>,
 
-    // #[cfg(feature = "precision_half")]
-    // pub rotation_scale_opacity_packed128: Vec<RotationScaleOpacityPacked128>,
+    #[cfg(feature = "f16")]
+    pub rotation_scale_opacity_packed128: Vec<RotationScaleOpacityPacked128>,
 
-    #[cfg(not(feature = "precision_half"))]
+    #[cfg(not(feature = "f16"))]
     rotation: Vec<Rotation>,
-    #[cfg(not(feature = "precision_half"))]
+    #[cfg(not(feature = "f16"))]
     scale_opacity: Vec<ScaleOpacity>,
 }
 
@@ -101,35 +101,35 @@ impl GaussianCloud {
 
 
     pub fn rotation(&self, index: usize) -> &[f32; 4] {
-        #[cfg(feature = "precision_half")]
+        #[cfg(feature = "f16")]
         return &self.rotation_scale_opacity_packed128[index].rotation;
 
-        #[cfg(not(feature = "precision_half"))]
+        #[cfg(not(feature = "f16"))]
         return &self.rotation[index].rotation;
     }
 
     pub fn rotation_mut(&mut self, index: usize) -> &mut [f32; 4] {
-        #[cfg(feature = "precision_half")]
+        #[cfg(feature = "f16")]
         return &mut self.rotation_scale_opacity_packed128[index].rotation;
 
-        #[cfg(not(feature = "precision_half"))]
+        #[cfg(not(feature = "f16"))]
         return &mut self.rotation[index].rotation;
     }
 
 
     pub fn scale(&self, index: usize) -> &[f32; 3] {
-        #[cfg(feature = "precision_half")]
+        #[cfg(feature = "f16")]
         return &self.rotation_scale_opacity_packed128[index].scale;
 
-        #[cfg(not(feature = "precision_half"))]
+        #[cfg(not(feature = "f16"))]
         return &self.scale_opacity[index].scale;
     }
 
     pub fn scale_mut(&mut self, index: usize) -> &mut [f32; 3] {
-        #[cfg(feature = "precision_half")]
+        #[cfg(feature = "f16")]
         return &mut self.rotation_scale_opacity_packed128[index].scale;
 
-        #[cfg(not(feature = "precision_half"))]
+        #[cfg(not(feature = "f16"))]
         return &mut self.scale_opacity[index].scale;
     }
 
@@ -139,12 +139,12 @@ impl GaussianCloud {
             position_visibility: self.position_visibility[index],
             spherical_harmonic: self.spherical_harmonic[index],
 
-            #[cfg(feature = "precision_half")]
+            #[cfg(feature = "f16")]
             rotation_scale_opacity_packed128: self.rotation_scale_opacity_packed128[index],
 
-            #[cfg(not(feature = "precision_half"))]
+            #[cfg(not(feature = "f16"))]
             rotation: self.rotation[index],
-            #[cfg(not(feature = "precision_half"))]
+            #[cfg(not(feature = "f16"))]
             scale_opacity: self.scale_opacity[index],
         }
     }
@@ -159,23 +159,23 @@ impl GaussianCloud {
                     position_visibility: *position_visibility,
                     spherical_harmonic: *spherical_harmonic,
 
-                    #[cfg(feature = "precision_half")]
+                    #[cfg(feature = "f16")]
                     rotation_scale_opacity_packed128: *rotation_scale_opacity_packed128,
 
-                    #[cfg(not(feature = "precision_half"))]
+                    #[cfg(not(feature = "f16"))]
                     rotation: *rotation,
-                    #[cfg(not(feature = "precision_half"))]
+                    #[cfg(not(feature = "f16"))]
                     scale_opacity: *scale_opacity,
                 }
             })
     }
 
 
-    pub fn spherical_harmonic(&self, index: usize) -> &[f32; MAX_SH_COEFF_COUNT] {
+    pub fn spherical_harmonic(&self, index: usize) -> &[f32; SH_COEFF_COUNT] {
         &self.spherical_harmonic[index].coefficients
     }
 
-    pub fn spherical_harmonic_mut(&mut self, index: usize) -> &mut [f32; MAX_SH_COEFF_COUNT] {
+    pub fn spherical_harmonic_mut(&mut self, index: usize) -> &mut [f32; SH_COEFF_COUNT] {
         &mut self.spherical_harmonic[index].coefficients
     }
 }
@@ -192,23 +192,25 @@ impl GaussianCloud {
             position_visibility.push(self.position_visibility[index]);
             spherical_harmonic.push(self.spherical_harmonic[index]);
 
-            #[cfg(feature = "precision_half")]
+            #[cfg(feature = "f16")]
             rotation_scale_opacity_packed128.push(self.rotation_scale_opacity_packed128[index]);
 
-            #[cfg(not(feature = "precision_half"))]
+            #[cfg(not(feature = "f16"))]
             rotation.push(self.rotation[index]);
-            #[cfg(not(feature = "precision_half"))]
+            #[cfg(not(feature = "f16"))]
             scale_opacity.push(self.scale_opacity[index]);
         }
 
         Self {
             position_visibility,
             spherical_harmonic,
-            #[cfg(feature = "precision_half")]
+
+            #[cfg(feature = "f16")]
             rotation_scale_opacity_packed128,
-            #[cfg(not(feature = "precision_half"))]
+
+            #[cfg(not(feature = "f16"))]
             rotation,
-            #[cfg(not(feature = "precision_half"))]
+            #[cfg(not(feature = "f16"))]
             scale_opacity,
         }
     }
@@ -236,23 +238,25 @@ impl GaussianCloud {
             position_visibility.push(gaussian.position_visibility);
             spherical_harmonic.push(gaussian.spherical_harmonic);
 
-            #[cfg(feature = "precision_half")]
+            #[cfg(feature = "f16")]
             rotation_scale_opacity_packed128.push(gaussian.rotation_scale_opacity_packed128);
 
-            #[cfg(not(feature = "precision_half"))]
+            #[cfg(not(feature = "f16"))]
             rotation.push(gaussian.rotation);
-            #[cfg(not(feature = "precision_half"))]
+            #[cfg(not(feature = "f16"))]
             scale_opacity.push(gaussian.scale_opacity);
         }
 
         Self {
             position_visibility,
             spherical_harmonic,
-            #[cfg(feature = "precision_half")]
+
+            #[cfg(feature = "f16")]
             rotation_scale_opacity_packed128,
-            #[cfg(not(feature = "precision_half"))]
+
+            #[cfg(not(feature = "f16"))]
             rotation,
-            #[cfg(not(feature = "precision_half"))]
+            #[cfg(not(feature = "f16"))]
             scale_opacity,
         }
     }
@@ -280,7 +284,7 @@ impl GaussianCloud {
             spherical_harmonic: SphericalHarmonicCoefficients {
                 coefficients: {
                     let mut rng = rand::thread_rng();
-                    let mut coefficients = [0.0; MAX_SH_COEFF_COUNT];
+                    let mut coefficients = [0.0; SH_COEFF_COUNT];
 
                     for coefficient in coefficients.iter_mut() {
                         *coefficient = rng.gen_range(-1.0..1.0);

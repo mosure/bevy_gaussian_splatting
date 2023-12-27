@@ -37,7 +37,10 @@ default = [
   "io_flexbuffers",
   "io_ply",
 
-  # "precision_half",
+  "packed",
+  # "planar",
+  "f32",
+  # "f16",
 
   "query_select",
   "query_sparse",
@@ -62,7 +65,10 @@ morph_particles = []
 
 noise = []
 
-precision_half = ["half"]
+f32 = []
+f16 = ["half"]
+packed = []
+planar = []
 
 query_raycast = []
 query_select = []

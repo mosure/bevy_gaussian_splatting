@@ -10,8 +10,9 @@ use ply_rs::{
 
 use crate::{
     material::spherical_harmonics::{
-        MAX_SH_COEFF_COUNT_PER_CHANNEL,
         SH_CHANNELS,
+        SH_COEFF_COUNT,
+        SH_COEFF_COUNT_PER_CHANNEL,
     },
     gaussian::packed::Gaussian,
 };
@@ -43,11 +44,23 @@ impl PropertyAccess for Gaussian {
             (_, Property::Float(v)) if key.starts_with("f_rest_") => {
                 let i = key[7..].parse::<usize>().unwrap();
 
-                match i {
-                    _ if i + 3 < self.spherical_harmonic.coefficients.len() => {
-                        self.spherical_harmonic.coefficients[i + 3] = v;
-                    },
-                    _ => { },
+                // interleaved
+                // if (i + 3) < SH_COEFF_COUNT {
+                //     self.spherical_harmonic.coefficients[i + 3] = v;
+                // }
+
+                // planar
+                let channel = i / SH_COEFF_COUNT_PER_CHANNEL;
+                let coefficient = if SH_COEFF_COUNT_PER_CHANNEL == 1 {
+                    1
+                } else {
+                    (i % (SH_COEFF_COUNT_PER_CHANNEL - 1)) + 1
+                };
+
+                let interleaved_idx = coefficient * SH_CHANNELS + channel;
+
+                if interleaved_idx < SH_COEFF_COUNT {
+                    self.spherical_harmonic.coefficients[interleaved_idx] = v;
                 }
             }
             (_, _) => {},
@@ -76,25 +89,6 @@ pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, std::io:
                 .max(mean_scale - MAX_SIZE_VARIANCE)
                 .min(mean_scale + MAX_SIZE_VARIANCE)
                 .exp();
-        }
-
-        let sh_src = gaussian.spherical_harmonic.coefficients;
-        let sh = &mut gaussian.spherical_harmonic.coefficients;
-
-        for (i, sh_src) in sh_src.iter().enumerate().skip(SH_CHANNELS) {
-            let j = i - SH_CHANNELS;
-
-            let channel = j / MAX_SH_COEFF_COUNT_PER_CHANNEL;
-            let coefficient = if MAX_SH_COEFF_COUNT_PER_CHANNEL == 1 {
-                1
-            } else {
-                (j % (MAX_SH_COEFF_COUNT_PER_CHANNEL - 1)) + 1
-            };
-
-            let interleaved_idx = coefficient * SH_CHANNELS + channel;
-            assert!(interleaved_idx >= SH_CHANNELS);
-
-            sh[interleaved_idx] = *sh_src;
         }
     }
 

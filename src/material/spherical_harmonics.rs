@@ -41,17 +41,17 @@ const fn num_sh_coefficients(degree: usize) -> usize {
         2 * degree + 1 + num_sh_coefficients(degree - 1)
     }
 }
-const SH_DEGREE: usize = 2;  // TODO: fix SH_DEGREE 3 - no default array >32 elements
+const SH_DEGREE: usize = 3;
 pub const SH_CHANNELS: usize = 3;
-pub const MAX_SH_COEFF_COUNT_PER_CHANNEL: usize = num_sh_coefficients(SH_DEGREE);
-pub const MAX_SH_COEFF_COUNT: usize = (MAX_SH_COEFF_COUNT_PER_CHANNEL * SH_CHANNELS + 3) & !3;
+pub const SH_COEFF_COUNT_PER_CHANNEL: usize = num_sh_coefficients(SH_DEGREE);
+pub const SH_COEFF_COUNT: usize = (SH_COEFF_COUNT_PER_CHANNEL * SH_CHANNELS + 3) & !3;
 
 
-#[cfg(feature = "precision_half")]
+#[cfg(feature = "f16")]
 type f16_pod_t = [u8; 2];
 
 
-#[cfg(feature = "precision_half")]
+#[cfg(feature = "f16")]
 #[derive(
     Clone,
     Copy,
@@ -67,11 +67,11 @@ type f16_pod_t = [u8; 2];
 pub struct SphericalHarmonicCoefficients {
     #[reflect(ignore)]
     #[serde(serialize_with = "coefficients_serializer", deserialize_with = "coefficients_deserializer")]
-    pub coefficients: [f16_pod_t; MAX_SH_COEFF_COUNT],
+    pub coefficients: [f16_pod_t; SH_COEFF_COUNT],
 }
 
 
-#[cfg(not(feature = "precision_half"))]
+#[cfg(not(feature = "f16"))]
 #[derive(
     Clone,
     Copy,
@@ -87,22 +87,22 @@ pub struct SphericalHarmonicCoefficients {
 #[repr(C)]
 pub struct SphericalHarmonicCoefficients {
     #[serde(serialize_with = "coefficients_serializer", deserialize_with = "coefficients_deserializer")]
-    pub coefficients: [f32; MAX_SH_COEFF_COUNT],
+    pub coefficients: [f32; SH_COEFF_COUNT],
 }
 
 
 impl Default for SphericalHarmonicCoefficients {
     fn default() -> Self {
         Self {
-            coefficients: [0.0; MAX_SH_COEFF_COUNT],
+            coefficients: [0.0; SH_COEFF_COUNT],
         }
     }
 }
-fn coefficients_serializer<S>(n: &[f32; MAX_SH_COEFF_COUNT], s: S) -> Result<S::Ok, S::Error>
+fn coefficients_serializer<S>(n: &[f32; SH_COEFF_COUNT], s: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
-    let mut tup = s.serialize_tuple(MAX_SH_COEFF_COUNT)?;
+    let mut tup = s.serialize_tuple(SH_COEFF_COUNT)?;
     for &x in n.iter() {
         tup.serialize_element(&x)?;
     }
@@ -110,26 +110,26 @@ where
     tup.end()
 }
 
-fn coefficients_deserializer<'de, D>(d: D) -> Result<[f32; MAX_SH_COEFF_COUNT], D::Error>
+fn coefficients_deserializer<'de, D>(d: D) -> Result<[f32; SH_COEFF_COUNT], D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     struct CoefficientsVisitor;
 
     impl<'de> serde::de::Visitor<'de> for CoefficientsVisitor {
-        type Value = [f32; MAX_SH_COEFF_COUNT];
+        type Value = [f32; SH_COEFF_COUNT];
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
             formatter.write_str("an array of floats")
         }
 
-        fn visit_seq<A>(self, mut seq: A) -> Result<[f32; MAX_SH_COEFF_COUNT], A::Error>
+        fn visit_seq<A>(self, mut seq: A) -> Result<[f32; SH_COEFF_COUNT], A::Error>
         where
             A: serde::de::SeqAccess<'de>,
         {
-            let mut coefficients = [0.0; MAX_SH_COEFF_COUNT];
+            let mut coefficients = [0.0; SH_COEFF_COUNT];
 
-            for (i, coefficient) in coefficients.iter_mut().enumerate().take(MAX_SH_COEFF_COUNT) {
+            for (i, coefficient) in coefficients.iter_mut().enumerate().take(SH_COEFF_COUNT) {
                 *coefficient = seq
                     .next_element()?
                     .ok_or_else(|| serde::de::Error::invalid_length(i, &self))?;
@@ -138,5 +138,5 @@ where
         }
     }
 
-    d.deserialize_tuple(MAX_SH_COEFF_COUNT, CoefficientsVisitor)
+    d.deserialize_tuple(SH_COEFF_COUNT, CoefficientsVisitor)
 }

@@ -4,8 +4,8 @@ pub mod packed;
 pub mod rand;
 pub mod settings;
 
-#[cfg(feature = "precision_half")]
+#[cfg(feature = "f16")]
 pub mod f16;
 
 // TODO: add plugin with type registration
-// TODO: add buffer/texture creation helpers
+// TODO: add buffer/texture creation helpers (e.g. fn create_buffers() -> [Buffer; 1])

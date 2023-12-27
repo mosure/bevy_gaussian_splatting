@@ -9,7 +9,7 @@ use crate::{
         packed::Gaussian,
     },
     material::spherical_harmonics::{
-        MAX_SH_COEFF_COUNT,
+        SH_COEFF_COUNT,
         SphericalHarmonicCoefficients,
     },
 };
@@ -38,7 +38,7 @@ impl Distribution<Gaussian> for rand::distributions::Standard {
             ].into(),
             spherical_harmonic: SphericalHarmonicCoefficients {
                 coefficients: {
-                    let mut coefficients = [0.0; MAX_SH_COEFF_COUNT];
+                    let mut coefficients = [0.0; SH_COEFF_COUNT];
                     for coefficient in coefficients.iter_mut() {
                         *coefficient = rng.gen_range(-1.0..1.0);
                     }

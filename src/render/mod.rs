@@ -57,20 +57,25 @@ use bevy::{
 
 use crate::{
     gaussian::{
-        packed::Gaussian,
         cloud::GaussianCloud,
         settings::{
             GaussianCloudDrawMode,
             GaussianCloudSettings,
         },
     },
-    material::spherical_harmonics::MAX_SH_COEFF_COUNT,
+    material::spherical_harmonics::SH_COEFF_COUNT,
     morph::MorphPlugin,
     sort::{
         SortPlugin,
         SortedEntries,
     },
 };
+
+#[cfg(feature = "packed")]
+mod packed;
+
+#[cfg(feature = "planar")]
+mod planar;
 
 
 const BINDINGS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(675257236);
@@ -90,26 +95,12 @@ impl Plugin for RenderPipelinePlugin {
             Shader::from_wgsl
         );
 
-        // load_internal_asset!(
-        //     app,
-        //     COLOR_SHADER_HANDLE,
-        //     "color.wgsl",
-        //     Shader::from_wgsl
-        // );
-
         load_internal_asset!(
             app,
             GAUSSIAN_SHADER_HANDLE,
             "gaussian.wgsl",
             Shader::from_wgsl
         );
-
-        // load_internal_asset!(
-        //     app,
-        //     SPHERICAL_HARMONICS_SHADER_HANDLE,
-        //     "spherical_harmonics.wgsl",
-        //     Shader::from_wgsl
-        // );
 
         load_internal_asset!(
             app,
@@ -161,7 +152,11 @@ pub struct GpuGaussianSplattingBundle {
 
 #[derive(Debug, Clone)]
 pub struct GpuGaussianCloud {
-    pub gaussian_buffer: Buffer,
+    #[cfg(feature = "packed")]
+    pub packed: packed::PackedBuffers,
+    #[cfg(feature = "planar")]
+    pub planar: planar::PlanarBuffers,
+
     pub count: usize,
 
     pub draw_indirect_buffer: Buffer,
@@ -182,20 +177,7 @@ impl RenderAsset for GaussianCloud {
         gaussian_cloud: Self::ExtractedAsset,
         render_device: &mut SystemParamItem<Self::Param>,
     ) -> Result<Self::PreparedAsset, PrepareAssetError<Self::ExtractedAsset>> {
-        let gaussian_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
-            label: Some("gaussian cloud buffer"),
-            contents: bytemuck::cast_slice(gaussian_cloud.gaussian_iter().collect::<Vec<Gaussian>>().as_slice()),
-            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::STORAGE,
-        });
-
         let count = gaussian_cloud.len();
-
-        // let draw_indirect_buffer = render_device.create_buffer(&BufferDescriptor {
-        //     label: Some("draw indirect buffer"),
-        //     size: std::mem::size_of::<wgpu::util::DrawIndirect>() as u64,
-        //     usage: BufferUsages::INDIRECT | BufferUsages::COPY_DST | BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-        //     mapped_at_creation: false,
-        // });
 
         let draw_indirect_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("draw indirect buffer"),
@@ -204,11 +186,16 @@ impl RenderAsset for GaussianCloud {
         });
 
         Ok(GpuGaussianCloud {
-            gaussian_buffer,
             count,
             draw_indirect_buffer,
+
             #[cfg(feature = "debug_gpu")]
             debug_gpu: gaussian_cloud,
+
+            #[cfg(feature = "packed")]
+            packed: packed::prepare_cloud(render_device, &gaussian_cloud),
+            #[cfg(feature = "planar")]
+            planar: planar::prepare_cloud(render_device, &gaussian_cloud),
         })
     }
 }
@@ -351,21 +338,11 @@ impl FromWorld for GaussianCloudPipeline {
         #[cfg(feature = "morph_particles")]
         let read_only = false;
 
-        let gaussian_cloud_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("gaussian_cloud_layout"),
-            entries: &[
-                BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: ShaderStages::all(),
-                    ty: BindingType::Buffer {
-                        ty: BufferBindingType::Storage { read_only },
-                        has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(std::mem::size_of::<Gaussian>() as u64),
-                    },
-                    count: None,
-                },
-            ],
-        });
+        #[cfg(feature = "packed")]
+        let gaussian_cloud_layout = packed::get_bind_group_layout(&render_device, read_only);
+
+        #[cfg(feature = "planar")]
+        let gaussian_cloud_layout = planar::get_bind_group_layout(&render_device);
 
         let sorted_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("sorted_layout"),
@@ -456,7 +433,7 @@ pub fn shader_defs(
 ) -> Vec<ShaderDefVal> {
     let defines = ShaderDefines::default();
     let mut shader_defs = vec![
-        ShaderDefVal::UInt("MAX_SH_COEFF_COUNT".into(), MAX_SH_COEFF_COUNT as u32),
+        ShaderDefVal::UInt("SH_COEFF_COUNT".into(), SH_COEFF_COUNT as u32),
         ShaderDefVal::UInt("RADIX_BASE".into(), defines.radix_base),
         ShaderDefVal::UInt("RADIX_BITS_PER_DIGIT".into(), defines.radix_bits_per_digit),
         ShaderDefVal::UInt("RADIX_DIGIT_PLACES".into(), defines.radix_digit_places),
@@ -487,6 +464,8 @@ pub fn shader_defs(
     if key.visualize_depth {
         shader_defs.push("VISUALIZE_DEPTH".into());
     }
+
+    // TODO: packed vs. planar shader defs
 
     match key.draw_mode {
         GaussianCloudDrawMode::All => {},
@@ -717,21 +696,14 @@ fn queue_gaussian_bind_group(
         let cloud: &GpuGaussianCloud = gaussian_cloud_res.get(cloud_handle).unwrap();
         let sorted_entries = sorted_entries_res.get(sorted_entries_handle).unwrap();
 
+        #[cfg(feature = "packed")]
+        let cloud_bind_group = packed::get_bind_group(&render_device, &gaussian_cloud_pipeline, &cloud);
+
+        #[cfg(feature = "planar")]
+        let cloud_bind_group = planar::get_bind_group(&render_device, &gaussian_cloud_pipeline, &cloud);
+
         commands.entity(entity).insert(GaussianCloudBindGroup {
-            cloud_bind_group: render_device.create_bind_group(
-                "gaussian_cloud_bind_group",
-                &gaussian_cloud_pipeline.gaussian_cloud_layout,
-                &[
-                    BindGroupEntry {
-                        binding: 0,
-                        resource: BindingResource::Buffer(BufferBinding {
-                            buffer: &cloud.gaussian_buffer,
-                            offset: 0,
-                            size: BufferSize::new(cloud.gaussian_buffer.size()),
-                        }),
-                    },
-                ],
-            ),
+            cloud_bind_group,
             sorted_bind_group: render_device.create_bind_group(
                 "render_sorted_bind_group",
                 &gaussian_cloud_pipeline.sorted_layout,
@@ -890,7 +862,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
             None => return RenderCommandResult::Failure,
         };
 
-        pass.set_bind_group(2, &bind_groups.cloud_bind_group, &[]);
+        pass.set_bind_group(2, &bind_groups.cloud_bind_group, &[]); // TODO: abstract source of cloud_bind_group (e.g. packed vs. planar)
         pass.set_bind_group(3, &bind_groups.sorted_bind_group, &[]);
 
         pass.draw_indirect(&gpu_gaussian_cloud.draw_indirect_buffer, 0);
