@@ -36,32 +36,15 @@ struct Gaussian {
 
 #ifdef PLANAR_F32
 
-struct PositionVisibility {
-    @location(0) position: vec3<f32>,
-    @location(1) visibility: f32,
-};
-
 #ifdef READ_WRITE_POINTS
-@group(2) @binding(0) var<storage, read_write> position_visibility: array<PositionVisibility>;
+@group(2) @binding(0) var<storage, read_write> position_visibility: array<vec4<f32>>;
 #else
-@group(2) @binding(0) var<storage, read> position_visibility: array<PositionVisibility>;
+@group(2) @binding(0) var<storage, read> position_visibility: array<vec4<f32>>;
 #endif
 
-
-struct Rotation {
-    @location(0) rotation: vec4<f32>,
-};
-@group(2) @binding(1) var<storage, read> rotation: array<Rotation>;
-
-
-struct ScaleOpacity {
-    @location(0) scale: vec3<f32>,
-    @location(1) opacity: f32,
-};
-@group(2) @binding(2) var<storage, read> scale_opacity: array<ScaleOpacity>;
-
+@group(2) @binding(1) var<storage, read> rotation: array<vec4<f32>>;
+@group(2) @binding(2) var<storage, read> scale_opacity: array<vec4<f32>>;
 @group(2) @binding(3) var<storage, read> spherical_harmonics: array<array<f32, #{SH_COEFF_COUNT}>>;
-
 
 #endif
 

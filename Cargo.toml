@@ -37,8 +37,8 @@ default = [
   "io_flexbuffers",
   "io_ply",
 
-  "packed",
-  # "planar",
+  # "packed",
+  "planar",
   "f32",
   # "f16",
 

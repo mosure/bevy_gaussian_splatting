@@ -11,7 +11,7 @@
 #ifdef PLANAR_F32
 
 fn get_position(index: u32) -> vec3<f32> {
-    return position_visibility[index].position;
+    return position_visibility[index].xyz;
 }
 
 fn get_spherical_harmonics(index: u32) -> array<f32, #{SH_COEFF_COUNT}> {
@@ -19,19 +19,19 @@ fn get_spherical_harmonics(index: u32) -> array<f32, #{SH_COEFF_COUNT}> {
 }
 
 fn get_rotation(index: u32) -> vec4<f32> {
-    return rotation[index].rotation;
+    return rotation[index];
 }
 
 fn get_scale(index: u32) -> vec3<f32> {
-    return scale_opacity[index].scale;
+    return scale_opacity[index].xyz;
 }
 
 fn get_opacity(index: u32) -> f32 {
-    return scale_opacity[index].opacity;
+    return scale_opacity[index].w;
 }
 
 fn get_visibility(index: u32) -> f32 {
-    return position_visibility[index].visibility;
+    return position_visibility[index].w;
 }
 
 #endif
