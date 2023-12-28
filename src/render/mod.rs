@@ -80,6 +80,8 @@ mod planar;
 
 const BINDINGS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(675257236);
 const GAUSSIAN_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(68294581);
+const PACKED_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(123623514);
+const PLANAR_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(72345231);
 const TRANSFORM_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(734523534);
 
 
@@ -104,6 +106,20 @@ impl Plugin for RenderPipelinePlugin {
 
         load_internal_asset!(
             app,
+            PACKED_SHADER_HANDLE,
+            "packed.wgsl",
+            Shader::from_wgsl
+        );
+
+        load_internal_asset!(
+            app,
+            PLANAR_SHADER_HANDLE,
+            "planar.wgsl",
+            Shader::from_wgsl
+        );
+
+        load_internal_asset!(
+            app,
             TRANSFORM_SHADER_HANDLE,
             "transform.wgsl",
             Shader::from_wgsl
@@ -111,6 +127,7 @@ impl Plugin for RenderPipelinePlugin {
 
         app.add_plugins(RenderAssetPlugin::<GaussianCloud>::default());
         app.add_plugins(UniformComponentPlugin::<GaussianCloudUniform>::default());
+
         app.add_plugins((
             MorphPlugin,
             SortPlugin,
@@ -334,15 +351,13 @@ impl FromWorld for GaussianCloudPipeline {
 
         #[cfg(not(feature = "morph_particles"))]
         let read_only = true;
-
         #[cfg(feature = "morph_particles")]
         let read_only = false;
 
         #[cfg(feature = "packed")]
         let gaussian_cloud_layout = packed::get_bind_group_layout(&render_device, read_only);
-
         #[cfg(feature = "planar")]
-        let gaussian_cloud_layout = planar::get_bind_group_layout(&render_device);
+        let gaussian_cloud_layout = planar::get_bind_group_layout(&render_device, read_only);
 
         let sorted_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("sorted_layout"),
@@ -465,7 +480,11 @@ pub fn shader_defs(
         shader_defs.push("VISUALIZE_DEPTH".into());
     }
 
-    // TODO: packed vs. planar shader defs
+    #[cfg(all(feature = "packed", feature = "f32"))]
+    shader_defs.push("PACKED_F32".into());
+
+    #[cfg(all(feature = "planar", feature = "f32"))]
+    shader_defs.push("PLANAR_F32".into());
 
     match key.draw_mode {
         GaussianCloudDrawMode::All => {},

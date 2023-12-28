@@ -1,10 +1,6 @@
-use bevy::{
-    prelude::*,
-    asset::load_internal_asset,
-    render::{
-        render_resource::*,
-        renderer::RenderDevice,
-    },
+use bevy::render::{
+    render_resource::*,
+    renderer::RenderDevice,
 };
 
 use crate::{
@@ -17,24 +13,6 @@ use crate::{
         GpuGaussianCloud,
     },
 };
-
-
-const PACKED_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(63783234);
-
-
-#[derive(Default)]
-pub struct PackedRenderPipelinePlugin;
-
-impl Plugin for PackedRenderPipelinePlugin {
-    fn build(&self, app: &mut App) {
-        load_internal_asset!(
-            app,
-            PACKED_SHADER_HANDLE,
-            "packed.wgsl",
-            Shader::from_wgsl
-        );
-    }
-}
 
 
 #[derive(Debug, Clone)]
@@ -81,6 +59,7 @@ pub fn get_bind_group_layout(
 }
 
 
+#[cfg(feature = "packed")]
 pub fn get_bind_group(
     render_device: &RenderDevice,
     gaussian_cloud_pipeline: &GaussianCloudPipeline,

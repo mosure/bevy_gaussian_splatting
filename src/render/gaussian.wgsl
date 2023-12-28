@@ -2,7 +2,6 @@
     view,
     globals,
     gaussian_uniforms,
-    points,
     sorting_pass_index,
     sorting,
     draw_indirect,
@@ -18,6 +17,28 @@
     world_to_clip,
     in_frustum,
 }
+
+#ifdef PACKED_F32
+#import bevy_gaussian_splatting::packed::{
+    get_position,
+    get_spherical_harmonics,
+    get_rotation,
+    get_scale,
+    get_opacity,
+    get_visibility,
+}
+#endif
+
+#ifdef PLANAR_F32
+#import bevy_gaussian_splatting::planar::{
+    get_position,
+    get_spherical_harmonics,
+    get_rotation,
+    get_scale,
+    get_opacity,
+    get_visibility,
+}
+#endif
 
 
 @group(3) @binding(0) var<storage, read> sorted_entries: array<Entry>;
@@ -213,14 +234,15 @@ fn vs_points(
 
     discard_quad |= sorted_entries[instance_index][0] == 0xFFFFFFFFu; // || splat_index == 0u;
 
-    let point = points[splat_index];
-    let transformed_position = (gaussian_uniforms.global_transform * point.position_visibility).xyz;
+    let position = vec4<f32>(get_position(splat_index), 1.0);
+
+    let transformed_position = (gaussian_uniforms.global_transform * position).xyz;
     let projected_position = world_to_clip(transformed_position);
 
     discard_quad |= !in_frustum(projected_position.xyz);
 
 #ifdef DRAW_SELECTED
-    discard_quad |= point.position_visibility.w < 0.5;
+    discard_quad |= get_visibility(splat_index) < 0.5;
 #endif
 
     if (discard_quad) {
@@ -244,8 +266,11 @@ fn vs_points(
     var rgb = vec3<f32>(0.0);
 
 #ifdef VISUALIZE_DEPTH
-    let min_position = (gaussian_uniforms.global_transform * points[sorted_entries[1][1]].position_visibility).xyz;
-    let max_position = (gaussian_uniforms.global_transform * points[sorted_entries[gaussian_uniforms.count - 1u][1]].position_visibility).xyz;
+    let first_position = vec4<f32>(get_position(sorted_entries[1][1]), 1.0);
+    let last_position = vec4<f32>(get_position(sorted_entries[gaussian_uniforms.count - 1u][1]), 1.0);
+
+    let min_position = (gaussian_uniforms.global_transform * first_position).xyz;
+    let max_position = (gaussian_uniforms.global_transform * last_position).xyz;
 
     let camera_position = view.world_position;
 
@@ -259,22 +284,24 @@ fn vs_points(
         max_distance,
     );
 #else
-    rgb = spherical_harmonics_lookup(ray_direction, point.sh);
+    rgb = spherical_harmonics_lookup(ray_direction, get_spherical_harmonics(splat_index));
 #endif
 
+    // TODO: precompute color, cov2d for every gaussian. cov2d only needs a single evaluation, while color needs to be evaluated every frame in SH degree > 0 mode
     output.color = vec4<f32>(
         rgb,
-        point.scale_opacity.a
+        get_opacity(splat_index),
     );
 
 #ifdef HIGHLIGHT_SELECTED
-    if (point.position_visibility.w > 0.5) {
+    if (get_visibility(splat_index) > 0.5) {
         output.color = vec4<f32>(0.3, 1.0, 0.1, 1.0);
     }
 #endif
 
-    let cov2d = compute_cov2d(transformed_position, point.scale_opacity.rgb, point.rotation);
+    let cov2d = compute_cov2d(transformed_position, get_scale(splat_index), get_rotation(splat_index));
 
+    // TODO: disable output.conic in obb mode
     let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
     let det_inv = 1.0 / det;
     let conic = vec3<f32>(

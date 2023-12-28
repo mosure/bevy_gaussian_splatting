@@ -2,7 +2,6 @@
     view,
     globals,
     gaussian_uniforms,
-    points,
     sorting_pass_index,
     sorting,
     status_counters,
@@ -17,6 +16,14 @@
     world_to_clip,
     in_frustum,
 }
+
+#ifdef PACKED_F32
+#import bevy_gaussian_splatting::packed::get_position
+#endif
+
+#ifdef PLANAR_F32
+#import bevy_gaussian_splatting::planar::get_position
+#endif
 
 
 struct SortingGlobal {
@@ -49,11 +56,12 @@ fn radix_sort_a(
     let start_entry_index = thread_index * #{ENTRIES_PER_INVOCATION_A}u;
     let end_entry_index = start_entry_index + #{ENTRIES_PER_INVOCATION_A}u;
     for(var entry_index = start_entry_index; entry_index < end_entry_index; entry_index += 1u) {
-        if(entry_index >= arrayLength(&points)) {
+        if(entry_index >= gaussian_uniforms.count) {
             continue;
         }
         var key: u32 = 0xFFFFFFFFu; // Stream compaction for frustum culling
-        let transformed_position = (gaussian_uniforms.global_transform * points[entry_index].position_visibility).xyz;
+        let position = vec4<f32>(get_position(entry_index), 1.0);
+        let transformed_position = (gaussian_uniforms.global_transform * position).xyz;
         let clip_space_pos = world_to_clip(transformed_position);
         if(in_frustum(clip_space_pos.xyz)) {
             // key = bitcast<u32>(1.0 - clip_space_pos.z);
@@ -158,7 +166,7 @@ fn radix_sort_c(
     let assignment = sorting_shared_c.entries[0];
     let global_entry_offset = assignment * #{WORKGROUP_ENTRIES_C}u;
     // TODO: Specialize end shader
-    if(gl_LocalInvocationID.x == 0u && assignment * #{WORKGROUP_ENTRIES_C}u + #{WORKGROUP_ENTRIES_C}u >= arrayLength(&points)) {
+    if(gl_LocalInvocationID.x == 0u && assignment * #{WORKGROUP_ENTRIES_C}u + #{WORKGROUP_ENTRIES_C}u >= gaussian_uniforms.count) {
         // Last workgroup resets the assignment number for the next pass
         sorting.assignment_counter = 0u;
     }
@@ -199,7 +207,7 @@ fn radix_sort_c(
         }
     }
     atomicStore(&status_counters[assignment][gl_LocalInvocationID.x], 0x80000000u | (global_digit_count + local_digit_count));
-    if(sorting_pass_index == #{RADIX_DIGIT_PLACES}u - 1u && gl_LocalInvocationID.x == #{WORKGROUP_INVOCATIONS_C}u - 2u && global_entry_offset + #{WORKGROUP_ENTRIES_C}u >= arrayLength(&points)) {
+    if(sorting_pass_index == #{RADIX_DIGIT_PLACES}u - 1u && gl_LocalInvocationID.x == #{WORKGROUP_INVOCATIONS_C}u - 2u && global_entry_offset + #{WORKGROUP_ENTRIES_C}u >= gaussian_uniforms.count) {
         draw_indirect.vertex_count = 4u;
         draw_indirect.instance_count = global_digit_count + local_digit_count;
     }

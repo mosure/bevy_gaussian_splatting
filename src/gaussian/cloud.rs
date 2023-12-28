@@ -49,17 +49,17 @@ use crate::gaussian::f16::RotationScaleOpacityPacked128;
 )]
 #[uuid = "ac2f08eb-bc32-aabb-ff21-51571ea332d5"]
 pub struct GaussianCloud {
-    position_visibility: Vec<PositionVisibility>,
+    pub position_visibility: Vec<PositionVisibility>,
 
-    spherical_harmonic: Vec<SphericalHarmonicCoefficients>,
+    pub spherical_harmonic: Vec<SphericalHarmonicCoefficients>,
 
     #[cfg(feature = "f16")]
     pub rotation_scale_opacity_packed128: Vec<RotationScaleOpacityPacked128>,
 
     #[cfg(not(feature = "f16"))]
-    rotation: Vec<Rotation>,
+    pub rotation: Vec<Rotation>,
     #[cfg(not(feature = "f16"))]
-    scale_opacity: Vec<ScaleOpacity>,
+    pub scale_opacity: Vec<ScaleOpacity>,
 }
 
 impl GaussianCloud {
