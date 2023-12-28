@@ -39,8 +39,8 @@ default = [
 
   # "packed",
   "planar",
-  "f32",
-  # "f16",
+  # "f32",
+  "f16",
 
   "query_select",
   "query_sparse",

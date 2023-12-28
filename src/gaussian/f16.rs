@@ -1,4 +1,3 @@
-use rand::prelude::Distribution;
 use std::marker::Copy;
 
 use half::f16;
@@ -17,8 +16,6 @@ use serde::{
 };
 
 
-type f16_pod_t = [u8; 2];
-
 #[derive(
     Clone,
     Debug,
@@ -26,6 +23,7 @@ type f16_pod_t = [u8; 2];
     Copy,
     PartialEq,
     Reflect,
+    ShaderType,
     Pod,
     Zeroable,
     Serialize,
@@ -34,28 +32,22 @@ type f16_pod_t = [u8; 2];
 #[repr(C)]
 pub struct RotationScaleOpacityPacked128 {
     #[reflect(ignore)]
-    pub rotation: [f16_pod_t; 4],
+    pub rotation: [u32; 2],
     #[reflect(ignore)]
-    pub scale: [f16_pod_t; 3],
-    #[reflect(ignore)]
-    pub opacity: f16_pod_t,
+    pub scale_opacity: [u32; 2],
 }
 
 impl From<[f32; 8]> for RotationScaleOpacityPacked128 {
     fn from(rotation_scale_opacity: [f32; 8]) -> Self {
         Self {
             rotation: [
-                f16::from_f32(rotation_scale_opacity[0]).to_bits().to_be_bytes(),
-                f16::from_f32(rotation_scale_opacity[1]).to_bits().to_be_bytes(),
-                f16::from_f32(rotation_scale_opacity[2]).to_bits().to_be_bytes(),
-                f16::from_f32(rotation_scale_opacity[3]).to_bits().to_be_bytes(),
+                pack_f32s_to_u32(rotation_scale_opacity[0], rotation_scale_opacity[1]),
+                pack_f32s_to_u32(rotation_scale_opacity[2], rotation_scale_opacity[3]),
             ],
-            scale: [
-                f16::from_f32(rotation_scale_opacity[4]).to_bits().to_be_bytes(),
-                f16::from_f32(rotation_scale_opacity[5]).to_bits().to_be_bytes(),
-                f16::from_f32(rotation_scale_opacity[6]).to_bits().to_be_bytes(),
+            scale_opacity: [
+                pack_f32s_to_u32(rotation_scale_opacity[4], rotation_scale_opacity[5]),
+                pack_f32s_to_u32(rotation_scale_opacity[6], rotation_scale_opacity[7]),
             ],
-            opacity: f16::from_f32(rotation_scale_opacity[7]).to_bits().to_be_bytes(),
         }
     }
 }
@@ -64,17 +56,40 @@ impl From<[f16; 8]> for RotationScaleOpacityPacked128 {
     fn from(rotation_scale_opacity: [f16; 8]) -> Self {
         Self {
             rotation: [
-                rotation_scale_opacity[0].to_bits().to_be_bytes(),
-                rotation_scale_opacity[1].to_bits().to_be_bytes(),
-                rotation_scale_opacity[2].to_bits().to_be_bytes(),
-                rotation_scale_opacity[3].to_bits().to_be_bytes(),
+                pack_f16s_to_u32(rotation_scale_opacity[0], rotation_scale_opacity[1]),
+                pack_f16s_to_u32(rotation_scale_opacity[2], rotation_scale_opacity[3]),
             ],
-            scale: [
-                rotation_scale_opacity[4].to_bits().to_be_bytes(),
-                rotation_scale_opacity[5].to_bits().to_be_bytes(),
-                rotation_scale_opacity[6].to_bits().to_be_bytes(),
+            scale_opacity: [
+                pack_f16s_to_u32(rotation_scale_opacity[4], rotation_scale_opacity[5]),
+                pack_f16s_to_u32(rotation_scale_opacity[6], rotation_scale_opacity[7]),
             ],
-            opacity: rotation_scale_opacity[7].to_bits().to_be_bytes(),
         }
     }
 }
+
+impl From<[u32; 4]> for RotationScaleOpacityPacked128 {
+    fn from(rotation_scale_opacity: [u32; 4]) -> Self {
+        Self {
+            rotation: [rotation_scale_opacity[0], rotation_scale_opacity[1]],
+            scale_opacity: [rotation_scale_opacity[2], rotation_scale_opacity[3]],
+        }
+    }
+}
+
+
+pub fn pack_f32s_to_u32(upper: f32, lower: f32) -> u32 {
+    let upper_bits = (f16::from_f32(upper).to_bits() as u32) << 16;
+    let lower_bits = f16::from_f32(lower).to_bits() as u32;
+    upper_bits | lower_bits
+}
+
+pub fn pack_f16s_to_u32(upper: f16, lower: f16) -> u32 {
+    let upper_bits = (upper.to_bits() as u32) << 16;
+    let lower_bits = lower.to_bits() as u32;
+    upper_bits | lower_bits
+}
+
+
+
+
+// TODO: add conversions from f32

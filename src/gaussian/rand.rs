@@ -3,6 +3,9 @@ use rand::{
     Rng,
 };
 
+#[cfg(feature = "f16")]
+use crate::gaussian::f16::pack_f32s_to_u32;
+
 use crate::{
     gaussian::{
         cloud::GaussianCloud,
@@ -38,11 +41,26 @@ impl Distribution<Gaussian> for rand::distributions::Standard {
             ].into(),
             spherical_harmonic: SphericalHarmonicCoefficients {
                 coefficients: {
-                    let mut coefficients = [0.0; SH_COEFF_COUNT];
-                    for coefficient in coefficients.iter_mut() {
-                        *coefficient = rng.gen_range(-1.0..1.0);
+                    #[cfg(feature = "f16")]
+                    {
+                        let mut coefficients: [u32; SH_COEFF_COUNT / 2];
+                        for coefficient in coefficients.iter_mut() {
+                            let upper = rng.gen_range(-1.0..1.0);
+                            let lower = rng.gen_range(-1.0..1.0);
+
+                            *coefficient = pack_f32s_to_u32(upper, lower);
+                        }
+                        coefficients
                     }
-                    coefficients
+
+                    #[cfg(feature = "f32")]
+                    {
+                        let mut coefficients = [0.0; SH_COEFF_COUNT];
+                        for coefficient in coefficients.iter_mut() {
+                            *coefficient = rng.gen_range(-1.0..1.0);
+                        }
+                        coefficients
+                    }
                 },
             },
         }

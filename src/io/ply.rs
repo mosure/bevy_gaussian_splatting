@@ -61,6 +61,8 @@ impl PropertyAccess for Gaussian {
 
                 if interleaved_idx < SH_COEFF_COUNT {
                     self.spherical_harmonic.coefficients[interleaved_idx] = v;
+                } else {
+                    // TODO: convert higher degree SH to lower degree SH
                 }
             }
             (_, _) => {},

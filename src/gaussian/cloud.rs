@@ -56,10 +56,10 @@ pub struct GaussianCloud {
     #[cfg(feature = "f16")]
     pub rotation_scale_opacity_packed128: Vec<RotationScaleOpacityPacked128>,
 
-    #[cfg(not(feature = "f16"))]
-    pub rotation: Vec<Rotation>,
-    #[cfg(not(feature = "f16"))]
-    pub scale_opacity: Vec<ScaleOpacity>,
+    // #[cfg(feature = "f32")]
+    // pub rotation: Vec<Rotation>,
+    // #[cfg(feature = "f32")]
+    // pub scale_opacity: Vec<ScaleOpacity>,
 }
 
 impl GaussianCloud {
@@ -100,55 +100,51 @@ impl GaussianCloud {
     }
 
 
-    pub fn rotation(&self, index: usize) -> &[f32; 4] {
-        #[cfg(feature = "f16")]
-        return &self.rotation_scale_opacity_packed128[index].rotation;
+    // pub fn rotation(&self, index: usize) -> &[f32; 4] {
+    //     #[cfg(feature = "f16")]
+    //     return &self.rotation_scale_opacity_packed128[index].rotation;
 
-        #[cfg(not(feature = "f16"))]
-        return &self.rotation[index].rotation;
-    }
+    //     #[cfg(feature = "f32")]
+    //     return &self.rotation[index].rotation;
+    // }
 
-    pub fn rotation_mut(&mut self, index: usize) -> &mut [f32; 4] {
-        #[cfg(feature = "f16")]
-        return &mut self.rotation_scale_opacity_packed128[index].rotation;
+    // pub fn rotation_mut(&mut self, index: usize) -> &mut [f32; 4] {
+    //     #[cfg(feature = "f16")]
+    //     return &mut self.rotation_scale_opacity_packed128[index].rotation;
 
-        #[cfg(not(feature = "f16"))]
-        return &mut self.rotation[index].rotation;
-    }
-
-
-    pub fn scale(&self, index: usize) -> &[f32; 3] {
-        #[cfg(feature = "f16")]
-        return &self.rotation_scale_opacity_packed128[index].scale;
-
-        #[cfg(not(feature = "f16"))]
-        return &self.scale_opacity[index].scale;
-    }
-
-    pub fn scale_mut(&mut self, index: usize) -> &mut [f32; 3] {
-        #[cfg(feature = "f16")]
-        return &mut self.rotation_scale_opacity_packed128[index].scale;
-
-        #[cfg(not(feature = "f16"))]
-        return &mut self.scale_opacity[index].scale;
-    }
+    //     #[cfg(feature = "f32")]
+    //     return &mut self.rotation[index].rotation;
+    // }
 
 
+    // pub fn scale(&self, index: usize) -> &[f32; 3] {
+    //     #[cfg(feature = "f16")]
+    //     return &self.rotation_scale_opacity_packed128[index].scale;
+
+    //     #[cfg(feature = "f32")]
+    //     return &self.scale_opacity[index].scale;
+    // }
+
+    // pub fn scale_mut(&mut self, index: usize) -> &mut [f32; 3] {
+    //     #[cfg(feature = "f16")]
+    //     return &mut self.rotation_scale_opacity_packed128[index].scale;
+
+    //     #[cfg(feature = "f32")]
+    //     return &mut self.scale_opacity[index].scale;
+    // }
+
+
+    #[cfg(feature = "f32")]
     pub fn gaussian(&self, index: usize) -> Gaussian {
         Gaussian {
             position_visibility: self.position_visibility[index],
             spherical_harmonic: self.spherical_harmonic[index],
-
-            #[cfg(feature = "f16")]
-            rotation_scale_opacity_packed128: self.rotation_scale_opacity_packed128[index],
-
-            #[cfg(not(feature = "f16"))]
             rotation: self.rotation[index],
-            #[cfg(not(feature = "f16"))]
             scale_opacity: self.scale_opacity[index],
         }
     }
 
+    #[cfg(feature = "f32")]
     pub fn gaussian_iter(&self) -> impl Iterator<Item=Gaussian> + '_ {
         self.position_visibility.iter()
             .zip(self.spherical_harmonic.iter())
@@ -159,62 +155,68 @@ impl GaussianCloud {
                     position_visibility: *position_visibility,
                     spherical_harmonic: *spherical_harmonic,
 
-                    #[cfg(feature = "f16")]
-                    rotation_scale_opacity_packed128: *rotation_scale_opacity_packed128,
-
-                    #[cfg(not(feature = "f16"))]
                     rotation: *rotation,
-                    #[cfg(not(feature = "f16"))]
                     scale_opacity: *scale_opacity,
                 }
             })
     }
 
 
-    pub fn spherical_harmonic(&self, index: usize) -> &[f32; SH_COEFF_COUNT] {
-        &self.spherical_harmonic[index].coefficients
+    pub fn spherical_harmonic(&self, index: usize) -> &SphericalHarmonicCoefficients {
+        &self.spherical_harmonic[index]
     }
 
-    pub fn spherical_harmonic_mut(&mut self, index: usize) -> &mut [f32; SH_COEFF_COUNT] {
-        &mut self.spherical_harmonic[index].coefficients
+    pub fn spherical_harmonic_mut(&mut self, index: usize) -> &mut SphericalHarmonicCoefficients {
+        &mut self.spherical_harmonic[index]
     }
 }
 
 
 impl GaussianCloud {
+    #[cfg(feature = "f16")]
+    pub fn subset(&self, indicies: &[usize]) -> Self {
+        let mut position_visibility = Vec::with_capacity(indicies.len());
+        let mut spherical_harmonic = Vec::with_capacity(indicies.len());
+        let mut rotation_scale_opacity_packed128 = Vec::with_capacity(indicies.len());
+
+        for &index in indicies.iter() {
+            position_visibility.push(self.position_visibility[index]);
+            spherical_harmonic.push(self.spherical_harmonic[index]);
+            rotation_scale_opacity_packed128.push(self.rotation_scale_opacity_packed128[index]);
+        }
+
+        Self {
+            position_visibility,
+            spherical_harmonic,
+            rotation_scale_opacity_packed128,
+        }
+    }
+
+    #[cfg(feature = "f32")]
     pub fn subset(&self, indicies: &[usize]) -> Self {
         let mut position_visibility = Vec::with_capacity(indicies.len());
         let mut spherical_harmonic = Vec::with_capacity(indicies.len());
         let mut rotation = Vec::with_capacity(indicies.len());
         let mut scale_opacity = Vec::with_capacity(indicies.len());
 
+        let mut rotation_scale_opacity_packed128 = Vec::with_capacity(indicies.len());
+
         for &index in indicies.iter() {
             position_visibility.push(self.position_visibility[index]);
             spherical_harmonic.push(self.spherical_harmonic[index]);
-
-            #[cfg(feature = "f16")]
-            rotation_scale_opacity_packed128.push(self.rotation_scale_opacity_packed128[index]);
-
-            #[cfg(not(feature = "f16"))]
             rotation.push(self.rotation[index]);
-            #[cfg(not(feature = "f16"))]
             scale_opacity.push(self.scale_opacity[index]);
         }
 
         Self {
             position_visibility,
             spherical_harmonic,
-
-            #[cfg(feature = "f16")]
-            rotation_scale_opacity_packed128,
-
-            #[cfg(not(feature = "f16"))]
             rotation,
-            #[cfg(not(feature = "f16"))]
             scale_opacity,
         }
     }
 
+    #[cfg(feature = "f32")]
     pub fn to_packed(&self) -> Vec<Gaussian> {
         let mut gaussians = Vec::with_capacity(self.len());
 
@@ -241,9 +243,9 @@ impl GaussianCloud {
             #[cfg(feature = "f16")]
             rotation_scale_opacity_packed128.push(gaussian.rotation_scale_opacity_packed128);
 
-            #[cfg(not(feature = "f16"))]
+            #[cfg(feature = "f32")]
             rotation.push(gaussian.rotation);
-            #[cfg(not(feature = "f16"))]
+            #[cfg(feature = "f32")]
             scale_opacity.push(gaussian.scale_opacity);
         }
 
@@ -254,9 +256,9 @@ impl GaussianCloud {
             #[cfg(feature = "f16")]
             rotation_scale_opacity_packed128,
 
-            #[cfg(not(feature = "f16"))]
+            #[cfg(feature = "f32")]
             rotation,
-            #[cfg(not(feature = "f16"))]
+            #[cfg(feature = "f32")]
             scale_opacity,
         }
     }
