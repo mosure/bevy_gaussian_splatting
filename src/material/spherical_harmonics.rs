@@ -55,10 +55,6 @@ pub const SH_COEFF_COUNT: usize = (SH_COEFF_COUNT_PER_CHANNEL * SH_CHANNELS + 3)
 
 
 #[cfg(feature = "f16")]
-type F16PodT = [u8; 2];
-
-
-#[cfg(feature = "f16")]
 #[derive(
     Clone,
     Copy,
