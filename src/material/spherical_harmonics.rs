@@ -46,10 +46,11 @@ const fn num_sh_coefficients(degree: usize) -> usize {
 }
 
 
-#[cfg(feature = "f16")]
-const SH_DEGREE: usize = 3;
+// minimize download size on web
+#[cfg(feature = "web")]
+const SH_DEGREE: usize = 0;
 
-#[cfg(feature = "f32")]
+#[cfg(not(feature = "web"))]
 const SH_DEGREE: usize = 3;
 
 pub const SH_CHANNELS: usize = 3;

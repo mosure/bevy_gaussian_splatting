@@ -51,7 +51,7 @@ struct Gaussian {
 #else
 @group(2) @binding(0) var<storage, read> position_visibility: array<vec4<f32>>;
 #endif
-@group(2) @binding(1) var<storage, read> spherical_harmonics: array<array<array<u32, #{SH_COEFF_COUNT} / 2>>;
+@group(2) @binding(1) var<storage, read> spherical_harmonics: array<array<u32, #{HALF_SH_COEFF_COUNT}>>;
 
 @group(2) @binding(2) var<storage, read> rotation_scale_opacity: array<vec4<u32>>;
 #endif

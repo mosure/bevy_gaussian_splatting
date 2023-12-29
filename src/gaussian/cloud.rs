@@ -292,6 +292,8 @@ impl GaussianCloud {
     }
 
     pub fn test_model() -> Self {
+        let mut rng = rand::thread_rng();
+
         let origin = Gaussian {
             rotation: [
                 1.0,
@@ -315,7 +317,6 @@ impl GaussianCloud {
                 coefficients: {
                     #[cfg(feature = "f16")]
                     {
-                        let mut rng = rand::thread_rng();
                         let mut coefficients = [0 as u32; SH_COEFF_COUNT / 2];
 
                         for coefficient in coefficients.iter_mut() {
@@ -330,7 +331,6 @@ impl GaussianCloud {
 
                     #[cfg(feature = "f32")]
                     {
-                        let mut rng = rand::thread_rng();
                         let mut coefficients = [0.0; SH_COEFF_COUNT];
 
                         for coefficient in coefficients.iter_mut() {
@@ -351,7 +351,6 @@ impl GaussianCloud {
                     g.position_visibility = [x, y, z, 1.0].into();
                     gaussians.push(g);
 
-                    let mut rng = rand::thread_rng();
                     gaussians.last_mut().unwrap().spherical_harmonic.coefficients.shuffle(&mut rng);
                 }
             }

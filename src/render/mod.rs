@@ -449,6 +449,7 @@ pub fn shader_defs(
     let defines = ShaderDefines::default();
     let mut shader_defs = vec![
         ShaderDefVal::UInt("SH_COEFF_COUNT".into(), SH_COEFF_COUNT as u32),
+        ShaderDefVal::UInt("HALF_SH_COEFF_COUNT".into(), ((SH_COEFF_COUNT + 1) & !1) as u32 / 2),
         ShaderDefVal::UInt("RADIX_BASE".into(), defines.radix_base),
         ShaderDefVal::UInt("RADIX_BITS_PER_DIGIT".into(), defines.radix_bits_per_digit),
         ShaderDefVal::UInt("RADIX_DIGIT_PLACES".into(), defines.radix_digit_places),
@@ -480,15 +481,23 @@ pub fn shader_defs(
         shader_defs.push("VISUALIZE_DEPTH".into());
     }
 
+    #[cfg(feature = "packed")]
+    shader_defs.push("PACKED".into());
+
+    #[cfg(feature = "planar")]
+    shader_defs.push("PLANAR".into());
+
+    #[cfg(feature = "f16")]
+    shader_defs.push("F16".into());
+
+    #[cfg(feature = "f32")]
+    shader_defs.push("F32".into());
+
     #[cfg(all(feature = "packed", feature = "f32"))]
     shader_defs.push("PACKED_F32".into());
 
     #[cfg(all(feature = "planar", feature = "f32"))]
     shader_defs.push("PLANAR_F32".into());
-
-    // packed_f16 is not currently supported
-    // #[cfg(all(feature = "packed", feature = "f16"))]
-    // shader_defs.push("PACKED_F16".into());
 
     #[cfg(all(feature = "planar", feature = "f16"))]
     shader_defs.push("PLANAR_F16".into());

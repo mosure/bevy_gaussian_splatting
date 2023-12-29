@@ -37,10 +37,10 @@ default = [
   "io_flexbuffers",
   "io_ply",
 
-  "packed",
-  # "planar",
-  "f32",
-  # "f16",
+  # "packed",
+  "planar",
+  # "f32",
+  "f16",
 
   "query_select",
   "query_sparse",

@@ -24,7 +24,6 @@ use crate::gaussian::{
 };
 
 
-
 #[derive(
     Clone,
     Debug,
@@ -124,9 +123,10 @@ impl From<[u32; 4]> for RotationScaleOpacityPacked128 {
 
 
 pub fn pack_f32s_to_u32(upper: f32, lower: f32) -> u32 {
-    let upper_bits = (f16::from_f32(upper).to_bits() as u32) << 16;
-    let lower_bits = f16::from_f32(lower).to_bits() as u32;
-    upper_bits | lower_bits
+    pack_f16s_to_u32(
+        f16::from_f32(upper),
+        f16::from_f32(lower),
+    )
 }
 
 pub fn pack_f16s_to_u32(upper: f16, lower: f16) -> u32 {

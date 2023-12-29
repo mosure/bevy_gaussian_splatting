@@ -224,17 +224,17 @@ pub fn get_bind_group(
             BindGroupEntry {
                 binding: 1,
                 resource: BindingResource::Buffer(BufferBinding {
-                    buffer: &cloud.planar.rotation_scale_opacity,
+                    buffer: &cloud.planar.spherical_harmonics,
                     offset: 0,
-                    size: BufferSize::new(cloud.planar.rotation_scale_opacity.size()),
+                    size: BufferSize::new(cloud.planar.spherical_harmonics.size()),
                 }),
             },
             BindGroupEntry {
                 binding: 2,
                 resource: BindingResource::Buffer(BufferBinding {
-                    buffer: &cloud.planar.spherical_harmonics,
+                    buffer: &cloud.planar.rotation_scale_opacity,
                     offset: 0,
-                    size: BufferSize::new(cloud.planar.spherical_harmonics.size()),
+                    size: BufferSize::new(cloud.planar.rotation_scale_opacity.size()),
                 }),
             },
         ],
@@ -263,25 +263,25 @@ pub fn get_bind_group(
             BindGroupEntry {
                 binding: 1,
                 resource: BindingResource::Buffer(BufferBinding {
+                    buffer: &cloud.planar.spherical_harmonics,
+                    offset: 0,
+                    size: BufferSize::new(cloud.planar.spherical_harmonics.size()),
+                }),
+            },
+            BindGroupEntry {
+                binding: 2,
+                resource: BindingResource::Buffer(BufferBinding {
                     buffer: &cloud.planar.rotation,
                     offset: 0,
                     size: BufferSize::new(cloud.planar.rotation.size()),
                 }),
             },
             BindGroupEntry {
-                binding: 2,
+                binding: 3,
                 resource: BindingResource::Buffer(BufferBinding {
                     buffer: &cloud.planar.scale_opacity,
                     offset: 0,
                     size: BufferSize::new(cloud.planar.scale_opacity.size()),
-                }),
-            },
-            BindGroupEntry {
-                binding: 3,
-                resource: BindingResource::Buffer(BufferBinding {
-                    buffer: &cloud.planar.spherical_harmonics,
-                    offset: 0,
-                    size: BufferSize::new(cloud.planar.spherical_harmonics.size()),
                 }),
             },
         ],
