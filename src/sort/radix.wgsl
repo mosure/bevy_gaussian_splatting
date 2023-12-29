@@ -21,7 +21,11 @@
 #import bevy_gaussian_splatting::packed::get_position
 #endif
 
-#if defined(PLANAR_F32) || defined(PLANAR_F16)
+#ifdef PLANAR_F32
+#import bevy_gaussian_splatting::planar::get_position
+#endif
+
+#ifdef PLANAR_F16
 #import bevy_gaussian_splatting::planar::get_position
 #endif
 
