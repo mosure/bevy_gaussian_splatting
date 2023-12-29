@@ -219,8 +219,6 @@ impl GaussianCloud {
         let mut rotation = Vec::with_capacity(indicies.len());
         let mut scale_opacity = Vec::with_capacity(indicies.len());
 
-        let mut rotation_scale_opacity_packed128 = Vec::with_capacity(indicies.len());
-
         for &index in indicies.iter() {
             position_visibility.push(self.position_visibility[index]);
             spherical_harmonic.push(self.spherical_harmonic[index]);

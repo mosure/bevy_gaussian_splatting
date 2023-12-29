@@ -7,7 +7,6 @@ use bevy::render::{
 use crate::{
     gaussian::{
         cloud::GaussianCloud,
-        f16::RotationScaleOpacityPacked128,
         f32::{
             PositionVisibility,
             Rotation,
@@ -20,6 +19,9 @@ use crate::{
     },
     material::spherical_harmonics::SphericalHarmonicCoefficients,
 };
+
+#[cfg(feature = "f16")]
+use crate::gaussian::f16::RotationScaleOpacityPacked128;
 
 #[derive(Debug, Clone)]
 pub struct PlanarBuffers {

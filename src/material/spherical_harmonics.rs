@@ -47,7 +47,7 @@ const fn num_sh_coefficients(degree: usize) -> usize {
 
 
 #[cfg(feature = "f16")]
-const SH_DEGREE: usize = 0;
+const SH_DEGREE: usize = 3;
 
 #[cfg(feature = "f32")]
 const SH_DEGREE: usize = 3;
@@ -98,10 +98,20 @@ pub struct SphericalHarmonicCoefficients {
 }
 
 
+#[cfg(feature = "f16")]
 impl Default for SphericalHarmonicCoefficients {
     fn default() -> Self {
         Self {
             coefficients: [0; SH_COEFF_COUNT / 2],
+        }
+    }
+}
+
+#[cfg(feature = "f32")]
+impl Default for SphericalHarmonicCoefficients {
+    fn default() -> Self {
+        Self {
+            coefficients: [0.0; SH_COEFF_COUNT],
         }
     }
 }

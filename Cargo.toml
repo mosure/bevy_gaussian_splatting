@@ -69,6 +69,8 @@ f32 = []
 f16 = ["half"]
 packed = []
 planar = []
+format_buffer = []
+format_texture = []
 
 query_raycast = []
 query_select = []
