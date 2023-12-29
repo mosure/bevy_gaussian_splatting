@@ -102,6 +102,7 @@ fn setup_gaussian_cloud(
 - [phys-gaussian](https://xpandora.github.io/PhysGaussian/)
 - [point-visualizer](https://github.com/mosure/point-visualizer)
 - [rusty-automata](https://github.com/mosure/rusty-automata)
+- [spacetime-gaussians](https://github.com/oppo-us-research/SpacetimeGaussians)
 - [splat](https://github.com/antimatter15/splat)
 - [splatter](https://github.com/Lichtso/splatter)
 - [sturdy-dollop](https://github.com/mosure/sturdy-dollop)
