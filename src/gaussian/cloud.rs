@@ -16,6 +16,7 @@ use serde::{
 #[cfg(feature = "sort_rayon")]
 use rayon::prelude::*;
 
+#[allow(unused_imports)]
 use crate::{
     gaussian::{
         f32::{
@@ -33,7 +34,10 @@ use crate::{
 };
 
 #[cfg(feature = "f16")]
-use crate::gaussian::f16::RotationScaleOpacityPacked128;
+use crate::gaussian::f16::{
+    RotationScaleOpacityPacked128,
+    pack_f32s_to_u32,
+};
 
 
 #[derive(
@@ -56,10 +60,10 @@ pub struct GaussianCloud {
     #[cfg(feature = "f16")]
     pub rotation_scale_opacity_packed128: Vec<RotationScaleOpacityPacked128>,
 
-    // #[cfg(feature = "f32")]
-    // pub rotation: Vec<Rotation>,
-    // #[cfg(feature = "f32")]
-    // pub scale_opacity: Vec<ScaleOpacity>,
+    #[cfg(feature = "f32")]
+    pub rotation: Vec<Rotation>,
+    #[cfg(feature = "f32")]
+    pub scale_opacity: Vec<ScaleOpacity>,
 }
 
 impl GaussianCloud {
@@ -142,6 +146,22 @@ impl GaussianCloud {
             rotation: self.rotation[index],
             scale_opacity: self.scale_opacity[index],
         }
+    }
+
+    #[cfg(feature = "f16")]
+    pub fn gaussian_iter(&self) -> impl Iterator<Item=Gaussian> + '_ {
+        self.position_visibility.iter()
+            .zip(self.spherical_harmonic.iter())
+            .zip(self.rotation_scale_opacity_packed128.iter())
+            .map(|((position_visibility, spherical_harmonic), rotation_scale_opacity)| {
+                Gaussian {
+                    position_visibility: *position_visibility,
+                    spherical_harmonic: *spherical_harmonic,
+
+                    rotation: rotation_scale_opacity.rotation(),
+                    scale_opacity: rotation_scale_opacity.scale_opacity(),
+                }
+            })
     }
 
     #[cfg(feature = "f32")]
@@ -230,6 +250,27 @@ impl GaussianCloud {
 
 
 impl GaussianCloud {
+    #[cfg(feature = "f16")]
+    pub fn from_gaussians(gaussians: Vec<Gaussian>) -> Self {
+        let mut position_visibility = Vec::with_capacity(gaussians.len());
+        let mut spherical_harmonic = Vec::with_capacity(gaussians.len());
+        let mut rotation_scale_opacity_packed128 = Vec::with_capacity(gaussians.len());
+
+        for gaussian in gaussians {
+            position_visibility.push(gaussian.position_visibility);
+            spherical_harmonic.push(gaussian.spherical_harmonic);
+
+            rotation_scale_opacity_packed128.push(RotationScaleOpacityPacked128::from_gaussian(&gaussian));
+        }
+
+        Self {
+            position_visibility,
+            spherical_harmonic,
+            rotation_scale_opacity_packed128,
+        }
+    }
+
+    #[cfg(feature = "f32")]
     pub fn from_gaussians(gaussians: Vec<Gaussian>) -> Self {
         let mut position_visibility = Vec::with_capacity(gaussians.len());
         let mut spherical_harmonic = Vec::with_capacity(gaussians.len());
@@ -240,25 +281,14 @@ impl GaussianCloud {
             position_visibility.push(gaussian.position_visibility);
             spherical_harmonic.push(gaussian.spherical_harmonic);
 
-            #[cfg(feature = "f16")]
-            rotation_scale_opacity_packed128.push(gaussian.rotation_scale_opacity_packed128);
-
-            #[cfg(feature = "f32")]
             rotation.push(gaussian.rotation);
-            #[cfg(feature = "f32")]
             scale_opacity.push(gaussian.scale_opacity);
         }
 
         Self {
             position_visibility,
             spherical_harmonic,
-
-            #[cfg(feature = "f16")]
-            rotation_scale_opacity_packed128,
-
-            #[cfg(feature = "f32")]
             rotation,
-            #[cfg(feature = "f32")]
             scale_opacity,
         }
     }
@@ -285,14 +315,32 @@ impl GaussianCloud {
             ].into(),
             spherical_harmonic: SphericalHarmonicCoefficients {
                 coefficients: {
-                    let mut rng = rand::thread_rng();
-                    let mut coefficients = [0.0; SH_COEFF_COUNT];
+                    #[cfg(feature = "f16")]
+                    {
+                        let mut rng = rand::thread_rng();
+                        let mut coefficients = [0 as u32; SH_COEFF_COUNT / 2];
 
-                    for coefficient in coefficients.iter_mut() {
-                        *coefficient = rng.gen_range(-1.0..1.0);
+                        for coefficient in coefficients.iter_mut() {
+                            let upper = rng.gen_range(-1.0..1.0);
+                            let lower = rng.gen_range(-1.0..1.0);
+
+                            *coefficient = pack_f32s_to_u32(upper, lower);
+                        }
+
+                        coefficients
                     }
 
-                    coefficients
+                    #[cfg(feature = "f32")]
+                    {
+                        let mut rng = rand::thread_rng();
+                        let mut coefficients = [0.0; SH_COEFF_COUNT];
+
+                        for coefficient in coefficients.iter_mut() {
+                            *coefficient = rng.gen_range(-1.0..1.0);
+                        }
+
+                        coefficients
+                    }
                 },
             },
         };

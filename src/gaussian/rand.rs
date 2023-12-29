@@ -43,7 +43,7 @@ impl Distribution<Gaussian> for rand::distributions::Standard {
                 coefficients: {
                     #[cfg(feature = "f16")]
                     {
-                        let mut coefficients: [u32; SH_COEFF_COUNT / 2];
+                        let mut coefficients: [u32; SH_COEFF_COUNT / 2] = [0; SH_COEFF_COUNT / 2];
                         for coefficient in coefficients.iter_mut() {
                             let upper = rng.gen_range(-1.0..1.0);
                             let lower = rng.gen_range(-1.0..1.0);

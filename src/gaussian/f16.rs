@@ -15,6 +15,15 @@ use serde::{
     Serialize,
 };
 
+use crate::gaussian::{
+    f32::{
+        Rotation,
+        ScaleOpacity,
+    },
+    packed::Gaussian,
+};
+
+
 
 #[derive(
     Clone,
@@ -35,6 +44,43 @@ pub struct RotationScaleOpacityPacked128 {
     pub rotation: [u32; 2],
     #[reflect(ignore)]
     pub scale_opacity: [u32; 2],
+}
+
+impl RotationScaleOpacityPacked128 {
+    pub fn from_gaussian(gaussian: &Gaussian) -> Self {
+        Self {
+            rotation: [
+                pack_f32s_to_u32(gaussian.rotation.rotation[0], gaussian.rotation.rotation[1]),
+                pack_f32s_to_u32(gaussian.rotation.rotation[2], gaussian.rotation.rotation[3]),
+            ],
+            scale_opacity: [
+                pack_f32s_to_u32(gaussian.scale_opacity.scale[0], gaussian.scale_opacity.scale[1]),
+                pack_f32s_to_u32(gaussian.scale_opacity.scale[2], gaussian.scale_opacity.opacity),
+            ],
+        }
+    }
+
+    pub fn rotation(&self) -> Rotation {
+        Rotation {
+            rotation: [
+                f16::from_bits(self.rotation[0] as u16).to_f32(),
+                f16::from_bits(self.rotation[0] as u16).to_f32(),
+                f16::from_bits(self.rotation[1] as u16).to_f32(),
+                f16::from_bits(self.rotation[1] as u16).to_f32(),
+            ],
+        }
+    }
+
+    pub fn scale_opacity(&self) -> ScaleOpacity {
+        ScaleOpacity {
+            scale: [
+                f16::from_bits(self.scale_opacity[0] as u16).to_f32(),
+                f16::from_bits(self.scale_opacity[0] as u16).to_f32(),
+                f16::from_bits(self.scale_opacity[1] as u16).to_f32(),
+            ],
+            opacity: f16::from_bits(self.scale_opacity[1] as u16).to_f32(),
+        }
+    }
 }
 
 impl From<[f32; 8]> for RotationScaleOpacityPacked128 {

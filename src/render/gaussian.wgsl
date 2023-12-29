@@ -29,7 +29,7 @@
 }
 #endif
 
-#ifdef PLANAR_F32
+#if defined(PLANAR_F32) || defined(PLANAR_F16)
 #import bevy_gaussian_splatting::planar::{
     get_position,
     get_spherical_harmonics,

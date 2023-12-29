@@ -30,9 +30,9 @@ impl PropertyAccess for Gaussian {
             ("x", Property::Float(v))           => self.position_visibility.position[0] = v,
             ("y", Property::Float(v))           => self.position_visibility.position[1] = v,
             ("z", Property::Float(v))           => self.position_visibility.position[2] = v,
-            ("f_dc_0", Property::Float(v))      => self.spherical_harmonic.coefficients[0] = v,
-            ("f_dc_1", Property::Float(v))      => self.spherical_harmonic.coefficients[1] = v,
-            ("f_dc_2", Property::Float(v))      => self.spherical_harmonic.coefficients[2] = v,
+            ("f_dc_0", Property::Float(v))      => self.spherical_harmonic.set(0, v),
+            ("f_dc_1", Property::Float(v))      => self.spherical_harmonic.set(1, v),
+            ("f_dc_2", Property::Float(v))      => self.spherical_harmonic.set(2, v),
             ("scale_0", Property::Float(v))     => self.scale_opacity.scale[0] = v,
             ("scale_1", Property::Float(v))     => self.scale_opacity.scale[1] = v,
             ("scale_2", Property::Float(v))     => self.scale_opacity.scale[2] = v,
@@ -60,7 +60,7 @@ impl PropertyAccess for Gaussian {
                 let interleaved_idx = coefficient * SH_CHANNELS + channel;
 
                 if interleaved_idx < SH_COEFF_COUNT {
-                    self.spherical_harmonic.coefficients[interleaved_idx] = v;
+                    self.spherical_harmonic.set(interleaved_idx, v);
                 } else {
                     // TODO: convert higher degree SH to lower degree SH
                 }

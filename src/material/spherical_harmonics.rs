@@ -16,6 +16,9 @@ use serde::{
     ser::SerializeTuple,
 };
 
+#[cfg(feature = "f16")]
+use half::f16;
+
 
 const SPHERICAL_HARMONICS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(834667312);
 
@@ -100,6 +103,24 @@ impl Default for SphericalHarmonicCoefficients {
         Self {
             coefficients: [0; SH_COEFF_COUNT / 2],
         }
+    }
+}
+
+
+impl SphericalHarmonicCoefficients {
+    #[cfg(feature = "f16")]
+    pub fn set(&mut self, index: usize, value: f32) {
+        let quantized = f16::from_f32(value).to_bits();
+        self.coefficients[index / 2] = match index % 2 {
+            0 => (self.coefficients[index / 2] & 0xffff0000) | (quantized as u32),
+            1 => (self.coefficients[index / 2] & 0x0000ffff) | ((quantized as u32) << 16),
+            _ => unreachable!(),
+        };
+    }
+
+    #[cfg(feature = "f32")]
+    pub fn set(&mut self, index: usize, value: f32) {
+        self.coefficients[index] = value;
     }
 }
 

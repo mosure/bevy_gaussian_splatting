@@ -7,9 +7,22 @@
     scale_opacity,
 };
 
+// TODO: type alias for results (e.g. downstream doesn't need to switch on f16/f32)
+
+
+#ifdef PLANAR_F16
+fn get_position(index: u32) -> vec3<f32> {
+    return position_visibility[index].xyz;
+}
+
+// TODO: unpack u32 to f16 (or f32 if downstream doesn't support f16)
+fn get_spherical_harmonics(index: u32) -> array<f16, #{SH_COEFF_COUNT}> {
+    return spherical_harmonics[index];
+}
+#endif
+
 
 #ifdef PLANAR_F32
-
 fn get_position(index: u32) -> vec3<f32> {
     return position_visibility[index].xyz;
 }
@@ -33,5 +46,4 @@ fn get_opacity(index: u32) -> f32 {
 fn get_visibility(index: u32) -> f32 {
     return position_visibility[index].w;
 }
-
 #endif

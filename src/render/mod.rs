@@ -486,6 +486,13 @@ pub fn shader_defs(
     #[cfg(all(feature = "planar", feature = "f32"))]
     shader_defs.push("PLANAR_F32".into());
 
+    // packed_f16 is not currently supported
+    // #[cfg(all(feature = "packed", feature = "f16"))]
+    // shader_defs.push("PACKED_F16".into());
+
+    #[cfg(all(feature = "planar", feature = "f16"))]
+    shader_defs.push("PLANAR_F16".into());
+
     match key.draw_mode {
         GaussianCloudDrawMode::All => {},
         GaussianCloudDrawMode::Selected => shader_defs.push("DRAW_SELECTED".into()),

@@ -17,7 +17,6 @@ struct GaussianUniforms {
 
 // TODO: move these bindings to packed vs. planar
 #ifdef PACKED_F32
-
 struct Gaussian {
     @location(0) rotation: vec4<f32>,
     @location(1) position_visibility: vec4<f32>,
@@ -30,22 +29,31 @@ struct Gaussian {
 #else
 @group(2) @binding(0) var<storage, read> points: array<Gaussian>;
 #endif
-
 #endif
 
 
 #ifdef PLANAR_F32
-
 #ifdef READ_WRITE_POINTS
 @group(2) @binding(0) var<storage, read_write> position_visibility: array<vec4<f32>>;
 #else
 @group(2) @binding(0) var<storage, read> position_visibility: array<vec4<f32>>;
 #endif
+@group(2) @binding(1) var<storage, read> spherical_harmonics: array<array<f32, #{SH_COEFF_COUNT}>>;
 
-@group(2) @binding(1) var<storage, read> rotation: array<vec4<f32>>;
-@group(2) @binding(2) var<storage, read> scale_opacity: array<vec4<f32>>;
-@group(2) @binding(3) var<storage, read> spherical_harmonics: array<array<f32, #{SH_COEFF_COUNT}>>;
+@group(2) @binding(2) var<storage, read> rotation: array<vec4<f32>>;
+@group(2) @binding(3) var<storage, read> scale_opacity: array<vec4<f32>>;
+#endif
 
+
+#ifdef PLANAR_F16
+#ifdef READ_WRITE_POINTS
+@group(2) @binding(0) var<storage, read_write> position_visibility: array<vec4<f32>>;
+#else
+@group(2) @binding(0) var<storage, read> position_visibility: array<vec4<f32>>;
+#endif
+@group(2) @binding(1) var<storage, read> spherical_harmonics: array<array<array<u32, #{SH_COEFF_COUNT} / 2>>;
+
+@group(2) @binding(2) var<storage, read> rotation_scale_opacity: array<vec4<u32>>;
 #endif
 
 

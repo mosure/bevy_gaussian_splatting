@@ -49,7 +49,7 @@ pub fn setup_aabb_obb_compare(
     mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
 ) {
     let mut blue_sh = SphericalHarmonicCoefficients::default();
-    blue_sh.coefficients[2] = 5.0;
+    blue_sh.set(2, 5.0);
 
     let blue_aabb_gaussian = Gaussian {
         position_visibility: [0.0, 0.0, 0.0, 1.0].into(),
@@ -77,7 +77,7 @@ pub fn setup_aabb_obb_compare(
     ));
 
     let mut red_sh = SphericalHarmonicCoefficients::default();
-    red_sh.coefficients[0] = 5.0;
+    red_sh.set(0, 5.0);
 
     let red_obb_gaussian = Gaussian {
         position_visibility: [0.0, 0.0, 0.0, 1.0].into(),
