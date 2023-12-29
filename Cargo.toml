@@ -86,6 +86,14 @@ viewer = [
   "bevy_transform_gizmo",
 ]
 
+web = [
+  "io_flexbuffers",
+  "planar",
+  "f16",
+  "sort_std",
+  "viewer",
+]
+
 
 [dependencies]
 bevy-inspector-egui = { version = "0.21", optional = true }
