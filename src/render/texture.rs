@@ -172,6 +172,8 @@ pub fn queue_gpu_texture_buffers(
     }
 }
 
+
+// TODO: support asset change detection and reupload
 fn queue_textures(
     mut commands: Commands,
     asset_server: Res<AssetServer>,

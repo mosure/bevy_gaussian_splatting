@@ -25,8 +25,8 @@ pub struct SparseSelect {
 impl Default for SparseSelect {
     fn default() -> Self {
         Self {
-            radius: 0.1,
-            neighbor_threshold: 4,
+            radius: 0.05,
+            neighbor_threshold: 3,
             completed: false,
         }
     }
@@ -48,7 +48,6 @@ impl SparseSelect {
             })
             .map(|(idx, _gaussian)| idx)
             .collect::<Select>()
-            .invert(cloud.len())
     }
 }
 

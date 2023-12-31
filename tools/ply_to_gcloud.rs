@@ -58,7 +58,7 @@ fn main() {
 
     #[cfg(feature = "query_sparse")]
     {
-        let sparse_selection = SparseSelect::default().select(&cloud);
+        let sparse_selection = SparseSelect::default().select(&cloud).invert(cloud.len());
 
         cloud = sparse_selection.indicies.iter()
             .map(|idx| cloud.gaussian(*idx))
