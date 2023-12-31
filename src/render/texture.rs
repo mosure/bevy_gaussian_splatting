@@ -40,6 +40,9 @@ use crate::{
 };
 
 
+// TODO: support loading from directory of images
+
+
 assert_cfg!(
     feature = "planar",
     "texture rendering is only supported with the `planar` feature enabled",

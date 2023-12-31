@@ -71,6 +71,19 @@ struct Gaussian {
 #endif
 
 
+#ifdef PLANAR_TEXTURE_F32
+#ifdef READ_WRITE_POINTS
+@group(2) @binding(0) var position_visibility: texture_storage_2d<rgba32float, read_write>;
+@group(2) @binding(1) var spherical_harmonics: texture_storage_2d_array<rgba32float, read_write>;
+@group(2) @binding(2) var rotation_scale_opacity: texture_storage_2d<rgba32float, read_write>;
+#else
+@group(2) @binding(0) var position_visibility: texture_storage_2d<rgba32float, read>;
+@group(2) @binding(1) var spherical_harmonics: texture_storage_2d_array<rgba32float, read>;
+@group(2) @binding(2) var rotation_scale_opacity: texture_storage_2d<rgba32float, read>;
+#endif
+#endif
+
+
 struct DrawIndirect {
     vertex_count: u32,
     instance_count: atomic<u32>,

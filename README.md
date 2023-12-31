@@ -26,7 +26,8 @@ download [cactus.gcloud](https://mitchell.mosure.me/cactus.gcloud)
 - [X] gaussian cloud particle effects
 - [X] wasm support /w [live demo](https://mosure.github.io/bevy_gaussian_splatting/index.html?arg1=cactus.gcloud)
 - [X] depth colorization
-- [X] f16 and f32 gcloud support
+- [X] f16 and f32 gcloud
+- [X] wgl2 and webgpu
 - [ ] 4D gaussian cloud wavelet compression
 - [ ] accelerated spatial queries
 - [ ] temporal depth sorting

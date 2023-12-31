@@ -111,6 +111,7 @@ fn get_visibility(index: u32) -> f32 {
 #endif
 
 
+// TODO: support f32
 #ifdef PLANAR_TEXTURE_F32
 fn get_position(index: u32) -> vec3<f32> {
     return position_visibility[index].xyz;

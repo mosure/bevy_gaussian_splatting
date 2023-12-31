@@ -60,24 +60,30 @@ impl RotationScaleOpacityPacked128 {
     }
 
     pub fn rotation(&self) -> Rotation {
+        let (u0, l0) = unpack_u32_to_f32s(self.rotation[0]);
+        let (u1, l1) = unpack_u32_to_f32s(self.rotation[1]);
+
         Rotation {
             rotation: [
-                f16::from_bits(self.rotation[0] as u16).to_f32(),
-                f16::from_bits(self.rotation[0] as u16).to_f32(),
-                f16::from_bits(self.rotation[1] as u16).to_f32(),
-                f16::from_bits(self.rotation[1] as u16).to_f32(),
+                u0,
+                l0,
+                u1,
+                l1,
             ],
         }
     }
 
     pub fn scale_opacity(&self) -> ScaleOpacity {
+        let (u0, l0) = unpack_u32_to_f32s(self.scale_opacity[0]);
+        let (u1, l1) = unpack_u32_to_f32s(self.scale_opacity[1]);
+
         ScaleOpacity {
             scale: [
-                f16::from_bits(self.scale_opacity[0] as u16).to_f32(),
-                f16::from_bits(self.scale_opacity[0] as u16).to_f32(),
-                f16::from_bits(self.scale_opacity[1] as u16).to_f32(),
+                u0,
+                l0,
+                u1,
             ],
-            opacity: f16::from_bits(self.scale_opacity[1] as u16).to_f32(),
+            opacity: l1,
         }
     }
 }
@@ -135,7 +141,13 @@ pub fn pack_f16s_to_u32(upper: f16, lower: f16) -> u32 {
     upper_bits | lower_bits
 }
 
+pub fn unpack_u32_to_f16s(value: u32) -> (f16, f16) {
+    let upper = f16::from_bits((value >> 16) as u16);
+    let lower = f16::from_bits((value & 0xFFFF) as u16);
+    (upper, lower)
+}
 
-
-
-// TODO: add conversions from f32
+pub fn unpack_u32_to_f32s(value: u32) -> (f32, f32) {
+    let (upper, lower) = unpack_u32_to_f16s(value);
+    (upper.to_f32(), lower.to_f32())
+}

@@ -7,7 +7,7 @@ use bevy_gaussian_splatting::{
 
 #[test]
 fn test_codec() {
-    let count = 100;
+    let count = 10000;
 
     let gaussians = random_gaussians(count);
     let encoded = gaussians.encode();
