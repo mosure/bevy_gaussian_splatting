@@ -11,8 +11,6 @@
 
 #ifdef PLANAR_F16
 
-// TODO: running f16 this way lowers performance. support loading f16 gcloud -> f32 gcloud -> f32 shader (unpacking f16 to f32)
-
 fn get_position(index: u32) -> vec3<f32> {
     return position_visibility[index].xyz;
 }

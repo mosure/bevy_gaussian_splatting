@@ -235,7 +235,7 @@ fn example_app() {
     let primary_window = Some(Window {
         fit_canvas_to_parent: true,
         mode: bevy::window::WindowMode::Windowed,
-        present_mode: bevy::window::PresentMode::AutoVsync,
+        present_mode: bevy::window::PresentMode::AutoNoVsync,
         prevent_default_event_handling: false,
         resolution: (config.width, config.height).into(),
         title: config.name.clone(),

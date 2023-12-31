@@ -39,6 +39,10 @@ default = [
 
   # "packed",
   "planar",
+
+  # "buffer_storage",
+  "buffer_texture",
+
   # "f32",
   "f16",
 
@@ -67,10 +71,12 @@ noise = []
 
 f32 = []
 f16 = ["half"]
+
 packed = []
 planar = []
-format_buffer = []
-format_texture = []
+
+buffer_storage = []
+buffer_texture = []
 
 query_raycast = []
 query_select = []

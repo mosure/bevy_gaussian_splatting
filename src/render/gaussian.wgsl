@@ -18,7 +18,7 @@
     in_frustum,
 }
 
-#ifdef PACKED_F32
+#ifdef PACKED
 #import bevy_gaussian_splatting::packed::{
     get_position,
     get_spherical_harmonics,
@@ -29,7 +29,7 @@
 }
 #endif
 
-#ifdef PLANAR_F32
+#ifdef BUFFER_STORAGE
 #import bevy_gaussian_splatting::planar::{
     get_position,
     get_spherical_harmonics,
@@ -40,8 +40,8 @@
 }
 #endif
 
-#ifdef PLANAR_F16
-#import bevy_gaussian_splatting::planar::{
+#ifdef BUFFER_TEXTURE
+#import bevy_gaussian_splatting::texture::{
     get_position,
     get_spherical_harmonics,
     get_rotation,

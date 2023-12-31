@@ -25,10 +25,30 @@ pub struct SparseSelect {
 impl Default for SparseSelect {
     fn default() -> Self {
         Self {
-            radius: 0.05,
-            neighbor_threshold: 4,
+            radius: 0.03,
+            neighbor_threshold: 5,
             completed: false,
         }
+    }
+}
+
+impl SparseSelect {
+    pub fn select(
+        &self,
+        cloud: &GaussianCloud,
+    ) -> Select {
+        let tree = KdTree::build_by_ordered_float(cloud.gaussian_iter().collect());
+
+        cloud.gaussian_iter()
+            .enumerate()
+            .filter(|(_idx, gaussian)| {
+                let neighbors = tree.within_radius(gaussian, self.radius);
+
+                neighbors.len() < self.neighbor_threshold
+            })
+            .map(|(idx, _gaussian)| idx)
+            .collect::<Select>()
+            .invert(cloud.len())
     }
 }
 
@@ -40,7 +60,7 @@ impl Plugin for SparsePlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<SparseSelect>();
 
-        app.add_systems(Update, select_sparse);
+        app.add_systems(Update, select_sparse_handler);
     }
 }
 
@@ -55,7 +75,7 @@ impl KdPoint for Gaussian {
 }
 
 
-fn select_sparse(
+fn select_sparse_handler(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     gaussian_clouds_res: Res<Assets<GaussianCloud>>,

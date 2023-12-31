@@ -35,9 +35,9 @@ use crate::{
 
 #[cfg(feature = "f16")]
 use crate::gaussian::f16::{
-    RotationScaleOpacityPacked128,
-    pack_f32s_to_u32,
-};
+        RotationScaleOpacityPacked128,
+        pack_f32s_to_u32,
+    };
 
 
 #[derive(
@@ -73,6 +73,14 @@ impl GaussianCloud {
 
     pub fn len(&self) -> usize {
         self.position_visibility.len()
+    }
+
+    pub fn len_sqrt_ceil(&self) -> usize {
+        (self.len() as f32).sqrt().ceil() as usize
+    }
+
+    pub fn square_len(&self) -> usize {
+        self.len_sqrt_ceil().pow(2)
     }
 
     pub fn position(&self, index: usize) -> &[f32; 3] {
@@ -137,6 +145,20 @@ impl GaussianCloud {
     //     return &mut self.scale_opacity[index].scale;
     // }
 
+    #[cfg(feature = "f16")]
+    pub fn gaussian(&self, index: usize) -> Gaussian {
+        let rso = self.rotation_scale_opacity_packed128[index];
+
+        let rotation = rso.rotation();
+        let scale_opacity = rso.scale_opacity();
+
+        Gaussian {
+            position_visibility: self.position_visibility[index],
+            spherical_harmonic: self.spherical_harmonic[index],
+            rotation,
+            scale_opacity,
+        }
+    }
 
     #[cfg(feature = "f32")]
     pub fn gaussian(&self, index: usize) -> Gaussian {
@@ -261,11 +283,21 @@ impl GaussianCloud {
             rotation_scale_opacity_packed128.push(RotationScaleOpacityPacked128::from_gaussian(&gaussian));
         }
 
-        Self {
+        #[allow(unused_mut)]
+        let mut cloud = GaussianCloud {
             position_visibility,
             spherical_harmonic,
             rotation_scale_opacity_packed128,
+        };
+
+        #[cfg(feature = "buffer_texture")]
+        {
+            cloud.position_visibility.resize(cloud.square_len(), PositionVisibility::default());
+            cloud.spherical_harmonic.resize(cloud.square_len(), SphericalHarmonicCoefficients::default());
+            cloud.rotation_scale_opacity_packed128.resize(cloud.square_len(), RotationScaleOpacityPacked128::default());
         }
+
+        cloud
     }
 
     #[cfg(feature = "f32")]

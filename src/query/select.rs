@@ -21,6 +21,19 @@ impl FromIterator<usize> for Select {
     }
 }
 
+impl Select {
+    pub fn invert(&mut self, cloud_size: usize) -> Select {
+        let inverted = (0..cloud_size)
+            .filter(|index| !self.indicies.contains(index))
+            .collect::<Vec<usize>>();
+
+        Select {
+            indicies: inverted,
+            completed: self.completed,
+        }
+    }
+}
+
 
 #[derive(Default)]
 pub struct SelectPlugin;

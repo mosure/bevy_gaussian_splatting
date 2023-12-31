@@ -11,6 +11,7 @@ struct GaussianUniforms {
     global_transform: mat4x4<f32>,
     global_scale: f32,
     count: u32,
+    count_root_ceil: u32,
 };
 @group(1) @binding(0) var<uniform> gaussian_uniforms: GaussianUniforms;
 
@@ -38,8 +39,8 @@ struct Gaussian {
 #else
 @group(2) @binding(0) var<storage, read> position_visibility: array<vec4<f32>>;
 #endif
-@group(2) @binding(1) var<storage, read> spherical_harmonics: array<array<f32, #{SH_COEFF_COUNT}>>;
 
+@group(2) @binding(1) var<storage, read> spherical_harmonics: array<array<f32, #{SH_COEFF_COUNT}>>;
 @group(2) @binding(2) var<storage, read> rotation: array<vec4<f32>>;
 @group(2) @binding(3) var<storage, read> scale_opacity: array<vec4<f32>>;
 #endif
@@ -51,9 +52,22 @@ struct Gaussian {
 #else
 @group(2) @binding(0) var<storage, read> position_visibility: array<vec4<f32>>;
 #endif
-@group(2) @binding(1) var<storage, read> spherical_harmonics: array<array<u32, #{HALF_SH_COEFF_COUNT}>>;
 
+@group(2) @binding(1) var<storage, read> spherical_harmonics: array<array<u32, #{HALF_SH_COEFF_COUNT}>>;
 @group(2) @binding(2) var<storage, read> rotation_scale_opacity: array<vec4<u32>>;
+#endif
+
+
+#ifdef PLANAR_TEXTURE_F16
+#ifdef READ_WRITE_POINTS
+@group(2) @binding(0) var position_visibility: texture_storage_2d<rgba32float, read_write>;
+@group(2) @binding(1) var spherical_harmonics: texture_storage_2d_array<rgba32uint, read_write>;
+@group(2) @binding(2) var rotation_scale_opacity: texture_storage_2d<rgba32uint, read_write>;
+#else
+@group(2) @binding(0) var position_visibility: texture_storage_2d<rgba32float, read>;
+@group(2) @binding(1) var spherical_harmonics: texture_storage_2d_array<rgba32uint, read>;
+@group(2) @binding(2) var rotation_scale_opacity: texture_storage_2d<rgba32uint, read>;
+#endif
 #endif
 
 

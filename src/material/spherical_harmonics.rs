@@ -57,6 +57,13 @@ pub const SH_CHANNELS: usize = 3;
 pub const SH_COEFF_COUNT_PER_CHANNEL: usize = num_sh_coefficients(SH_DEGREE);
 pub const SH_COEFF_COUNT: usize = (SH_COEFF_COUNT_PER_CHANNEL * SH_CHANNELS + 3) & !3;
 
+pub const HALF_SH_COEFF_COUNT: usize = ((SH_COEFF_COUNT + 1) & !1) / 2;
+
+#[cfg(feature = "f16")]
+pub const SH_VEC4_PLANES: usize = ((HALF_SH_COEFF_COUNT + 3) & !3) / 4;
+#[cfg(feature = "f32")]
+pub const SH_VEC4_PLANES: usize = SH_COEFF_COUNT / 4;
+
 
 #[cfg(feature = "f16")]
 #[derive(

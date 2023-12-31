@@ -11,6 +11,9 @@ use bevy_gaussian_splatting::{
     },
 };
 
+#[cfg(feature = "query_sparse")]
+use bevy_gaussian_splatting::query::sparse::SparseSelect;
+
 
 fn main() {
     let filename = std::env::args().nth(1).expect("no filename given");
@@ -20,9 +23,18 @@ fn main() {
     let file = std::fs::File::open(&filename).expect("failed to open file");
     let mut reader = std::io::BufReader::new(file);
 
-    let cloud = GaussianCloud::from_gaussians(
+    let mut cloud = GaussianCloud::from_gaussians(
         parse_ply(&mut reader).expect("failed to parse ply file"),
     );
+
+    #[cfg(feature = "query_sparse")]
+    {
+        let sparse_selection = SparseSelect::default().select(&cloud);
+
+        cloud = sparse_selection.indicies.iter()
+            .map(|idx| cloud.gaussian(*idx))
+            .collect();
+    }
 
     let base_filename = filename.split('.').next().expect("no extension").to_string();
     let gcloud_filename = base_filename + ".gcloud";

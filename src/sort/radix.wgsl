@@ -21,12 +21,12 @@
 #import bevy_gaussian_splatting::packed::get_position
 #endif
 
-#ifdef PLANAR_F32
+#ifdef BUFFER_STORAGE
 #import bevy_gaussian_splatting::planar::get_position
 #endif
 
-#ifdef PLANAR_F16
-#import bevy_gaussian_splatting::planar::get_position
+#ifdef BUFFER_TEXTURE
+#import bevy_gaussian_splatting::texture::get_position
 #endif
 
 
