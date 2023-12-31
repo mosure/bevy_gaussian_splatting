@@ -32,7 +32,6 @@ use crate::{
         GpuGaussianCloud,
     },
     material::spherical_harmonics::{
-        HALF_SH_COEFF_COUNT,
         SH_COEFF_COUNT,
         SH_VEC4_PLANES,
         SphericalHarmonicCoefficients,
@@ -222,7 +221,10 @@ fn queue_textures(
                             let start_index = plane_index * 4;
                             let end_index = std::cmp::min(start_index + 4, sh.coefficients.len());
 
-                            sh.coefficients[start_index..end_index].to_vec()
+                            let mut depthwise = sh.coefficients[start_index..end_index].to_vec();
+                            depthwise.resize(4, 0);
+
+                            depthwise
                         })
                 })
                 .collect();
@@ -282,6 +284,12 @@ pub fn get_bind_group_layout(
         StorageTextureAccess::ReadWrite
     };
 
+    let sh_view_dimension = if SH_VEC4_PLANES == 1 {
+        TextureViewDimension::D2
+    } else {
+        TextureViewDimension::D2Array
+    };
+
     render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
         label: Some("planar_f16_gaussian_cloud_layout"),
         entries: &[
@@ -301,7 +309,7 @@ pub fn get_bind_group_layout(
                 ty: BindingType::StorageTexture {
                     access,
                     format: TextureFormat::Rgba32Uint,
-                    view_dimension: TextureViewDimension::D2Array,
+                    view_dimension: sh_view_dimension,
                 },
                 count: None,
             },

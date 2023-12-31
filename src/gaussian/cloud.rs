@@ -28,6 +28,7 @@ use crate::{
         packed::Gaussian,
     },
     material::spherical_harmonics::{
+        HALF_SH_COEFF_COUNT,
         SH_COEFF_COUNT,
         SphericalHarmonicCoefficients,
     },
@@ -211,6 +212,23 @@ impl GaussianCloud {
     pub fn spherical_harmonic_mut(&mut self, index: usize) -> &mut SphericalHarmonicCoefficients {
         &mut self.spherical_harmonic[index]
     }
+
+    pub fn resize_to_square(&mut self) {
+        #[cfg(all(feature = "buffer_texture", feature = "f16"))]
+        {
+            self.position_visibility.resize(self.square_len(), PositionVisibility::default());
+            self.spherical_harmonic.resize(self.square_len(), SphericalHarmonicCoefficients::default());
+            self.rotation_scale_opacity_packed128.resize(self.square_len(), RotationScaleOpacityPacked128::default());
+        }
+
+        #[cfg(all(feature = "buffer_texture", feature = "f32"))]
+        {
+            self.position_visibility.resize(self.square_len(), PositionVisibility::default());
+            self.spherical_harmonic.resize(self.square_len(), SphericalHarmonicCoefficients::default());
+            self.rotation.resize(self.square_len(), Rotation::default());
+            self.scale_opacity.resize(self.square_len(), ScaleOpacity::default());
+        }
+    }
 }
 
 
@@ -290,12 +308,7 @@ impl GaussianCloud {
             rotation_scale_opacity_packed128,
         };
 
-        #[cfg(feature = "buffer_texture")]
-        {
-            cloud.position_visibility.resize(cloud.square_len(), PositionVisibility::default());
-            cloud.spherical_harmonic.resize(cloud.square_len(), SphericalHarmonicCoefficients::default());
-            cloud.rotation_scale_opacity_packed128.resize(cloud.square_len(), RotationScaleOpacityPacked128::default());
-        }
+        cloud.resize_to_square();
 
         cloud
     }
@@ -349,7 +362,7 @@ impl GaussianCloud {
                 coefficients: {
                     #[cfg(feature = "f16")]
                     {
-                        let mut coefficients = [0 as u32; SH_COEFF_COUNT / 2];
+                        let mut coefficients = [0 as u32; HALF_SH_COEFF_COUNT];
 
                         for coefficient in coefficients.iter_mut() {
                             let upper = rng.gen_range(-1.0..1.0);

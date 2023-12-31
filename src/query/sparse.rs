@@ -25,8 +25,8 @@ pub struct SparseSelect {
 impl Default for SparseSelect {
     fn default() -> Self {
         Self {
-            radius: 0.03,
-            neighbor_threshold: 5,
+            radius: 0.05,
+            neighbor_threshold: 4,
             completed: false,
         }
     }

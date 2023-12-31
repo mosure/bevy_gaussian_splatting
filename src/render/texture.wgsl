@@ -33,11 +33,19 @@ fn get_spherical_harmonics(index: u32) -> array<f32, #{SH_COEFF_COUNT}> {
     var coefficients: array<f32, #{SH_COEFF_COUNT}>;
 
     for (var i = 0u; i < #{SH_VEC4_PLANES}u; i = i + 1u) {
+
+#if SH_VEC4_PLANES == 1
+        let sample = textureLoad(
+            spherical_harmonics,
+            location(index),
+        );
+#else
         let sample = textureLoad(
             spherical_harmonics,
             location(index),
             i,
         );
+#endif
 
         let v0 = unpack2x16float(sample.x);
         let v1 = unpack2x16float(sample.y);

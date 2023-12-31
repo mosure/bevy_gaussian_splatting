@@ -51,16 +51,17 @@ const fn num_sh_coefficients(degree: usize) -> usize {
 const SH_DEGREE: usize = 0;
 
 #[cfg(not(feature = "web"))]
-const SH_DEGREE: usize = 3;
+const SH_DEGREE: usize = 0;
 
 pub const SH_CHANNELS: usize = 3;
 pub const SH_COEFF_COUNT_PER_CHANNEL: usize = num_sh_coefficients(SH_DEGREE);
 pub const SH_COEFF_COUNT: usize = (SH_COEFF_COUNT_PER_CHANNEL * SH_CHANNELS + 3) & !3;
 
-pub const HALF_SH_COEFF_COUNT: usize = ((SH_COEFF_COUNT + 1) & !1) / 2;
+pub const HALF_SH_COEFF_COUNT: usize = SH_COEFF_COUNT / 2;
+pub const PADDED_HALF_SH_COEFF_COUNT: usize = (HALF_SH_COEFF_COUNT + 3) & !3;
 
 #[cfg(feature = "f16")]
-pub const SH_VEC4_PLANES: usize = ((HALF_SH_COEFF_COUNT + 3) & !3) / 4;
+pub const SH_VEC4_PLANES: usize = PADDED_HALF_SH_COEFF_COUNT / 4;
 #[cfg(feature = "f32")]
 pub const SH_VEC4_PLANES: usize = SH_COEFF_COUNT / 4;
 
@@ -82,7 +83,7 @@ pub const SH_VEC4_PLANES: usize = SH_COEFF_COUNT / 4;
 pub struct SphericalHarmonicCoefficients {
     #[reflect(ignore)]
     #[serde(serialize_with = "coefficients_serializer", deserialize_with = "coefficients_deserializer")]
-    pub coefficients: [u32; SH_COEFF_COUNT / 2],
+    pub coefficients: [u32; HALF_SH_COEFF_COUNT],
 }
 
 
@@ -110,7 +111,7 @@ pub struct SphericalHarmonicCoefficients {
 impl Default for SphericalHarmonicCoefficients {
     fn default() -> Self {
         Self {
-            coefficients: [0; SH_COEFF_COUNT / 2],
+            coefficients: [0; HALF_SH_COEFF_COUNT],
         }
     }
 }
@@ -145,7 +146,7 @@ impl SphericalHarmonicCoefficients {
 
 
 #[cfg(feature = "f16")]
-fn coefficients_serializer<S>(n: &[u32; SH_COEFF_COUNT / 2], s: S) -> Result<S::Ok, S::Error>
+fn coefficients_serializer<S>(n: &[u32; HALF_SH_COEFF_COUNT], s: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -158,24 +159,24 @@ where
 }
 
 #[cfg(feature = "f16")]
-fn coefficients_deserializer<'de, D>(d: D) -> Result<[u32; SH_COEFF_COUNT / 2], D::Error>
+fn coefficients_deserializer<'de, D>(d: D) -> Result<[u32; HALF_SH_COEFF_COUNT], D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     struct CoefficientsVisitor;
 
     impl<'de> serde::de::Visitor<'de> for CoefficientsVisitor {
-        type Value = [u32; SH_COEFF_COUNT / 2];
+        type Value = [u32; HALF_SH_COEFF_COUNT];
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
             formatter.write_str("an array of floats")
         }
 
-        fn visit_seq<A>(self, mut seq: A) -> Result<[u32; SH_COEFF_COUNT / 2], A::Error>
+        fn visit_seq<A>(self, mut seq: A) -> Result<[u32; HALF_SH_COEFF_COUNT], A::Error>
         where
             A: serde::de::SeqAccess<'de>,
         {
-            let mut coefficients = [0; SH_COEFF_COUNT / 2];
+            let mut coefficients = [0; HALF_SH_COEFF_COUNT];
 
             for (i, coefficient) in coefficients.iter_mut().enumerate().take(SH_COEFF_COUNT) {
                 *coefficient = seq
