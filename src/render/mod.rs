@@ -393,6 +393,7 @@ impl FromWorld for GaussianCloudPipeline {
         #[cfg(feature = "buffer_texture")]
         let gaussian_cloud_layout = texture::get_bind_group_layout(&render_device, read_only);
 
+        // TODO: support sorted layout as a texture
         let sorted_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("sorted_layout"),
             entries: &[

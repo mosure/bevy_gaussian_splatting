@@ -209,7 +209,7 @@ fn queue_textures(
             bytemuck::cast_slice(cloud.position_visibility.as_slice()).to_vec(),
             TextureFormat::Rgba32Float,
         );
-        position_visibility.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING;
+        position_visibility.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
         let position_visibility = images.add(position_visibility);
 
         let texture_buffers: TextureBuffers;
@@ -241,7 +241,7 @@ fn queue_textures(
                 bytemuck::cast_slice(planar_spherical_harmonics.as_slice()).to_vec(),
                 TextureFormat::Rgba32Uint,
             );
-            spherical_harmonics.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING;
+            spherical_harmonics.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
             let spherical_harmonics = images.add(spherical_harmonics);
 
             let mut rotation_scale_opacity = Image::new(
@@ -250,7 +250,7 @@ fn queue_textures(
                 bytemuck::cast_slice(cloud.rotation_scale_opacity_packed128.as_slice()).to_vec(),
                 TextureFormat::Rgba32Uint,
             );
-            rotation_scale_opacity.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING;
+            rotation_scale_opacity.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
             let rotation_scale_opacity = images.add(rotation_scale_opacity);
 
             texture_buffers = TextureBuffers {
@@ -278,14 +278,8 @@ fn queue_textures(
 #[cfg(feature = "f16")]
 pub fn get_bind_group_layout(
     render_device: &RenderDevice,
-    read_only: bool
+    _read_only: bool
 ) -> BindGroupLayout {
-    let access = if read_only {
-        StorageTextureAccess::ReadOnly
-    } else {
-        StorageTextureAccess::ReadWrite
-    };
-
     let sh_view_dimension = if SH_VEC4_PLANES == 1 {
         TextureViewDimension::D2
     } else {
@@ -297,31 +291,31 @@ pub fn get_bind_group_layout(
         entries: &[
             BindGroupLayoutEntry {
                 binding: 0,
-                visibility: ShaderStages::all(),
-                ty: BindingType::StorageTexture {
-                    access,
-                    format: TextureFormat::Rgba32Float,
+                visibility: ShaderStages::VERTEX_FRAGMENT,
+                ty: BindingType::Texture {
                     view_dimension: TextureViewDimension::D2,
+                    sample_type: TextureSampleType::Uint,
+                    multisampled: false,
                 },
                 count: None,
             },
             BindGroupLayoutEntry {
                 binding: 1,
-                visibility: ShaderStages::all(),
-                ty: BindingType::StorageTexture {
-                    access,
-                    format: TextureFormat::Rgba32Uint,
+                visibility: ShaderStages::VERTEX_FRAGMENT,
+                ty: BindingType::Texture {
                     view_dimension: sh_view_dimension,
+                    sample_type: TextureSampleType::Uint,
+                    multisampled: false,
                 },
                 count: None,
             },
             BindGroupLayoutEntry {
                 binding: 2,
-                visibility: ShaderStages::all(),
-                ty: BindingType::StorageTexture {
-                    access,
-                    format: TextureFormat::Rgba32Uint,
+                visibility: ShaderStages::VERTEX_FRAGMENT,
+                ty: BindingType::Texture {
                     view_dimension: TextureViewDimension::D2,
+                    sample_type: TextureSampleType::Uint,
+                    multisampled: false,
                 },
                 count: None,
             },
