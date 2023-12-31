@@ -95,9 +95,10 @@ viewer = [
 ]
 
 web = [
+  "buffer_texture",
+  "f16",
   "io_flexbuffers",
   "planar",
-  "f16",
   "sort_std",
   "viewer",
 ]
