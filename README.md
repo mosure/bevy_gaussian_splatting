@@ -8,15 +8,12 @@
 [![Average time to resolve an issue](https://isitmaintained.com/badge/resolution/mosure/bevy_gaussian_splatting.svg)](http://isitmaintained.com/project/mosure/bevy_gaussian_splatting)
 [![crates.io](https://img.shields.io/crates/v/bevy_gaussian_splatting.svg)](https://crates.io/crates/bevy_gaussian_splatting)
 
-bevy gaussian splatting render pipeline plugin
+bevy gaussian splatting render pipeline plugin. view the [live demo](https://mosure.github.io/bevy_gaussian_splatting/index.html?arg1=cactus.gcloud)
 
 ![Alt text](docs/notferris.png)
 ![Alt text](docs/cactus.gif)
 ![Alt text](docs/bike.png)
 
-download [cactus.gcloud](https://mitchell.mosure.me/cactus.gcloud)
-
-`cargo run -- scenes/cactus.gcloud`
 
 ## capabilities
 
