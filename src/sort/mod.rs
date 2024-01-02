@@ -43,7 +43,7 @@ pub mod radix;
 pub mod rayon;
 
 #[cfg(feature = "sort_std")]
-pub mod std;
+pub mod std; // rename to std_sort.rs to avoid name conflict with std crate
 
 
 assert_cfg!(

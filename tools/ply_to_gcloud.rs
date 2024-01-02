@@ -45,16 +45,16 @@ fn main() {
     );
 
     // TODO: prioritize mesh selection over export filter
-    println!("initial cloud size: {}", cloud.len());
-    cloud = (0..cloud.len())
-        .filter(|&idx| {
-            is_point_in_transformed_sphere(
-                cloud.position(idx),
-            )
-        })
-        .map(|idx| cloud.gaussian(idx))
-        .collect();
-    println!("filtered position cloud size: {}", cloud.len());
+    // println!("initial cloud size: {}", cloud.len());
+    // cloud = (0..cloud.len())
+    //     .filter(|&idx| {
+    //         is_point_in_transformed_sphere(
+    //             cloud.position(idx),
+    //         )
+    //     })
+    //     .map(|idx| cloud.gaussian(idx))
+    //     .collect();
+    // println!("filtered position cloud size: {}", cloud.len());
 
     #[cfg(feature = "query_sparse")]
     {

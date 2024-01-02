@@ -12,7 +12,6 @@
 #import bevy_gaussian_splatting::depth::{
     depth_to_rgb,
 }
-#import bevy_gaussian_splatting::spherical_harmonics::spherical_harmonics_lookup
 #import bevy_gaussian_splatting::transform::{
     world_to_clip,
     in_frustum,
@@ -21,7 +20,7 @@
 #ifdef PACKED
 #import bevy_gaussian_splatting::packed::{
     get_position,
-    get_spherical_harmonics,
+    get_color,
     get_rotation,
     get_scale,
     get_opacity,
@@ -32,7 +31,7 @@
 #ifdef BUFFER_STORAGE
 #import bevy_gaussian_splatting::planar::{
     get_position,
-    get_spherical_harmonics,
+    get_color,
     get_rotation,
     get_scale,
     get_opacity,
@@ -43,7 +42,7 @@
 #ifdef BUFFER_TEXTURE
 #import bevy_gaussian_splatting::texture::{
     get_position,
-    get_spherical_harmonics,
+    get_color,
     get_rotation,
     get_scale,
     get_opacity,
@@ -331,7 +330,7 @@ fn vs_points(
         max_distance,
     );
 #else
-    rgb = spherical_harmonics_lookup(ray_direction, get_spherical_harmonics(splat_index));
+    rgb = get_color(splat_index, ray_direction);
 #endif
 
     // TODO: precompute color, cov2d for every gaussian. cov2d only needs a single evaluation, while color needs to be evaluated every frame in SH degree > 0 mode

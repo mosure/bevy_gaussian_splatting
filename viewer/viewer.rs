@@ -107,6 +107,9 @@ fn setup_gaussian_cloud(
         },
         PanOrbitCamera{
             allow_upside_down: true,
+            orbit_smoothness: 0.0,
+            pan_smoothness: 0.0,
+            zoom_smoothness: 0.0,
             ..default()
         },
     ));

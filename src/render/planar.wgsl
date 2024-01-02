@@ -7,12 +7,25 @@
     rotation_scale_opacity,
     scale_opacity,
 };
+#import bevy_gaussian_splatting::spherical_harmonics::{
+    spherical_harmonics_lookup,
+    srgb_to_linear,
+}
 
 
 #ifdef PLANAR_F16
 
 fn get_position(index: u32) -> vec3<f32> {
     return position_visibility[index].xyz;
+}
+
+fn get_color(
+    index: u32,
+    ray_direction: vec3<f32>,
+) -> vec3<f32> {
+    let sh = get_spherical_harmonics(index);
+    let color = spherical_harmonics_lookup(sh, ray_direction);
+    return srgb_to_linear(color);
 }
 
 fn get_spherical_harmonics(index: u32) -> array<f32, #{SH_COEFF_COUNT}> {

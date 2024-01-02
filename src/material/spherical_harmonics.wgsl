@@ -36,7 +36,7 @@ fn spherical_harmonics_lookup(
     ray_direction: vec3<f32>,
     sh: array<f32, #{SH_COEFF_COUNT}>,
 ) -> vec3<f32> {
-    var rds = ray_direction * ray_direction;
+    let rds = ray_direction * ray_direction;
     var color = vec3<f32>(0.5);
 
     color += shc[ 0] * vec3<f32>(sh[0], sh[1], sh[2]);
