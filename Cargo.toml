@@ -101,7 +101,10 @@ web = [
   "planar",
   "sort_std",
   "viewer",
+  "webgl2",
 ]
+
+webgl2 = ["bevy/webgl2"]
 
 
 [dependencies]
@@ -139,7 +142,6 @@ features = [
   "bevy_core_pipeline",
   "bevy_render",
   "bevy_winit",
-  "webgl2",
 ]
 
 

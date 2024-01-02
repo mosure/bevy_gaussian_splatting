@@ -585,6 +585,10 @@ pub fn shader_defs(
     #[cfg(all(feature = "f32", feature = "buffer_texture"))]
     shader_defs.push("PLANAR_TEXTURE_F32".into());
 
+
+    #[cfg(feature = "webgl2")]
+    shader_defs.push("WEBGL2".into());
+
     match key.draw_mode {
         GaussianCloudDrawMode::All => {},
         GaussianCloudDrawMode::Selected => shader_defs.push("DRAW_SELECTED".into()),
@@ -1020,6 +1024,10 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
         pass.set_bind_group(2, &bind_groups.cloud_bind_group, &[]); // TODO: abstract source of cloud_bind_group (e.g. packed vs. planar)
         pass.set_bind_group(3, &bind_groups.sorted_bind_group, &[]);
 
+        #[cfg(feature = "webgl2")]
+        pass.draw(0..4, 0..gpu_gaussian_cloud.count as u32);
+
+        #[cfg(not(feature = "webgl2"))]
         pass.draw_indirect(&gpu_gaussian_cloud.draw_indirect_buffer, 0);
 
         RenderCommandResult::Success

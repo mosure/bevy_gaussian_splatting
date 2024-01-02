@@ -78,6 +78,15 @@ fn get_entry(index: u32) -> Entry {
 }
 #endif
 
+#ifdef WEBGL2
+struct GaussianVertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) conic: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) major_minor: vec2<f32>,
+};
+#else
 struct GaussianVertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) @interpolate(flat) color: vec4<f32>,
@@ -85,6 +94,7 @@ struct GaussianVertexOutput {
     @location(2) @interpolate(linear) uv: vec2<f32>,
     @location(3) @interpolate(linear) major_minor: vec2<f32>,
 };
+#endif
 
 
 // https://github.com/cvlab-epfl/gaussian-splatting-web/blob/905b3c0fb8961e42c79ef97e64609e82383ca1c2/src/shaders.ts#L185
