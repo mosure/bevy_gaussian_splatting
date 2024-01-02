@@ -1,13 +1,6 @@
+#[allow(unused_imports)]
 use bevy::render::{
-    render_resource::{
-        Buffer,
-        BufferInitDescriptor,
-        BufferUsages,
-        Extent3d,
-        ShaderType,
-        TextureDimension,
-        TextureFormat,
-    },
+    render_resource::*,
     renderer::RenderDevice,
 };
 

@@ -18,7 +18,7 @@ fn get_color(
     ray_direction: vec3<f32>,
 ) -> vec3<f32> {
     let sh = get_spherical_harmonics(index);
-    let color = spherical_harmonics_lookup(sh, ray_direction);
+    let color = spherical_harmonics_lookup(ray_direction, sh);
     return srgb_to_linear(color);
 }
 

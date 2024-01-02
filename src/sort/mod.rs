@@ -7,15 +7,7 @@ use bevy::{
     },
     reflect::TypeUuid,
     render::{
-        render_resource::{
-            Buffer,
-            BufferInitDescriptor,
-            BufferUsages,
-            Extent3d,
-            ShaderType,
-            TextureDimension,
-            TextureFormat,
-        },
+        render_resource::*,
         render_asset::{
             RenderAsset,
             RenderAssetPlugin,

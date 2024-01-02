@@ -40,8 +40,8 @@ default = [
   # "packed",
   "planar",
 
-  # "buffer_storage",
-  "buffer_texture",
+  "buffer_storage",
+  # "buffer_texture",
 
   # "f32",
   "f16",
@@ -49,7 +49,7 @@ default = [
   "query_select",
   "query_sparse",
 
-  # "sort_radix",
+  "sort_radix",
   "sort_rayon",
   "sort_std",
 

@@ -41,7 +41,6 @@ pub fn rayon_sort(
     mut last_camera_position: Local<Vec3>,
     mut last_sort_time: Local<Option<Instant>>,
     mut period: Local<std::time::Duration>,
-    mut camera_debounce: Local<bool>,
     mut sort_done: Local<bool>,
 ) {
     if last_sort_time.is_none() {
@@ -68,18 +67,13 @@ pub fn rayon_sort(
 
         if camera_movement {
             *sort_done = false;
-            *camera_debounce = true;
         } else {
             if *sort_done {
                 return;
             }
         }
 
-        if *camera_debounce {
-            *last_camera_position = camera_position;
-            *camera_debounce = false;
-            return;
-        }
+        *last_camera_position = camera_position;
 
         for (
             gaussian_cloud_handle,
