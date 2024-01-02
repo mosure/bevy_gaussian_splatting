@@ -13,6 +13,8 @@
 }
 
 
+#ifdef PLANAR_F16
+
 fn get_color(
     index: u32,
     ray_direction: vec3<f32>,
@@ -21,9 +23,6 @@ fn get_color(
     let color = spherical_harmonics_lookup(ray_direction, sh);
     return srgb_to_linear(color);
 }
-
-
-#ifdef PLANAR_F16
 
 fn get_position(index: u32) -> vec3<f32> {
     return position_visibility[index].xyz;
@@ -73,6 +72,15 @@ fn get_visibility(index: u32) -> f32 {
 
 
 #ifdef PLANAR_F32
+fn get_color(
+    index: u32,
+    ray_direction: vec3<f32>,
+) -> vec3<f32> {
+    let sh = get_spherical_harmonics(index);
+    let color = spherical_harmonics_lookup(ray_direction, sh);
+    return srgb_to_linear(color);
+}
+
 fn get_position(index: u32) -> vec3<f32> {
     return position_visibility[index].xyz;
 }

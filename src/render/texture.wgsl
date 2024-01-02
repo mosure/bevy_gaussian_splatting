@@ -10,6 +10,7 @@
 };
 #import bevy_gaussian_splatting::spherical_harmonics::{
     shc,
+    spherical_harmonics_lookup,
     srgb_to_linear,
 }
 
