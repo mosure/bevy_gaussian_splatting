@@ -24,7 +24,15 @@ use bevy::{
             RenderAssets,
             RenderAssetPlugin,
         },
-        render_resource::*,
+        render_resource::{
+            Buffer,
+            BufferInitDescriptor,
+            BufferUsages,
+            Extent3d,
+            ShaderType,
+            TextureDimension,
+            TextureFormat,
+        },
         renderer::{
             RenderContext,
             RenderDevice,
@@ -53,6 +61,7 @@ use serde::{
 use crate::render::{
     GaussianCloudBindGroup,
     GaussianCloudPipeline,
+    GaussianCloudPipelineKey,
     GaussianUniformBindGroups,
     GaussianViewBindGroup,
     shader_defs,
@@ -201,7 +210,7 @@ impl FromWorld for ParticleBehaviorPipeline {
             ],
         });
 
-        let shader_defs = shader_defs(false, false, false);
+        let shader_defs = shader_defs(GaussianCloudPipelineKey::default());
         let pipeline_cache = render_world.resource::<PipelineCache>();
 
         let particle_behavior_pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {

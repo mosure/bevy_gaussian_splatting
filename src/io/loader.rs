@@ -1,3 +1,4 @@
+#[allow(unused_imports)]
 use std::io::{
     BufReader,
     Cursor,
@@ -47,12 +48,8 @@ impl AssetLoader for GaussianCloudLoader {
                         let mut f = BufReader::new(cursor);
 
                         let gaussians = crate::io::ply::parse_ply(&mut f)?;
-                        let cloud = GaussianCloud {
-                            gaussians,
-                            ..Default::default()
-                        };
 
-                        Ok(cloud)
+                        Ok(GaussianCloud::from_gaussians(gaussians))
                     }
 
                     #[cfg(not(feature = "io_ply"))]

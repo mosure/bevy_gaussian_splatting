@@ -2,7 +2,6 @@
     view,
     globals,
     gaussian_uniforms,
-    points,
     sorting_pass_index,
     sorting,
     draw_indirect,
@@ -10,18 +9,83 @@
     output_entries,
     Entry,
 }
-#import bevy_gaussian_splatting::color::{
+#import bevy_gaussian_splatting::depth::{
     depth_to_rgb,
 }
-#import bevy_gaussian_splatting::spherical_harmonics::spherical_harmonics_lookup
 #import bevy_gaussian_splatting::transform::{
     world_to_clip,
     in_frustum,
 }
 
+#ifdef PACKED
+#import bevy_gaussian_splatting::packed::{
+    get_position,
+    get_color,
+    get_rotation,
+    get_scale,
+    get_opacity,
+    get_visibility,
+}
+#endif
 
+#ifdef BUFFER_STORAGE
+#import bevy_gaussian_splatting::planar::{
+    get_position,
+    get_color,
+    get_rotation,
+    get_scale,
+    get_opacity,
+    get_visibility,
+}
+#endif
+
+#ifdef BUFFER_TEXTURE
+#import bevy_gaussian_splatting::texture::{
+    get_position,
+    get_color,
+    get_rotation,
+    get_scale,
+    get_opacity,
+    get_visibility,
+    location,
+}
+#endif
+
+
+#ifdef BUFFER_STORAGE
 @group(3) @binding(0) var<storage, read> sorted_entries: array<Entry>;
 
+fn get_entry(index: u32) -> Entry {
+    return sorted_entries[index];
+}
+#endif
+
+#ifdef BUFFER_TEXTURE
+@group(3) @binding(0) var sorted_entries: texture_2d<u32>;
+
+fn get_entry(index: u32) -> Entry {
+    let sample = textureLoad(
+        sorted_entries,
+        location(index),
+        0,
+    );
+
+    return Entry(
+        sample.r,
+        sample.g,
+    );
+}
+#endif
+
+#ifdef WEBGL2
+struct GaussianVertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) conic: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) major_minor: vec2<f32>,
+};
+#else
 struct GaussianVertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) @interpolate(flat) color: vec4<f32>,
@@ -29,6 +93,7 @@ struct GaussianVertexOutput {
     @location(2) @interpolate(linear) uv: vec2<f32>,
     @location(3) @interpolate(linear) major_minor: vec2<f32>,
 };
+#endif
 
 
 // https://github.com/cvlab-epfl/gaussian-splatting-web/blob/905b3c0fb8961e42c79ef97e64609e82383ca1c2/src/shaders.ts#L185
@@ -207,19 +272,26 @@ fn vs_points(
     @builtin(vertex_index) vertex_index: u32,
 ) -> GaussianVertexOutput {
     var output: GaussianVertexOutput;
-    let splat_index = sorted_entries[instance_index][1];
 
-    let discard_quad = sorted_entries[instance_index][0] == 0xFFFFFFFFu || splat_index == 0u;
-    if (discard_quad) {
-        output.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
-        output.position = vec4<f32>(0.0, 0.0, 0.0, 0.0);
-        return output;
-    }
+    let entry = get_entry(instance_index);
+    let splat_index = entry.value;
 
-    let point = points[splat_index];
-    let transformed_position = (gaussian_uniforms.global_transform * point.position).xyz;
+    var discard_quad = false;
+
+    discard_quad |= entry.key == 0xFFFFFFFFu; // || splat_index == 0u;
+
+    let position = vec4<f32>(get_position(splat_index), 1.0);
+
+    let transformed_position = (gaussian_uniforms.global_transform * position).xyz;
     let projected_position = world_to_clip(transformed_position);
-    if (!in_frustum(projected_position.xyz)) {
+
+    discard_quad |= !in_frustum(projected_position.xyz);
+
+#ifdef DRAW_SELECTED
+    discard_quad |= get_visibility(splat_index) < 0.5;
+#endif
+
+    if (discard_quad) {
         output.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
         output.position = vec4<f32>(0.0, 0.0, 0.0, 0.0);
         return output;
@@ -237,9 +309,14 @@ fn vs_points(
 
     let ray_direction = normalize(transformed_position - view.world_position);
 
+    var rgb = vec3<f32>(0.0);
+
 #ifdef VISUALIZE_DEPTH
-    let min_position = (gaussian_uniforms.global_transform * points[sorted_entries[1][1]].position).xyz;
-    let max_position = (gaussian_uniforms.global_transform * points[sorted_entries[gaussian_uniforms.count - 1u][1]].position).xyz;
+    let first_position = vec4<f32>(get_position(get_entry(1u).value), 1.0);
+    let last_position = vec4<f32>(get_position(get_entry(gaussian_uniforms.count - 1u).value), 1.0);
+
+    let min_position = (gaussian_uniforms.global_transform * first_position).xyz;
+    let max_position = (gaussian_uniforms.global_transform * last_position).xyz;
 
     let camera_position = view.world_position;
 
@@ -247,24 +324,30 @@ fn vs_points(
     let max_distance = length(max_position - camera_position);
 
     let depth = length(transformed_position - camera_position);
-    let rgb = depth_to_rgb(
+    rgb = depth_to_rgb(
         depth,
         min_distance,
         max_distance,
     );
 #else
-    let rgb = spherical_harmonics_lookup(ray_direction, point.sh);
+    rgb = get_color(splat_index, ray_direction);
 #endif
 
+    // TODO: precompute color, cov2d for every gaussian. cov2d only needs a single evaluation, while color needs to be evaluated every frame in SH degree > 0 mode
     output.color = vec4<f32>(
         rgb,
-        point.scale_opacity.a
+        get_opacity(splat_index),
     );
 
-    // TODO: add depth color visualization
+#ifdef HIGHLIGHT_SELECTED
+    if (get_visibility(splat_index) > 0.5) {
+        output.color = vec4<f32>(0.3, 1.0, 0.1, 1.0);
+    }
+#endif
 
-    let cov2d = compute_cov2d(transformed_position, point.scale_opacity.rgb, point.rotation);
+    let cov2d = compute_cov2d(transformed_position, get_scale(splat_index), get_rotation(splat_index));
 
+    // TODO: disable output.conic in obb mode
     let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
     let det_inv = 1.0 / det;
     let conic = vec3<f32>(

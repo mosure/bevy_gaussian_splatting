@@ -49,24 +49,22 @@ pub fn setup_aabb_obb_compare(
     mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
 ) {
     let mut blue_sh = SphericalHarmonicCoefficients::default();
-    blue_sh.coefficients[2] = 5.0;
+    blue_sh.set(2, 5.0);
 
     let blue_aabb_gaussian = Gaussian {
-        position: [0.0, 0.0, 0.0, 1.0],
-        rotation: [0.89, 0.0, -0.432, 0.144],
-        scale_opacity: [10.0, 1.0, 1.0, 0.5],
+        position_visibility: [0.0, 0.0, 0.0, 1.0].into(),
+        rotation: [0.89, 0.0, -0.432, 0.144].into(),
+        scale_opacity: [10.0, 1.0, 1.0, 0.5].into(),
         spherical_harmonic: blue_sh,
     };
 
     commands.spawn((
         GaussianSplattingBundle {
             cloud: gaussian_assets.add(
-                GaussianCloud {
-                    gaussians: vec![
-                        blue_aabb_gaussian,
-                        blue_aabb_gaussian,
-                    ],
-                }
+            GaussianCloud::from_gaussians(vec![
+                    blue_aabb_gaussian,
+                    blue_aabb_gaussian,
+                ])
             ),
             settings: GaussianCloudSettings {
                 aabb: true,
@@ -79,24 +77,22 @@ pub fn setup_aabb_obb_compare(
     ));
 
     let mut red_sh = SphericalHarmonicCoefficients::default();
-    red_sh.coefficients[0] = 5.0;
+    red_sh.set(0, 5.0);
 
     let red_obb_gaussian = Gaussian {
-        position: [0.0, 0.0, 0.0, 1.0],
-        rotation: [0.89, 0.0, -0.432, 0.144],
-        scale_opacity: [10.0, 1.0, 1.0, 0.5],
+        position_visibility: [0.0, 0.0, 0.0, 1.0].into(),
+        rotation: [0.89, 0.0, -0.432, 0.144].into(),
+        scale_opacity: [10.0, 1.0, 1.0, 0.5].into(),
         spherical_harmonic: red_sh,
     };
 
     commands.spawn((
         GaussianSplattingBundle {
             cloud: gaussian_assets.add(
-                GaussianCloud {
-                    gaussians: vec![
-                        red_obb_gaussian,
-                        red_obb_gaussian,
-                    ],
-                }
+            GaussianCloud::from_gaussians(vec![
+                    red_obb_gaussian,
+                    red_obb_gaussian,
+                ])
             ),
             settings: GaussianCloudSettings {
                 aabb: false,

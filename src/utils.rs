@@ -23,9 +23,9 @@ pub fn get_arg(n: usize) -> Option<String> {
 
 #[cfg(target_arch = "wasm32")]
 pub fn get_arg(n: usize) -> Option<String> {
-    let window = web_sys::window()?; // Get the window object
-    let location = window.location(); // Get the location object from the window
-    let search = location.search().ok()?; // Get the search (query string) part of the URL
+    let window = web_sys::window()?;
+    let location = window.location();
+    let search = location.search().ok()?;
 
     let args = search
         .trim_start_matches('?')

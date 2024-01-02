@@ -23,10 +23,11 @@ bevy gaussian splatting render pipeline plugin. view the [live demo](https://mos
 - [X] gaussian cloud particle effects
 - [X] wasm support /w [live demo](https://mosure.github.io/bevy_gaussian_splatting/index.html?arg1=cactus.gcloud)
 - [X] depth colorization
+- [X] f16 and f32 gcloud
+- [X] wgl2 and webgpu
 - [ ] 4D gaussian cloud wavelet compression
 - [ ] accelerated spatial queries
 - [ ] temporal depth sorting
-- [ ] f16 and f32 gcloud support
 - [ ] skeletons
 - [ ] volume masks
 - [ ] level of detail
@@ -87,9 +88,11 @@ fn setup_gaussian_cloud(
 - [dreamgaussian](https://github.com/dreamgaussian/dreamgaussian)
 - [dynamic-3d-gaussians](https://github.com/JonathonLuiten/Dynamic3DGaussians)
 - [ewa splatting](https://www.cs.umd.edu/~zwicker/publications/EWASplatting-TVCG02.pdf)
+- [gaussian-grouping](https://github.com/lkeab/gaussian-grouping)
 - [gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting)
 - [gaussian-splatting-viewer](https://github.com/limacv/GaussianSplattingViewer/tree/main)
 - [gaussian-splatting-web](https://github.com/cvlab-epfl/gaussian-splatting-web)
+- [gir](https://3dgir.github.io/)
 - [making gaussian splats smaller](https://aras-p.info/blog/2023/09/13/Making-Gaussian-Splats-smaller/)
 - [masked-spacetime-hashing](https://github.com/masked-spacetime-hashing/msth)
 - [onesweep](https://arxiv.org/ftp/arxiv/papers/2206/2206.01784.pdf)
@@ -97,7 +100,9 @@ fn setup_gaussian_cloud(
 - [phys-gaussian](https://xpandora.github.io/PhysGaussian/)
 - [point-visualizer](https://github.com/mosure/point-visualizer)
 - [rusty-automata](https://github.com/mosure/rusty-automata)
+- [spacetime-gaussians](https://github.com/oppo-us-research/SpacetimeGaussians)
 - [splat](https://github.com/antimatter15/splat)
 - [splatter](https://github.com/Lichtso/splatter)
 - [sturdy-dollop](https://github.com/mosure/sturdy-dollop)
+- [sugar](https://github.com/Anttwo/SuGaR)
 - [taichi_3d_gaussian_splatting](https://github.com/wanmeihuali/taichi_3d_gaussian_splatting)

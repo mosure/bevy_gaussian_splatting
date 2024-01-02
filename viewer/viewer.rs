@@ -25,11 +25,23 @@ use bevy_gaussian_splatting::{
     },
 };
 
+#[cfg(feature = "material_noise")]
+use bevy_gaussian_splatting::material::noise::NoiseMaterial;
+
 #[cfg(feature = "morph_particles")]
 use bevy_gaussian_splatting::morph::particle::{
     ParticleBehaviors,
     random_particle_behaviors,
 };
+
+#[cfg(feature = "query_select")]
+use bevy_gaussian_splatting::query::select::{
+    InvertSelectionEvent,
+    SaveSelectionEvent,
+};
+
+#[cfg(feature = "query_sparse")]
+use bevy_gaussian_splatting::query::sparse::SparseSelect;
 
 
 pub struct GaussianSplattingViewer {
@@ -68,7 +80,7 @@ fn setup_gaussian_cloud(
         println!("generating {} gaussians", n);
         cloud = gaussian_assets.add(random_gaussians(n));
     } else if let Some(filename) = file_arg {
-        if filename == "--help".to_string() {
+        if filename == "--help" {
             println!("usage: cargo run -- [filename | n]");
             return;
         }
@@ -95,6 +107,9 @@ fn setup_gaussian_cloud(
         },
         PanOrbitCamera{
             allow_upside_down: true,
+            orbit_smoothness: 0.0,
+            pan_smoothness: 0.0,
+            zoom_smoothness: 0.0,
             ..default()
         },
     ));
@@ -130,6 +145,78 @@ fn setup_particle_behavior(
         commands.entity(gaussian_cloud.single().0)
             .insert(particle_behaviors);
     }
+}
+
+#[cfg(feature = "material_noise")]
+fn setup_noise_material(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    gaussian_clouds: Query<(
+        Entity,
+        &Handle<GaussianCloud>,
+        Without<NoiseMaterial>,
+    )>,
+) {
+    if gaussian_clouds.is_empty() {
+        return;
+    }
+
+    for (
+        entity,
+        cloud_handle,
+        _
+    ) in gaussian_clouds.iter() {
+        if Some(bevy::asset::LoadState::Loading) == asset_server.get_load_state(cloud_handle) {
+            continue;
+        }
+
+        commands.entity(entity)
+            .insert(NoiseMaterial::default());
+    }
+}
+
+
+#[cfg(feature = "query_select")]
+fn press_i_invert_selection(
+    keys: Res<Input<KeyCode>>,
+    mut select_inverse_events: EventWriter<InvertSelectionEvent>,
+) {
+    if keys.just_pressed(KeyCode::I) {
+        println!("inverting selection");
+        select_inverse_events.send(InvertSelectionEvent);
+    }
+}
+
+#[cfg(feature = "query_select")]
+fn press_o_save_selection(
+    keys: Res<Input<KeyCode>>,
+    mut select_inverse_events: EventWriter<SaveSelectionEvent>,
+) {
+    if keys.just_pressed(KeyCode::O) {
+        println!("saving selection");
+        select_inverse_events.send(SaveSelectionEvent);
+    }
+}
+
+
+#[cfg(feature = "query_sparse")]
+fn setup_sparse_select(
+    mut commands: Commands,
+    gaussian_cloud: Query<(
+        Entity,
+        &Handle<GaussianCloud>,
+        Without<SparseSelect>,
+    )>,
+) {
+    if gaussian_cloud.is_empty() {
+        return;
+    }
+
+    commands.entity(gaussian_cloud.single().0)
+        .insert(SparseSelect {
+            completed: true,
+            ..default()
+        });
 }
 
 
@@ -181,7 +268,7 @@ fn example_app() {
     }
 
     if config.show_fps {
-        app.add_plugins(FrameTimeDiagnosticsPlugin::default());
+        app.add_plugins(FrameTimeDiagnosticsPlugin);
         app.add_systems(Startup, fps_display_setup);
         app.add_systems(Update, fps_update_system);
     }
@@ -191,8 +278,20 @@ fn example_app() {
     app.add_plugins(GaussianSplattingPlugin);
     app.add_systems(Startup, setup_gaussian_cloud);
 
+    #[cfg(feature = "material_noise")]
+    app.add_systems(Update, setup_noise_material);
+
     #[cfg(feature = "morph_particles")]
     app.add_systems(Update, setup_particle_behavior);
+
+    #[cfg(feature = "query_select")]
+    {
+        app.add_systems(Update, press_i_invert_selection);
+        app.add_systems(Update, press_o_save_selection);
+    }
+
+    #[cfg(feature = "query_sparse")]
+    app.add_systems(Update, setup_sparse_select);
 
     app.run();
 }

@@ -42,8 +42,11 @@ jobs:
     - name: lint
       run: cargo clippy
 
-    - name: test
+    - name: test (default)
       run: cargo test
+
+    - name: test (web)
+      run: cargo test --no-default-features --features="web io_ply tooling"
 
     # - name: gaussian render test
     #   run: cargo run --bin test_gaussian

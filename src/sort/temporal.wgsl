@@ -19,7 +19,7 @@ fn temporal_sort_flop(
 
     // // pair sort entries in window size
     // for (var i = start_index; i < end_index; i += 2u) {
-    //     let pos_a = points[input_entries[i][0]].position.xyz;
+    //     let pos_a = points[input_entries[i][0]].position_visibility.xyz;
     //     let depth_a = world_to_clip(pos_a).z;
     // }
 }
