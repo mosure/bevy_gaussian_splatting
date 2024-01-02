@@ -6,6 +6,7 @@ use rand::{
 #[cfg(feature = "f16")]
 use crate::gaussian::f16::pack_f32s_to_u32;
 
+#[allow(unused_imports)]
 use crate::{
     gaussian::{
         cloud::GaussianCloud,
@@ -13,6 +14,7 @@ use crate::{
     },
     material::spherical_harmonics::{
         HALF_SH_COEFF_COUNT,
+        SH_COEFF_COUNT,
         SphericalHarmonicCoefficients,
     },
 };

@@ -62,6 +62,11 @@ assert_cfg!(
     "texture rendering is only supported with the `planar` feature enabled",
 );
 
+assert_cfg!(
+    not(feature = "f32"),
+    "f32 texture support is not implemented yet",
+);
+
 
 #[derive(Component, Clone, Debug, Reflect)]
 pub struct TextureBuffers {
