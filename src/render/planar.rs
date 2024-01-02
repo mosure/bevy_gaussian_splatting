@@ -1,5 +1,13 @@
 use bevy::render::{
-    render_resource::*,
+    render_resource::{
+        Buffer,
+        BufferInitDescriptor,
+        BufferUsages,
+        Extent3d,
+        ShaderType,
+        TextureDimension,
+        TextureFormat,
+    },
     renderer::RenderDevice,
 };
 

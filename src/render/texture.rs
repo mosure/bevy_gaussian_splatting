@@ -11,7 +11,22 @@ use bevy::{
         RenderApp,
         RenderSet,
         render_asset::RenderAssets,
-        render_resource::*,
+        render_resource::{
+            BindGroup,
+            BindGroupLayout,
+            BindGroupLayoutDescriptor,
+            BindGroupLayoutEntry,
+            BindGroupEntry,
+            BindingType,
+            BindingResource,
+            Extent3d,
+            TextureDimension,
+            TextureFormat,
+            TextureSampleType,
+            TextureUsages,
+            TextureViewDimension,
+            ShaderStages,
+        },
         renderer::RenderDevice,
     },
 };
@@ -27,14 +42,14 @@ use crate::{
             ScaleOpacity,
         },
     },
-    render::{
-        GaussianCloudPipeline,
-        GpuGaussianCloud,
-    },
     material::spherical_harmonics::{
         SH_COEFF_COUNT,
         SH_VEC4_PLANES,
         SphericalHarmonicCoefficients,
+    },
+    render::{
+        GaussianCloudPipeline,
+        GpuGaussianCloud,
     },
 };
 
@@ -275,6 +290,27 @@ fn queue_textures(
 }
 
 
+pub fn get_sorted_bind_group_layout(
+    render_device: &RenderDevice,
+) -> BindGroupLayout {
+    render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: Some("texture_sorted_layout"),
+        entries: &[
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::all(),
+                ty: BindingType::Texture {
+                    view_dimension: TextureViewDimension::D2,
+                    sample_type: TextureSampleType::Uint,
+                    multisampled: false,
+                },
+                count: None,
+            },
+        ],
+    })
+}
+
+
 #[cfg(feature = "f16")]
 pub fn get_bind_group_layout(
     render_device: &RenderDevice,
@@ -287,21 +323,23 @@ pub fn get_bind_group_layout(
     };
 
     render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-        label: Some("planar_f16_gaussian_cloud_layout"),
+        label: Some("texture_f16_gaussian_cloud_layout"),
         entries: &[
             BindGroupLayoutEntry {
                 binding: 0,
-                visibility: ShaderStages::VERTEX_FRAGMENT,
+                visibility: ShaderStages::all(),
                 ty: BindingType::Texture {
                     view_dimension: TextureViewDimension::D2,
-                    sample_type: TextureSampleType::Uint,
+                    sample_type: TextureSampleType::Float {
+                        filterable: false,
+                    },
                     multisampled: false,
                 },
                 count: None,
             },
             BindGroupLayoutEntry {
                 binding: 1,
-                visibility: ShaderStages::VERTEX_FRAGMENT,
+                visibility: ShaderStages::all(),
                 ty: BindingType::Texture {
                     view_dimension: sh_view_dimension,
                     sample_type: TextureSampleType::Uint,
@@ -311,7 +349,7 @@ pub fn get_bind_group_layout(
             },
             BindGroupLayoutEntry {
                 binding: 2,
-                visibility: ShaderStages::VERTEX_FRAGMENT,
+                visibility: ShaderStages::all(),
                 ty: BindingType::Texture {
                     view_dimension: TextureViewDimension::D2,
                     sample_type: TextureSampleType::Uint,
@@ -330,7 +368,7 @@ pub fn get_bind_group_layout(
     read_only: bool
 ) -> BindGroupLayout {
     render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-        label: Some("planar_f32_gaussian_cloud_layout"),
+        label: Some("texture_f32_gaussian_cloud_layout"),
         entries: &[
             BindGroupLayoutEntry {
                 binding: 0,

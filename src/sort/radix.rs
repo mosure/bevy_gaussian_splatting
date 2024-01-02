@@ -9,7 +9,28 @@ use bevy::{
     core_pipeline::core_3d::CORE_3D,
     render::{
         render_asset::RenderAssets,
-        render_resource::*,
+        render_resource::{
+            BindGroup,
+            BindGroupEntry,
+            BindGroupLayout,
+            BindGroupLayoutDescriptor,
+            BindGroupLayoutEntry,
+            BindingResource,
+            BindingType,
+            Buffer,
+            BufferBindingType,
+            BufferDescriptor,
+            BufferInitDescriptor,
+            BufferBinding,
+            BufferSize,
+            BufferUsages,
+            CachedComputePipelineId,
+            CachedPipelineState,
+            ComputePassDescriptor,
+            ComputePipelineDescriptor,
+            PipelineCache,
+            ShaderStages,
+        },
         renderer::{
             RenderContext,
             RenderDevice,
@@ -26,6 +47,7 @@ use bevy::{
         view::ViewUniformOffset,
     },
 };
+use static_assertions::assert_cfg;
 
 use crate::{
     gaussian::cloud::GaussianCloud,
@@ -45,6 +67,15 @@ use crate::{
         SortMode,
     },
 };
+
+
+assert_cfg!(
+    not(all(
+        feature = "sort_radix",
+        feature = "buffer_texture",
+    )),
+    "sort_radix and buffer_texture are incompatible",
+);
 
 
 const RADIX_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(6234673214);

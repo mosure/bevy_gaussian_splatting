@@ -41,7 +41,43 @@ use bevy::{
             SetItemPipeline,
             TrackedRenderPass,
         },
-        render_resource::*,
+        render_resource::{
+            BindGroup,
+            BindGroupEntry,
+            BindGroupLayout,
+            BindGroupLayoutDescriptor,
+            BindGroupLayoutEntry,
+            BindingResource,
+            BindingType,
+            BlendState,
+            Buffer,
+            BufferBinding,
+            BufferBindingType,
+            BufferInitDescriptor,
+            BufferUsages,
+            ColorTargetState,
+            ColorWrites,
+            CompareFunction,
+            DepthBiasState,
+            DepthStencilState,
+            FragmentState,
+            FrontFace,
+            MultisampleState,
+            PipelineCache,
+            PolygonMode,
+            PrimitiveState,
+            PrimitiveTopology,
+            RenderPipelineDescriptor,
+            ShaderDefVal,
+            ShaderStages,
+            ShaderType,
+            SpecializedRenderPipeline,
+            SpecializedRenderPipelines,
+            StencilFaceState,
+            StencilState,
+            TextureFormat,
+            VertexState,
+        },
         renderer::RenderDevice,
         Render,
         RenderApp,
@@ -393,7 +429,7 @@ impl FromWorld for GaussianCloudPipeline {
         #[cfg(feature = "buffer_texture")]
         let gaussian_cloud_layout = texture::get_bind_group_layout(&render_device, read_only);
 
-        // TODO: support sorted layout as a texture
+        #[cfg(feature = "buffer_storage")]
         let sorted_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("sorted_layout"),
             entries: &[
@@ -409,6 +445,8 @@ impl FromWorld for GaussianCloudPipeline {
                 },
             ],
         });
+        #[cfg(feature = "buffer_texture")]
+        let sorted_layout = texture::get_sorted_bind_group_layout(&render_device);
 
         GaussianCloudPipeline {
             gaussian_cloud_layout,
@@ -742,6 +780,9 @@ fn queue_gaussian_bind_group(
         &Handle<SortedEntries>,
         &texture::GpuTextureBuffers,
     )>,
+
+    #[cfg(feature = "buffer_texture")]
+    gpu_images: Res<RenderAssets<Image>>,
 ) {
     let Some(model) = gaussian_uniforms.buffer() else {
         return;
@@ -788,7 +829,9 @@ fn queue_gaussian_bind_group(
             continue;
         }
 
+        #[cfg(not(feature = "buffer_texture"))]
         let cloud: &GpuGaussianCloud = gaussian_cloud_res.get(cloud_handle).unwrap();
+
         let sorted_entries = sorted_entries_res.get(sorted_entries_handle).unwrap();
 
         #[cfg(feature = "packed")]
@@ -798,6 +841,7 @@ fn queue_gaussian_bind_group(
         #[cfg(feature = "buffer_texture")]
         let cloud_bind_group = texture_buffers.bind_group.clone();
 
+        #[cfg(feature = "buffer_storage")]
         let sorted_bind_group = render_device.create_bind_group(
             "render_sorted_bind_group",
             &gaussian_cloud_pipeline.sorted_layout,
@@ -809,6 +853,19 @@ fn queue_gaussian_bind_group(
                         offset: 0,
                         size: BufferSize::new((cloud.count * std::mem::size_of::<(u32, u32)>()) as u64),
                     }),
+                },
+            ],
+        );
+        #[cfg(feature = "buffer_texture")]
+        let sorted_bind_group = render_device.create_bind_group(
+            Some("render_sorted_bind_group"),
+            &gaussian_cloud_pipeline.sorted_layout,
+            &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(
+                        &gpu_images.get(&sorted_entries.texture).unwrap().texture_view
+                    ),
                 },
             ],
         );

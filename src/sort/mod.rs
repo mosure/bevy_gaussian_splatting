@@ -7,12 +7,20 @@ use bevy::{
     },
     reflect::TypeUuid,
     render::{
+        render_resource::{
+            Buffer,
+            BufferInitDescriptor,
+            BufferUsages,
+            Extent3d,
+            ShaderType,
+            TextureDimension,
+            TextureFormat,
+        },
         render_asset::{
             RenderAsset,
             RenderAssetPlugin,
             PrepareAssetError,
         },
-        render_resource::*,
         renderer::RenderDevice,
     },
 };
@@ -107,6 +115,31 @@ impl Plugin for SortPlugin {
         app.add_plugins(RenderAssetPlugin::<SortedEntries>::default());
 
         app.add_systems(Update, auto_insert_sorted_entries);
+
+        #[cfg(feature = "buffer_texture")]
+        app.add_systems(PostUpdate, update_textures_on_change);
+    }
+}
+
+
+#[cfg(feature = "buffer_texture")]
+fn update_textures_on_change(
+    mut images: ResMut<Assets<Image>>,
+    mut ev_asset: EventReader<AssetEvent<SortedEntries>>,
+    sorted_entries_res: Res<Assets<SortedEntries>>,
+) {
+    for ev in ev_asset.read() {
+        match ev {
+            AssetEvent::Modified { id } => {
+                let sorted_entries = sorted_entries_res.get(*id).unwrap();
+                let image = images.get_mut(&sorted_entries.texture).unwrap();
+
+                image.data = bytemuck::cast_slice(sorted_entries.sorted.as_slice()).to_vec();
+            },
+            AssetEvent::Added { id: _ } => {},
+            AssetEvent::Removed { id: _ } => {},
+            AssetEvent::LoadedWithDependencies { id: _ } => {},
+        }
     }
 }
 
@@ -123,6 +156,9 @@ fn auto_insert_sorted_entries(
         &GaussianCloudSettings,
         Without<Handle<SortedEntries>>,
     )>,
+
+    #[cfg(feature = "buffer_texture")]
+    mut images: ResMut<Assets<Image>>,
 ) {
     for (
         entity,
@@ -145,16 +181,34 @@ fn auto_insert_sorted_entries(
         }
         let cloud = cloud.unwrap();
 
+        let sorted: Vec<SortEntry> = (0..cloud.len())
+            .map(|idx| {
+                SortEntry {
+                    key: 1,
+                    index: idx as u32,
+                }
+            })
+            .collect();
+
         // TODO: move gaussian_cloud and sorted_entry assets into an asset bundle
+        #[cfg(feature = "buffer_storage")]
         let sorted_entries = sorted_entries_res.add(SortedEntries {
-            sorted: (0..cloud.len())
-                .map(|idx| {
-                    SortEntry {
-                        key: 1,
-                        index: idx as u32,
-                    }
-                })
-                .collect(),
+            sorted,
+        });
+
+        #[cfg(feature = "buffer_texture")]
+        let sorted_entries = sorted_entries_res.add(SortedEntries {
+            texture: images.add(Image::new(
+                Extent3d {
+                    width: cloud.len_sqrt_ceil() as u32,
+                    height: cloud.len_sqrt_ceil() as u32,
+                    depth_or_array_layers: 1,
+                },
+                TextureDimension::D2,
+                bytemuck::cast_slice(sorted.as_slice()).to_vec(),
+                TextureFormat::Rg32Uint,
+            )),
+            sorted,
         });
 
         commands.entity(entity)
@@ -180,8 +234,6 @@ pub struct SortEntry {
     pub index: u32,
 }
 
-// TODO: add RenderAssetPlugin for SortedEntries & auto-insert to GaussianCloudBundles if their sort mode is not None
-// supports pre-sorting or CPU sorting in main world, initializes the sorting_entry_buffer
 #[derive(
     Clone,
     Asset,
@@ -194,6 +246,9 @@ pub struct SortEntry {
 #[uuid = "ac2f08eb-fa13-ccdd-ea11-51571ea332d5"]
 pub struct SortedEntries {
     pub sorted: Vec<SortEntry>,
+
+    #[cfg(feature = "buffer_texture")]
+    pub texture: Handle<Image>,
 }
 
 impl RenderAsset for SortedEntries {
@@ -220,6 +275,9 @@ impl RenderAsset for SortedEntries {
         Ok(GpuSortedEntry {
             sorted_entry_buffer,
             count,
+
+            #[cfg(feature = "buffer_texture")]
+            texture: sorted_entries.texture,
         })
     }
 }
@@ -231,4 +289,7 @@ impl RenderAsset for SortedEntries {
 pub struct GpuSortedEntry {
     pub sorted_entry_buffer: Buffer,
     pub count: usize,
+
+    #[cfg(feature = "buffer_texture")]
+    pub texture: Handle<Image>,
 }

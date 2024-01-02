@@ -24,7 +24,15 @@ use bevy::{
             RenderAssets,
             RenderAssetPlugin,
         },
-        render_resource::*,
+        render_resource::{
+            Buffer,
+            BufferInitDescriptor,
+            BufferUsages,
+            Extent3d,
+            ShaderType,
+            TextureDimension,
+            TextureFormat,
+        },
         renderer::{
             RenderContext,
             RenderDevice,

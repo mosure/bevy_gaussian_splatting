@@ -24,6 +24,7 @@ fn get_position(index: u32) -> vec3<f32> {
     let sample = textureLoad(
         position_visibility,
         location(index),
+        0,
     );
 
     return sample.xyz;
@@ -33,19 +34,11 @@ fn get_spherical_harmonics(index: u32) -> array<f32, #{SH_COEFF_COUNT}> {
     var coefficients: array<f32, #{SH_COEFF_COUNT}>;
 
     for (var i = 0u; i < #{SH_VEC4_PLANES}u; i = i + 1u) {
-
-#if SH_VEC4_PLANES == 1
         let sample = textureLoad(
             spherical_harmonics,
             location(index),
+            i32(i),
         );
-#else
-        let sample = textureLoad(
-            spherical_harmonics,
-            location(index),
-            i,
-        );
-#endif
 
         let v0 = unpack2x16float(sample.x);
         let v1 = unpack2x16float(sample.y);
@@ -73,6 +66,7 @@ fn get_rotation(index: u32) -> vec4<f32> {
     let sample = textureLoad(
         rotation_scale_opacity,
         location(index),
+        0,
     );
 
     let q0 = unpack2x16float(sample.x);
@@ -88,6 +82,7 @@ fn get_scale(index: u32) -> vec3<f32> {
     let sample = textureLoad(
         rotation_scale_opacity,
         location(index),
+        0,
     );
 
     let s0 = unpack2x16float(sample.z);
@@ -103,6 +98,7 @@ fn get_opacity(index: u32) -> f32 {
     let sample = textureLoad(
         rotation_scale_opacity,
         location(index),
+        0,
     );
 
     return unpack2x16float(sample.w).x;
@@ -112,6 +108,7 @@ fn get_visibility(index: u32) -> f32 {
     let sample = textureLoad(
         position_visibility,
         location(index),
+        0,
     );
 
     return sample.w;

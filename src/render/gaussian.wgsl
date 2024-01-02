@@ -48,11 +48,35 @@
     get_scale,
     get_opacity,
     get_visibility,
+    location,
 }
 #endif
 
 
+#ifdef BUFFER_STORAGE
 @group(3) @binding(0) var<storage, read> sorted_entries: array<Entry>;
+
+fn get_entry(index: u32) -> Entry {
+    return sorted_entries[index];
+}
+#endif
+
+#ifdef BUFFER_TEXTURE
+@group(3) @binding(0) var sorted_entries: texture_2d<u32>;
+
+fn get_entry(index: u32) -> Entry {
+    let sample = textureLoad(
+        sorted_entries,
+        location(index),
+        0,
+    );
+
+    return Entry(
+        sample.r,
+        sample.g,
+    );
+}
+#endif
 
 struct GaussianVertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -239,11 +263,13 @@ fn vs_points(
     @builtin(vertex_index) vertex_index: u32,
 ) -> GaussianVertexOutput {
     var output: GaussianVertexOutput;
-    let splat_index = sorted_entries[instance_index][1];
+
+    let entry = get_entry(instance_index);
+    let splat_index = entry.value;
 
     var discard_quad = false;
 
-    discard_quad |= sorted_entries[instance_index][0] == 0xFFFFFFFFu; // || splat_index == 0u;
+    discard_quad |= entry.key == 0xFFFFFFFFu; // || splat_index == 0u;
 
     let position = vec4<f32>(get_position(splat_index), 1.0);
 
@@ -277,8 +303,8 @@ fn vs_points(
     var rgb = vec3<f32>(0.0);
 
 #ifdef VISUALIZE_DEPTH
-    let first_position = vec4<f32>(get_position(sorted_entries[1][1]), 1.0);
-    let last_position = vec4<f32>(get_position(sorted_entries[gaussian_uniforms.count - 1u][1]), 1.0);
+    let first_position = vec4<f32>(get_position(get_entry(1u).value), 1.0);
+    let last_position = vec4<f32>(get_position(get_entry(gaussian_uniforms.count - 1u).value), 1.0);
 
     let min_position = (gaussian_uniforms.global_transform * first_position).xyz;
     let max_position = (gaussian_uniforms.global_transform * last_position).xyz;
