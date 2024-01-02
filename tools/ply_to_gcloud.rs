@@ -15,6 +15,7 @@ use bevy_gaussian_splatting::{
 use bevy_gaussian_splatting::query::sparse::SparseSelect;
 
 
+#[allow(dead_code)]
 fn is_point_in_transformed_sphere(pos: &[f32; 3]) -> bool {
     let inv_scale_x = 1.0 / 1.75;
     let inv_scale_y = 1.0 / 1.75;
