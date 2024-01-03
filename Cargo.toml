@@ -46,6 +46,8 @@ default = [
   # "f32",
   "f16",
 
+  "precompute_covariance_3d",
+
   "query_select",
   "query_sparse",
 
@@ -71,6 +73,8 @@ noise = []
 
 f32 = []
 f16 = ["half"]
+
+precompute_covariance_3d = []
 
 packed = []
 planar = []
