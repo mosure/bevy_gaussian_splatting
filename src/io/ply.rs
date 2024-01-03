@@ -92,6 +92,11 @@ pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, std::io:
                 .min(mean_scale + MAX_SIZE_VARIANCE)
                 .exp();
         }
+
+        let norm = (0..4).map(|i| gaussian.rotation.rotation[i].powf(2.0)).sum::<f32>().sqrt();
+        for i in 0..4 {
+            gaussian.rotation.rotation[i] /= norm;
+        }
     }
 
     Ok(cloud)

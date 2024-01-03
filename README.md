@@ -25,6 +25,7 @@ bevy gaussian splatting render pipeline plugin. view the [live demo](https://mos
 - [X] depth colorization
 - [X] f16 and f32 gcloud
 - [X] wgl2 and webgpu
+- [ ] spherical harmonic coefficients clustering
 - [ ] 4D gaussian cloud wavelet compression
 - [ ] accelerated spatial queries
 - [ ] temporal depth sorting

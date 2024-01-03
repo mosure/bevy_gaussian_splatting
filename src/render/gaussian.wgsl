@@ -201,7 +201,6 @@ fn get_bounding_box(
 
 
 #ifdef USE_AABB
-    // creates a square AABB (inefficient fragment usage)
     let radius_px = 3.5 * max(x_axis_length, y_axis_length);
     let radius_ndc = vec2<f32>(
         radius_px / view.viewport.zw,
@@ -224,16 +223,6 @@ fn get_bounding_box(
         major_radius,
         minor_radius,
     );
-
-    // collapse unstable eigenvectors to circle
-    let threshold = 0.1;
-    if (abs(lambda1 - lambda2) < threshold) {
-        let circle = direction * max(bounds.x, bounds.y);
-        return vec4<f32>(
-            circle / view.viewport.zw,
-            circle,
-        );
-    }
 
     let eigvec1 = normalize(vec2<f32>(
         -cov2d.y,
