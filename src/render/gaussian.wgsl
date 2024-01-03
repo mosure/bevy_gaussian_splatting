@@ -151,10 +151,9 @@ fn compute_cov2d(
 
     var t = view.inverse_view * vec4<f32>(position, 1.0);
 
-    let device_pixel_ratio = 1.0;
     let focal = vec2<f32>(
-        view.projection.x.x * device_pixel_ratio * view.viewport.z * 0.45,
-        view.projection.y.y * device_pixel_ratio * view.viewport.w * 0.45,
+        view.projection.x.x * view.viewport.z,
+        view.projection.y.y * view.viewport.w,
     );
 
     let s = 1.0 / (t.z * t.z);
@@ -347,7 +346,7 @@ fn vs_points(
 
     let cov2d = compute_cov2d(transformed_position, get_scale(splat_index), get_rotation(splat_index));
 
-    // TODO: disable output.conic in obb mode
+#ifdef USE_AABB
     let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
     let det_inv = 1.0 / det;
     let conic = vec3<f32>(
@@ -356,6 +355,7 @@ fn vs_points(
         cov2d.x * det_inv
     );
     output.conic = conic;
+#endif
 
     let bb = get_bounding_box(
         cov2d,

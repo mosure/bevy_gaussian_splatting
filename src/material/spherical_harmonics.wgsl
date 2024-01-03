@@ -65,5 +65,5 @@ fn spherical_harmonics_lookup(
     color += shc[15] * vec3<f32>(sh[45], sh[46], sh[47]) * ray_direction.x * (rds.x - 3.0 * rds.y);
 #endif
 
-    return srgb_to_linear(color);
+    return color;
 }

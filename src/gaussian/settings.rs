@@ -36,7 +36,7 @@ impl Default for GaussianCloudSettings {
     fn default() -> Self {
         Self {
             aabb: false,
-            global_scale: 2.0,
+            global_scale: 1.0,
             global_transform: Transform::IDENTITY.into(),
             visualize_bounding_box: false,
             visualize_depth: false,
