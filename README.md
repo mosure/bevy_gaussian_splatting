@@ -12,7 +12,6 @@ bevy gaussian splatting render pipeline plugin. view the [live demo](https://mos
 
 ![Alt text](docs/notferris.png)
 ![Alt text](docs/go.gif)
-![Alt text](docs/bike.png)
 
 
 ## capabilities
