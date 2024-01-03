@@ -11,7 +11,7 @@
 bevy gaussian splatting render pipeline plugin. view the [live demo](https://mosure.github.io/bevy_gaussian_splatting/index.html?arg1=cactus.gcloud)
 
 ![Alt text](docs/notferris.png)
-![Alt text](docs/cactus.gif)
+![Alt text](docs/go.gif)
 ![Alt text](docs/bike.png)
 
 
