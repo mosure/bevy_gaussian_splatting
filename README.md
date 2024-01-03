@@ -63,6 +63,13 @@ fn setup_gaussian_cloud(
 }
 ```
 
+### examples
+
+```cargo run --release -- -f <PATH_TO_PLY_OR_GCLOUD_FILE>```
+
+i.e
+```cargo run --release -- -f scenes/icecream.gcloud```
+
 ## tools
 
 - [ply to gcloud converter](tools/README.md#ply-to-gcloud-converter)

@@ -2,37 +2,34 @@
 // pub use wasm_bindgen_rayon::init_thread_pool;
 use clap::Parser;
 
-
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use std::collections::HashMap;
-
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(about = "bevy gaussian splatting render pipeline plugin", version, long_about = None)]
 struct CliArgs {
     /// number of random gaussians to generate
     #[arg(short, long)]
-    num_of_gaussians : Option<usize>,
+    num_of_gaussians: Option<usize>,
 
     /// number of random particle behaviors to generate
-    #[arg(short, long)]
-    num_of_particle_behaviors : Option<usize>,
-    
+    #[arg(short = 'p', long)]
+    num_of_particle_behaviors: Option<usize>,
+
     /// .gcloud or .ply file to load
-    #[arg(short, long)]
-    asset_filename : Option<String>,
+    #[arg(short = 'f', long)]
+    filename: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum MainArgs {
-    NumOfGaussians=1,
+    NumOfGaussians = 1,
     NumOfParticleBehaviors,
-    AssetFilename,
+    Filename,
 }
-
 
 pub fn setup_hooks() {
     #[cfg(debug_assertions)]
@@ -42,14 +39,13 @@ pub fn setup_hooks() {
     }
 }
 
-
 #[cfg(not(target_arch = "wasm32"))]
 pub fn get_arg(arg: MainArgs) -> Option<String> {
     let args = CliArgs::parse();
     match arg {
         MainArgs::NumOfGaussians => args.num_of_gaussians.map(|n| n.to_string()),
         MainArgs::NumOfParticleBehaviors => args.num_of_particle_behaviors.map(|n| n.to_string()),
-        MainArgs::AssetFilename => args.asset_filename,
+        MainArgs::Filename => args.filename,
     }
 }
 
@@ -69,7 +65,9 @@ pub fn get_arg(arg: MainArgs) -> Option<String> {
 
     let arg_value = args.get(&format!("arg{}", arg as u8)).cloned();
     match arg {
-        MainArgs::NumOfGaussians | MainArgs::NumOfParticleBehaviors => arg_value.and_then(|a| a.parse::<usize>().ok().map(|_|a)),
+        MainArgs::NumOfGaussians | MainArgs::NumOfParticleBehaviors => {
+            arg_value.and_then(|a| a.parse::<usize>().ok().map(|_| a))
+        }
         _ => arg_value,
     }
 }
