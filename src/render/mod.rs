@@ -985,7 +985,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
             None => return RenderCommandResult::Failure,
         };
 
-        pass.set_bind_group(2, &bind_groups.cloud_bind_group, &[]); // TODO: abstract source of cloud_bind_group (e.g. packed vs. planar)
+        pass.set_bind_group(2, &bind_groups.cloud_bind_group, &[]);
         pass.set_bind_group(3, &bind_groups.sorted_bind_group, &[]);
 
         #[cfg(feature = "webgl2")]

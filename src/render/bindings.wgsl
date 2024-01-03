@@ -16,7 +16,6 @@ struct GaussianUniforms {
 @group(1) @binding(0) var<uniform> gaussian_uniforms: GaussianUniforms;
 
 
-// TODO: move these bindings to packed vs. planar
 #ifdef PACKED_F32
 struct Gaussian {
     @location(0) rotation: vec4<f32>,

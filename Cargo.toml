@@ -32,6 +32,7 @@ exclude = [
 default-run = "viewer"
 
 
+# TODO: resolve one-hot feature flags through runtime configuration
 [features]
 default = [
   "io_flexbuffers",
