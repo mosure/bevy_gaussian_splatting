@@ -216,7 +216,12 @@ impl RenderAsset for GaussianCloud {
 
         let draw_indirect_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("draw indirect buffer"),
-            contents: bytemuck::cast_ref::<[u32; 4], [u8; 16]>(&[4, count as u32, 0, 0]),
+            contents: wgpu::util::DrawIndirect {
+                vertex_count: 4,
+                instance_count: count as u32,
+                base_vertex: 0,
+                base_instance: 0,
+            }.as_bytes(),
             usage: BufferUsages::INDIRECT | BufferUsages::COPY_DST | BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         });
 
