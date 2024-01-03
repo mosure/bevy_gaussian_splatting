@@ -21,7 +21,7 @@ use bevy_gaussian_splatting::{
     random_gaussians,
     utils::{
         get_arg,
-        setup_hooks,
+        setup_hooks, MainArgs,
     },
 };
 
@@ -74,17 +74,11 @@ fn setup_gaussian_cloud(
 ) {
     let cloud: Handle<GaussianCloud>;
 
-    // TODO: add proper GaussianSplattingViewer argument parsing
-    let file_arg = get_arg(1);
-    if let Some(n) = file_arg.clone().and_then(|s| s.parse::<usize>().ok()) {
+    if let Some(n) = get_arg(MainArgs::NumOfGaussians){
+        let n = n.parse::<usize>().unwrap();
         println!("generating {} gaussians", n);
         cloud = gaussian_assets.add(random_gaussians(n));
-    } else if let Some(filename) = file_arg {
-        if filename == "--help" {
-            println!("usage: cargo run -- [filename | n]");
-            return;
-        }
-
+    } else if let Some(filename) = get_arg(MainArgs::AssetFilename) {
         println!("loading {}", filename);
         cloud = asset_server.load(filename.to_string());
     } else {
@@ -130,16 +124,14 @@ fn setup_particle_behavior(
         return;
     }
 
-    let mut particle_behaviors = None;
-
-    let file_arg = get_arg(1);
-    if let Some(_n) = file_arg.clone().and_then(|s| s.parse::<usize>().ok()) {
-        let behavior_arg = get_arg(2);
-        if let Some(k) = behavior_arg.clone().and_then(|s| s.parse::<usize>().ok()) {
+    let particle_behaviors = match (get_arg(MainArgs::NumOfGaussians), get_arg(MainArgs::NumOfParticleBehaviors)) {
+        (Some(_), Some(k)) => {
+            let k = k.parse::<usize>().unwrap();
             println!("generating {} particle behaviors", k);
-            particle_behaviors = particle_behavior_assets.add(random_particle_behaviors(k)).into();
-        }
-    }
+            particle_behavior_assets.add(random_particle_behaviors(k)).into()
+        },
+        _ => None,
+    };
 
     if let Some(particle_behaviors) = particle_behaviors {
         commands.entity(gaussian_cloud.single().0)
