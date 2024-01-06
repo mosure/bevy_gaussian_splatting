@@ -8,21 +8,7 @@ use bevy_gaussian_splatting::{
     GaussianSplattingPlugin,
 };
 
-#[cfg(feature = "material_noise")]
-use bevy_gaussian_splatting::material::noise::NoiseMaterial;
-
-#[cfg(feature = "morph_particles")]
-use bevy_gaussian_splatting::morph::particle::{random_particle_behaviors, ParticleBehaviors};
-
-#[cfg(feature = "query_select")]
-use bevy_gaussian_splatting::query::select::{InvertSelectionEvent, SaveSelectionEvent};
-
-#[cfg(feature = "query_sparse")]
-use bevy_gaussian_splatting::query::sparse::SparseSelect;
-
-// TODO: clean up later, make repo a workspace?
-// Derived from: https://github.com/bevyengine/bevy/pull/5550
-
+/// Derived from: https://github.com/bevyengine/bevy/pull/5550
 mod frame_capture {
     pub mod image_copy {
         use std::sync::Arc;
@@ -212,16 +198,12 @@ mod frame_capture {
 
         use bevy::{
             app::AppExit,
-            log::LogPlugin,
             prelude::*,
             render::{camera::RenderTarget, renderer::RenderDevice},
-            window::ExitCondition,
         };
         use wgpu::{Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages};
 
-        // use image::{io::Reader, ImageBuffer, Rgba, ImageFormat};
-
-        use super::image_copy::{ImageCopier, ImageCopyPlugin};
+        use super::image_copy::ImageCopier;
 
 
         #[derive(Component, Default)]
@@ -233,20 +215,7 @@ mod frame_capture {
         pub struct SceneTesterPlugin;
         impl Plugin for SceneTesterPlugin {
             fn build(&self, app: &mut App) {
-                app.add_plugins(
-                    DefaultPlugins
-                        .build()
-                        .disable::<LogPlugin>()
-                        .set(WindowPlugin {
-                            primary_window: None,
-                            exit_condition: ExitCondition::DontExit,
-                            close_when_requested: false,
-                        }),
-                )
-                .add_plugins(ImageCopyPlugin)
-                .init_resource::<SceneController>()
-                .add_event::<SceneController>()
-                .add_systems(PostUpdate, update);
+                app.add_systems(PostUpdate, update);
             }
         }
 
@@ -361,8 +330,6 @@ mod frame_capture {
                 if n > 0 {
                     scene_controller.state = SceneState::Render(n - 1);
                 } else {
-                    let x = images_to_save.iter().len();
-                    println!("saving {} images", x);
                     for image in images_to_save.iter() {
                         let img_bytes = images.get_mut(image.id()).unwrap();
 
@@ -370,13 +337,6 @@ mod frame_capture {
                             Ok(img) => img.to_rgba8(),
                             Err(e) => panic!("Failed to create image buffer {e:?}"),
                         };
-                        
-                        println!(
-                            "\n After: {}x{} ({} channels)",
-                            img.width(),
-                            img.height(),
-                            img.sample_layout().channels
-                        );
 
                         let images_path =
                             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test_images");
@@ -392,8 +352,6 @@ mod frame_capture {
         }
     }
 }
-
-// --------------------------------------
 
 pub struct HeadlessGaussianSplatViewer {
     pub width: f32,
@@ -445,6 +403,7 @@ fn setup_gaussian_cloud(
         String::from("basic_cube_scene"),
     );
 
+
     commands.spawn((
         GaussianSplattingBundle { cloud, ..default() },
         Name::new("gaussian_cloud"),
@@ -470,98 +429,6 @@ fn setup_gaussian_cloud(
     ));
 }
 
-#[cfg(feature = "morph_particles")]
-fn setup_particle_behavior(
-    mut commands: Commands,
-    mut particle_behavior_assets: ResMut<Assets<ParticleBehaviors>>,
-    gaussian_cloud: Query<(
-        Entity,
-        &Handle<GaussianCloud>,
-        Without<Handle<ParticleBehaviors>>,
-    )>,
-) {
-    if gaussian_cloud.is_empty() {
-        return;
-    }
-
-    let mut particle_behaviors = None;
-
-    let file_arg = get_arg(1);
-    if let Some(_n) = file_arg.clone().and_then(|s| s.parse::<usize>().ok()) {
-        let behavior_arg = get_arg(2);
-        if let Some(k) = behavior_arg.clone().and_then(|s| s.parse::<usize>().ok()) {
-            println!("generating {} particle behaviors", k);
-            particle_behaviors = particle_behavior_assets
-                .add(random_particle_behaviors(k))
-                .into();
-        }
-    }
-
-    if let Some(particle_behaviors) = particle_behaviors {
-        commands
-            .entity(gaussian_cloud.single().0)
-            .insert(particle_behaviors);
-    }
-}
-
-#[cfg(feature = "material_noise")]
-fn setup_noise_material(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    gaussian_clouds: Query<(Entity, &Handle<GaussianCloud>, Without<NoiseMaterial>)>,
-) {
-    if gaussian_clouds.is_empty() {
-        return;
-    }
-
-    for (entity, cloud_handle, _) in gaussian_clouds.iter() {
-        if Some(bevy::asset::LoadState::Loading) == asset_server.get_load_state(cloud_handle) {
-            continue;
-        }
-
-        commands.entity(entity).insert(NoiseMaterial::default());
-    }
-}
-
-#[cfg(feature = "query_select")]
-fn press_i_invert_selection(
-    keys: Res<Input<KeyCode>>,
-    mut select_inverse_events: EventWriter<InvertSelectionEvent>,
-) {
-    if keys.just_pressed(KeyCode::I) {
-        println!("inverting selection");
-        select_inverse_events.send(InvertSelectionEvent);
-    }
-}
-
-#[cfg(feature = "query_select")]
-fn press_o_save_selection(
-    keys: Res<Input<KeyCode>>,
-    mut select_inverse_events: EventWriter<SaveSelectionEvent>,
-) {
-    if keys.just_pressed(KeyCode::O) {
-        println!("saving selection");
-        select_inverse_events.send(SaveSelectionEvent);
-    }
-}
-
-#[cfg(feature = "query_sparse")]
-fn setup_sparse_select(
-    mut commands: Commands,
-    gaussian_cloud: Query<(Entity, &Handle<GaussianCloud>, Without<SparseSelect>)>,
-) {
-    if gaussian_cloud.is_empty() {
-        return;
-    }
-
-    commands
-        .entity(gaussian_cloud.single().0)
-        .insert(SparseSelect {
-            completed: true,
-            ..default()
-        });
-}
-
 fn headless_app() {
     let config = HeadlessGaussianSplatViewer::default();
     let mut app = App::new();
@@ -570,12 +437,18 @@ fn headless_app() {
     app.insert_resource(frame_capture::scene_tester::SceneController::new(config.width as u32, config.height as u32));
     app.insert_resource(ClearColor(Color::rgb_u8(0, 0, 0)));
 
-    // app.add_plugins(
-    //     DefaultPlugins
-    //         .set(ImagePlugin::default_nearest())
-    //         .build()
-    //         .disable::<bevy::winit::WinitPlugin>(),
-    // );
+    app.add_plugins(
+        DefaultPlugins
+        .set(ImagePlugin::default_nearest())
+        .set(WindowPlugin {
+            primary_window: None,
+            exit_condition: bevy::window::ExitCondition::DontExit,
+            close_when_requested: false,
+        }),
+    );
+
+    app.add_plugins(frame_capture::image_copy::ImageCopyPlugin);
+    
     // headless frame capture
     app.add_plugins(frame_capture::scene_tester::SceneTesterPlugin);
 
@@ -589,22 +462,11 @@ fn headless_app() {
     app.add_plugins(GaussianSplattingPlugin);
 
 
+    app.init_resource::<frame_capture::scene_tester::SceneController>();
+    app.add_event::<frame_capture::scene_tester::SceneController>();
+
     app.add_systems(Startup, setup_gaussian_cloud);
 
-    #[cfg(feature = "material_noise")]
-    app.add_systems(Update, setup_noise_material);
-
-    #[cfg(feature = "morph_particles")]
-    app.add_systems(Update, setup_particle_behavior);
-
-    #[cfg(feature = "query_select")]
-    {
-        app.add_systems(Update, press_i_invert_selection);
-        app.add_systems(Update, press_o_save_selection);
-    }
-
-    #[cfg(feature = "query_sparse")]
-    app.add_systems(Update, setup_sparse_select);
 
     app.run();
 }
