@@ -161,7 +161,8 @@ features = [
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-
+futures-intrusive = { version = "0.5.0" }
+pollster = { version = "0.3.0" }
 
 [profile.dev.package."*"]
 opt-level = 3
@@ -211,6 +212,10 @@ required-features = ["debug_gpu", "sort_radix"]
 [[example]]
 name = "minimal"
 path = "examples/minimal.rs"
+
+[[example]]
+name = "headless"
+path = "examples/headless.rs"
 
 
 [[bench]]
