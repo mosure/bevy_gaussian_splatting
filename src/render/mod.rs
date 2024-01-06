@@ -633,7 +633,7 @@ impl SpecializedRenderPipeline for GaussianCloudPipeline {
                 },
             }),
             multisample: MultisampleState {
-                count: 4,
+                count: 4,  // TODO: disable MSAA for gaussian pipeline
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
