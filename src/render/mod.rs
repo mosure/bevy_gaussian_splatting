@@ -393,7 +393,7 @@ impl FromWorld for GaussianCloudPipeline {
 
         #[cfg(feature = "packed")]
         let gaussian_cloud_layout = packed::get_bind_group_layout(&render_device, read_only);
-        #[cfg(feature = "buffer_storage")]
+        #[cfg(all(feature = "buffer_storage", not(feature = "packed")))]
         let gaussian_cloud_layout = planar::get_bind_group_layout(&render_device, read_only);
         #[cfg(feature = "buffer_texture")]
         let gaussian_cloud_layout = texture::get_bind_group_layout(&render_device, read_only);
@@ -811,7 +811,7 @@ fn queue_gaussian_bind_group(
 
         #[cfg(feature = "packed")]
         let cloud_bind_group = packed::get_bind_group(&render_device, &gaussian_cloud_pipeline, &cloud);
-        #[cfg(feature = "buffer_storage")]
+        #[cfg(all(feature = "buffer_storage", not(feature = "packed")))]
         let cloud_bind_group = planar::get_bind_group(&render_device, &gaussian_cloud_pipeline, &cloud);
         #[cfg(feature = "buffer_texture")]
         let cloud_bind_group = texture_buffers.bind_group.clone();

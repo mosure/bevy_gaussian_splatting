@@ -19,10 +19,12 @@
 
 #ifdef PACKED_F32
 #import bevy_gaussian_splatting::packed::get_position
-#endif
+#else
 
 #ifdef BUFFER_STORAGE
 #import bevy_gaussian_splatting::planar::get_position
+#endif
+
 #endif
 
 #ifdef BUFFER_TEXTURE

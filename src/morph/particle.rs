@@ -4,6 +4,7 @@ use rand::{
 };
 use std::marker::Copy;
 
+#[allow(unused_imports)]
 use bevy::{
     prelude::*,
     asset::{
@@ -25,10 +26,26 @@ use bevy::{
             RenderAssetPlugin,
         },
         render_resource::{
+            BindGroup,
+            BindGroupEntry,
+            BindGroupLayout,
+            BindGroupLayoutDescriptor,
+            BindGroupLayoutEntry,
+            BindingResource,
+            BindingType,
             Buffer,
+            BufferBinding,
+            BufferBindingType,
             BufferInitDescriptor,
+            BufferSize,
             BufferUsages,
+            CachedComputePipelineId,
+            CachedPipelineState,
+            ComputePassDescriptor,
+            ComputePipelineDescriptor,
             Extent3d,
+            PipelineCache,
+            ShaderStages,
             ShaderType,
             TextureDimension,
             TextureFormat,

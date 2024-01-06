@@ -36,7 +36,7 @@
     get_scale,
 }
 #endif
-#endif
+#else
 
 #ifdef BUFFER_STORAGE
 #ifdef PRECOMPUTE_COVARIANCE_3D
@@ -59,6 +59,9 @@
 #endif
 #endif
 
+#endif
+
+
 #ifdef BUFFER_TEXTURE
 #ifdef PRECOMPUTE_COVARIANCE_3D
 #import bevy_gaussian_splatting::texture::{
@@ -67,6 +70,7 @@
     get_visibility,
     get_opacity,
     get_cov3d,
+    location,
 }
 #else
 #import bevy_gaussian_splatting::texture::{
@@ -76,6 +80,7 @@
     get_opacity,
     get_rotation,
     get_scale,
+    location,
 }
 #endif
 #endif
