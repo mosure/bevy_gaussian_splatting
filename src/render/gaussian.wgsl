@@ -366,7 +366,7 @@ fn vs_points(
     rgb = get_color(splat_index, ray_direction);
 #endif
 
-    // TODO: precompute color, cov2d for every gaussian. cov2d only needs a single evaluation, while color needs to be evaluated every frame in SH degree > 0 mode
+    // TODO: verify color benefit for ray_direction computed at quad verticies instead of gaussian center (same as current complexity)
     output.color = vec4<f32>(
         rgb,
         get_opacity(splat_index),
