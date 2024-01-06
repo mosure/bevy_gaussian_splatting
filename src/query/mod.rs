@@ -22,7 +22,10 @@ impl Plugin for QueryPlugin {
         #[cfg(feature = "query_select")]
         app.add_plugins(select::SelectPlugin);
 
-        #[cfg(feature = "query_sparse")]
+        #[cfg(all(
+            feature = "query_sparse",
+            not(feature = "precompute_covariance_3d"),
+        ))]
         app.add_plugins(sparse::SparsePlugin);
     }
 }

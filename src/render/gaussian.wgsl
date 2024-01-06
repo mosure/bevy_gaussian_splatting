@@ -18,37 +18,66 @@
 }
 
 #ifdef PACKED
+#ifdef PRECOMPUTE_COVARIANCE_3D
 #import bevy_gaussian_splatting::packed::{
     get_position,
     get_color,
+    get_visibility,
+    get_opacity,
+    get_cov3d,
+}
+#else
+#import bevy_gaussian_splatting::packed::{
+    get_position,
+    get_color,
+    get_visibility,
+    get_opacity,
     get_rotation,
     get_scale,
-    get_opacity,
-    get_visibility,
 }
+#endif
 #endif
 
 #ifdef BUFFER_STORAGE
+#ifdef PRECOMPUTE_COVARIANCE_3D
 #import bevy_gaussian_splatting::planar::{
     get_position,
     get_color,
+    get_visibility,
+    get_opacity,
+    get_cov3d,
+}
+#else
+#import bevy_gaussian_splatting::planar::{
+    get_position,
+    get_color,
+    get_visibility,
+    get_opacity,
     get_rotation,
     get_scale,
-    get_opacity,
-    get_visibility,
 }
+#endif
 #endif
 
 #ifdef BUFFER_TEXTURE
+#ifdef PRECOMPUTE_COVARIANCE_3D
 #import bevy_gaussian_splatting::texture::{
     get_position,
     get_color,
+    get_visibility,
+    get_opacity,
+    get_cov3d,
+}
+#else
+#import bevy_gaussian_splatting::texture::{
+    get_position,
+    get_color,
+    get_visibility,
+    get_opacity,
     get_rotation,
     get_scale,
-    get_opacity,
-    get_visibility,
-    location,
 }
+#endif
 #endif
 
 
@@ -139,10 +168,17 @@ fn compute_cov3d(scale: vec3<f32>, rotation: vec4<f32>) -> array<f32, 6> {
 
 fn compute_cov2d(
     position: vec3<f32>,
-    scale: vec3<f32>,
-    rotation: vec4<f32>
+    index: u32,
 ) -> vec3<f32> {
+#ifdef PRECOMPUTE_COVARIANCE_3D
+    let cov3d = get_cov3d(index);
+#else
+    let rotation = get_rotation(index);
+    let scale = get_scale(index);
+
     let cov3d = compute_cov3d(scale, rotation);
+#endif
+
     let Vrk = mat3x3(
         cov3d[0], cov3d[1], cov3d[2],
         cov3d[1], cov3d[3], cov3d[4],
@@ -333,7 +369,7 @@ fn vs_points(
     }
 #endif
 
-    let cov2d = compute_cov2d(transformed_position, get_scale(splat_index), get_rotation(splat_index));
+    let cov2d = compute_cov2d(transformed_position, splat_index);
 
 #ifdef USE_AABB
     let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;

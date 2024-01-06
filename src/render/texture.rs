@@ -68,17 +68,29 @@ assert_cfg!(
 );
 
 
+#[cfg(feature = "f16")]
 #[derive(Component, Clone, Debug, Reflect)]
 pub struct TextureBuffers {
     position_visibility: Handle<Image>,
     spherical_harmonics: Handle<Image>,
 
-    #[cfg(feature = "f16")]
+    #[cfg(feature = "precompute_covariance_3d")]
+    covariance_3d_opacity: Handle<Image>,
+    #[cfg(not(feature = "precompute_covariance_3d"))]
     rotation_scale_opacity: Handle<Image>,
+}
 
-    #[cfg(feature = "f32")]
+#[cfg(feature = "f32")]
+#[derive(Component, Clone, Debug, Reflect)]
+pub struct TextureBuffers {
+    position_visibility: Handle<Image>,
+    spherical_harmonics: Handle<Image>,
+
+    #[cfg(feature = "precompute_covariance_3d")]
+    covariance_3d_opacity: Handle<Image>,
+    #[cfg(not(feature = "precompute_covariance_3d"))]
     rotation: Handle<Image>,
-    #[cfg(feature = "f32")]
+    #[cfg(not(feature = "precompute_covariance_3d"))]
     scale_opacity: Handle<Image>,
 }
 

@@ -554,6 +554,8 @@ pub fn shader_defs(
     #[cfg(all(feature = "f32", feature = "buffer_texture"))]
     shader_defs.push("PLANAR_TEXTURE_F32".into());
 
+    #[cfg(feature = "precompute_covariance_3d")]
+    shader_defs.push("PRECOMPUTE_COVARIANCE_3D".into());
 
     #[cfg(feature = "webgl2")]
     shader_defs.push("WEBGL2".into());

@@ -40,8 +40,13 @@ struct Gaussian {
 #endif
 
 @group(2) @binding(1) var<storage, read> spherical_harmonics: array<array<f32, #{SH_COEFF_COUNT}>>;
+
+#ifdef PRECOMPUTE_COVARIANCE_3D
+@group(2) @binding(2) var<storage, read> covariance_3d_opacity: array<array<f32, 8>>;
+#else
 @group(2) @binding(2) var<storage, read> rotation: array<vec4<f32>>;
 @group(2) @binding(3) var<storage, read> scale_opacity: array<vec4<f32>>;
+#endif
 #endif
 
 
@@ -51,9 +56,13 @@ struct Gaussian {
 #else
 @group(2) @binding(0) var<storage, read> position_visibility: array<vec4<f32>>;
 #endif
-
 @group(2) @binding(1) var<storage, read> spherical_harmonics: array<array<u32, #{HALF_SH_COEFF_COUNT}>>;
+
+#ifdef PRECOMPUTE_COVARIANCE_3D
+@group(2) @binding(2) var<storage, read> covariance_3d_opacity: array<vec4<u32>>;
+#else
 @group(2) @binding(2) var<storage, read> rotation_scale_opacity: array<vec4<u32>>;
+#endif
 #endif
 
 
@@ -66,7 +75,11 @@ struct Gaussian {
 @group(2) @binding(1) var spherical_harmonics: texture_2d_array<u32>;
 #endif
 
+#ifdef PRECOMPUTE_COVARIANCE_3D
+@group(2) @binding(2) var covariance_3d_opacity: texture_2d<u32>;
+#else
 @group(2) @binding(2) var rotation_scale_opacity: texture_2d<u32>;
+#endif
 #endif
 
 
@@ -78,6 +91,8 @@ struct Gaussian {
 #else
 @group(2) @binding(1) var spherical_harmonics: texture_2d_array<f32>;
 #endif
+
+// TODO: support f32_cov3d_opacity texture
 
 @group(2) @binding(2) var rotation_scale_opacity: texture_2d<f32>;
 #endif

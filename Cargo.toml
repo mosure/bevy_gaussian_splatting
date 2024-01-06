@@ -50,7 +50,7 @@ default = [
   "precompute_covariance_3d",
 
   "query_select",
-  "query_sparse",
+  # "query_sparse",
 
   "sort_radix",
   "sort_rayon",
@@ -75,7 +75,7 @@ noise = []
 f32 = []
 f16 = ["half"]
 
-precompute_covariance_3d = []
+precompute_covariance_3d = []  # TODO: disable on main binary
 
 packed = []
 planar = []
@@ -106,6 +106,7 @@ web = [
   "f16",
   "io_flexbuffers",
   "planar",
+  "precompute_covariance_3d",
   "sort_std",
   "viewer",
   "webgl2",
