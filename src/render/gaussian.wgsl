@@ -443,6 +443,9 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
 
     let alpha = exp(power);
     let final_alpha = alpha * input.color.a;
+
+    // TODO: round final_alpha to terminate depth test?
+
     return vec4<f32>(
         input.color.rgb * final_alpha,
         final_alpha,
