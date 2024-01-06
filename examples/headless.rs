@@ -197,7 +197,7 @@ mod frame_capture {
             }
         }
     }
-    pub mod scene_tester {
+    pub mod scene {
         use std::path::PathBuf;
 
         use bevy::{
@@ -216,8 +216,8 @@ mod frame_capture {
         #[derive(Component, Deref, DerefMut)]
         struct ImageToSave(Handle<Image>);
 
-        pub struct SceneTesterPlugin;
-        impl Plugin for SceneTesterPlugin {
+        pub struct CaptureFramePlugin;
+        impl Plugin for CaptureFramePlugin {
             fn build(&self, app: &mut App) {
                 app.add_systems(PostUpdate, update);
             }
@@ -251,7 +251,7 @@ mod frame_capture {
             Render(u32),
         }
 
-        pub fn setup_test(
+        pub fn setup_render_target(
             commands: &mut Commands,
             images: &mut ResMut<Assets<Image>>,
             render_device: &Res<RenderDevice>,
@@ -323,18 +323,15 @@ mod frame_capture {
             mut app_exit_writer: EventWriter<AppExit>,
         ) {
             if let SceneState::Render(n) = scene_controller.state {
-                println!("current frame {}", n);
-                if n > 0 {
-                    scene_controller.state = SceneState::Render(n - 1);
-                } else {
+                if n < 1 {
                     for image in images_to_save.iter() {
                         let img_bytes = images.get_mut(image.id()).unwrap();
-
+    
                         let img = match img_bytes.clone().try_into_dynamic() {
                             Ok(img) => img.to_rgba8(),
                             Err(e) => panic!("Failed to create image buffer {e:?}"),
                         };
-
+    
                         let images_path =
                             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test_images");
                         let uuid = bevy::utils::Uuid::new_v4();
@@ -346,6 +343,8 @@ mod frame_capture {
                     if scene_controller.single_image {
                         app_exit_writer.send(AppExit);
                     }
+                } else {
+                    scene_controller.state = SceneState::Render(n - 1);
                 }
             }
         }
@@ -356,7 +355,7 @@ fn setup_gaussian_cloud(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
-    mut scene_controller: ResMut<frame_capture::scene_tester::SceneController>,
+    mut scene_controller: ResMut<frame_capture::scene::SceneController>,
     mut images: ResMut<Assets<Image>>,
     render_device: Res<RenderDevice>,
 ) {
@@ -379,7 +378,7 @@ fn setup_gaussian_cloud(
         cloud = gaussian_assets.add(GaussianCloud::test_model());
     }
 
-    let render_target = frame_capture::scene_tester::setup_test(
+    let render_target = frame_capture::scene::setup_render_target(
         &mut commands,
         &mut images,
         &render_device,
@@ -429,10 +428,8 @@ fn headless_app() {
         single_image: true,
     };
 
-    let scene_controller = frame_capture::scene_tester::SceneController::new(config.width, config.height, config.single_image);
-
-    // setup for gaussian viewer app
-    app.insert_resource(scene_controller);
+    // setup frame capture
+    app.insert_resource(frame_capture::scene::SceneController::new(config.width, config.height, config.single_image));
     app.insert_resource(ClearColor(Color::rgb_u8(0, 0, 0)));
 
     app.add_plugins(
@@ -448,7 +445,7 @@ fn headless_app() {
     app.add_plugins(frame_capture::image_copy::ImageCopyPlugin);
     
     // headless frame capture
-    app.add_plugins(frame_capture::scene_tester::SceneTesterPlugin);
+    app.add_plugins(frame_capture::scene::CaptureFramePlugin);
 
     app.add_plugins(ScheduleRunnerPlugin::run_loop(
         std::time::Duration::from_secs_f64(1.0 / 60.0),
@@ -460,8 +457,8 @@ fn headless_app() {
     app.add_plugins(GaussianSplattingPlugin);
 
 
-    app.init_resource::<frame_capture::scene_tester::SceneController>();
-    app.add_event::<frame_capture::scene_tester::SceneController>();
+    app.init_resource::<frame_capture::scene::SceneController>();
+    app.add_event::<frame_capture::scene::SceneController>();
 
     app.add_systems(Startup, setup_gaussian_cloud);
 
