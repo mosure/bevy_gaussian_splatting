@@ -1,3 +1,7 @@
+// for running the gaussian splatting viewer without a window ( i.e on a server )
+//! ensure the "test_images" directory exists in the root of the project
+// c_rr --example headless -- [filename]
+
 use bevy::{
     app::ScheduleRunnerPlugin, core::Name, core_pipeline::tonemapping::Tonemapping, prelude::*, render::renderer::RenderDevice,
 };
@@ -219,38 +223,30 @@ mod frame_capture {
             }
         }
 
-        #[derive(Debug, Resource, Event)]
+        #[derive(Debug, Default, Resource, Event)]
         pub struct SceneController {
             state: SceneState,
             name: String,
             width: u32,
             height: u32,
+            single_image: bool,
         }
 
         impl SceneController {
-            pub fn new(width:u32, height:u32) -> SceneController {
+            pub fn new(width:u32, height:u32, single_image: bool) -> SceneController {
                 SceneController {
                     state: SceneState::BuildScene,
                     name: String::from(""),
                     width,
                     height,
+                    single_image
                 }
             }
         }
 
-        impl Default for SceneController {
-            fn default() -> SceneController {
-                SceneController {
-                    state: SceneState::BuildScene,
-                    name: String::from(""),
-                    width: 1920,
-                    height: 1080,
-                }
-            }
-        }
-
-        #[derive(Debug)]
+        #[derive(Debug, Default)]
         pub enum SceneState {
+            #[default]
             BuildScene,
             Render(u32),
         }
@@ -327,6 +323,7 @@ mod frame_capture {
             mut app_exit_writer: EventWriter<AppExit>,
         ) {
             if let SceneState::Render(n) = scene_controller.state {
+                println!("current frame {}", n);
                 if n > 0 {
                     scene_controller.state = SceneState::Render(n - 1);
                 } else {
@@ -346,23 +343,11 @@ mod frame_capture {
                             panic!("Failed to save image: {}", e);
                         };
                     }
-                    app_exit_writer.send(AppExit);
+                    if scene_controller.single_image {
+                        app_exit_writer.send(AppExit);
+                    }
                 }
             }
-        }
-    }
-}
-
-pub struct HeadlessGaussianSplatViewer {
-    pub width: f32,
-    pub height: f32,
-}
-
-impl Default for HeadlessGaussianSplatViewer {
-    fn default() -> HeadlessGaussianSplatViewer {
-        HeadlessGaussianSplatViewer {
-            width: 1920.0,
-            height: 1080.0,
         }
     }
 }
@@ -400,7 +385,7 @@ fn setup_gaussian_cloud(
         &render_device,
         &mut scene_controller,
         15,
-        String::from("basic_cube_scene"),
+        String::from("main_scene"),
     );
 
 
@@ -429,12 +414,25 @@ fn setup_gaussian_cloud(
     ));
 }
 
+pub struct AppConfig {
+    width: u32,
+    height: u32,
+    single_image: bool,
+}
+
 fn headless_app() {
-    let config = HeadlessGaussianSplatViewer::default();
     let mut app = App::new();
 
+    let config = AppConfig {
+        width: 1920,
+        height: 1080,
+        single_image: true,
+    };
+
+    let scene_controller = frame_capture::scene_tester::SceneController::new(config.width, config.height, config.single_image);
+
     // setup for gaussian viewer app
-    app.insert_resource(frame_capture::scene_tester::SceneController::new(config.width as u32, config.height as u32));
+    app.insert_resource(scene_controller);
     app.insert_resource(ClearColor(Color::rgb_u8(0, 0, 0)));
 
     app.add_plugins(
