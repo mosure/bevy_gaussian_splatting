@@ -290,6 +290,15 @@ fn get_bounding_box(
 }
 
 
+// @compute @workgroup_size(#{RADIX_BASE}, #{RADIX_DIGIT_PLACES})
+// fn gaussian_compute(
+//     @builtin(local_invocation_id) gl_LocalInvocationID: vec3<u32>,
+//     @builtin(global_invocation_id) gl_GlobalInvocationID: vec3<u32>,
+// ) {
+//     // TODO: compute cov2d, color (any non-quad gaussian property)
+// }
+
+
 @vertex
 fn vs_points(
     @builtin(instance_index) instance_index: u32,
@@ -387,7 +396,7 @@ fn vs_points(
         quad_offset,
     );
 
-    output.uv = (quad_offset + vec2<f32>(1.0)) * 0.5;
+    output.uv = quad_offset;
     output.major_minor = bb.zw;
     output.position = vec4<f32>(
         projected_position.xy + bb.xy,
@@ -410,12 +419,11 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
 #endif
 
 #ifdef USE_OBB
-    let norm_uv = input.uv * 2.0 - 1.0;
     let sigma = 1.0 / 3.5;
-    let sigma_squared = sigma * sigma;
-    let distance_squared = dot(norm_uv, norm_uv);
+    let sigma_squared = 2.0 * sigma * sigma;
+    let distance_squared = dot(input.uv, input.uv);
 
-    let power = -distance_squared / (2.0 * sigma_squared);
+    let power = -distance_squared / sigma_squared;
 
     if (distance_squared > 3.5 * 3.5) {
         discard;
@@ -423,7 +431,7 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
 #endif
 
 #ifdef VISUALIZE_BOUNDING_BOX
-    let uv = input.uv;
+    let uv = (input.uv + 1.0) / 2.0;
     let edge_width = 0.08;
     if (
         (uv.x < edge_width || uv.x > 1.0 - edge_width) ||
