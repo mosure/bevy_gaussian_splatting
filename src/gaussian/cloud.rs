@@ -254,9 +254,9 @@ impl GaussianCloud {
             self.position_visibility.resize(self.square_len(), PositionVisibility::default());
             self.spherical_harmonic.resize(self.square_len(), SphericalHarmonicCoefficients::default());
 
-            #[cfg(feature = "precomputed_covariance_3d")]
+            #[cfg(feature = "precompute_covariance_3d")]
             self.covariance_3d_opacity_packed128.resize(self.square_len(), Covariance3dOpacityPacked128::default());
-            #[cfg(not(feature = "precomputed_covariance_3d"))]
+            #[cfg(not(feature = "precompute_covariance_3d"))]
             self.rotation_scale_opacity_packed128.resize(self.square_len(), RotationScaleOpacityPacked128::default());
         }
 
