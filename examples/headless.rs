@@ -331,11 +331,13 @@ mod frame_capture {
                             Ok(img) => img.to_rgba8(),
                             Err(e) => panic!("Failed to create image buffer {e:?}"),
                         };
-    
-                        let images_path =
+
+                        let images_dir =
                             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test_images");
+                        std::fs::create_dir_all(&images_dir).unwrap();
+
                         let uuid = bevy::utils::Uuid::new_v4();
-                        let image_path = images_path.join(format!("{uuid}.png"));
+                        let image_path = images_dir.join(format!("{uuid}.png"));
                         if let Err(e) = img.save(image_path){
                             panic!("Failed to save image: {}", e);
                         };
