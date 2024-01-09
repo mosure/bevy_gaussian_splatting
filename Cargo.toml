@@ -128,6 +128,7 @@ bytemuck = "1.14"
 flate2  = { version = "1.0", optional = true }
 flexbuffers = { version = "2.0", optional = true }
 half = { version = "2.3.1", optional = true, features = ["serde"] }
+image = { version = "0.24.7", default-features = false, features = ["png"] }
 kd-tree = { version = "0.5", optional = true }
 noise = { version = "0.8.2", optional = true }
 ply-rs = { version = "0.1", optional = true }
@@ -169,7 +170,8 @@ features = [
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-
+futures-intrusive = { version = "0.5.0" }
+pollster = { version = "0.3.0" }
 
 [profile.dev.package."*"]
 opt-level = 3
@@ -219,6 +221,10 @@ required-features = ["debug_gpu", "sort_radix"]
 [[example]]
 name = "minimal"
 path = "examples/minimal.rs"
+
+[[example]]
+name = "headless"
+path = "examples/headless.rs"
 
 
 [[bench]]
