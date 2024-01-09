@@ -17,6 +17,7 @@ use serde::{
 
 use crate::gaussian::{
     f32::{
+        Covariance3dOpacity,
         Rotation,
         ScaleOpacity,
     },
@@ -123,6 +124,74 @@ impl From<[u32; 4]> for RotationScaleOpacityPacked128 {
         Self {
             rotation: [rotation_scale_opacity[0], rotation_scale_opacity[1]],
             scale_opacity: [rotation_scale_opacity[2], rotation_scale_opacity[3]],
+        }
+    }
+}
+
+
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    Copy,
+    PartialEq,
+    Reflect,
+    ShaderType,
+    Pod,
+    Zeroable,
+    Serialize,
+    Deserialize,
+)]
+#[repr(C)]
+pub struct Covariance3dOpacityPacked128 {
+    #[reflect(ignore)]
+    pub cov3d: [u32; 3],
+    pub opacity: u32,
+}
+
+impl Covariance3dOpacityPacked128 {
+    pub fn from_gaussian(gaussian: &Gaussian) -> Self {
+        let cov3d: Covariance3dOpacity = gaussian.into();
+        let cov3d = cov3d.cov3d;
+
+        let opacity = gaussian.scale_opacity.opacity;
+
+        Self {
+            cov3d: [
+                pack_f32s_to_u32(cov3d[0], cov3d[1]),
+                pack_f32s_to_u32(cov3d[2], cov3d[3]),
+                pack_f32s_to_u32(cov3d[4], cov3d[5]),
+            ],
+            opacity: pack_f32s_to_u32(opacity, opacity),  // TODO: benefit from 32-bit opacity
+        }
+    }
+
+    pub fn covariance_3d_opacity(&self) -> Covariance3dOpacity {
+        let (c0, c1) = unpack_u32_to_f32s(self.cov3d[0]);
+        let (c2, c3) = unpack_u32_to_f32s(self.cov3d[1]);
+        let (c4, c5) = unpack_u32_to_f32s(self.cov3d[2]);
+
+        let (opacity, _) = unpack_u32_to_f32s(self.opacity);
+
+        let cov3d: [f32; 6] = [c0, c1, c2, c3, c4, c5];
+
+        Covariance3dOpacity {
+            cov3d,
+            opacity,
+            pad: 0.0,
+        }
+    }
+}
+
+impl From<[u32; 4]> for Covariance3dOpacityPacked128 {
+    fn from(cov3d_opacity: [u32; 4]) -> Self {
+        Self {
+            cov3d: [
+                cov3d_opacity[0],
+                cov3d_opacity[1],
+                cov3d_opacity[2],
+            ],
+            opacity: cov3d_opacity[3],
         }
     }
 }

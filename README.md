@@ -11,8 +11,7 @@
 bevy gaussian splatting render pipeline plugin. view the [live demo](https://mosure.github.io/bevy_gaussian_splatting/index.html?arg1=cactus.gcloud)
 
 ![Alt text](docs/notferris.png)
-![Alt text](docs/cactus.gif)
-![Alt text](docs/bike.png)
+![Alt text](docs/go.gif)
 
 
 ## capabilities
@@ -101,6 +100,8 @@ fn setup_gaussian_cloud(
 - [phys-gaussian](https://xpandora.github.io/PhysGaussian/)
 - [point-visualizer](https://github.com/mosure/point-visualizer)
 - [rusty-automata](https://github.com/mosure/rusty-automata)
+- [scaffold-gs](https://city-super.github.io/scaffold-gs/)
+- [shader-one-sweep](https://github.com/b0nes164/ShaderOneSweep)
 - [spacetime-gaussians](https://github.com/oppo-us-research/SpacetimeGaussians)
 - [splat](https://github.com/antimatter15/splat)
 - [splatter](https://github.com/Lichtso/splatter)

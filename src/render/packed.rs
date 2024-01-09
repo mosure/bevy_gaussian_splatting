@@ -1,12 +1,19 @@
 use bevy::render::{
     render_resource::{
+        BindGroup,
+        BindGroupEntry,
+        BindGroupLayout,
+        BindGroupLayoutDescriptor,
+        BindGroupLayoutEntry,
+        BindingResource,
+        BindingType,
         Buffer,
+        BufferBinding,
+        BufferBindingType,
         BufferInitDescriptor,
+        BufferSize,
         BufferUsages,
-        Extent3d,
-        ShaderType,
-        TextureDimension,
-        TextureFormat,
+        ShaderStages,
     },
     renderer::RenderDevice,
 };

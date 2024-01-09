@@ -32,6 +32,7 @@ exclude = [
 default-run = "viewer"
 
 
+# TODO: resolve one-hot feature flags through runtime configuration
 [features]
 default = [
   "io_flexbuffers",
@@ -46,10 +47,14 @@ default = [
   # "f32",
   "f16",
 
-  "query_select",
-  "query_sparse",
+  # "precompute_covariance_3d",
 
-  "sort_radix",
+  "query_select",
+  # "query_sparse",
+
+  # "morph_particles",
+
+  # "sort_radix",  # TODO: fix macos radix sort
   "sort_rayon",
   "sort_std",
 
@@ -71,6 +76,8 @@ noise = []
 
 f32 = []
 f16 = ["half"]
+
+precompute_covariance_3d = []  # TODO: disable on main binary
 
 packed = []
 planar = []
@@ -101,6 +108,7 @@ web = [
   "f16",
   "io_flexbuffers",
   "planar",
+  "precompute_covariance_3d",
   "sort_std",
   "viewer",
   "webgl2",
@@ -134,7 +142,7 @@ wgpu = "0.17.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"
-wasm-bindgen = "0.2"
+wasm-bindgen = "0.2.89"
 
 
 [dependencies.bevy]

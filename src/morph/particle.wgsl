@@ -33,6 +33,8 @@ fn apply_particle_behaviors(
     let point_index = behavior.indicies.x;
     let point = points[point_index];
 
+    // TODO: add gaussian attribute setters for 4d capability
+
     let delta_position = behavior.velocity * globals.delta_time + 0.5 * behavior.acceleration * globals.delta_time * globals.delta_time + 1.0 / 6.0 * behavior.jerk * globals.delta_time * globals.delta_time * globals.delta_time;
     let delta_velocity = behavior.acceleration * globals.delta_time + 0.5 * behavior.jerk * globals.delta_time * globals.delta_time;
     let delta_acceleration = behavior.jerk * globals.delta_time;

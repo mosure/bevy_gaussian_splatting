@@ -18,37 +18,71 @@
 }
 
 #ifdef PACKED
+#ifdef PRECOMPUTE_COVARIANCE_3D
 #import bevy_gaussian_splatting::packed::{
     get_position,
     get_color,
+    get_visibility,
+    get_opacity,
+    get_cov3d,
+}
+#else
+#import bevy_gaussian_splatting::packed::{
+    get_position,
+    get_color,
+    get_visibility,
+    get_opacity,
     get_rotation,
     get_scale,
-    get_opacity,
-    get_visibility,
 }
 #endif
+#else
 
 #ifdef BUFFER_STORAGE
+#ifdef PRECOMPUTE_COVARIANCE_3D
 #import bevy_gaussian_splatting::planar::{
     get_position,
     get_color,
+    get_visibility,
+    get_opacity,
+    get_cov3d,
+}
+#else
+#import bevy_gaussian_splatting::planar::{
+    get_position,
+    get_color,
+    get_visibility,
+    get_opacity,
     get_rotation,
     get_scale,
-    get_opacity,
-    get_visibility,
 }
 #endif
+#endif
+
+#endif
+
 
 #ifdef BUFFER_TEXTURE
+#ifdef PRECOMPUTE_COVARIANCE_3D
 #import bevy_gaussian_splatting::texture::{
     get_position,
     get_color,
-    get_rotation,
-    get_scale,
-    get_opacity,
     get_visibility,
+    get_opacity,
+    get_cov3d,
     location,
 }
+#else
+#import bevy_gaussian_splatting::texture::{
+    get_position,
+    get_color,
+    get_visibility,
+    get_opacity,
+    get_rotation,
+    get_scale,
+    location,
+}
+#endif
 #endif
 
 
@@ -139,10 +173,17 @@ fn compute_cov3d(scale: vec3<f32>, rotation: vec4<f32>) -> array<f32, 6> {
 
 fn compute_cov2d(
     position: vec3<f32>,
-    scale: vec3<f32>,
-    rotation: vec4<f32>
+    index: u32,
 ) -> vec3<f32> {
+#ifdef PRECOMPUTE_COVARIANCE_3D
+    let cov3d = get_cov3d(index);
+#else
+    let rotation = get_rotation(index);
+    let scale = get_scale(index);
+
     let cov3d = compute_cov3d(scale, rotation);
+#endif
+
     let Vrk = mat3x3(
         cov3d[0], cov3d[1], cov3d[2],
         cov3d[1], cov3d[3], cov3d[4],
@@ -254,6 +295,15 @@ fn get_bounding_box(
 }
 
 
+// @compute @workgroup_size(#{RADIX_BASE}, #{RADIX_DIGIT_PLACES})
+// fn gaussian_compute(
+//     @builtin(local_invocation_id) gl_LocalInvocationID: vec3<u32>,
+//     @builtin(global_invocation_id) gl_GlobalInvocationID: vec3<u32>,
+// ) {
+//     // TODO: compute cov2d, color (any non-quad gaussian property)
+// }
+
+
 @vertex
 fn vs_points(
     @builtin(instance_index) instance_index: u32,
@@ -321,7 +371,7 @@ fn vs_points(
     rgb = get_color(splat_index, ray_direction);
 #endif
 
-    // TODO: precompute color, cov2d for every gaussian. cov2d only needs a single evaluation, while color needs to be evaluated every frame in SH degree > 0 mode
+    // TODO: verify color benefit for ray_direction computed at quad verticies instead of gaussian center (same as current complexity)
     output.color = vec4<f32>(
         rgb,
         get_opacity(splat_index),
@@ -333,7 +383,7 @@ fn vs_points(
     }
 #endif
 
-    let cov2d = compute_cov2d(transformed_position, get_scale(splat_index), get_rotation(splat_index));
+    let cov2d = compute_cov2d(transformed_position, splat_index);
 
 #ifdef USE_AABB
     let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
@@ -351,7 +401,7 @@ fn vs_points(
         quad_offset,
     );
 
-    output.uv = (quad_offset + vec2<f32>(1.0)) * 0.5;
+    output.uv = quad_offset;
     output.major_minor = bb.zw;
     output.position = vec4<f32>(
         projected_position.xy + bb.xy,
@@ -374,12 +424,11 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
 #endif
 
 #ifdef USE_OBB
-    let norm_uv = input.uv * 2.0 - 1.0;
     let sigma = 1.0 / 3.5;
-    let sigma_squared = sigma * sigma;
-    let distance_squared = dot(norm_uv, norm_uv);
+    let sigma_squared = 2.0 * sigma * sigma;
+    let distance_squared = dot(input.uv, input.uv);
 
-    let power = -distance_squared / (2.0 * sigma_squared);
+    let power = -distance_squared / sigma_squared;
 
     if (distance_squared > 3.5 * 3.5) {
         discard;
@@ -387,7 +436,7 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
 #endif
 
 #ifdef VISUALIZE_BOUNDING_BOX
-    let uv = input.uv;
+    let uv = (input.uv + 1.0) / 2.0;
     let edge_width = 0.08;
     if (
         (uv.x < edge_width || uv.x > 1.0 - edge_width) ||
@@ -399,6 +448,9 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
 
     let alpha = exp(power);
     let final_alpha = alpha * input.color.a;
+
+    // TODO: round final_alpha to terminate depth test?
+
     return vec4<f32>(
         input.color.rgb * final_alpha,
         final_alpha,

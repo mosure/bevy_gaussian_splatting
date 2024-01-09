@@ -19,7 +19,6 @@ use crate::{
     material::spherical_harmonics::SphericalHarmonicCoefficients,
 };
 
-
 #[derive(
     Clone,
     Debug,

@@ -13,6 +13,11 @@ use serde::{
     Serialize,
 };
 
+use crate::gaussian::{
+    covariance::compute_covariance_3d,
+    packed::Gaussian,
+};
+
 
 pub type Position = [f32; 3];
 
@@ -100,6 +105,42 @@ impl From<[f32; 4]> for ScaleOpacity {
                 scale_opacity[2],
             ],
             opacity: scale_opacity[3],
+        }
+    }
+}
+
+
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    Copy,
+    PartialEq,
+    Reflect,
+    ShaderType,
+    Pod,
+    Zeroable,
+    Serialize,
+    Deserialize,
+)]
+#[repr(C)]
+pub struct Covariance3dOpacity {
+    pub cov3d: [f32; 6],
+    pub opacity: f32,
+    pub pad: f32,
+}
+
+impl From<&Gaussian> for Covariance3dOpacity {
+    fn from(gaussian: &Gaussian) -> Self {
+        let cov3d = compute_covariance_3d(
+            Vec4::from_slice(gaussian.rotation.rotation.as_slice()),
+            Vec3::from_slice(gaussian.scale_opacity.scale.as_slice()),
+        );
+
+        Covariance3dOpacity {
+            cov3d,
+            opacity: gaussian.scale_opacity.opacity,
+            pad: 0.0,
         }
     }
 }

@@ -33,6 +33,7 @@ fn is_point_in_transformed_sphere(pos: &[f32; 3]) -> bool {
 }
 
 
+#[allow(unused_mut)]
 fn main() {
     let filename = std::env::args().nth(1).expect("no filename given");
 
