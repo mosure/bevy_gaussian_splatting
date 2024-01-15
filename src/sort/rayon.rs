@@ -129,7 +129,7 @@ pub fn rayon_sort(
         *period = std::time::Duration::from_millis(
             100
                 .max(period.as_millis() as u64 * 4 / 5)
-                .max(10 * delta.as_millis() as u64)
+                .max(4 * delta.as_millis() as u64)
         );
     }
 }

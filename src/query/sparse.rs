@@ -6,6 +6,7 @@ use kd_tree::{
     KdPoint,
     KdTree,
 };
+use static_assertions::assert_cfg;
 use typenum::consts::U3;
 
 use crate::{
@@ -13,6 +14,14 @@ use crate::{
     GaussianCloud,
     query::select::Select,
 };
+
+assert_cfg!(
+    all(
+        feature = "query_sparse",
+        not(feature = "precompute_covariance_3d"),
+    ),
+    "sparse queries and precomputed covariance are not implemented",
+);
 
 
 #[derive(Component, Debug, Reflect)]

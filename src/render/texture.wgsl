@@ -1,5 +1,13 @@
 #define_import_path bevy_gaussian_splatting::texture
 
+#ifdef PRECOMPUTE_COVARIANCE_3D
+#import bevy_gaussian_splatting::bindings::{
+    gaussian_uniforms,
+    position_visibility,
+    spherical_harmonics,
+    covariance_3d_opacity,
+};
+#else
 #import bevy_gaussian_splatting::bindings::{
     gaussian_uniforms,
     position_visibility,
@@ -8,6 +16,8 @@
     rotation_scale_opacity,
     scale_opacity,
 };
+#endif
+
 #import bevy_gaussian_splatting::spherical_harmonics::{
     shc,
     spherical_harmonics_lookup,
@@ -261,39 +271,74 @@ fn get_color(
 }
 #endif
 
-fn get_rotation(index: u32) -> vec4<f32> {
-    let sample = textureLoad(
-        rotation_scale_opacity,
-        location(index),
-        0,
-    );
 
-    let q0 = unpack2x16float(sample.x);
-    let q1 = unpack2x16float(sample.y);
+#ifdef PRECOMPUTE_COVARIANCE_3D
+    fn get_cov3d(index: u32) -> array<f32, 6> {
+        let sample = textureLoad(
+            covariance_3d_opacity,
+            location(index),
+            0,
+        );
 
-    return vec4<f32>(
-        q0.yx,
-        q1.yx,
-    );
-}
+        let c0 = unpack2x16float(sample.x);
+        let c1 = unpack2x16float(sample.y);
+        let c2 = unpack2x16float(sample.z);
 
-fn get_scale(index: u32) -> vec3<f32> {
-    let sample = textureLoad(
-        rotation_scale_opacity,
-        location(index),
-        0,
-    );
+        var cov3d: array<f32, 6>;
 
-    let s0 = unpack2x16float(sample.z);
-    let s1 = unpack2x16float(sample.w);
+        cov3d[0] = c0.y;
+        cov3d[1] = c0.x;
+        cov3d[2] = c1.y;
+        cov3d[3] = c1.x;
+        cov3d[4] = c2.y;
+        cov3d[5] = c2.x;
 
-    return vec3<f32>(
-        s0.yx,
-        s1.y,
-    );
-}
+        return cov3d;
+    }
+#else
+    fn get_rotation(index: u32) -> vec4<f32> {
+        let sample = textureLoad(
+            rotation_scale_opacity,
+            location(index),
+            0,
+        );
+
+        let q0 = unpack2x16float(sample.x);
+        let q1 = unpack2x16float(sample.y);
+
+        return vec4<f32>(
+            q0.yx,
+            q1.yx,
+        );
+    }
+
+    fn get_scale(index: u32) -> vec3<f32> {
+        let sample = textureLoad(
+            rotation_scale_opacity,
+            location(index),
+            0,
+        );
+
+        let s0 = unpack2x16float(sample.z);
+        let s1 = unpack2x16float(sample.w);
+
+        return vec3<f32>(
+            s0.yx,
+            s1.y,
+        );
+    }
+#endif
 
 fn get_opacity(index: u32) -> f32 {
+#ifdef PRECOMPUTE_COVARIANCE_3D
+    let sample = textureLoad(
+        covariance_3d_opacity,
+        location(index),
+        0,
+    );
+
+    return unpack2x16float(sample.w).y;
+#else
     let sample = textureLoad(
         rotation_scale_opacity,
         location(index),
@@ -301,6 +346,7 @@ fn get_opacity(index: u32) -> f32 {
     );
 
     return unpack2x16float(sample.w).x;
+#endif
 }
 
 fn get_visibility(index: u32) -> f32 {

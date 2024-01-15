@@ -20,6 +20,7 @@ use rayon::prelude::*;
 use crate::{
     gaussian::{
         f32::{
+            Covariance3dOpacity,
             Position,
             PositionVisibility,
             Rotation,
@@ -34,13 +35,16 @@ use crate::{
     },
 };
 
+#[allow(unused_imports)]
 #[cfg(feature = "f16")]
 use crate::gaussian::f16::{
-        RotationScaleOpacityPacked128,
-        pack_f32s_to_u32,
-    };
+    Covariance3dOpacityPacked128,
+    RotationScaleOpacityPacked128,
+    pack_f32s_to_u32,
+};
 
 
+#[cfg(feature = "f16")]
 #[derive(
     Asset,
     Clone,
@@ -58,12 +62,37 @@ pub struct GaussianCloud {
 
     pub spherical_harmonic: Vec<SphericalHarmonicCoefficients>,
 
-    #[cfg(feature = "f16")]
+    #[cfg(not(feature = "precompute_covariance_3d"))]
     pub rotation_scale_opacity_packed128: Vec<RotationScaleOpacityPacked128>,
 
-    #[cfg(feature = "f32")]
+    #[cfg(feature = "precompute_covariance_3d")]
+    pub covariance_3d_opacity_packed128: Vec<Covariance3dOpacityPacked128>,
+}
+
+#[cfg(feature = "f32")]
+#[derive(
+    Asset,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Reflect,
+    TypeUuid,
+    Serialize,
+    Deserialize,
+)]
+#[uuid = "ac2f08eb-bc32-aabb-ff21-51571ea332d5"]
+pub struct GaussianCloud {
+    pub position_visibility: Vec<PositionVisibility>,
+
+    pub spherical_harmonic: Vec<SphericalHarmonicCoefficients>,
+
+    #[cfg(feature = "precompute_covariance_3d")]
+    pub covariance_3d: Vec<Covariance3dOpacity>,
+
+    #[cfg(not(feature = "precompute_covariance_3d"))]
     pub rotation: Vec<Rotation>,
-    #[cfg(feature = "f32")]
+    #[cfg(not(feature = "precompute_covariance_3d"))]
     pub scale_opacity: Vec<ScaleOpacity>,
 }
 
@@ -146,7 +175,10 @@ impl GaussianCloud {
     //     return &mut self.scale_opacity[index].scale;
     // }
 
-    #[cfg(feature = "f16")]
+    #[cfg(all(
+        not(feature = "precompute_covariance_3d"),
+        feature = "f16",
+    ))]
     pub fn gaussian(&self, index: usize) -> Gaussian {
         let rso = self.rotation_scale_opacity_packed128[index];
 
@@ -171,7 +203,10 @@ impl GaussianCloud {
         }
     }
 
-    #[cfg(feature = "f16")]
+    #[cfg(all(
+        not(feature = "precompute_covariance_3d"),
+        feature = "f16",
+    ))]
     pub fn gaussian_iter(&self) -> impl Iterator<Item=Gaussian> + '_ {
         self.position_visibility.iter()
             .zip(self.spherical_harmonic.iter())
@@ -218,6 +253,10 @@ impl GaussianCloud {
         {
             self.position_visibility.resize(self.square_len(), PositionVisibility::default());
             self.spherical_harmonic.resize(self.square_len(), SphericalHarmonicCoefficients::default());
+
+            #[cfg(feature = "precompute_covariance_3d")]
+            self.covariance_3d_opacity_packed128.resize(self.square_len(), Covariance3dOpacityPacked128::default());
+            #[cfg(not(feature = "precompute_covariance_3d"))]
             self.rotation_scale_opacity_packed128.resize(self.square_len(), RotationScaleOpacityPacked128::default());
         }
 
@@ -227,6 +266,7 @@ impl GaussianCloud {
             self.spherical_harmonic.resize(self.square_len(), SphericalHarmonicCoefficients::default());
             self.rotation.resize(self.square_len(), Rotation::default());
             self.scale_opacity.resize(self.square_len(), ScaleOpacity::default());
+            self.covariance_3d.resize(self.square_len(), Covariance3dOpacity::default());
         }
     }
 }
@@ -237,17 +277,31 @@ impl GaussianCloud {
     pub fn subset(&self, indicies: &[usize]) -> Self {
         let mut position_visibility = Vec::with_capacity(indicies.len());
         let mut spherical_harmonic = Vec::with_capacity(indicies.len());
+
+        #[cfg(feature = "precompute_covariance_3d")]
+        let mut covariance_3d_opacity_packed128 = Vec::with_capacity(indicies.len());
+
+        #[cfg(not(feature = "precompute_covariance_3d"))]
         let mut rotation_scale_opacity_packed128 = Vec::with_capacity(indicies.len());
 
         for &index in indicies.iter() {
             position_visibility.push(self.position_visibility[index]);
             spherical_harmonic.push(self.spherical_harmonic[index]);
+
+            #[cfg(feature = "precompute_covariance_3d")]
+            covariance_3d_opacity_packed128.push(self.covariance_3d_opacity_packed128[index]);
+
+            #[cfg(not(feature = "precompute_covariance_3d"))]
             rotation_scale_opacity_packed128.push(self.rotation_scale_opacity_packed128[index]);
         }
 
         Self {
             position_visibility,
             spherical_harmonic,
+
+            #[cfg(feature = "precompute_covariance_3d")]
+            covariance_3d_opacity_packed128,
+            #[cfg(not(feature = "precompute_covariance_3d"))]
             rotation_scale_opacity_packed128,
         }
     }
@@ -292,12 +346,21 @@ impl GaussianCloud {
     pub fn from_gaussians(gaussians: Vec<Gaussian>) -> Self {
         let mut position_visibility = Vec::with_capacity(gaussians.len());
         let mut spherical_harmonic = Vec::with_capacity(gaussians.len());
+
+        #[cfg(feature = "precompute_covariance_3d")]
+        let mut covariance_3d_opacity_packed128 = Vec::with_capacity(gaussians.len());
+
+        #[cfg(not(feature = "precompute_covariance_3d"))]
         let mut rotation_scale_opacity_packed128 = Vec::with_capacity(gaussians.len());
 
         for gaussian in gaussians {
             position_visibility.push(gaussian.position_visibility);
             spherical_harmonic.push(gaussian.spherical_harmonic);
 
+            #[cfg(feature = "precompute_covariance_3d")]
+            covariance_3d_opacity_packed128.push(Covariance3dOpacityPacked128::from_gaussian(&gaussian));
+
+            #[cfg(not(feature = "precompute_covariance_3d"))]
             rotation_scale_opacity_packed128.push(RotationScaleOpacityPacked128::from_gaussian(&gaussian));
         }
 
@@ -305,6 +368,10 @@ impl GaussianCloud {
         let mut cloud = GaussianCloud {
             position_visibility,
             spherical_harmonic,
+
+            #[cfg(feature = "precompute_covariance_3d")]
+            covariance_3d_opacity_packed128,
+            #[cfg(not(feature = "precompute_covariance_3d"))]
             rotation_scale_opacity_packed128,
         };
 

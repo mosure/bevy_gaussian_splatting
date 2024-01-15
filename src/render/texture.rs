@@ -68,17 +68,29 @@ assert_cfg!(
 );
 
 
+#[cfg(feature = "f16")]
 #[derive(Component, Clone, Debug, Reflect)]
 pub struct TextureBuffers {
     position_visibility: Handle<Image>,
     spherical_harmonics: Handle<Image>,
 
-    #[cfg(feature = "f16")]
+    #[cfg(feature = "precompute_covariance_3d")]
+    covariance_3d_opacity: Handle<Image>,
+    #[cfg(not(feature = "precompute_covariance_3d"))]
     rotation_scale_opacity: Handle<Image>,
+}
 
-    #[cfg(feature = "f32")]
+#[cfg(feature = "f32")]
+#[derive(Component, Clone, Debug, Reflect)]
+pub struct TextureBuffers {
+    position_visibility: Handle<Image>,
+    spherical_harmonics: Handle<Image>,
+
+    #[cfg(feature = "precompute_covariance_3d")]
+    covariance_3d_opacity: Handle<Image>,
+    #[cfg(not(feature = "precompute_covariance_3d"))]
     rotation: Handle<Image>,
-    #[cfg(feature = "f32")]
+    #[cfg(not(feature = "precompute_covariance_3d"))]
     scale_opacity: Handle<Image>,
 }
 
@@ -147,6 +159,14 @@ pub fn queue_gpu_texture_buffers(
                         &gpu_images.get(&texture_buffers.spherical_harmonics).unwrap().texture_view
                     ),
                 },
+                #[cfg(feature = "precompute_covariance_3d")]
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::TextureView(
+                        &gpu_images.get(&texture_buffers.covariance_3d_opacity).unwrap().texture_view
+                    ),
+                },
+                #[cfg(not(feature = "precompute_covariance_3d"))]
                 BindGroupEntry {
                     binding: 2,
                     resource: BindingResource::TextureView(
@@ -264,20 +284,41 @@ fn queue_textures(
             spherical_harmonics.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
             let spherical_harmonics = images.add(spherical_harmonics);
 
-            let mut rotation_scale_opacity = Image::new(
-                extent_1d,
-                TextureDimension::D2,
-                bytemuck::cast_slice(cloud.rotation_scale_opacity_packed128.as_slice()).to_vec(),
-                TextureFormat::Rgba32Uint,
-            );
-            rotation_scale_opacity.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
-            let rotation_scale_opacity = images.add(rotation_scale_opacity);
+            #[cfg(feature = "precompute_covariance_3d")]
+            {
+                let mut covariance_3d_opacity = Image::new(
+                    extent_1d,
+                    TextureDimension::D2,
+                    bytemuck::cast_slice(cloud.covariance_3d_opacity_packed128.as_slice()).to_vec(),
+                    TextureFormat::Rgba32Uint,
+                );
+                covariance_3d_opacity.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
+                let covariance_3d_opacity = images.add(covariance_3d_opacity);
 
-            texture_buffers = TextureBuffers {
-                position_visibility,
-                spherical_harmonics,
-                rotation_scale_opacity,
-            };
+                texture_buffers = TextureBuffers {
+                    position_visibility,
+                    spherical_harmonics,
+                    covariance_3d_opacity,
+                };
+            }
+
+            #[cfg(not(feature = "precompute_covariance_3d"))]
+            {
+                let mut rotation_scale_opacity = Image::new(
+                    extent_1d,
+                    TextureDimension::D2,
+                    bytemuck::cast_slice(cloud.rotation_scale_opacity_packed128.as_slice()).to_vec(),
+                    TextureFormat::Rgba32Uint,
+                );
+                rotation_scale_opacity.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
+                let rotation_scale_opacity = images.add(rotation_scale_opacity);
+
+                texture_buffers = TextureBuffers {
+                    position_visibility,
+                    spherical_harmonics,
+                    rotation_scale_opacity,
+                };
+            }
         }
 
         #[cfg(feature = "f32")]

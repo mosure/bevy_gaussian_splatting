@@ -216,7 +216,12 @@ impl RenderAsset for GaussianCloud {
 
         let draw_indirect_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("draw indirect buffer"),
-            contents: bytemuck::cast_ref::<[u32; 4], [u8; 16]>(&[4, count as u32, 0, 0]),
+            contents: wgpu::util::DrawIndirect {
+                vertex_count: 4,
+                instance_count: count as u32,
+                base_vertex: 0,
+                base_instance: 0,
+            }.as_bytes(),
             usage: BufferUsages::INDIRECT | BufferUsages::COPY_DST | BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         });
 
@@ -388,7 +393,7 @@ impl FromWorld for GaussianCloudPipeline {
 
         #[cfg(feature = "packed")]
         let gaussian_cloud_layout = packed::get_bind_group_layout(&render_device, read_only);
-        #[cfg(feature = "buffer_storage")]
+        #[cfg(all(feature = "buffer_storage", not(feature = "packed")))]
         let gaussian_cloud_layout = planar::get_bind_group_layout(&render_device, read_only);
         #[cfg(feature = "buffer_texture")]
         let gaussian_cloud_layout = texture::get_bind_group_layout(&render_device, read_only);
@@ -549,6 +554,8 @@ pub fn shader_defs(
     #[cfg(all(feature = "f32", feature = "buffer_texture"))]
     shader_defs.push("PLANAR_TEXTURE_F32".into());
 
+    #[cfg(feature = "precompute_covariance_3d")]
+    shader_defs.push("PRECOMPUTE_COVARIANCE_3D".into());
 
     #[cfg(feature = "webgl2")]
     shader_defs.push("WEBGL2".into());
@@ -626,7 +633,7 @@ impl SpecializedRenderPipeline for GaussianCloudPipeline {
                 },
             }),
             multisample: MultisampleState {
-                count: 4,
+                count: 4,  // TODO: disable MSAA for gaussian pipeline
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
@@ -804,7 +811,7 @@ fn queue_gaussian_bind_group(
 
         #[cfg(feature = "packed")]
         let cloud_bind_group = packed::get_bind_group(&render_device, &gaussian_cloud_pipeline, &cloud);
-        #[cfg(feature = "buffer_storage")]
+        #[cfg(all(feature = "buffer_storage", not(feature = "packed")))]
         let cloud_bind_group = planar::get_bind_group(&render_device, &gaussian_cloud_pipeline, &cloud);
         #[cfg(feature = "buffer_texture")]
         let cloud_bind_group = texture_buffers.bind_group.clone();
@@ -985,7 +992,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
             None => return RenderCommandResult::Failure,
         };
 
-        pass.set_bind_group(2, &bind_groups.cloud_bind_group, &[]); // TODO: abstract source of cloud_bind_group (e.g. packed vs. planar)
+        pass.set_bind_group(2, &bind_groups.cloud_bind_group, &[]);
         pass.set_bind_group(3, &bind_groups.sorted_bind_group, &[]);
 
         #[cfg(feature = "webgl2")]

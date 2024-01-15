@@ -24,17 +24,33 @@ use crate::{
 #[cfg(feature = "f16")]
 use crate::gaussian::f16::RotationScaleOpacityPacked128;
 
+
+#[cfg(feature = "f16")]
 #[derive(Debug, Clone)]
 pub struct PlanarBuffers {
     position_visibility: Buffer,
     spherical_harmonics: Buffer,
 
-    #[cfg(feature = "f16")]
-    rotation_scale_opacity: Buffer,
+    #[cfg(feature = "precompute_covariance_3d")]
+    covariance_3d_opacity: Buffer,
 
-    #[cfg(feature = "f32")]
+    #[cfg(not(feature = "precompute_covariance_3d"))]
+    rotation_scale_opacity: Buffer,
+}
+
+
+#[cfg(feature = "f32")]
+#[derive(Debug, Clone)]
+pub struct PlanarBuffers {
+    position_visibility: Buffer,
+    spherical_harmonics: Buffer,
+
+    #[cfg(feature = "precompute_covariance_3d")]
+    covariance_3d_opacity: Buffer,
+
+    #[cfg(not(feature = "precompute_covariance_3d"))]
     rotation: Buffer,
-    #[cfg(feature = "f32")]
+    #[cfg(not(feature = "precompute_covariance_3d"))]
     scale_opacity: Buffer,
 }
 
@@ -50,6 +66,14 @@ pub fn prepare_cloud(
         usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::STORAGE,
     });
 
+    #[cfg(feature = "precompute_covariance_3d")]
+    let covariance_3d_opacity = render_device.create_buffer_with_data(&BufferInitDescriptor {
+        label: Some("planar_covariance_3d_opacity"),
+        contents: bytemuck::cast_slice(cloud.covariance_3d_opacity_packed128.as_slice()),
+        usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::STORAGE,
+    });
+
+    #[cfg(not(feature = "precompute_covariance_3d"))]
     let rotation_scale_opacity = render_device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("planar_rotation_scale_opacity_buffer"),
         contents: bytemuck::cast_slice(cloud.rotation_scale_opacity_packed128.as_slice()),
@@ -64,8 +88,12 @@ pub fn prepare_cloud(
 
     PlanarBuffers {
         position_visibility,
-        rotation_scale_opacity,
         spherical_harmonics,
+
+        #[cfg(feature = "precompute_covariance_3d")]
+        covariance_3d_opacity,
+        #[cfg(not(feature = "precompute_covariance_3d"))]
+        rotation_scale_opacity,
     }
 }
 
@@ -101,9 +129,14 @@ pub fn prepare_cloud(
 
     PlanarBuffers {
         position_visibility,
-        rotation,
-        scale_opacity,
         spherical_harmonics,
+
+        #[cfg(feature = "precompute_covariance_3d")]
+        covariance_3d_opacity,
+        #[cfg(not(feature = "precompute_covariance_3d"))]
+        rotation,
+        #[cfg(not(feature = "precompute_covariance_3d"))]
+        scale_opacity,
     }
 }
 
@@ -230,6 +263,17 @@ pub fn get_bind_group(
                     size: BufferSize::new(cloud.planar.spherical_harmonics.size()),
                 }),
             },
+
+            #[cfg(feature = "precompute_covariance_3d")]
+            BindGroupEntry {
+                binding: 2,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: &cloud.planar.covariance_3d_opacity,
+                    offset: 0,
+                    size: BufferSize::new(cloud.planar.covariance_3d_opacity.size()),
+                }),
+            },
+            #[cfg(not(feature = "precompute_covariance_3d"))]
             BindGroupEntry {
                 binding: 2,
                 resource: BindingResource::Buffer(BufferBinding {
