@@ -76,6 +76,8 @@ fn setup_gaussian_cloud(
 | `0.4 - 1.0`               | `0.12` |
 | `0.1 - 0.3`               | `0.11` |
 
+## Projects using this plugin
+- [kitt2](https://github.com/cs50victor/kitt2)
 
 # credits
 
