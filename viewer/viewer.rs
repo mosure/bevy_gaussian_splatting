@@ -51,6 +51,7 @@ pub struct GaussianSplattingViewer {
     pub width: f32,
     pub height: f32,
     pub name: String,
+    pub msaa: Msaa,
 }
 
 impl Default for GaussianSplattingViewer {
@@ -62,6 +63,11 @@ impl Default for GaussianSplattingViewer {
             width: 1920.0,
             height: 1080.0,
             name: "bevy_gaussian_splatting".to_string(),
+
+            #[cfg(feature = "web")]
+            msaa: Msaa::Off,
+            #[cfg(not(feature = "web"))]
+            msaa: Msaa::default(),
         }
     }
 }
@@ -263,11 +269,13 @@ fn example_app() {
         .set(WindowPlugin {
             primary_window,
             ..default()
-        }),
+        })
     );
     app.add_plugins((
         PanOrbitCameraPlugin,
     ));
+
+    app.insert_resource(config.msaa);
 
     if config.editor {
         app.add_plugins(WorldInspectorPlugin::new());

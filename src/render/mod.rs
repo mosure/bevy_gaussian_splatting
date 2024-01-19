@@ -256,6 +256,7 @@ fn queue_gaussians(
         &ExtractedView,
         &mut RenderPhase<Transparent3d>,
     )>,
+    msaa: Res<Msaa>,
 
     #[cfg(feature = "buffer_storage")]
     gaussian_splatting_bundles: Query<(
@@ -305,6 +306,7 @@ fn queue_gaussians(
                 visualize_bounding_box: settings.visualize_bounding_box,
                 visualize_depth: settings.visualize_depth,
                 draw_mode: settings.draw_mode,
+                sample_count: msaa.samples(),
             };
 
             let pipeline = pipelines.specialize(&pipeline_cache, &custom_pipeline, key);
@@ -325,8 +327,6 @@ fn queue_gaussians(
         }
     }
 }
-
-
 
 
 #[derive(Resource)]
@@ -575,6 +575,7 @@ pub struct GaussianCloudPipelineKey {
     pub visualize_bounding_box: bool,
     pub visualize_depth: bool,
     pub draw_mode: GaussianCloudDrawMode,
+    pub sample_count: u32,
 }
 
 impl SpecializedRenderPipeline for GaussianCloudPipeline {
@@ -633,7 +634,7 @@ impl SpecializedRenderPipeline for GaussianCloudPipeline {
                 },
             }),
             multisample: MultisampleState {
-                count: 4,  // TODO: disable MSAA for gaussian pipeline
+                count: key.sample_count,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
