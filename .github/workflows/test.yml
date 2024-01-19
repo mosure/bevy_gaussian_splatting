@@ -33,14 +33,14 @@ jobs:
         components: rustfmt, clippy
         enable-sccache: "true"
 
+    - name: lint
+      run: cargo clippy -- -Dwarnings
+
     - name: build
       run: cargo build
 
     - name: build_tools
       run: cargo build --bin ply_to_gcloud
-
-    - name: lint
-      run: cargo clippy
 
     - name: test (default)
       run: cargo test
