@@ -24,6 +24,7 @@ impl Plugin for StdSortPlugin {
 }
 
 // TODO: async CPU sort to prevent frame drops on large clouds
+#[allow(clippy::too_many_arguments)]
 pub fn std_sort(
     asset_server: Res<AssetServer>,
     gaussian_clouds_res: Res<Assets<GaussianCloud>>,
@@ -66,10 +67,8 @@ pub fn std_sort(
         if camera_movement {
             *sort_done = false;
             *camera_debounce = true;
-        } else {
-            if *sort_done {
-                return;
-            }
+        } else if *sort_done {
+            return;
         }
 
         if *camera_debounce {

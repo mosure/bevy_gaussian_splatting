@@ -429,7 +429,7 @@ impl GaussianCloud {
                 coefficients: {
                     #[cfg(feature = "f16")]
                     {
-                        let mut coefficients = [0 as u32; HALF_SH_COEFF_COUNT];
+                        let mut coefficients = [0_u32; HALF_SH_COEFF_COUNT];
 
                         for coefficient in coefficients.iter_mut() {
                             let upper = rng.gen_range(-1.0..1.0);

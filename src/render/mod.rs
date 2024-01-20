@@ -78,7 +78,7 @@ use crate::{
 #[cfg(feature = "packed")]
 mod packed;
 
-#[cfg(all(feature = "buffer_storage"))]
+#[cfg(feature = "buffer_storage")]
 mod planar;
 
 #[cfg(feature = "buffer_texture")]
@@ -242,6 +242,23 @@ impl RenderAsset for GaussianCloud {
     }
 }
 
+#[cfg(feature = "buffer_storage")]
+type GpuGaussianBundleQuery = (
+    Entity,
+    &'static Handle<GaussianCloud>,
+    &'static Handle<SortedEntries>,
+    &'static GaussianCloudSettings,
+    (),
+);
+
+#[cfg(feature = "buffer_texture")]
+type GpuGaussianBundleQuery = (
+    Entity,
+    &'static Handle<GaussianCloud>,
+    &'static Handle<SortedEntries>,
+    &'static GaussianCloudSettings,
+    &texture::GpuTextureBuffers,
+);
 
 #[allow(clippy::too_many_arguments)]
 fn queue_gaussians(
@@ -257,23 +274,7 @@ fn queue_gaussians(
         &mut RenderPhase<Transparent3d>,
     )>,
     msaa: Res<Msaa>,
-
-    #[cfg(feature = "buffer_storage")]
-    gaussian_splatting_bundles: Query<(
-        Entity,
-        &Handle<GaussianCloud>,
-        &Handle<SortedEntries>,
-        &GaussianCloudSettings,
-        (),
-    )>,
-    #[cfg(feature = "buffer_texture")]
-    gaussian_splatting_bundles: Query<(
-        Entity,
-        &Handle<GaussianCloud>,
-        &Handle<SortedEntries>,
-        &GaussianCloudSettings,
-        &texture::GpuTextureBuffers,
-    )>,
+    gaussian_splatting_bundles: Query<GpuGaussianBundleQuery>,
 ) {
     // TODO: condition this system based on GaussianCloudBindGroup attachment
     if gaussian_cloud_uniform.buffer().is_none() {
@@ -392,9 +393,9 @@ impl FromWorld for GaussianCloudPipeline {
         let read_only = false;
 
         #[cfg(feature = "packed")]
-        let gaussian_cloud_layout = packed::get_bind_group_layout(&render_device, read_only);
+        let gaussian_cloud_layout = packed::get_bind_group_layout(render_device, read_only);
         #[cfg(all(feature = "buffer_storage", not(feature = "packed")))]
-        let gaussian_cloud_layout = planar::get_bind_group_layout(&render_device, read_only);
+        let gaussian_cloud_layout = planar::get_bind_group_layout(render_device, read_only);
         #[cfg(feature = "buffer_texture")]
         let gaussian_cloud_layout = texture::get_bind_group_layout(&render_device, read_only);
 
@@ -811,9 +812,9 @@ fn queue_gaussian_bind_group(
         let sorted_entries = sorted_entries_res.get(sorted_entries_handle).unwrap();
 
         #[cfg(feature = "packed")]
-        let cloud_bind_group = packed::get_bind_group(&render_device, &gaussian_cloud_pipeline, &cloud);
+        let cloud_bind_group = packed::get_bind_group(&render_device, &gaussian_cloud_pipeline, cloud);
         #[cfg(all(feature = "buffer_storage", not(feature = "packed")))]
-        let cloud_bind_group = planar::get_bind_group(&render_device, &gaussian_cloud_pipeline, &cloud);
+        let cloud_bind_group = planar::get_bind_group(&render_device, &gaussian_cloud_pipeline, cloud);
         #[cfg(feature = "buffer_texture")]
         let cloud_bind_group = texture_buffers.bind_group.clone();
 
