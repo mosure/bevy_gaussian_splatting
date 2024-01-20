@@ -257,7 +257,7 @@ type GpuGaussianBundleQuery = (
     &'static Handle<GaussianCloud>,
     &'static Handle<SortedEntries>,
     &'static GaussianCloudSettings,
-    &texture::GpuTextureBuffers,
+    &'static texture::GpuTextureBuffers,
 );
 
 #[allow(clippy::too_many_arguments)]
@@ -743,20 +743,7 @@ fn queue_gaussian_bind_group(
     asset_server: Res<AssetServer>,
     gaussian_cloud_res: Res<RenderAssets<GaussianCloud>>,
     sorted_entries_res: Res<RenderAssets<SortedEntries>>,
-
-    #[cfg(feature = "buffer_storage")]
-    gaussian_clouds: Query<(
-        Entity,
-        &Handle<GaussianCloud>,
-        &Handle<SortedEntries>,
-    )>,
-    #[cfg(feature = "buffer_texture")]
-    gaussian_clouds: Query<(
-        Entity,
-        &Handle<GaussianCloud>,
-        &Handle<SortedEntries>,
-        &texture::GpuTextureBuffers,
-    )>,
+    gaussian_clouds: Query<GpuGaussianBundleQuery>,
 
     #[cfg(feature = "buffer_texture")]
     gpu_images: Res<RenderAssets<Image>>,
@@ -787,7 +774,7 @@ fn queue_gaussian_bind_group(
         let sorted_entries_handle = query.2;
 
         #[cfg(feature = "buffer_texture")]
-        let texture_buffers = query.3;
+        let texture_buffers = query.4;
 
         // TODO: add asset loading indicator (and maybe streamed loading)
         if Some(LoadState::Loading) == asset_server.get_load_state(cloud_handle){
