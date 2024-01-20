@@ -340,7 +340,9 @@ pub fn s_screenshot(
             screenshot_manager.take_screenshot(window_entity, move |image: Image| {
                 let dyn_img = image.clone().try_into_dynamic().unwrap();
                 let img = dyn_img.to_rgba8();
-                img.save(output_path).unwrap();
+                img.save(&output_path).unwrap();
+
+                println!("saved screenshot to {}", output_path.display());
             }).unwrap();
         }
     }
