@@ -27,6 +27,7 @@ use _harness::{
 mod _harness;
 
 
+// run with `cargo run --bin test_gaussian`
 fn main() {
     let mut app = test_harness_app(TestHarness {
         resolution: (512.0, 512.0),

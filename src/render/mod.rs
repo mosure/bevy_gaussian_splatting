@@ -231,13 +231,13 @@ impl RenderAsset for GaussianCloud {
             count,
             draw_indirect_buffer,
 
-            #[cfg(feature = "debug_gpu")]
-            debug_gpu: gaussian_cloud,
-
             #[cfg(feature = "packed")]
             packed: packed::prepare_cloud(render_device, &gaussian_cloud),
             #[cfg(feature = "buffer_storage")]
             planar: planar::prepare_cloud(render_device, &gaussian_cloud),
+
+            #[cfg(feature = "debug_gpu")]
+            debug_gpu: gaussian_cloud,
         })
     }
 }
