@@ -82,6 +82,7 @@ fn setup_gaussian_cloud(
 # credits
 
 - [4d gaussians](https://github.com/hustvl/4DGaussians)
+- [4d-gaussian-splatting](https://fudan-zvg.github.io/4d-gaussian-splatting/)
 - [bevy](https://github.com/bevyengine/bevy)
 - [bevy-hanabi](https://github.com/djeedai/bevy_hanabi)
 - [d3ga](https://zielon.github.io/d3ga/)
