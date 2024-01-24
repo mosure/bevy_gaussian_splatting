@@ -10,8 +10,8 @@
 
 bevy gaussian splatting render pipeline plugin. view the [live demo](https://mosure.github.io/bevy_gaussian_splatting/index.html?arg1=cactus.gcloud)
 
-![Alt text](docs/bevy_gaussian_splatting_demo.webp)
-![Alt text](docs/go.gif)
+![alt text](docs/assets/bevy_gaussian_splatting_demo.webp)
+![alt text](docs/assets/go.gif)
 
 
 ## capabilities
@@ -69,6 +69,13 @@ fn setup_gaussian_cloud(
 - aabb vs. obb gaussian comparison via `cargo run --bin compare_aabb_obb`
 
 
+### creating gaussian clouds
+
+- [X] 3d gaussian clouds: [gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting)
+- [X] 4d gaussian clouds: [4d-gaussian-splatting](https://fudan-zvg.github.io/4d-gaussian-splatting/)
+- [ ] edge-device training pipeline: [burn_gaussian_splatting](https://github.com/mosure/burn_gaussian_splatting)
+
+
 ## compatible bevy versions
 
 | `bevy_gaussian_splatting` | `bevy` |
@@ -76,38 +83,6 @@ fn setup_gaussian_cloud(
 | `0.4 - 1.0`               | `0.12` |
 | `0.1 - 0.3`               | `0.11` |
 
+
 ## projects using this plugin
 - [kitt2](https://github.com/cs50victor/kitt2)
-
-# credits
-
-- [4d gaussians](https://github.com/hustvl/4DGaussians)
-- [4d-gaussian-splatting](https://fudan-zvg.github.io/4d-gaussian-splatting/)
-- [bevy](https://github.com/bevyengine/bevy)
-- [bevy-hanabi](https://github.com/djeedai/bevy_hanabi)
-- [d3ga](https://zielon.github.io/d3ga/)
-- [deformable-3d-gaussians](https://github.com/ingra14m/Deformable-3D-Gaussians)
-- [diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization)
-- [dreamgaussian](https://github.com/dreamgaussian/dreamgaussian)
-- [dynamic-3d-gaussians](https://github.com/JonathonLuiten/Dynamic3DGaussians)
-- [ewa splatting](https://www.cs.umd.edu/~zwicker/publications/EWASplatting-TVCG02.pdf)
-- [gaussian-grouping](https://github.com/lkeab/gaussian-grouping)
-- [gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting)
-- [gaussian-splatting-viewer](https://github.com/limacv/GaussianSplattingViewer/tree/main)
-- [gaussian-splatting-web](https://github.com/cvlab-epfl/gaussian-splatting-web)
-- [gir](https://3dgir.github.io/)
-- [making gaussian splats smaller](https://aras-p.info/blog/2023/09/13/Making-Gaussian-Splats-smaller/)
-- [masked-spacetime-hashing](https://github.com/masked-spacetime-hashing/msth)
-- [onesweep](https://arxiv.org/ftp/arxiv/papers/2206/2206.01784.pdf)
-- [pasture](https://github.com/Mortano/pasture)
-- [phys-gaussian](https://xpandora.github.io/PhysGaussian/)
-- [point-visualizer](https://github.com/mosure/point-visualizer)
-- [rusty-automata](https://github.com/mosure/rusty-automata)
-- [scaffold-gs](https://city-super.github.io/scaffold-gs/)
-- [shader-one-sweep](https://github.com/b0nes164/ShaderOneSweep)
-- [spacetime-gaussians](https://github.com/oppo-us-research/SpacetimeGaussians)
-- [splat](https://github.com/antimatter15/splat)
-- [splatter](https://github.com/Lichtso/splatter)
-- [sturdy-dollop](https://github.com/mosure/sturdy-dollop)
-- [sugar](https://github.com/Anttwo/SuGaR)
-- [taichi_3d_gaussian_splatting](https://github.com/wanmeihuali/taichi_3d_gaussian_splatting)
