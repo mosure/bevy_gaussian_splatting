@@ -12,6 +12,7 @@
 #import bevy_gaussian_splatting::depth::{
     depth_to_rgb,
 }
+#import bevy_gaussian_splatting::gaussian_4d::compute_cov3d_conditional
 #import bevy_gaussian_splatting::transform::{
     world_to_clip,
     in_frustum,
@@ -181,7 +182,27 @@ fn compute_cov2d(
     let rotation = get_rotation(index);
     let scale = get_scale(index);
 
+#ifdef GAUSSIAN_4d
+    let rotation_r = get_rotation_r(index);
+
+    let decomposed = compute_cov3d_conditional(
+        position,
+        scale,
+        rotation,
+        rotation_r,
+    );
+
+    // TODO: propagate to discard_quad
+    if decomposed.mask {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    }
+
+    let cov3d = decomposed.cov3d;
+    let position = position + decomposed.delta_mean;
+    let opacity = decomposed.opacity;
+#else
     let cov3d = compute_cov3d(scale, rotation);
+#endif
 #endif
 
     let Vrk = mat3x3(

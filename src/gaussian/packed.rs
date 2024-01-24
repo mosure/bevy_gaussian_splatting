@@ -12,11 +12,16 @@ use serde::{
 
 use crate::{
     gaussian::f32::{
+        PositionOpacity,
         PositionVisibility,
         Rotation,
+        Scale4d,
         ScaleOpacity,
     },
-    material::spherical_harmonics::SphericalHarmonicCoefficients,
+    material::spherical_harmonics::{
+        SphericalHarmonicCoefficients,
+        SpherindricalHarmonicCoefficients,
+    },
 };
 
 #[derive(
@@ -37,4 +42,25 @@ pub struct Gaussian {
     pub position_visibility: PositionVisibility,
     pub scale_opacity: ScaleOpacity,
     pub spherical_harmonic: SphericalHarmonicCoefficients,
+}
+
+
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    Copy,
+    PartialEq,
+    Reflect,
+    Pod,
+    Zeroable,
+    Serialize,
+    Deserialize,
+)]
+#[repr(C)]
+pub struct Gaussian4d {
+    pub isomorphic_rotations: [Rotation; 2],
+    pub position_opacity: PositionOpacity,
+    pub scale: Scale4d,
+    pub spherindrical_harmonic: SpherindricalHarmonicCoefficients,
 }
