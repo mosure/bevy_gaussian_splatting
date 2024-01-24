@@ -200,6 +200,7 @@ fn compute_cov2d(
     let cov3d = decomposed.cov3d;
     let position = position + decomposed.delta_mean;
     let opacity = decomposed.opacity;
+    // TODO: refactor compute_cov2d to accept cov3d input (allows opacity/updated position to be used in parent)
 #else
     let cov3d = compute_cov3d(scale, rotation);
 #endif
