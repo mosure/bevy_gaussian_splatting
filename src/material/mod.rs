@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 pub mod depth;
 pub mod spherical_harmonics;
+pub mod spherindrical_harmonics;
 
 #[cfg(feature = "material_noise")]
 pub mod noise;
