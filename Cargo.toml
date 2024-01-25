@@ -101,6 +101,7 @@ viewer = [
   "bevy-inspector-egui",
   "bevy_panorbit_camera",
   # "bevy_transform_gizmo",
+  "bevy/multi-threaded",  # bevy screenshot functionality requires bevy/multi-threaded as of 0.12.1
 ]
 
 web = [

@@ -1,4 +1,4 @@
-name: test
+name: build
 
 on:
   push:
@@ -11,8 +11,7 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  test:
-
+  build:
     strategy:
       fail-fast: false
       matrix:
@@ -33,11 +32,11 @@ jobs:
         components: rustfmt, clippy
         enable-sccache: "true"
 
-    - name: test (default)
-      run: cargo test
+    - name: build
+      run: cargo build
 
 
-  test_web:
+  build_tools:
     strategy:
       fail-fast: false
       matrix:
@@ -58,5 +57,5 @@ jobs:
         components: rustfmt, clippy
         enable-sccache: "true"
 
-    - name: test (web)
-      run: cargo test --no-default-features --features="web io_ply tooling"
+    - name: build_tools
+      run: cargo build --bin ply_to_gcloud

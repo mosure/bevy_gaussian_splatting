@@ -25,6 +25,7 @@ impl Plugin for RayonSortPlugin {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn rayon_sort(
     asset_server: Res<AssetServer>,
     gaussian_clouds_res: Res<Assets<GaussianCloud>>,
@@ -67,10 +68,8 @@ pub fn rayon_sort(
 
         if camera_movement {
             *sort_done = false;
-        } else {
-            if *sort_done {
-                return;
-            }
+        } else if *sort_done {
+            return;
         }
 
         *last_camera_position = camera_position;

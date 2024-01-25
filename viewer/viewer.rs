@@ -1,9 +1,16 @@
+use std::path::PathBuf;
+
 use bevy::{
-    app::AppExit,
-    core::Name,
-    core_pipeline::tonemapping::Tonemapping,
-    diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     prelude::*,
+    app::AppExit,
+    core::{Name, FrameCount},
+    core_pipeline::tonemapping::Tonemapping,
+    diagnostic::{
+        DiagnosticsStore,
+        FrameTimeDiagnosticsPlugin,
+    },
+    render::view::screenshot::ScreenshotManager,
+    window::PrimaryWindow,
 };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
@@ -29,10 +36,12 @@ use bevy_gaussian_splatting::query::sparse::SparseSelect;
 pub struct GaussianSplattingViewer {
     pub editor: bool,
     pub esc_close: bool,
+    pub s_screenshot: bool,
     pub show_fps: bool,
     pub width: f32,
     pub height: f32,
     pub name: String,
+    pub msaa: Msaa,
 }
 
 impl Default for GaussianSplattingViewer {
@@ -40,10 +49,16 @@ impl Default for GaussianSplattingViewer {
         GaussianSplattingViewer {
             editor: true,
             esc_close: true,
+            s_screenshot: true,
             show_fps: true,
             width: 1920.0,
             height: 1080.0,
             name: "bevy_gaussian_splatting".to_string(),
+
+            #[cfg(feature = "web")]
+            msaa: Msaa::Off,
+            #[cfg(not(feature = "web"))]
+            msaa: Msaa::default(),
         }
     }
 }
@@ -201,7 +216,7 @@ fn example_app() {
 
     #[cfg(not(target_arch = "wasm32"))]
     let primary_window = Some(Window {
-        fit_canvas_to_parent: true,
+        fit_canvas_to_parent: false,
         mode: bevy::window::WindowMode::Windowed,
         prevent_default_event_handling: false,
         resolution: (config.width, config.height).into(),
@@ -227,12 +242,18 @@ fn example_app() {
     );
     app.add_plugins((PanOrbitCameraPlugin,));
 
+    app.insert_resource(config.msaa);
+
     if config.editor {
         app.add_plugins(WorldInspectorPlugin::new());
     }
 
     if config.esc_close {
         app.add_systems(Update, esc_close);
+    }
+
+    if config.s_screenshot {
+        app.add_systems(Update, s_screenshot);
     }
 
     if config.show_fps {
@@ -263,13 +284,43 @@ fn example_app() {
     app.run();
 }
 
-pub fn esc_close(keys: Res<Input<KeyCode>>, mut exit: EventWriter<AppExit>) {
+
+pub fn s_screenshot(
+    keys: Res<Input<KeyCode>>,
+    main_window: Query<Entity, With<PrimaryWindow>>,
+    mut screenshot_manager: ResMut<ScreenshotManager>,
+    current_frame: Res<FrameCount>,
+) {
+    if keys.just_pressed(KeyCode::S) {
+        if let Ok(window_entity) = main_window.get_single() {
+            let images_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("screenshots");
+            std::fs::create_dir_all(&images_dir).unwrap();
+            let output_path = images_dir.join(format!("output_{}.png", current_frame.0));
+
+            screenshot_manager.take_screenshot(window_entity, move |image: Image| {
+                let dyn_img = image.clone().try_into_dynamic().unwrap();
+                let img = dyn_img.to_rgba8();
+                img.save(&output_path).unwrap();
+
+                println!("saved screenshot to {}", output_path.display());
+            }).unwrap();
+        }
+    }
+}
+
+pub fn esc_close(
+    keys: Res<Input<KeyCode>>,
+    mut exit: EventWriter<AppExit>
+) {
     if keys.just_pressed(KeyCode::Escape) {
         exit.send(AppExit);
     }
 }
 
-fn fps_display_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn fps_display_setup(
+  mut commands: Commands,
+  asset_server: Res<AssetServer>
+) {
     commands.spawn((
         TextBundle::from_sections([
             TextSection::new(

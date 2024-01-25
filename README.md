@@ -10,7 +10,7 @@
 
 bevy gaussian splatting render pipeline plugin. view the [live demo](https://mosure.github.io/bevy_gaussian_splatting/index.html?arg1=cactus.gcloud)
 
-![Alt text](docs/notferris.png)
+![Alt text](docs/bevy_gaussian_splatting_demo.webp)
 ![Alt text](docs/go.gif)
 
 
@@ -83,10 +83,13 @@ i.e
 | `0.4 - 1.0`               | `0.12` |
 | `0.1 - 0.3`               | `0.11` |
 
+## projects using this plugin
+- [kitt2](https://github.com/cs50victor/kitt2)
 
 # credits
 
 - [4d gaussians](https://github.com/hustvl/4DGaussians)
+- [4d-gaussian-splatting](https://fudan-zvg.github.io/4d-gaussian-splatting/)
 - [bevy](https://github.com/bevyengine/bevy)
 - [bevy-hanabi](https://github.com/djeedai/bevy_hanabi)
 - [d3ga](https://zielon.github.io/d3ga/)
