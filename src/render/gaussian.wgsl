@@ -182,7 +182,7 @@ fn compute_cov2d(
     let rotation = get_rotation(index);
     let scale = get_scale(index);
 
-#ifdef GAUSSIAN_4d
+#ifdef GAUSSIAN_4D
     let rotation_r = get_rotation_r(index);
 
     let decomposed = compute_cov3d_conditional(

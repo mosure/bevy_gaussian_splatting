@@ -20,8 +20,11 @@ use serde::{
 use half::f16;
 
 use crate::material::spherical_harmonics::{
-
+    SH_DEGREE,
 };
+
+
+const SH_4D_DEGREE_TIME: usize = 0;
 
 
 #[cfg(feature = "f16")]

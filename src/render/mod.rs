@@ -66,6 +66,7 @@ use crate::{
     material::spherical_harmonics::{
         HALF_SH_COEFF_COUNT,
         SH_COEFF_COUNT,
+        SH_DEGREE,
         SH_VEC4_PLANES,
     },
     morph::MorphPlugin,
@@ -304,6 +305,7 @@ fn queue_gaussians(
 
             let key = GaussianCloudPipelineKey {
                 aabb: settings.aabb,
+                gaussian_4d: false,  // TODO: determine GaussianCloud(3d) or SpaceTimeGaussianCloud(4d) - better queue system abstraction
                 visualize_bounding_box: settings.visualize_bounding_box,
                 visualize_depth: settings.visualize_depth,
                 draw_mode: settings.draw_mode,
@@ -492,6 +494,8 @@ pub fn shader_defs(
     let defines = ShaderDefines::default();
     let mut shader_defs = vec![
         ShaderDefVal::UInt("SH_COEFF_COUNT".into(), SH_COEFF_COUNT as u32),
+        ShaderDefVal::UInt("SH_DEGREE".into(), SH_DEGREE as u32),
+        ShaderDefVal::UInt("SH_DEGREE_TIME".into(), SH_DEGREE as u32),
         ShaderDefVal::UInt("HALF_SH_COEFF_COUNT".into(), HALF_SH_COEFF_COUNT as u32),
         ShaderDefVal::UInt("SH_VEC4_PLANES".into(), SH_VEC4_PLANES as u32),
         ShaderDefVal::UInt("RADIX_BASE".into(), defines.radix_base),
@@ -523,6 +527,10 @@ pub fn shader_defs(
 
     if key.visualize_depth {
         shader_defs.push("VISUALIZE_DEPTH".into());
+    }
+
+    if key.gaussian_4d {
+        shader_defs.push("GAUSSIAN_4D".into());
     }
 
     #[cfg(feature = "packed")]
@@ -573,6 +581,7 @@ pub fn shader_defs(
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Default)]
 pub struct GaussianCloudPipelineKey {
     pub aabb: bool,
+    pub gaussian_4d: bool,
     pub visualize_bounding_box: bool,
     pub visualize_depth: bool,
     pub draw_mode: GaussianCloudDrawMode,

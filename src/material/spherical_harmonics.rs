@@ -47,10 +47,10 @@ const fn num_sh_coefficients(degree: usize) -> usize {
 
 
 #[cfg(feature = "web")]
-const SH_DEGREE: usize = 0;
+pub const SH_DEGREE: usize = 0;
 
 #[cfg(not(feature = "web"))]
-const SH_DEGREE: usize = 3;
+pub const SH_DEGREE: usize = 3;
 
 pub const SH_CHANNELS: usize = 3;
 pub const SH_COEFF_COUNT_PER_CHANNEL: usize = num_sh_coefficients(SH_DEGREE);
