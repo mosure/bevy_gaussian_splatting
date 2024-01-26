@@ -183,7 +183,7 @@ pub struct GpuGaussianSplattingBundle {
     pub settings: GaussianCloudSettings,
     pub settings_uniform: GaussianCloudUniform,
     pub sorted_entries: Handle<SortedEntries>,
-    pub cloud_handle: Handle<GaussianCloud>,
+    pub cloud_handle: Handle<GaussianCloud>,  // TODO: handle 4d gaussian cloud
 }
 
 #[derive(Debug, Clone)]
