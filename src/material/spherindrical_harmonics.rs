@@ -19,27 +19,24 @@ use serde::{
 #[cfg(feature = "f16")]
 use half::f16;
 
-use crate::material::spherical_harmonics::{
-    SH_CHANNELS,
-    SH_DEGREE,
+use crate::{
+    material::spherical_harmonics::{
+        SH_CHANNELS,
+        SH_DEGREE,
+    },
+    math::{
+        gcd,
+        pad_4,
+    },
 };
-
-
-const fn gcd(a: usize, b: usize) -> usize {
-    if b == 0 {
-        a
-    } else {
-        gcd(b, a % b)
-    }
-}
 
 
 pub const SH_4D_DEGREE_TIME: usize = 2;
 
 pub const SH_4D_COEFF_COUNT_PER_CHANNEL: usize = (SH_DEGREE + 1).pow(2) * (SH_4D_DEGREE_TIME + 1);
-pub const SH_4D_COEFF_COUNT: usize = (SH_4D_COEFF_COUNT_PER_CHANNEL * SH_CHANNELS + 3) & !3;
+pub const SH_4D_COEFF_COUNT: usize = pad_4(SH_4D_COEFF_COUNT_PER_CHANNEL * SH_CHANNELS);
 
-pub const HALF_SH_4D_COEFF_COUNT: usize = (SH_4D_COEFF_COUNT / 2 + 3) & !3;
+pub const HALF_SH_4D_COEFF_COUNT: usize = pad_4(SH_4D_COEFF_COUNT / 2);
 
 // TODO: calculate POD_PLANE_COUNT for f16 and f32 based on a switch for HALF_SH_4D_COEFF_COUNT vs. SH_4D_COEFF_COUNT
 pub const MAX_POD_U32_ARRAY_SIZE: usize = 32;
@@ -125,7 +122,7 @@ impl Default for SpherindricalHarmonicCoefficients {
 impl Default for SpherindricalHarmonicCoefficients {
     fn default() -> Self {
         Self {
-            coefficients: [0.0; SH_4D_COEFF_COUNT],
+            coefficients: [[0.0; POD_ARRAY_SIZE]; POD_PLANE_COUNT],
         }
     }
 }
@@ -135,9 +132,13 @@ impl SpherindricalHarmonicCoefficients {
     #[cfg(feature = "f16")]
     pub fn set(&mut self, index: usize, value: f32) {
         let quantized = f16::from_f32(value).to_bits();
-        self.coefficients[index / 2] = match index % 2 {
-            0 => (self.coefficients[index / 2] & 0xffff0000) | (quantized as u32),
-            1 => (self.coefficients[index / 2] & 0x0000ffff) | ((quantized as u32) << 16),
+        let pair_index = index / 2;
+        let pod_index = pair_index / POD_ARRAY_SIZE;
+        let pod_offset = pair_index % POD_ARRAY_SIZE;
+
+        self.coefficients[pod_index][pod_offset] = match index % 2 {
+            0 => (self.coefficients[pod_index][pod_offset] & 0xffff0000) | (quantized as u32),
+            1 => (self.coefficients[pod_index][pod_offset] & 0x0000ffff) | ((quantized as u32) << 16),
             _ => unreachable!(),
         };
     }
@@ -151,11 +152,11 @@ impl SpherindricalHarmonicCoefficients {
 
 
 #[cfg(feature = "f16")]
-fn coefficients_serializer<S>(n: &[u32; HALF_SH_4D_COEFF_COUNT], s: S) -> Result<S::Ok, S::Error>
+fn coefficients_serializer<S>(n: &[[u32; POD_ARRAY_SIZE]; POD_PLANE_COUNT], s: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
-    let mut tup = s.serialize_tuple(SH_4D_COEFF_COUNT)?;
+    let mut tup = s.serialize_tuple(HALF_SH_4D_COEFF_COUNT)?;
     for &x in n.iter() {
         tup.serialize_element(&x)?;
     }
@@ -164,24 +165,24 @@ where
 }
 
 #[cfg(feature = "f16")]
-fn coefficients_deserializer<'de, D>(d: D) -> Result<[u32; HALF_SH_4D_COEFF_COUNT], D::Error>
+fn coefficients_deserializer<'de, D>(d: D) -> Result<[[u32; POD_ARRAY_SIZE]; POD_PLANE_COUNT], D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     struct CoefficientsVisitor;
 
     impl<'de> serde::de::Visitor<'de> for CoefficientsVisitor {
-        type Value = [u32; HALF_SH_4D_COEFF_COUNT];
+        type Value = [[u32; POD_ARRAY_SIZE]; POD_PLANE_COUNT];
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
             formatter.write_str("an array of floats")
         }
 
-        fn visit_seq<A>(self, mut seq: A) -> Result<[u32; HALF_SH_4D_COEFF_COUNT], A::Error>
+        fn visit_seq<A>(self, mut seq: A) -> Result<[[u32; POD_ARRAY_SIZE]; POD_PLANE_COUNT], A::Error>
         where
             A: serde::de::SeqAccess<'de>,
         {
-            let mut coefficients = [0; HALF_SH_4D_COEFF_COUNT];
+            let mut coefficients = [[0; POD_ARRAY_SIZE]; POD_PLANE_COUNT];
 
             for (i, coefficient) in coefficients.iter_mut().enumerate().take(SH_4D_COEFF_COUNT) {
                 *coefficient = seq
@@ -192,7 +193,7 @@ where
         }
     }
 
-    d.deserialize_tuple(SH_4D_COEFF_COUNT, CoefficientsVisitor)
+    d.deserialize_tuple(HALF_SH_4D_COEFF_COUNT, CoefficientsVisitor)
 }
 
 

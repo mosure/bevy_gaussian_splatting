@@ -18,9 +18,9 @@ use crate::{
         Scale4d,
         ScaleOpacity,
     },
-    material::spherical_harmonics::{
-        SphericalHarmonicCoefficients,
-        SpherindricalHarmonicCoefficients,
+    material::{
+        spherical_harmonics::SphericalHarmonicCoefficients,
+        spherindrical_harmonics::SpherindricalHarmonicCoefficients,
     },
 };
 
