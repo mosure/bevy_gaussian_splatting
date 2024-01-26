@@ -65,10 +65,10 @@ fn setup_gaussian_cloud(
 ) {
     let cloud: Handle<GaussianCloud>;
     if gaussian_splatting_viewer.gaussian_count > 0 {
-        println!("generating {} gaussians", gaussian_splatting_viewer.gaussian_count);
+        log(&format!("generating {} gaussians", gaussian_splatting_viewer.gaussian_count));
         cloud = gaussian_assets.add(random_gaussians(gaussian_splatting_viewer.gaussian_count));
     } else if !gaussian_splatting_viewer.input_file.is_empty() {
-        println!("loading {}", gaussian_splatting_viewer.input_file);
+        log(&format!("loading {}", gaussian_splatting_viewer.input_file));
         cloud = asset_server.load(&gaussian_splatting_viewer.input_file);
     } else {
         cloud = gaussian_assets.add(GaussianCloud::test_model());
@@ -116,7 +116,7 @@ fn setup_particle_behavior(
 
     let mut particle_behaviors = None;
     if gaussian_splatting_viewer.particle_count > 0 {
-        println!("generating {} particle behaviors", gaussian_splatting_viewer.particle_count);
+        log(&format!("generating {} particle behaviors", gaussian_splatting_viewer.particle_count));
         particle_behaviors = particle_behavior_assets.add(random_particle_behaviors(gaussian_splatting_viewer.particle_count)).into();
     }
 
@@ -292,7 +292,7 @@ pub fn press_s_screenshot(
                 let img = dyn_img.to_rgba8();
                 img.save(&output_path).unwrap();
 
-                println!("saved screenshot to {}", output_path.display());
+                log(&format!("saved screenshot to {}", output_path.display()));
             }).unwrap();
         }
     }
@@ -313,7 +313,7 @@ fn press_i_invert_selection(
     mut select_inverse_events: EventWriter<InvertSelectionEvent>,
 ) {
     if keys.just_pressed(KeyCode::I) {
-        println!("inverting selection");
+        log("inverting selection");
         select_inverse_events.send(InvertSelectionEvent);
     }
 }
@@ -324,7 +324,7 @@ fn press_o_save_selection(
     mut select_inverse_events: EventWriter<SaveSelectionEvent>,
 ) {
     if keys.just_pressed(KeyCode::O) {
-        println!("saving selection");
+        log("saving selection");
         select_inverse_events.send(SaveSelectionEvent);
     }
 }
