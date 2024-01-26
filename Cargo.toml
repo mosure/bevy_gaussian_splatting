@@ -97,6 +97,16 @@ tooling = ["byte-unit"]
 
 perftest = []
 
+headless = [
+  "io_flexbuffers",
+  "io_ply",
+  "planar",
+  "buffer_storage",
+  "f16",
+  "sort_rayon",
+  "sort_std",
+]
+
 viewer = [
   "bevy-inspector-egui",
   "bevy_panorbit_camera",
