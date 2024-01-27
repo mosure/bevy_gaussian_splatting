@@ -4,6 +4,10 @@ use bevy::{
     core::Name,
     core_pipeline::tonemapping::Tonemapping,
 };
+use bevy_args::{
+    BevyArgsPlugin,
+    parse_args,
+};
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_panorbit_camera::{
     PanOrbitCamera,
@@ -16,32 +20,12 @@ use bevy_gaussian_splatting::{
     GaussianCloudSettings,
     GaussianSplattingBundle,
     GaussianSplattingPlugin,
-    utils::setup_hooks, SphericalHarmonicCoefficients,
+    utils::{
+        setup_hooks,
+        GaussianSplattingViewer,
+    },
+    SphericalHarmonicCoefficients,
 };
-
-
-// TODO: move to editor crate
-pub struct GaussianSplattingViewer {
-    pub editor: bool,
-    pub esc_close: bool,
-    pub show_fps: bool,
-    pub width: f32,
-    pub height: f32,
-    pub name: String,
-}
-
-impl Default for GaussianSplattingViewer {
-    fn default() -> GaussianSplattingViewer {
-        GaussianSplattingViewer {
-            editor: true,
-            esc_close: true,
-            show_fps: true,
-            width: 1920.0,
-            height: 1080.0,
-            name: "bevy_gaussian_splatting".to_string(),
-        }
-    }
-}
 
 
 pub fn setup_aabb_obb_compare(
@@ -118,7 +102,7 @@ pub fn setup_aabb_obb_compare(
 }
 
 fn compare_aabb_obb_app() {
-    let config = GaussianSplattingViewer::default();
+    let config = parse_args::<GaussianSplattingViewer>();
     let mut app = App::new();
 
     // setup for gaussian viewer app
@@ -139,15 +123,14 @@ fn compare_aabb_obb_app() {
             ..default()
         }),
     );
-    app.add_plugins((
-        PanOrbitCameraPlugin,
-    ));
+    app.add_plugins(BevyArgsPlugin::<GaussianSplattingViewer>::default());
+    app.add_plugins(PanOrbitCameraPlugin);
 
     if config.editor {
         app.add_plugins(WorldInspectorPlugin::new());
     }
 
-    if config.esc_close {
+    if config.press_esc_close {
         app.add_systems(Update, esc_close);
     }
 

@@ -1,9 +1,13 @@
+// TODO: move to editor crate
 use std::path::PathBuf;
 
 use bevy::{
     prelude::*,
     app::AppExit,
-    core::{Name, FrameCount},
+    core::{
+        Name,
+        FrameCount,
+    },
     core_pipeline::tonemapping::Tonemapping,
     diagnostic::{
         DiagnosticsStore,
@@ -11,6 +15,10 @@ use bevy::{
     },
     render::view::screenshot::ScreenshotManager,
     window::PrimaryWindow,
+};
+use bevy_args::{
+    BevyArgsPlugin,
+    parse_args,
 };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_panorbit_camera::{
@@ -24,7 +32,8 @@ use bevy_gaussian_splatting::{
     GaussianSplattingPlugin,
     random_gaussians,
     utils::{
-        get_arg,
+        GaussianSplattingViewer,
+        log,
         setup_hooks,
     },
 };
@@ -48,57 +57,19 @@ use bevy_gaussian_splatting::query::select::{
 use bevy_gaussian_splatting::query::sparse::SparseSelect;
 
 
-pub struct GaussianSplattingViewer {
-    pub editor: bool,
-    pub esc_close: bool,
-    pub s_screenshot: bool,
-    pub show_fps: bool,
-    pub width: f32,
-    pub height: f32,
-    pub name: String,
-    pub msaa: Msaa,
-}
-
-impl Default for GaussianSplattingViewer {
-    fn default() -> GaussianSplattingViewer {
-        GaussianSplattingViewer {
-            editor: true,
-            esc_close: true,
-            s_screenshot: true,
-            show_fps: true,
-            width: 1920.0,
-            height: 1080.0,
-            name: "bevy_gaussian_splatting".to_string(),
-
-            #[cfg(feature = "web")]
-            msaa: Msaa::Off,
-            #[cfg(not(feature = "web"))]
-            msaa: Msaa::default(),
-        }
-    }
-}
-
-
 fn setup_gaussian_cloud(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
+    gaussian_splatting_viewer: Res<GaussianSplattingViewer>,
     mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
 ) {
     let cloud: Handle<GaussianCloud>;
-
-    // TODO: add proper GaussianSplattingViewer argument parsing
-    let file_arg = get_arg(1);
-    if let Some(n) = file_arg.clone().and_then(|s| s.parse::<usize>().ok()) {
-        println!("generating {} gaussians", n);
-        cloud = gaussian_assets.add(random_gaussians(n));
-    } else if let Some(filename) = file_arg {
-        if filename == "--help" {
-            println!("usage: cargo run -- [filename | n]");
-            return;
-        }
-
-        println!("loading {}", filename);
-        cloud = asset_server.load(filename.to_string());
+    if gaussian_splatting_viewer.gaussian_count > 0 {
+        log(&format!("generating {} gaussians", gaussian_splatting_viewer.gaussian_count));
+        cloud = gaussian_assets.add(random_gaussians(gaussian_splatting_viewer.gaussian_count));
+    } else if !gaussian_splatting_viewer.input_file.is_empty() {
+        log(&format!("loading {}", gaussian_splatting_viewer.input_file));
+        cloud = asset_server.load(&gaussian_splatting_viewer.input_file);
     } else {
         cloud = gaussian_assets.add(GaussianCloud::test_model());
     }
@@ -131,6 +102,7 @@ fn setup_gaussian_cloud(
 #[cfg(feature = "morph_particles")]
 fn setup_particle_behavior(
     mut commands: Commands,
+    gaussian_splatting_viewer: Res<GaussianSplattingViewer>,
     mut particle_behavior_assets: ResMut<Assets<ParticleBehaviors>>,
     gaussian_cloud: Query<(
         Entity,
@@ -143,14 +115,9 @@ fn setup_particle_behavior(
     }
 
     let mut particle_behaviors = None;
-
-    let file_arg = get_arg(1);
-    if let Some(_n) = file_arg.clone().and_then(|s| s.parse::<usize>().ok()) {
-        let behavior_arg = get_arg(2);
-        if let Some(k) = behavior_arg.clone().and_then(|s| s.parse::<usize>().ok()) {
-            println!("generating {} particle behaviors", k);
-            particle_behaviors = particle_behavior_assets.add(random_particle_behaviors(k)).into();
-        }
+    if gaussian_splatting_viewer.particle_count > 0 {
+        log(&format!("generating {} particle behaviors", gaussian_splatting_viewer.particle_count));
+        particle_behaviors = particle_behavior_assets.add(random_particle_behaviors(gaussian_splatting_viewer.particle_count)).into();
     }
 
     if let Some(particle_behaviors) = particle_behaviors {
@@ -187,30 +154,6 @@ fn setup_noise_material(
     }
 }
 
-
-#[cfg(feature = "query_select")]
-fn press_i_invert_selection(
-    keys: Res<Input<KeyCode>>,
-    mut select_inverse_events: EventWriter<InvertSelectionEvent>,
-) {
-    if keys.just_pressed(KeyCode::I) {
-        println!("inverting selection");
-        select_inverse_events.send(InvertSelectionEvent);
-    }
-}
-
-#[cfg(feature = "query_select")]
-fn press_o_save_selection(
-    keys: Res<Input<KeyCode>>,
-    mut select_inverse_events: EventWriter<SaveSelectionEvent>,
-) {
-    if keys.just_pressed(KeyCode::O) {
-        println!("saving selection");
-        select_inverse_events.send(SaveSelectionEvent);
-    }
-}
-
-
 #[cfg(feature = "query_sparse")]
 fn setup_sparse_select(
     mut commands: Commands,
@@ -233,7 +176,9 @@ fn setup_sparse_select(
 
 
 fn example_app() {
-    let config = GaussianSplattingViewer::default();
+    let config = parse_args::<GaussianSplattingViewer>();
+    log(&format!("{:?}", config));
+
     let mut app = App::new();
 
     #[cfg(target_arch = "wasm32")]
@@ -277,22 +222,27 @@ fn example_app() {
             ..default()
         })
     );
-    app.add_plugins((
-        PanOrbitCameraPlugin,
-    ));
+    app.add_plugins(BevyArgsPlugin::<GaussianSplattingViewer>::default());
+    app.add_plugins(PanOrbitCameraPlugin);
 
-    app.insert_resource(config.msaa);
+    app.insert_resource(match config.msaa_samples {
+        1 => Msaa::Off,
+        2 => Msaa::Sample2,
+        4 => Msaa::Sample4,
+        8 => Msaa::Sample8,
+        _ => Msaa::default(),
+    });
 
     if config.editor {
         app.add_plugins(WorldInspectorPlugin::new());
     }
 
-    if config.esc_close {
-        app.add_systems(Update, esc_close);
+    if config.press_esc_close {
+        app.add_systems(Update, press_esc_close);
     }
 
-    if config.s_screenshot {
-        app.add_systems(Update, s_screenshot);
+    if config.press_s_screenshot {
+        app.add_systems(Update, press_s_screenshot);
     }
 
     if config.show_fps {
@@ -325,7 +275,7 @@ fn example_app() {
 }
 
 
-pub fn s_screenshot(
+pub fn press_s_screenshot(
     keys: Res<Input<KeyCode>>,
     main_window: Query<Entity, With<PrimaryWindow>>,
     mut screenshot_manager: ResMut<ScreenshotManager>,
@@ -342,18 +292,40 @@ pub fn s_screenshot(
                 let img = dyn_img.to_rgba8();
                 img.save(&output_path).unwrap();
 
-                println!("saved screenshot to {}", output_path.display());
+                log(&format!("saved screenshot to {}", output_path.display()));
             }).unwrap();
         }
     }
 }
 
-pub fn esc_close(
+pub fn press_esc_close(
     keys: Res<Input<KeyCode>>,
     mut exit: EventWriter<AppExit>
 ) {
     if keys.just_pressed(KeyCode::Escape) {
         exit.send(AppExit);
+    }
+}
+
+#[cfg(feature = "query_select")]
+fn press_i_invert_selection(
+    keys: Res<Input<KeyCode>>,
+    mut select_inverse_events: EventWriter<InvertSelectionEvent>,
+) {
+    if keys.just_pressed(KeyCode::I) {
+        log("inverting selection");
+        select_inverse_events.send(InvertSelectionEvent);
+    }
+}
+
+#[cfg(feature = "query_select")]
+fn press_o_save_selection(
+    keys: Res<Input<KeyCode>>,
+    mut select_inverse_events: EventWriter<SaveSelectionEvent>,
+) {
+    if keys.just_pressed(KeyCode::O) {
+        log("saving selection");
+        select_inverse_events.send(SaveSelectionEvent);
     }
 }
 

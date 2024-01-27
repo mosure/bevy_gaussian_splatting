@@ -3,13 +3,26 @@
 // c_rr --example headless --no-default-features --features "headless" -- [filename]
 
 use bevy::{
-    app::ScheduleRunnerPlugin, core::Name, core_pipeline::tonemapping::Tonemapping, prelude::*, render::renderer::RenderDevice,
+    prelude::*,
+    app::ScheduleRunnerPlugin,
+    core::Name,
+    core_pipeline::tonemapping::Tonemapping,
+    render::renderer::RenderDevice,
+};
+use bevy_args::BevyArgsPlugin;
+use bevy_panorbit_camera::{
+    PanOrbitCamera,
+    PanOrbitCameraPlugin,
 };
 
 use bevy_gaussian_splatting::{
-    random_gaussians, utils::get_arg, GaussianCloud, GaussianSplattingBundle,
+    GaussianCloud,
+    GaussianSplattingBundle,
     GaussianSplattingPlugin,
+    random_gaussians,
+    utils::GaussianSplattingViewer,
 };
+
 
 /// Derived from: https://github.com/bevyengine/bevy/pull/5550
 mod frame_capture {
@@ -325,7 +338,7 @@ mod frame_capture {
                 if n < 1 {
                     for image in images_to_save.iter() {
                         let img_bytes = images.get_mut(image.id()).unwrap();
-    
+
                         let img = match img_bytes.clone().try_into_dynamic() {
                             Ok(img) => img.to_rgba8(),
                             Err(e) => panic!("Failed to create image buffer {e:?}"),
@@ -355,6 +368,7 @@ mod frame_capture {
 fn setup_gaussian_cloud(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
+    gaussian_splatting_viewer: Res<GaussianSplattingViewer>,
     mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
     mut scene_controller: ResMut<frame_capture::scene::SceneController>,
     mut images: ResMut<Assets<Image>>,
@@ -362,19 +376,12 @@ fn setup_gaussian_cloud(
 ) {
     let cloud: Handle<GaussianCloud>;
 
-    // TODO: add proper GaussianSplattingViewer argument parsing
-    let file_arg = get_arg(1);
-    if let Some(n) = file_arg.clone().and_then(|s| s.parse::<usize>().ok()) {
-        println!("generating {} gaussians", n);
-        cloud = gaussian_assets.add(random_gaussians(n));
-    } else if let Some(filename) = file_arg {
-        if filename == "--help" {
-            println!("usage: cargo run -- [filename | n]");
-            return;
-        }
-
-        println!("loading {}", filename);
-        cloud = asset_server.load(filename.to_string());
+    if gaussian_splatting_viewer.gaussian_count > 0 {
+        println!("generating {} gaussians", gaussian_splatting_viewer.gaussian_count);
+        cloud = gaussian_assets.add(random_gaussians(gaussian_splatting_viewer.gaussian_count));
+    } else if !gaussian_splatting_viewer.input_file.is_empty() {
+        println!("loading {}", gaussian_splatting_viewer.input_file);
+        cloud = asset_server.load(&gaussian_splatting_viewer.input_file);
     } else {
         cloud = gaussian_assets.add(GaussianCloud::test_model());
     }
@@ -435,10 +442,10 @@ fn headless_app() {
             close_when_requested: false,
         }),
     );
-
-    app.add_plugins(frame_capture::image_copy::ImageCopyPlugin);
+    app.add_plugins(BevyArgsPlugin::<GaussianSplattingViewer>::default());
 
     // headless frame capture
+    app.add_plugins(frame_capture::image_copy::ImageCopyPlugin);
     app.add_plugins(frame_capture::scene::CaptureFramePlugin);
 
     app.add_plugins(ScheduleRunnerPlugin::run_loop(
