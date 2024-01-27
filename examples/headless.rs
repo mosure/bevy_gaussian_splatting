@@ -1,11 +1,10 @@
 // for running the gaussian splatting viewer without a window ( i.e on a server )
-//! ensure the "test_images" directory exists in the root of the project
-// c_rr --example headless -- [filename]
+//! ensure the "headless_output" directory exists in the root of the project
+// c_rr --example headless --no-default-features --features "headless" -- [filename]
 
 use bevy::{
     app::ScheduleRunnerPlugin, core::Name, core_pipeline::tonemapping::Tonemapping, prelude::*, render::renderer::RenderDevice,
 };
-use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 
 use bevy_gaussian_splatting::{
     random_gaussians, utils::get_arg, GaussianCloud, GaussianSplattingBundle,
@@ -333,7 +332,7 @@ mod frame_capture {
                         };
 
                         let images_dir =
-                            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test_images");
+                            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("headless_output");
                         std::fs::create_dir_all(&images_dir).unwrap();
 
                         let uuid = bevy::utils::Uuid::new_v4();
@@ -405,13 +404,6 @@ fn setup_gaussian_cloud(
             },
             ..default()
         },
-        PanOrbitCamera {
-            allow_upside_down: true,
-            orbit_smoothness: 0.0,
-            pan_smoothness: 0.0,
-            zoom_smoothness: 0.0,
-            ..default()
-        },
     ));
 }
 
@@ -445,15 +437,13 @@ fn headless_app() {
     );
 
     app.add_plugins(frame_capture::image_copy::ImageCopyPlugin);
-    
+
     // headless frame capture
     app.add_plugins(frame_capture::scene::CaptureFramePlugin);
 
     app.add_plugins(ScheduleRunnerPlugin::run_loop(
         std::time::Duration::from_secs_f64(1.0 / 60.0),
     ));
-
-    app.add_plugins(PanOrbitCameraPlugin);
 
     // setup for gaussian splatting
     app.add_plugins(GaussianSplattingPlugin);
