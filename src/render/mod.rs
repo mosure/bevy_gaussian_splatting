@@ -88,6 +88,7 @@ mod texture;
 
 const BINDINGS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(675257236);
 const GAUSSIAN_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(68294581);
+const GAUSSIAN_4D_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(513623421);
 const PACKED_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(123623514);
 const PLANAR_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(72345231);
 const TEXTURE_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(26345735);
@@ -110,6 +111,13 @@ impl Plugin for RenderPipelinePlugin {
             app,
             GAUSSIAN_SHADER_HANDLE,
             "gaussian.wgsl",
+            Shader::from_wgsl
+        );
+
+        load_internal_asset!(
+            app,
+            GAUSSIAN_4D_SHADER_HANDLE,
+            "gaussian_4d.wgsl",
             Shader::from_wgsl
         );
 

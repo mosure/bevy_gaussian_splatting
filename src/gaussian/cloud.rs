@@ -44,7 +44,6 @@ use crate::gaussian::f16::{
 };
 
 
-#[cfg(feature = "f16")]
 #[derive(
     Asset,
     Clone,
@@ -58,6 +57,28 @@ use crate::gaussian::f16::{
 )]
 #[uuid = "ac2f08eb-bc32-aabb-ff21-51571ea332d5"]
 pub struct GaussianCloud {
+    pub cloud_3d: Option<GaussianCloud3d>,
+    pub cloud_4d: Option<GaussianCloud4d>,
+}
+
+pub trait GaussianCloudTrait {
+    fn is_empty(&self) -> bool;
+    fn len(&self) -> usize;
+    fn len_sqrt_ceil(&self) -> usize;
+    fn square_len(&self) -> usize;
+}
+
+
+#[cfg(feature = "f16")]
+#[derive(
+    Debug,
+    Default,
+    PartialEq,
+    Reflect,
+    Serialize,
+    Deserialize,
+)]
+pub struct GaussianCloud3d {
     pub position_visibility: Vec<PositionVisibility>,
 
     pub spherical_harmonic: Vec<SphericalHarmonicCoefficients>,
@@ -82,7 +103,7 @@ pub struct GaussianCloud {
     Deserialize,
 )]
 #[uuid = "ac2f08eb-bc32-aabb-ff21-51571ea332d5"]
-pub struct GaussianCloud {
+pub struct GaussianCloud3d {
     pub position_visibility: Vec<PositionVisibility>,
 
     pub spherical_harmonic: Vec<SphericalHarmonicCoefficients>,
@@ -96,23 +117,25 @@ pub struct GaussianCloud {
     pub scale_opacity: Vec<ScaleOpacity>,
 }
 
-impl GaussianCloud {
-    pub fn is_empty(&self) -> bool {
+impl GaussianCloudTrait for GaussianCloud3d {
+    fn is_empty(&self) -> bool {
         self.position_visibility.is_empty()
     }
 
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.position_visibility.len()
     }
 
-    pub fn len_sqrt_ceil(&self) -> usize {
+    fn len_sqrt_ceil(&self) -> usize {
         (self.len() as f32).sqrt().ceil() as usize
     }
 
-    pub fn square_len(&self) -> usize {
+    fn square_len(&self) -> usize {
         self.len_sqrt_ceil().pow(2)
     }
+}
 
+impl GaussianCloud3d {
     pub fn position(&self, index: usize) -> &[f32; 3] {
         &self.position_visibility[index].position
     }
@@ -272,7 +295,7 @@ impl GaussianCloud {
 }
 
 
-impl GaussianCloud {
+impl GaussianCloud3d {
     #[cfg(feature = "f16")]
     pub fn subset(&self, indicies: &[usize]) -> Self {
         let mut position_visibility = Vec::with_capacity(indicies.len());
@@ -341,7 +364,7 @@ impl GaussianCloud {
 }
 
 
-impl GaussianCloud {
+impl GaussianCloud3d {
     #[cfg(feature = "f16")]
     pub fn from_gaussians(gaussians: Vec<Gaussian>) -> Self {
         let mut position_visibility = Vec::with_capacity(gaussians.len());
@@ -365,7 +388,7 @@ impl GaussianCloud {
         }
 
         #[allow(unused_mut)]
-        let mut cloud = GaussianCloud {
+        let mut cloud = GaussianCloud3d {
             position_visibility,
             spherical_harmonic,
 
@@ -470,13 +493,13 @@ impl GaussianCloud {
 
         gaussians.push(gaussians[0]);
 
-        GaussianCloud::from_gaussians(gaussians)
+        GaussianCloud3d::from_gaussians(gaussians)
     }
 }
 
-impl FromIterator<Gaussian> for GaussianCloud {
+impl FromIterator<Gaussian> for GaussianCloud3d {
     fn from_iter<I: IntoIterator<Item=Gaussian>>(iter: I) -> Self {
         let gaussians = iter.into_iter().collect::<Vec<Gaussian>>();
-        GaussianCloud::from_gaussians(gaussians)
+        GaussianCloud3d::from_gaussians(gaussians)
     }
 }

@@ -1,6 +1,7 @@
 use static_assertions::assert_cfg;
 
 pub mod cloud;
+pub mod cloud_4d;
 pub mod covariance;
 pub mod f32;
 pub mod packed;

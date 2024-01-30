@@ -10,7 +10,7 @@
 struct DecomposedGaussian4d {
     cov3d: array<f32, 6>,
     delta_mean: vec3<f32>,
-    opacity: f32,
+    opacity_modifier: f32,
     mask: bool,
 }
 
@@ -72,7 +72,7 @@ fn compute_cov3d_conditional(
         );
     }
 
-    let opacity *= marginal_t;
+    let opacity_modifier = marginal_t;
 
     let cov11 = mat3x3<f32>(
         Sigma[0][0], Sigma[0][1], Sigma[0][2],
@@ -92,7 +92,7 @@ fn compute_cov3d_conditional(
         cov3d_condition[1][2],
         cov3d_condition[2][2],
         delta_mean,
-        opacity,
+        opacity_modifier,
         mask,
     );
 }
