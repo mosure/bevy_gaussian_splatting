@@ -9,7 +9,7 @@ use flate2::{
 };
 
 use crate::{
-    gaussian::GaussianCloud,
+    gaussian::Cloud,
     io::codec::GaussianCloudCodec,
 };
 

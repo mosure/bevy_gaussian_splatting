@@ -50,7 +50,7 @@ use bevy::{
 use static_assertions::assert_cfg;
 
 use crate::{
-    gaussian::cloud::GaussianCloud,
+    gaussian::cloud::Cloud,
     GaussianCloudSettings,
     render::{
         GaussianCloudBindGroup,
@@ -140,7 +140,7 @@ impl Plugin for RadixSortPlugin {
 #[derive(Resource, Default)]
 pub struct RadixSortBuffers {
     pub asset_map: HashMap<
-        AssetId<GaussianCloud>,
+        AssetId<Cloud>,
         GpuRadixBuffers,
     >,
 }
@@ -201,7 +201,7 @@ impl GpuRadixBuffers {
 
 
 fn update_sort_buffers(
-    gpu_gaussian_clouds: Res<RenderAssets<GaussianCloud>>,
+    gpu_gaussian_clouds: Res<RenderAssets<Cloud>>,
     mut sort_buffers: ResMut<RadixSortBuffers>,
     render_device: Res<RenderDevice>,
 ) {
@@ -360,11 +360,11 @@ pub fn queue_radix_bind_group(
     radix_pipeline: Res<RadixSortPipeline>,
     render_device: Res<RenderDevice>,
     asset_server: Res<AssetServer>,
-    gaussian_cloud_res: Res<RenderAssets<GaussianCloud>>,
+    gaussian_cloud_res: Res<RenderAssets<Cloud>>,
     sorted_entries_res: Res<RenderAssets<SortedEntries>>,
     gaussian_clouds: Query<(
         Entity,
-        &Handle<GaussianCloud>,
+        &Handle<Cloud>,
         &Handle<SortedEntries>,
         &GaussianCloudSettings,
     )>,
@@ -489,7 +489,7 @@ pub fn queue_radix_bind_group(
 
 pub struct RadixSortNode {
     gaussian_clouds: QueryState<(
-        &'static Handle<GaussianCloud>,
+        &'static Handle<Cloud>,
         &'static GaussianCloudBindGroup,
         &'static RadixBindGroup,
     )>,
@@ -562,7 +562,7 @@ impl Node for RadixSortNode {
                 cloud_bind_group,
                 radix_bind_group,
             ) in self.gaussian_clouds.iter_manual(world) {
-                let cloud = world.get_resource::<RenderAssets<GaussianCloud>>().unwrap().get(cloud_handle).unwrap();
+                let cloud = world.get_resource::<RenderAssets<Cloud>>().unwrap().get(cloud_handle).unwrap();
 
                 assert!(sort_buffers.asset_map.contains_key(&cloud_handle.id()));
                 let sorting_assets = &sort_buffers.asset_map[&cloud_handle.id()];

@@ -35,7 +35,7 @@ use static_assertions::assert_cfg;
 #[allow(unused_imports)]
 use crate::{
     gaussian::{
-        cloud::GaussianCloud,
+        cloud::Cloud,
         f32::{
             PositionVisibility,
             Rotation,
@@ -217,11 +217,11 @@ pub fn queue_gpu_texture_buffers(
 fn queue_textures(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    gaussian_cloud_res: Res<Assets<GaussianCloud>>,
+    gaussian_cloud_res: Res<Assets<Cloud>>,
     mut images: ResMut<Assets<Image>>,
     clouds: Query<(
         Entity,
-        &Handle<GaussianCloud>,
+        &Handle<Cloud>,
         Without<TextureBuffers>,
     )>,
 ) {

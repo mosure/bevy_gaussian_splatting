@@ -35,7 +35,7 @@ use bevy::{
 };
 
 use bevy_gaussian_splatting::{
-    GaussianCloud,
+    Cloud,
     GaussianSplattingBundle,
     random_gaussians,
     sort::SortedEntries,
@@ -82,7 +82,7 @@ fn main() {
 
 fn setup(
     mut commands: Commands,
-    mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_assets: ResMut<Assets<Cloud>>,
 ) {
     let cloud = gaussian_assets.add(random_gaussians(10000));
 
@@ -110,7 +110,7 @@ fn setup(
 
 pub struct RadixTestNode {
     gaussian_clouds: QueryState<(
-        &'static Handle<GaussianCloud>,
+        &'static Handle<Cloud>,
         &'static Handle<SortedEntries>,
     )>,
     state: TestStateArc,
@@ -170,7 +170,7 @@ impl Node for RadixTestNode {
                 cloud_handle,
                 sorted_entries_handle,
             ) in self.gaussian_clouds.iter_manual(world) {
-                let gaussian_cloud_res = world.get_resource::<RenderAssets<GaussianCloud>>().unwrap();
+                let gaussian_cloud_res = world.get_resource::<RenderAssets<Cloud>>().unwrap();
                 let sorted_entries_res = world.get_resource::<RenderAssets<SortedEntries>>().unwrap();
 
                 let mut state = self.state.lock().unwrap();

@@ -5,7 +5,7 @@ use bevy::{
     asset::LoadState,
 };
 
-use crate::{GaussianCloud, io::writer::write_gaussian_cloud_to_file};
+use crate::{Cloud, io::writer::write_gaussian_cloud_to_file};
 
 
 #[derive(Component, Debug, Default, Reflect)]
@@ -56,10 +56,10 @@ impl Plugin for SelectPlugin {
 
 fn apply_selection(
     asset_server: Res<AssetServer>,
-    mut gaussian_clouds_res: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_clouds_res: ResMut<Assets<Cloud>>,
     mut selections: Query<(
         Entity,
-        &Handle<GaussianCloud>,
+        &Handle<Cloud>,
         &mut Select,
     )>,
 ) {
@@ -103,10 +103,10 @@ pub struct InvertSelectionEvent;
 
 fn invert_selection(
     mut events: EventReader<InvertSelectionEvent>,
-    mut gaussian_clouds_res: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_clouds_res: ResMut<Assets<Cloud>>,
     mut selections: Query<(
         Entity,
-        &Handle<GaussianCloud>,
+        &Handle<Cloud>,
         &mut Select,
     )>,
 ) {
@@ -152,10 +152,10 @@ pub struct SaveSelectionEvent;
 
 pub fn save_selection(
     mut events: EventReader<SaveSelectionEvent>,
-    mut gaussian_clouds_res: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_clouds_res: ResMut<Assets<Cloud>>,
     mut selections: Query<(
         Entity,
-        &Handle<GaussianCloud>,
+        &Handle<Cloud>,
         &Select,
     )>,
 ) {

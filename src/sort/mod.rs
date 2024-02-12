@@ -23,7 +23,7 @@ use bytemuck::{
 use static_assertions::assert_cfg;
 
 use crate::{
-    GaussianCloud,
+    Cloud,
     GaussianCloudSettings,
 };
 
@@ -140,11 +140,11 @@ fn update_textures_on_change(
 fn auto_insert_sorted_entries(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    gaussian_clouds_res: Res<Assets<GaussianCloud>>,
+    gaussian_clouds_res: Res<Assets<Cloud>>,
     mut sorted_entries_res: ResMut<Assets<SortedEntries>>,
     gaussian_clouds: Query<(
         Entity,
-        &Handle<GaussianCloud>,
+        &Handle<Cloud>,
         &GaussianCloudSettings,
         Without<Handle<SortedEntries>>,
     )>,

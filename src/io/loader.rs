@@ -16,7 +16,7 @@ use bevy::{
 };
 
 use crate::{
-    GaussianCloud,
+    Cloud,
     io::codec::GaussianCloudCodec,
 };
 
@@ -25,7 +25,7 @@ use crate::{
 pub struct GaussianCloudLoader;
 
 impl AssetLoader for GaussianCloudLoader {
-    type Asset = GaussianCloud;
+    type Asset = Cloud;
     type Settings = ();
     type Error = std::io::Error;
 
@@ -49,7 +49,7 @@ impl AssetLoader for GaussianCloudLoader {
 
                         let gaussians = crate::io::ply::parse_ply(&mut f)?;
 
-                        Ok(GaussianCloud::from_gaussians(gaussians))
+                        Ok(Cloud::from_gaussians(gaussians))
                     }
 
                     #[cfg(not(feature = "io_ply"))]
@@ -58,7 +58,7 @@ impl AssetLoader for GaussianCloudLoader {
                     }
                 },
                 Some(ext) if ext == "gcloud" => {
-                    let cloud = GaussianCloud::decode(bytes.as_slice());
+                    let cloud = Cloud::decode(bytes.as_slice());
 
                     Ok(cloud)
                 },

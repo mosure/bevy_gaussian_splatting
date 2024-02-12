@@ -7,7 +7,7 @@ use bevy::render::{
 #[allow(unused_imports)]
 use crate::{
     gaussian::{
-        cloud::GaussianCloud,
+        cloud::Cloud,
         f32::{
             PositionVisibility,
             Rotation,
@@ -58,7 +58,7 @@ pub struct PlanarBuffers {
 #[cfg(feature = "f16")]
 pub fn prepare_cloud(
     render_device: &RenderDevice,
-    cloud: &GaussianCloud,
+    cloud: &Cloud,
 ) -> PlanarBuffers {
     let position_visibility = render_device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("planar_position_visibility_buffer"),
@@ -101,7 +101,7 @@ pub fn prepare_cloud(
 #[cfg(feature = "f32")]
 pub fn prepare_cloud(
     render_device: &RenderDevice,
-    cloud: &GaussianCloud,
+    cloud: &Cloud,
 ) -> PlanarBuffers {
     let position_visibility = render_device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("planar_f32_position_visibility_buffer"),

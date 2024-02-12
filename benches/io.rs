@@ -8,7 +8,7 @@ use criterion::{
 
 use bevy_gaussian_splatting::{
     Gaussian,
-    GaussianCloud,
+    Cloud,
     io::codec::GaussianCloudCodec,
     random_gaussians,
 };
@@ -33,7 +33,7 @@ fn gaussian_cloud_decode_benchmark(c: &mut Criterion) {
                 let gaussians = random_gaussians(*count);
                 let bytes = gaussians.encode();
 
-                b.iter(|| GaussianCloud::decode(bytes.as_slice()));
+                b.iter(|| Cloud::decode(bytes.as_slice()));
             },
         );
     }

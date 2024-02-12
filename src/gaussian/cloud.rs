@@ -19,6 +19,7 @@ use rayon::prelude::*;
 #[allow(unused_imports)]
 use crate::{
     gaussian::{
+        cloud_4d::GaussianCloud4d,
         f32::{
             Covariance3dOpacity,
             Position,
@@ -56,21 +57,30 @@ use crate::gaussian::f16::{
     Deserialize,
 )]
 #[uuid = "ac2f08eb-bc32-aabb-ff21-51571ea332d5"]
-pub struct GaussianCloud {
+pub struct Cloud {
     pub cloud_3d: Option<GaussianCloud3d>,
     pub cloud_4d: Option<GaussianCloud4d>,
 }
 
-pub trait GaussianCloudTrait {
+pub trait GaussianCloud<PackedType> {
     fn is_empty(&self) -> bool;
     fn len(&self) -> usize;
     fn len_sqrt_ceil(&self) -> usize;
     fn square_len(&self) -> usize;
+
+    fn packed(&self, index: usize) -> PackedType;
+    fn iter(&self) -> dyn Iterator<Item=PackedType>;
+
+    // TODO: become opinionated about packed vs. planar representation
+    fn to_packed(&self) -> Vec<PackedType>;
+
+    fn test_model() -> Self;
 }
 
 
 #[cfg(feature = "f16")]
 #[derive(
+    Clone,
     Debug,
     Default,
     PartialEq,
@@ -117,7 +127,7 @@ pub struct GaussianCloud3d {
     pub scale_opacity: Vec<ScaleOpacity>,
 }
 
-impl GaussianCloudTrait for GaussianCloud3d {
+impl GaussianCloud<Gaussian> for GaussianCloud3d {
     fn is_empty(&self) -> bool {
         self.position_visibility.is_empty()
     }
@@ -132,6 +142,151 @@ impl GaussianCloudTrait for GaussianCloud3d {
 
     fn square_len(&self) -> usize {
         self.len_sqrt_ceil().pow(2)
+    }
+
+
+    #[cfg(all(
+        not(feature = "precompute_covariance_3d"),
+        feature = "f16",
+    ))]
+    fn packed(&self, index: usize) -> Gaussian {
+        let rso = self.rotation_scale_opacity_packed128[index];
+
+        let rotation = rso.rotation();
+        let scale_opacity = rso.scale_opacity();
+
+        Gaussian {
+            position_visibility: self.position_visibility[index],
+            spherical_harmonic: self.spherical_harmonic[index],
+            rotation,
+            scale_opacity,
+        }
+    }
+
+    #[cfg(feature = "f32")]
+    fn packed(&self, index: usize) -> Gaussian {
+        Gaussian {
+            position_visibility: self.position_visibility[index],
+            spherical_harmonic: self.spherical_harmonic[index],
+            rotation: self.rotation[index],
+            scale_opacity: self.scale_opacity[index],
+        }
+    }
+
+    #[cfg(all(
+        not(feature = "precompute_covariance_3d"),
+        feature = "f16",
+    ))]
+    fn iter(&self) -> dyn Iterator<Item=Gaussian> {
+        self.position_visibility.iter()
+            .zip(self.spherical_harmonic.iter())
+            .zip(self.rotation_scale_opacity_packed128.iter())
+            .map(|((position_visibility, spherical_harmonic), rotation_scale_opacity)| {
+                Gaussian {
+                    position_visibility: *position_visibility,
+                    spherical_harmonic: *spherical_harmonic,
+
+                    rotation: rotation_scale_opacity.rotation(),
+                    scale_opacity: rotation_scale_opacity.scale_opacity(),
+                }
+            })
+    }
+
+    #[cfg(feature = "f32")]
+    fn iter(&self) -> dyn Iterator<Item=Gaussian> {
+        self.position_visibility.iter()
+            .zip(self.spherical_harmonic.iter())
+            .zip(self.rotation.iter())
+            .zip(self.scale_opacity.iter())
+            .map(|(((position_visibility, spherical_harmonic), rotation), scale_opacity)| {
+                Gaussian {
+                    position_visibility: *position_visibility,
+                    spherical_harmonic: *spherical_harmonic,
+
+                    rotation: *rotation,
+                    scale_opacity: *scale_opacity,
+                }
+            })
+    }
+
+    fn to_packed(&self) -> Vec<Gaussian> {
+        let mut gaussians = Vec::with_capacity(self.len());
+
+        for index in 0..self.len() {
+            gaussians.push(self.packed(index));
+        }
+
+        gaussians
+    }
+
+    fn test_model() -> Self {
+        let mut rng = rand::thread_rng();
+
+        let origin = Gaussian {
+            rotation: [
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+            ].into(),
+            position_visibility: [
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ].into(),
+            scale_opacity: [
+                0.5,
+                0.5,
+                0.5,
+                0.5,
+            ].into(),
+            spherical_harmonic: SphericalHarmonicCoefficients {
+                coefficients: {
+                    #[cfg(feature = "f16")]
+                    {
+                        let mut coefficients = [0_u32; HALF_SH_COEFF_COUNT];
+
+                        for coefficient in coefficients.iter_mut() {
+                            let upper = rng.gen_range(-1.0..1.0);
+                            let lower = rng.gen_range(-1.0..1.0);
+
+                            *coefficient = pack_f32s_to_u32(upper, lower);
+                        }
+
+                        coefficients
+                    }
+
+                    #[cfg(feature = "f32")]
+                    {
+                        let mut coefficients = [0.0; SH_COEFF_COUNT];
+
+                        for coefficient in coefficients.iter_mut() {
+                            *coefficient = rng.gen_range(-1.0..1.0);
+                        }
+
+                        coefficients
+                    }
+                },
+            },
+        };
+        let mut gaussians: Vec<Gaussian> = Vec::new();
+
+        for &x in [-0.5, 0.5].iter() {
+            for &y in [-0.5, 0.5].iter() {
+                for &z in [-0.5, 0.5].iter() {
+                    let mut g = origin;
+                    g.position_visibility = [x, y, z, 1.0].into();
+                    gaussians.push(g);
+
+                    gaussians.last_mut().unwrap().spherical_harmonic.coefficients.shuffle(&mut rng);
+                }
+            }
+        }
+
+        gaussians.push(gaussians[0]);
+
+        GaussianCloud3d::from_packed(gaussians)
     }
 }
 
@@ -162,104 +317,6 @@ impl GaussianCloud3d {
 
     pub fn visibility_mut(&mut self, index: usize) -> &mut f32 {
         &mut self.position_visibility[index].visibility
-    }
-
-
-    // pub fn rotation(&self, index: usize) -> &[f32; 4] {
-    //     #[cfg(feature = "f16")]
-    //     return &self.rotation_scale_opacity_packed128[index].rotation;
-
-    //     #[cfg(feature = "f32")]
-    //     return &self.rotation[index].rotation;
-    // }
-
-    // pub fn rotation_mut(&mut self, index: usize) -> &mut [f32; 4] {
-    //     #[cfg(feature = "f16")]
-    //     return &mut self.rotation_scale_opacity_packed128[index].rotation;
-
-    //     #[cfg(feature = "f32")]
-    //     return &mut self.rotation[index].rotation;
-    // }
-
-
-    // pub fn scale(&self, index: usize) -> &[f32; 3] {
-    //     #[cfg(feature = "f16")]
-    //     return &self.rotation_scale_opacity_packed128[index].scale;
-
-    //     #[cfg(feature = "f32")]
-    //     return &self.scale_opacity[index].scale;
-    // }
-
-    // pub fn scale_mut(&mut self, index: usize) -> &mut [f32; 3] {
-    //     #[cfg(feature = "f16")]
-    //     return &mut self.rotation_scale_opacity_packed128[index].scale;
-
-    //     #[cfg(feature = "f32")]
-    //     return &mut self.scale_opacity[index].scale;
-    // }
-
-    #[cfg(all(
-        not(feature = "precompute_covariance_3d"),
-        feature = "f16",
-    ))]
-    pub fn gaussian(&self, index: usize) -> Gaussian {
-        let rso = self.rotation_scale_opacity_packed128[index];
-
-        let rotation = rso.rotation();
-        let scale_opacity = rso.scale_opacity();
-
-        Gaussian {
-            position_visibility: self.position_visibility[index],
-            spherical_harmonic: self.spherical_harmonic[index],
-            rotation,
-            scale_opacity,
-        }
-    }
-
-    #[cfg(feature = "f32")]
-    pub fn gaussian(&self, index: usize) -> Gaussian {
-        Gaussian {
-            position_visibility: self.position_visibility[index],
-            spherical_harmonic: self.spherical_harmonic[index],
-            rotation: self.rotation[index],
-            scale_opacity: self.scale_opacity[index],
-        }
-    }
-
-    #[cfg(all(
-        not(feature = "precompute_covariance_3d"),
-        feature = "f16",
-    ))]
-    pub fn gaussian_iter(&self) -> impl Iterator<Item=Gaussian> + '_ {
-        self.position_visibility.iter()
-            .zip(self.spherical_harmonic.iter())
-            .zip(self.rotation_scale_opacity_packed128.iter())
-            .map(|((position_visibility, spherical_harmonic), rotation_scale_opacity)| {
-                Gaussian {
-                    position_visibility: *position_visibility,
-                    spherical_harmonic: *spherical_harmonic,
-
-                    rotation: rotation_scale_opacity.rotation(),
-                    scale_opacity: rotation_scale_opacity.scale_opacity(),
-                }
-            })
-    }
-
-    #[cfg(feature = "f32")]
-    pub fn gaussian_iter(&self) -> impl Iterator<Item=Gaussian> + '_ {
-        self.position_visibility.iter()
-            .zip(self.spherical_harmonic.iter())
-            .zip(self.rotation.iter())
-            .zip(self.scale_opacity.iter())
-            .map(|(((position_visibility, spherical_harmonic), rotation), scale_opacity)| {
-                Gaussian {
-                    position_visibility: *position_visibility,
-                    spherical_harmonic: *spherical_harmonic,
-
-                    rotation: *rotation,
-                    scale_opacity: *scale_opacity,
-                }
-            })
     }
 
 
@@ -351,22 +408,8 @@ impl GaussianCloud3d {
         }
     }
 
-    #[cfg(feature = "f32")]
-    pub fn to_packed(&self) -> Vec<Gaussian> {
-        let mut gaussians = Vec::with_capacity(self.len());
-
-        for index in 0..self.len() {
-            gaussians.push(self.gaussian(index));
-        }
-
-        gaussians
-    }
-}
-
-
-impl GaussianCloud3d {
     #[cfg(feature = "f16")]
-    pub fn from_gaussians(gaussians: Vec<Gaussian>) -> Self {
+    fn from_packed(gaussians: Vec<Gaussian>) -> Self {
         let mut position_visibility = Vec::with_capacity(gaussians.len());
         let mut spherical_harmonic = Vec::with_capacity(gaussians.len());
 
@@ -404,7 +447,7 @@ impl GaussianCloud3d {
     }
 
     #[cfg(feature = "f32")]
-    pub fn from_gaussians(gaussians: Vec<Gaussian>) -> Self {
+    fn from_packed(gaussians: Vec<Gaussian>) -> Self {
         let mut position_visibility = Vec::with_capacity(gaussians.len());
         let mut spherical_harmonic = Vec::with_capacity(gaussians.len());
         let mut rotation = Vec::with_capacity(gaussians.len());
@@ -424,76 +467,6 @@ impl GaussianCloud3d {
             rotation,
             scale_opacity,
         }
-    }
-
-    pub fn test_model() -> Self {
-        let mut rng = rand::thread_rng();
-
-        let origin = Gaussian {
-            rotation: [
-                1.0,
-                0.0,
-                0.0,
-                0.0,
-            ].into(),
-            position_visibility: [
-                0.0,
-                0.0,
-                0.0,
-                1.0,
-            ].into(),
-            scale_opacity: [
-                0.5,
-                0.5,
-                0.5,
-                0.5,
-            ].into(),
-            spherical_harmonic: SphericalHarmonicCoefficients {
-                coefficients: {
-                    #[cfg(feature = "f16")]
-                    {
-                        let mut coefficients = [0_u32; HALF_SH_COEFF_COUNT];
-
-                        for coefficient in coefficients.iter_mut() {
-                            let upper = rng.gen_range(-1.0..1.0);
-                            let lower = rng.gen_range(-1.0..1.0);
-
-                            *coefficient = pack_f32s_to_u32(upper, lower);
-                        }
-
-                        coefficients
-                    }
-
-                    #[cfg(feature = "f32")]
-                    {
-                        let mut coefficients = [0.0; SH_COEFF_COUNT];
-
-                        for coefficient in coefficients.iter_mut() {
-                            *coefficient = rng.gen_range(-1.0..1.0);
-                        }
-
-                        coefficients
-                    }
-                },
-            },
-        };
-        let mut gaussians: Vec<Gaussian> = Vec::new();
-
-        for &x in [-0.5, 0.5].iter() {
-            for &y in [-0.5, 0.5].iter() {
-                for &z in [-0.5, 0.5].iter() {
-                    let mut g = origin;
-                    g.position_visibility = [x, y, z, 1.0].into();
-                    gaussians.push(g);
-
-                    gaussians.last_mut().unwrap().spherical_harmonic.coefficients.shuffle(&mut rng);
-                }
-            }
-        }
-
-        gaussians.push(gaussians[0]);
-
-        GaussianCloud3d::from_gaussians(gaussians)
     }
 }
 

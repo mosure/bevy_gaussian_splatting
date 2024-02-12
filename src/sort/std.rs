@@ -5,7 +5,7 @@ use bevy::{
 };
 
 use crate::{
-    GaussianCloud,
+    Cloud,
     GaussianCloudSettings,
     sort::{
         SortedEntries,
@@ -27,10 +27,10 @@ impl Plugin for StdSortPlugin {
 #[allow(clippy::too_many_arguments)]
 pub fn std_sort(
     asset_server: Res<AssetServer>,
-    gaussian_clouds_res: Res<Assets<GaussianCloud>>,
+    gaussian_clouds_res: Res<Assets<Cloud>>,
     mut sorted_entries_res: ResMut<Assets<SortedEntries>>,
     gaussian_clouds: Query<(
-        &Handle<GaussianCloud>,
+        &Handle<Cloud>,
         &Handle<SortedEntries>,
         &GaussianCloudSettings,
     )>,

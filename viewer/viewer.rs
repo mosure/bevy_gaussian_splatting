@@ -27,7 +27,7 @@ use bevy_panorbit_camera::{
 };
 
 use bevy_gaussian_splatting::{
-    GaussianCloud,
+    Cloud,
     GaussianSplattingBundle,
     GaussianSplattingPlugin,
     random_gaussians,
@@ -61,9 +61,9 @@ fn setup_gaussian_cloud(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     gaussian_splatting_viewer: Res<GaussianSplattingViewer>,
-    mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_assets: ResMut<Assets<Cloud>>,
 ) {
-    let cloud: Handle<GaussianCloud>;
+    let cloud: Handle<Cloud>;
     if gaussian_splatting_viewer.gaussian_count > 0 {
         log(&format!("generating {} gaussians", gaussian_splatting_viewer.gaussian_count));
         cloud = gaussian_assets.add(random_gaussians(gaussian_splatting_viewer.gaussian_count));
@@ -106,7 +106,7 @@ fn setup_particle_behavior(
     mut particle_behavior_assets: ResMut<Assets<ParticleBehaviors>>,
     gaussian_cloud: Query<(
         Entity,
-        &Handle<GaussianCloud>,
+        &Handle<Cloud>,
         Without<Handle<ParticleBehaviors>>,
     )>,
 ) {
@@ -132,7 +132,7 @@ fn setup_noise_material(
     asset_server: Res<AssetServer>,
     gaussian_clouds: Query<(
         Entity,
-        &Handle<GaussianCloud>,
+        &Handle<Cloud>,
         Without<NoiseMaterial>,
     )>,
 ) {
@@ -159,7 +159,7 @@ fn setup_sparse_select(
     mut commands: Commands,
     gaussian_cloud: Query<(
         Entity,
-        &Handle<GaussianCloud>,
+        &Handle<Cloud>,
         Without<SparseSelect>,
     )>,
 ) {

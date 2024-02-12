@@ -13,7 +13,7 @@ use bevy::{
 };
 
 use bevy_gaussian_splatting::{
-    GaussianCloud,
+    Cloud,
     GaussianSplattingBundle,
     random_gaussians,
 };
@@ -41,7 +41,7 @@ fn main() {
 
 fn setup(
     mut commands: Commands,
-    mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_assets: ResMut<Assets<Cloud>>,
 ) {
     let cloud = gaussian_assets.add(random_gaussians(10000));
 
@@ -106,11 +106,11 @@ fn save_captures(captures: Arc<Mutex<Vec<Image>>>) {
 }
 
 fn capture_ready(
-    // gaussian_cloud_assets: Res<Assets<GaussianCloud>>,
+    // gaussian_cloud_assets: Res<Assets<Cloud>>,
     // asset_server: Res<AssetServer>,
     // gaussian_clouds: Query<
     //     Entity,
-    //     &Handle<GaussianCloud>,
+    //     &Handle<Cloud>,
     // >,
     main_window: Query<Entity, With<PrimaryWindow>>,
     mut screenshot_manager: ResMut<ScreenshotManager>,

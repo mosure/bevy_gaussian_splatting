@@ -57,7 +57,7 @@ use bevy::{
 
 use crate::{
     gaussian::{
-        cloud::GaussianCloud,
+        cloud::Cloud,
         settings::{
             GaussianCloudDrawMode,
             GaussianCloudSettings,
@@ -149,7 +149,7 @@ impl Plugin for RenderPipelinePlugin {
             Shader::from_wgsl
         );
 
-        app.add_plugins(RenderAssetPlugin::<GaussianCloud>::default());
+        app.add_plugins(RenderAssetPlugin::<Cloud>::default());
         app.add_plugins(UniformComponentPlugin::<GaussianCloudUniform>::default());
 
         app.add_plugins((
@@ -191,7 +191,7 @@ pub struct GpuGaussianSplattingBundle {
     pub settings: GaussianCloudSettings,
     pub settings_uniform: GaussianCloudUniform,
     pub sorted_entries: Handle<SortedEntries>,
-    pub cloud_handle: Handle<GaussianCloud>,  // TODO: handle 4d gaussian cloud
+    pub cloud_handle: Handle<Cloud>,  // TODO: handle 4d gaussian cloud
 }
 
 #[derive(Debug, Clone)]
@@ -206,10 +206,10 @@ pub struct GpuGaussianCloud {
     pub draw_indirect_buffer: Buffer,
 
     #[cfg(feature = "debug_gpu")]
-    pub debug_gpu: GaussianCloud,
+    pub debug_gpu: Cloud,
 }
-impl RenderAsset for GaussianCloud {
-    type ExtractedAsset = GaussianCloud;
+impl RenderAsset for Cloud {
+    type ExtractedAsset = Cloud;
     type PreparedAsset = GpuGaussianCloud;
     type Param = SRes<RenderDevice>;
 
@@ -234,7 +234,7 @@ impl RenderAsset for GaussianCloud {
             usage: BufferUsages::INDIRECT | BufferUsages::COPY_DST | BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         });
 
-        // TODO: (extract GaussianCloud, TextureBuffers) when feature buffer_texture is enabled
+        // TODO: (extract Cloud, TextureBuffers) when feature buffer_texture is enabled
 
         Ok(GpuGaussianCloud {
             count,
@@ -254,7 +254,7 @@ impl RenderAsset for GaussianCloud {
 #[cfg(feature = "buffer_storage")]
 type GpuGaussianBundleQuery = (
     Entity,
-    &'static Handle<GaussianCloud>,
+    &'static Handle<Cloud>,
     &'static Handle<SortedEntries>,
     &'static GaussianCloudSettings,
     (),
@@ -263,7 +263,7 @@ type GpuGaussianBundleQuery = (
 #[cfg(feature = "buffer_texture")]
 type GpuGaussianBundleQuery = (
     Entity,
-    &'static Handle<GaussianCloud>,
+    &'static Handle<Cloud>,
     &'static Handle<SortedEntries>,
     &'static GaussianCloudSettings,
     &'static texture::GpuTextureBuffers,
@@ -276,7 +276,7 @@ fn queue_gaussians(
     custom_pipeline: Res<GaussianCloudPipeline>,
     mut pipelines: ResMut<SpecializedRenderPipelines<GaussianCloudPipeline>>,
     pipeline_cache: Res<PipelineCache>,
-    gaussian_clouds: Res<RenderAssets<GaussianCloud>>,
+    gaussian_clouds: Res<RenderAssets<Cloud>>,
     sorted_entries: Res<RenderAssets<SortedEntries>>,
     mut views: Query<(
         &ExtractedView,
@@ -682,13 +682,13 @@ pub fn extract_gaussians(
     mut commands: Commands,
     mut prev_commands_len: Local<usize>,
     asset_server: Res<AssetServer>,
-    gaussian_cloud_res: Res<RenderAssets<GaussianCloud>>,
+    gaussian_cloud_res: Res<RenderAssets<Cloud>>,
     gaussians_query: Extract<
         Query<(
             Entity,
             // &ComputedVisibility,
             &Visibility,
-            &Handle<GaussianCloud>,
+            &Handle<Cloud>,
             &Handle<SortedEntries>,
             &GaussianCloudSettings,
         )>,
@@ -758,7 +758,7 @@ fn queue_gaussian_bind_group(
     render_device: Res<RenderDevice>,
     gaussian_uniforms: Res<ComponentUniforms<GaussianCloudUniform>>,
     asset_server: Res<AssetServer>,
-    gaussian_cloud_res: Res<RenderAssets<GaussianCloud>>,
+    gaussian_cloud_res: Res<RenderAssets<Cloud>>,
     sorted_entries_res: Res<RenderAssets<SortedEntries>>,
     gaussian_clouds: Query<GpuGaussianBundleQuery>,
 
@@ -972,10 +972,10 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianUniformBindGr
 
 pub struct DrawGaussianInstanced;
 impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
-    type Param = SRes<RenderAssets<GaussianCloud>>;
+    type Param = SRes<RenderAssets<Cloud>>;
     type ViewWorldQuery = ();
     type ItemWorldQuery = (
-        Read<Handle<GaussianCloud>>,
+        Read<Handle<Cloud>>,
         Read<GaussianCloudBindGroup>,
     );
 
@@ -987,7 +987,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
             handle,
             bind_groups,
         ): (
-            &'w Handle<GaussianCloud>,
+            &'w Handle<Cloud>,
             &'w GaussianCloudBindGroup,
         ),
         gaussian_clouds: SystemParamItem<'w, '_, Self::Param>,

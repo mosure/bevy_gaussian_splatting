@@ -4,7 +4,7 @@ use byte_unit::{
 };
 
 use bevy_gaussian_splatting::{
-    GaussianCloud,
+    Cloud,
     io::{
         ply::parse_ply,
         writer::write_gaussian_cloud_to_file,

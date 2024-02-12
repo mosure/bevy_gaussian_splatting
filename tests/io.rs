@@ -1,5 +1,5 @@
 use bevy_gaussian_splatting::{
-    GaussianCloud,
+    Cloud,
     io::codec::GaussianCloudCodec,
     random_gaussians,
 };

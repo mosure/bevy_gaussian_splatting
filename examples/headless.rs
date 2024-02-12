@@ -16,7 +16,7 @@ use bevy_panorbit_camera::{
 };
 
 use bevy_gaussian_splatting::{
-    GaussianCloud,
+    Cloud,
     GaussianSplattingBundle,
     GaussianSplattingPlugin,
     random_gaussians,
@@ -369,12 +369,12 @@ fn setup_gaussian_cloud(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     gaussian_splatting_viewer: Res<GaussianSplattingViewer>,
-    mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_assets: ResMut<Assets<Cloud>>,
     mut scene_controller: ResMut<frame_capture::scene::SceneController>,
     mut images: ResMut<Assets<Image>>,
     render_device: Res<RenderDevice>,
 ) {
-    let cloud: Handle<GaussianCloud>;
+    let cloud: Handle<Cloud>;
 
     if gaussian_splatting_viewer.gaussian_count > 0 {
         println!("generating {} gaussians", gaussian_splatting_viewer.gaussian_count);
@@ -383,7 +383,7 @@ fn setup_gaussian_cloud(
         println!("loading {}", gaussian_splatting_viewer.input_file);
         cloud = asset_server.load(&gaussian_splatting_viewer.input_file);
     } else {
-        cloud = gaussian_assets.add(GaussianCloud::test_model());
+        cloud = gaussian_assets.add(Cloud::test_model());
     }
 
     let render_target = frame_capture::scene::setup_render_target(

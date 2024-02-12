@@ -8,12 +8,12 @@ use serde::{
 };
 
 use crate::{
-    GaussianCloud,
+    Cloud,
     io::codec::GaussianCloudCodec,
 };
 
 
-impl GaussianCloudCodec for GaussianCloud {
+impl GaussianCloudCodec for Cloud {
     fn encode(&self) -> Vec<u8> {
         let mut serializer = FlexbufferSerializer::new();
         self.serialize(&mut serializer).expect("failed to serialize cloud");
@@ -23,7 +23,7 @@ impl GaussianCloudCodec for GaussianCloud {
 
     fn decode(data: &[u8]) -> Self {
         let reader = Reader::get_root(data).expect("failed to read flexbuffer");
-        let cloud = GaussianCloud::deserialize(reader).expect("deserialization failed");
+        let cloud = Cloud::deserialize(reader).expect("deserialization failed");
 
         cloud
     }

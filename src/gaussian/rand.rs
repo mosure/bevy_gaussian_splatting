@@ -9,7 +9,7 @@ use crate::gaussian::f16::pack_f32s_to_u32;
 #[allow(unused_imports)]
 use crate::{
     gaussian::{
-        cloud::GaussianCloud,
+        cloud::Cloud,
         packed::Gaussian,
     },
     material::spherical_harmonics::{
@@ -69,7 +69,7 @@ impl Distribution<Gaussian> for rand::distributions::Standard {
     }
 }
 
-pub fn random_gaussians(n: usize) -> GaussianCloud {
+pub fn random_gaussians(n: usize) -> Cloud {
     let mut rng = rand::thread_rng();
     let mut gaussians: Vec<Gaussian> = Vec::with_capacity(n);
 
@@ -77,6 +77,6 @@ pub fn random_gaussians(n: usize) -> GaussianCloud {
         gaussians.push(rng.gen());
     }
 
-    GaussianCloud::from_gaussians(gaussians)
+    Cloud::from_gaussians(gaussians)
 }
 

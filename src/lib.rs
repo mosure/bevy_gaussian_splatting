@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 pub use gaussian::{
     packed::Gaussian,
-    cloud::GaussianCloud,
+    cloud::Cloud,
     rand::random_gaussians,
     settings::GaussianCloudSettings,
 };
@@ -30,7 +30,7 @@ pub mod noise;
 #[derive(Bundle, Default, Reflect)]
 pub struct GaussianSplattingBundle {
     pub settings: GaussianCloudSettings,
-    pub cloud: Handle<GaussianCloud>,
+    pub cloud: Handle<Cloud>,
     pub visibility: Visibility,
 }
 
@@ -45,9 +45,9 @@ impl Plugin for GaussianSplattingPlugin {
     fn build(&self, app: &mut App) {
         // TODO: allow hot reloading of GaussianCloud handle through inspector UI
         app.register_type::<SphericalHarmonicCoefficients>();
-        app.register_type::<GaussianCloud>();
-        app.init_asset::<GaussianCloud>();
-        app.register_asset_reflect::<GaussianCloud>();
+        app.register_type::<Cloud>();
+        app.init_asset::<Cloud>();
+        app.register_asset_reflect::<Cloud>();
 
         app.init_asset_loader::<GaussianCloudLoader>();
 

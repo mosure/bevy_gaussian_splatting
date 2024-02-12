@@ -16,7 +16,7 @@ use bevy_panorbit_camera::{
 
 use bevy_gaussian_splatting::{
     Gaussian,
-    GaussianCloud,
+    Cloud,
     GaussianCloudSettings,
     GaussianSplattingBundle,
     GaussianSplattingPlugin,
@@ -30,7 +30,7 @@ use bevy_gaussian_splatting::{
 
 pub fn setup_aabb_obb_compare(
     mut commands: Commands,
-    mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_assets: ResMut<Assets<Cloud>>,
 ) {
     let mut blue_sh = SphericalHarmonicCoefficients::default();
     blue_sh.set(2, 5.0);
