@@ -11,12 +11,14 @@ use bevy::{
         load_internal_asset,
         LoadState,
     },
-    core_pipeline::core_3d::CORE_3D,
+    core_pipeline::core_3d::graph::{
+        Core3d,
+        Node3d,
+    },
     ecs::system::{
         lifetimeless::SRes,
         SystemParamItem,
     },
-    reflect::TypeUuid,
     render::{
         Extract,
         render_asset::{
@@ -24,12 +26,12 @@ use bevy::{
             RenderAsset,
             RenderAssets,
             RenderAssetPlugin,
+            RenderAssetUsages,
         },
         render_resource::{
             BindGroup,
             BindGroupEntry,
             BindGroupLayout,
-            BindGroupLayoutDescriptor,
             BindGroupLayoutEntry,
             BindingResource,
             BindingType,
@@ -111,13 +113,13 @@ impl Plugin for ParticleBehaviorPlugin {
         if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .add_render_graph_node::<ParticleBehaviorNode>(
-                    CORE_3D,
+                    Core3d,
                     node::MORPH,
                 )
                 .add_render_graph_edge(
-                    CORE_3D,
+                    Core3d,
                     node::MORPH,
-                    bevy::core_pipeline::core_3d::graph::node::PREPASS,
+                    Node3d::PREPASS,
                 );
 
             render_app
@@ -170,24 +172,19 @@ pub struct GpuParticleBehaviorBuffers {
 }
 
 impl RenderAsset for ParticleBehaviors {
-    type ExtractedAsset = ParticleBehaviors;
     type PreparedAsset = GpuParticleBehaviorBuffers;
     type Param = SRes<RenderDevice>;
 
-    fn extract_asset(&self) -> Self::ExtractedAsset {
-        self.clone()
-    }
-
     fn prepare_asset(
-        particle_behaviors: Self::ExtractedAsset,
+        self,
         render_device: &mut SystemParamItem<Self::Param>,
-    ) -> Result<Self::PreparedAsset, PrepareAssetError<Self::ExtractedAsset>> {
-        let particle_behavior_count = particle_behaviors.0.len() as u32;
+    ) -> Result<Self::PreparedAsset, PrepareAssetError<Self>> {
+        let particle_behavior_count = self.0.len() as u32;
 
         let particle_behavior_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("particle behavior buffer"),
             contents: bytemuck::cast_slice(
-                particle_behaviors.0.as_slice()
+                self.0.as_slice()
             ),
             usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::STORAGE,
         });
@@ -196,6 +193,10 @@ impl RenderAsset for ParticleBehaviors {
             particle_behavior_count,
             particle_behavior_buffer,
         })
+    }
+
+    fn asset_usage(&self) -> RenderAssetUsages {
+        RenderAssetUsages::RENDER_WORLD
     }
 }
 
@@ -211,9 +212,9 @@ impl FromWorld for ParticleBehaviorPipeline {
         let render_device = render_world.resource::<RenderDevice>();
         let gaussian_cloud_pipeline = render_world.resource::<GaussianCloudPipeline>();
 
-        let particle_behavior_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("gaussian_cloud_particle_behavior_layout"),
-            entries: &[
+        let particle_behavior_layout = render_device.create_bind_group_layout(
+            Some("gaussian_cloud_particle_behavior_layout"),
+            &[
                 BindGroupLayoutEntry {
                     binding: 7,
                     visibility: ShaderStages::COMPUTE,
@@ -225,7 +226,7 @@ impl FromWorld for ParticleBehaviorPipeline {
                     count: None,
                 },
             ],
-        });
+        );
 
         let shader_defs = shader_defs(GaussianCloudPipelineKey::default());
         let pipeline_cache = render_world.resource::<PipelineCache>();
@@ -453,11 +454,9 @@ impl Default for ParticleBehavior {
     Default,
     PartialEq,
     Reflect,
-    TypeUuid,
     Serialize,
     Deserialize,
 )]
-#[uuid = "ac2f08eb-6463-2131-6772-51571ea332d5"]
 pub struct ParticleBehaviors(pub Vec<ParticleBehavior>);
 
 

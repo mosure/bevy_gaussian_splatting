@@ -1,35 +1,36 @@
 use std::hash::Hash;
 
 use bevy::{
-    prelude::*,
     asset::{
         load_internal_asset,
         LoadState,
     },
     core_pipeline::core_3d::Transparent3d,
     ecs::{
+        query::ROQueryItem,
         system::{
             lifetimeless::*,
             SystemParamItem,
-        },
-        query::ROQueryItem,
+        }
     },
+    prelude::*,
     render::{
         Extract,
         extract_component::{
+            ComponentUniforms,
             DynamicUniformIndex,
             UniformComponentPlugin,
-            ComponentUniforms,
         },
         globals::{
-            GlobalsUniform,
             GlobalsBuffer,
+            GlobalsUniform,
         },
         render_asset::{
             PrepareAssetError,
             RenderAsset,
-            RenderAssets,
             RenderAssetPlugin,
+            RenderAssetUsages,
+            RenderAssets,
         },
         render_phase::{
             AddRenderCommand,
@@ -43,16 +44,16 @@ use bevy::{
         },
         render_resource::*,
         renderer::RenderDevice,
-        Render,
-        RenderApp,
-        RenderSet,
         view::{
             ExtractedView,
             ViewUniform,
-            ViewUniforms,
             ViewUniformOffset,
+            ViewUniforms,
         },
-    },
+        Render,
+        RenderApp,
+        RenderSet,
+    }
 };
 
 use crate::{
@@ -189,7 +190,7 @@ pub struct GpuGaussianSplattingBundle {
 pub struct GpuGaussianCloud {
     #[cfg(feature = "packed")]
     pub packed: packed::PackedBuffers,
-    #[cfg(feature = "buffer_storage")]
+    #[cfg(feature = "planar")]
     pub planar: planar::PlanarBuffers,
 
     pub count: usize,
@@ -200,27 +201,22 @@ pub struct GpuGaussianCloud {
     pub debug_gpu: GaussianCloud,
 }
 impl RenderAsset for GaussianCloud {
-    type ExtractedAsset = GaussianCloud;
     type PreparedAsset = GpuGaussianCloud;
     type Param = SRes<RenderDevice>;
 
-    fn extract_asset(&self) -> Self::ExtractedAsset {
-        self.clone()
-    }
-
     fn prepare_asset(
-        gaussian_cloud: Self::ExtractedAsset,
+        self,
         render_device: &mut SystemParamItem<Self::Param>,
-    ) -> Result<Self::PreparedAsset, PrepareAssetError<Self::ExtractedAsset>> {
-        let count = gaussian_cloud.len();
+    ) -> Result<Self::PreparedAsset, PrepareAssetError<Self>> {
+        let count = self.len();
 
         let draw_indirect_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("draw indirect buffer"),
-            contents: wgpu::util::DrawIndirect {
+            contents: wgpu::util::DrawIndirectArgs {
                 vertex_count: 4,
                 instance_count: count as u32,
-                base_vertex: 0,
-                base_instance: 0,
+                first_vertex: 0,
+                first_instance: 0,
             }.as_bytes(),
             usage: BufferUsages::INDIRECT | BufferUsages::COPY_DST | BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         });
@@ -232,13 +228,17 @@ impl RenderAsset for GaussianCloud {
             draw_indirect_buffer,
 
             #[cfg(feature = "packed")]
-            packed: packed::prepare_cloud(render_device, &gaussian_cloud),
+            packed: packed::prepare_cloud(render_device, &self),
             #[cfg(feature = "buffer_storage")]
-            planar: planar::prepare_cloud(render_device, &gaussian_cloud),
+            planar: planar::prepare_cloud(render_device, &self),
 
             #[cfg(feature = "debug_gpu")]
             debug_gpu: gaussian_cloud,
         })
+    }
+
+    fn asset_usage(&self) -> RenderAssetUsages {
+        RenderAssetUsages::RENDER_WORLD
     }
 }
 
@@ -366,14 +366,14 @@ impl FromWorld for GaussianCloudPipeline {
             },
         ];
 
-        let view_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("gaussian_view_layout"),
-            entries: &view_layout_entries,
-        });
+        let view_layout = render_device.create_bind_group_layout(
+            Some("gaussian_view_layout"),
+            &view_layout_entries,
+        );
 
-        let gaussian_uniform_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("gaussian_uniform_layout"),
-            entries: &[
+        let gaussian_uniform_layout = render_device.create_bind_group_layout(
+            Some("gaussian_uniform_layout"),
+            &[
                 BindGroupLayoutEntry {
                     binding: 0,
                     visibility: ShaderStages::all(),
@@ -385,7 +385,7 @@ impl FromWorld for GaussianCloudPipeline {
                     count: None,
                 },
             ],
-        });
+        );
 
         #[cfg(not(feature = "morph_particles"))]
         let read_only = true;
@@ -400,9 +400,9 @@ impl FromWorld for GaussianCloudPipeline {
         let gaussian_cloud_layout = texture::get_bind_group_layout(&render_device, read_only);
 
         #[cfg(feature = "buffer_storage")]
-        let sorted_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("sorted_layout"),
-            entries: &[
+        let sorted_layout = render_device.create_bind_group_layout(
+            Some("sorted_layout"),
+            &[
                 BindGroupLayoutEntry {
                     binding: 0,
                     visibility: ShaderStages::VERTEX_FRAGMENT,
@@ -414,7 +414,7 @@ impl FromWorld for GaussianCloudPipeline {
                     count: None,
                 },
             ],
-        });
+        );
         #[cfg(feature = "buffer_texture")]
         let sorted_layout = texture::get_sorted_bind_group_layout(&render_device);
 
@@ -900,20 +900,20 @@ pub fn queue_gaussian_view_bind_groups(
 pub struct SetGaussianViewBindGroup<const I: usize>;
 impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianViewBindGroup<I> {
     type Param = ();
-    type ViewWorldQuery = (
+    type ViewQuery = (
         Read<ViewUniformOffset>,
         Read<GaussianViewBindGroup>,
     );
-    type ItemWorldQuery = ();
+    type ItemQuery = ();
 
     #[inline]
     fn render<'w>(
         _item: &P,
         (view_uniform, gaussian_view_bind_group): ROQueryItem<
             'w,
-            Self::ViewWorldQuery,
+            Self::ViewQuery,
         >,
-        _entity: (),
+        _entity: Option<()>,
         _: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
@@ -931,14 +931,14 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianViewBindGroup
 pub struct SetGaussianUniformBindGroup<const I: usize>;
 impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianUniformBindGroup<I> {
     type Param = SRes<GaussianUniformBindGroups>;
-    type ViewWorldQuery = ();
-    type ItemWorldQuery = Read<DynamicUniformIndex<GaussianCloudUniform>>;
+    type ViewQuery = ();
+    type ItemQuery = Read<DynamicUniformIndex<GaussianCloudUniform>>;
 
     #[inline]
     fn render<'w>(
         _item: &P,
         _view: (),
-        gaussian_cloud_index: ROQueryItem<Self::ItemWorldQuery>,
+        gaussian_cloud_index: Option<ROQueryItem<Self::ItemQuery>>,
         bind_groups: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
@@ -946,7 +946,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianUniformBindGr
         let bind_group = bind_groups.base_bind_group.as_ref().expect("bind group not initialized");
 
         let mut set_bind_group = |indices: &[u32]| pass.set_bind_group(I, bind_group, indices);
-        let gaussian_cloud_index = gaussian_cloud_index.index();
+        let gaussian_cloud_index = gaussian_cloud_index.unwrap().index();
         set_bind_group(&[gaussian_cloud_index]);
 
         RenderCommandResult::Success
@@ -956,8 +956,8 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianUniformBindGr
 pub struct DrawGaussianInstanced;
 impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
     type Param = SRes<RenderAssets<GaussianCloud>>;
-    type ViewWorldQuery = ();
-    type ItemWorldQuery = (
+    type ViewQuery = ();
+    type ItemQuery = (
         Read<Handle<GaussianCloud>>,
         Read<GaussianCloudBindGroup>,
     );
@@ -966,16 +966,15 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
     fn render<'w>(
         _item: &P,
         _view: (),
-        (
-            handle,
-            bind_groups,
-        ): (
+        entity: Option<(
             &'w Handle<GaussianCloud>,
             &'w GaussianCloudBindGroup,
-        ),
+        )>,
         gaussian_clouds: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
+        let (handle, bind_groups) = entity.expect("gaussian cloud entity not found");
+
         let gpu_gaussian_cloud = match gaussian_clouds.into_inner().get(handle) {
             Some(gpu_gaussian_cloud) => gpu_gaussian_cloud,
             None => return RenderCommandResult::Failure,

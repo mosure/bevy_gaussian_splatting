@@ -88,7 +88,7 @@ fn setup_gaussian_cloud(
             tonemapping: Tonemapping::None,
             ..default()
         },
-        PanOrbitCamera{
+        PanOrbitCamera {
             allow_upside_down: true,
             orbit_smoothness: 0.0,
             pan_smoothness: 0.0,
@@ -198,7 +198,7 @@ fn example_app() {
 
     #[cfg(not(target_arch = "wasm32"))]
     let primary_window = Some(Window {
-        fit_canvas_to_parent: false,
+        canvas: Some("#bevy".to_string()),
         mode: bevy::window::WindowMode::Windowed,
         prevent_default_event_handling: false,
         resolution: (config.width, config.height).into(),
@@ -276,12 +276,12 @@ fn example_app() {
 
 
 pub fn press_s_screenshot(
-    keys: Res<Input<KeyCode>>,
+    keys: Res<ButtonInput<KeyCode>>,
     main_window: Query<Entity, With<PrimaryWindow>>,
     mut screenshot_manager: ResMut<ScreenshotManager>,
     current_frame: Res<FrameCount>,
 ) {
-    if keys.just_pressed(KeyCode::S) {
+    if keys.just_pressed(KeyCode::KeyS) {
         if let Ok(window_entity) = main_window.get_single() {
             let images_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("screenshots");
             std::fs::create_dir_all(&images_dir).unwrap();
@@ -299,7 +299,7 @@ pub fn press_s_screenshot(
 }
 
 pub fn press_esc_close(
-    keys: Res<Input<KeyCode>>,
+    keys: Res<ButtonInput<KeyCode>>,
     mut exit: EventWriter<AppExit>
 ) {
     if keys.just_pressed(KeyCode::Escape) {
@@ -309,10 +309,10 @@ pub fn press_esc_close(
 
 #[cfg(feature = "query_select")]
 fn press_i_invert_selection(
-    keys: Res<Input<KeyCode>>,
+    keys: Res<ButtonInput<KeyCode>>,
     mut select_inverse_events: EventWriter<InvertSelectionEvent>,
 ) {
-    if keys.just_pressed(KeyCode::I) {
+    if keys.just_pressed(KeyCode::KeyI) {
         log("inverting selection");
         select_inverse_events.send(InvertSelectionEvent);
     }
@@ -320,10 +320,10 @@ fn press_i_invert_selection(
 
 #[cfg(feature = "query_select")]
 fn press_o_save_selection(
-    keys: Res<Input<KeyCode>>,
+    keys: Res<ButtonInput<KeyCode>>,
     mut select_inverse_events: EventWriter<SaveSelectionEvent>,
 ) {
-    if keys.just_pressed(KeyCode::O) {
+    if keys.just_pressed(KeyCode::KeyO) {
         log("saving selection");
         select_inverse_events.send(SaveSelectionEvent);
     }
@@ -366,7 +366,7 @@ fn fps_update_system(
     mut query: Query<&mut Text, With<FpsText>>,
 ) {
     for mut text in &mut query {
-        if let Some(fps) = diagnostics.get(FrameTimeDiagnosticsPlugin::FPS) {
+        if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) {
             if let Some(value) = fps.smoothed() {
                 text.sections[1].value = format!("{value:.2}");
             }

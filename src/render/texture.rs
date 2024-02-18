@@ -14,7 +14,6 @@ use bevy::{
         render_resource::{
             BindGroup,
             BindGroupLayout,
-            BindGroupLayoutDescriptor,
             BindGroupLayoutEntry,
             BindGroupEntry,
             BindingType,
@@ -339,9 +338,9 @@ fn queue_textures(
 pub fn get_sorted_bind_group_layout(
     render_device: &RenderDevice,
 ) -> BindGroupLayout {
-    render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-        label: Some("texture_sorted_layout"),
-        entries: &[
+    render_device.create_bind_group_layout(
+        Some("texture_sorted_layout"),
+        &[
             BindGroupLayoutEntry {
                 binding: 0,
                 visibility: ShaderStages::all(),
@@ -353,7 +352,7 @@ pub fn get_sorted_bind_group_layout(
                 count: None,
             },
         ],
-    })
+    )
 }
 
 
@@ -368,9 +367,9 @@ pub fn get_bind_group_layout(
         TextureViewDimension::D2Array
     };
 
-    render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-        label: Some("texture_f16_gaussian_cloud_layout"),
-        entries: &[
+    render_device.create_bind_group_layout(
+        Some("texture_f16_gaussian_cloud_layout"),
+        &[
             BindGroupLayoutEntry {
                 binding: 0,
                 visibility: ShaderStages::all(),
@@ -413,9 +412,9 @@ pub fn get_bind_group_layout(
     render_device: &RenderDevice,
     read_only: bool
 ) -> BindGroupLayout {
-    render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-        label: Some("texture_f32_gaussian_cloud_layout"),
-        entries: &[
+    render_device.create_bind_group_layout(
+        Some("texture_f32_gaussian_cloud_layout"),
+        &[
             BindGroupLayoutEntry {
                 binding: 0,
                 visibility: ShaderStages::all(),
@@ -457,5 +456,5 @@ pub fn get_bind_group_layout(
                 count: None,
             },
         ],
-    })
+    )
 }

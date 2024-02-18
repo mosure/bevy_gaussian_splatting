@@ -146,9 +146,9 @@ pub fn get_bind_group_layout(
     render_device: &RenderDevice,
     read_only: bool
 ) -> BindGroupLayout {
-    render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-        label: Some("planar_f16_gaussian_cloud_layout"),
-        entries: &[
+    render_device.create_bind_group_layout(
+        Some("planar_f16_gaussian_cloud_layout"),
+        &[
             BindGroupLayoutEntry {
                 binding: 0,
                 visibility: ShaderStages::all(),
@@ -180,7 +180,7 @@ pub fn get_bind_group_layout(
                 count: None,
             },
         ],
-    })
+    )
 }
 
 
@@ -189,9 +189,9 @@ pub fn get_bind_group_layout(
     render_device: &RenderDevice,
     read_only: bool
 ) -> BindGroupLayout {
-    render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-        label: Some("planar_f32_gaussian_cloud_layout"),
-        entries: &[
+    render_device.create_bind_group_layout(
+        Some("planar_f32_gaussian_cloud_layout"),
+        &[
             BindGroupLayoutEntry {
                 binding: 0,
                 visibility: ShaderStages::all(),
@@ -233,7 +233,7 @@ pub fn get_bind_group_layout(
                 count: None,
             },
         ],
-    })
+    )
 }
 
 

@@ -4,10 +4,7 @@ use rand::{
 };
 use std::iter::FromIterator;
 
-use bevy::{
-    prelude::*,
-    reflect::TypeUuid,
-};
+use bevy::prelude::*;
 use serde::{
     Deserialize,
     Serialize,
@@ -52,11 +49,9 @@ use crate::gaussian::f16::{
     Default,
     PartialEq,
     Reflect,
-    TypeUuid,
     Serialize,
     Deserialize,
 )]
-#[uuid = "ac2f08eb-bc32-aabb-ff21-51571ea332d5"]
 pub struct GaussianCloud {
     pub position_visibility: Vec<PositionVisibility>,
 
@@ -77,11 +72,10 @@ pub struct GaussianCloud {
     Default,
     PartialEq,
     Reflect,
-    TypeUuid,
+    TypePath,
     Serialize,
     Deserialize,
 )]
-#[uuid = "ac2f08eb-bc32-aabb-ff21-51571ea332d5"]
 pub struct GaussianCloud {
     pub position_visibility: Vec<PositionVisibility>,
 

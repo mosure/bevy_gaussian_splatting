@@ -1,4 +1,10 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        Mutex,
+    },
+};
 
 use bevy::{
     prelude::*,
@@ -6,14 +12,16 @@ use bevy::{
         load_internal_asset,
         LoadState,
     },
-    core_pipeline::core_3d::CORE_3D,
+    core_pipeline::core_3d::graph::{
+        Core3d,
+        Node3d,
+    },
     render::{
         render_asset::RenderAssets,
         render_resource::{
             BindGroup,
             BindGroupEntry,
             BindGroupLayout,
-            BindGroupLayoutDescriptor,
             BindGroupLayoutEntry,
             BindingResource,
             BindingType,
@@ -107,13 +115,13 @@ impl Plugin for RadixSortPlugin {
         if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .add_render_graph_node::<RadixSortNode>(
-                    CORE_3D,
+                    Core3d,
                     node::RADIX_SORT,
                 )
                 .add_render_graph_edge(
-                    CORE_3D,
+                    Core3d,
                     node::RADIX_SORT,
-                     bevy::core_pipeline::core_3d::graph::node::PREPASS,
+                     Node3d::PREPASS,
                 );
 
             render_app
@@ -139,6 +147,7 @@ impl Plugin for RadixSortPlugin {
 
 #[derive(Resource, Default)]
 pub struct RadixSortBuffers {
+    // TODO: use a more ECS-friendly approach
     pub asset_map: HashMap<
         AssetId<GaussianCloud>,
         GpuRadixBuffers,
@@ -256,14 +265,14 @@ impl FromWorld for RadixSortPipeline {
             ty: BindingType::Buffer {
                 ty: BufferBindingType::Storage { read_only: false },
                 has_dynamic_offset: false,
-                min_binding_size: BufferSize::new(std::mem::size_of::<wgpu::util::DrawIndirect>() as u64),
+                min_binding_size: BufferSize::new(std::mem::size_of::<wgpu::util::DrawIndirectArgs>() as u64),
             },
             count: None,
         };
 
-        let radix_sort_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("radix_sort_layout"),
-            entries: &[
+        let radix_sort_layout = render_device.create_bind_group_layout(
+            Some("radix_sort_layout"),
+            &[
                 BindGroupLayoutEntry {
                     binding: 0,
                     visibility: ShaderStages::COMPUTE,
@@ -298,7 +307,7 @@ impl FromWorld for RadixSortPipeline {
                     count: None,
                 },
             ],
-        });
+        );
 
         let sorting_layout = vec![
             gaussian_cloud_pipeline.view_layout.clone(),
