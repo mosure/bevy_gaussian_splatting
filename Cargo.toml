@@ -161,7 +161,7 @@ wasm-bindgen = "0.2.89"
 
 
 [dependencies.bevy]
-version = "0.12"
+version = "0.13"
 default-features = false
 features = [
   "bevy_asset",
