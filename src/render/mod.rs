@@ -190,7 +190,7 @@ pub struct GpuGaussianSplattingBundle {
 pub struct GpuGaussianCloud {
     #[cfg(feature = "packed")]
     pub packed: packed::PackedBuffers,
-    #[cfg(feature = "planar")]
+    #[cfg(feature = "buffer_storage")]
     pub planar: planar::PlanarBuffers,
 
     pub count: usize,
@@ -238,7 +238,7 @@ impl RenderAsset for GaussianCloud {
     }
 
     fn asset_usage(&self) -> RenderAssetUsages {
-        RenderAssetUsages::RENDER_WORLD
+        RenderAssetUsages::default()
     }
 }
 
@@ -397,7 +397,7 @@ impl FromWorld for GaussianCloudPipeline {
         #[cfg(all(feature = "buffer_storage", not(feature = "packed")))]
         let gaussian_cloud_layout = planar::get_bind_group_layout(render_device, read_only);
         #[cfg(feature = "buffer_texture")]
-        let gaussian_cloud_layout = texture::get_bind_group_layout(&render_device, read_only);
+        let gaussian_cloud_layout = texture::get_bind_group_layout(render_device, read_only);
 
         #[cfg(feature = "buffer_storage")]
         let sorted_layout = render_device.create_bind_group_layout(
@@ -416,7 +416,7 @@ impl FromWorld for GaussianCloudPipeline {
             ],
         );
         #[cfg(feature = "buffer_texture")]
-        let sorted_layout = texture::get_sorted_bind_group_layout(&render_device);
+        let sorted_layout = texture::get_sorted_bind_group_layout(render_device);
 
         GaussianCloudPipeline {
             gaussian_cloud_layout,

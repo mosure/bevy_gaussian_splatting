@@ -131,6 +131,7 @@ fn update_textures_on_change(
             AssetEvent::Added { id: _ } => {},
             AssetEvent::Removed { id: _ } => {},
             AssetEvent::LoadedWithDependencies { id: _ } => {},
+            AssetEvent::Unused { id: _ } => {},
         }
     }
 }
@@ -200,6 +201,7 @@ fn auto_insert_sorted_entries(
                 TextureDimension::D2,
                 bytemuck::cast_slice(sorted.as_slice()).to_vec(),
                 TextureFormat::Rg32Uint,
+                RenderAssetUsages::default(),
             )),
             sorted,
         });
@@ -263,12 +265,12 @@ impl RenderAsset for SortedEntries {
             count,
 
             #[cfg(feature = "buffer_texture")]
-            texture: sorted_entries.texture,
+            texture: self.texture,
         })
     }
 
     fn asset_usage(&self) -> RenderAssetUsages {
-        RenderAssetUsages::RENDER_WORLD
+        RenderAssetUsages::default()
     }
 }
 
