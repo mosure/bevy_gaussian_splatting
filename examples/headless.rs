@@ -77,7 +77,8 @@ mod frame_capture {
             }
         }
 
-        pub const IMAGE_COPY: &str = "image_copy";
+        #[derive(RenderLabel)]
+        pub struct ImageCopy;
 
         pub struct ImageCopyPlugin;
         impl Plugin for ImageCopyPlugin {
@@ -90,9 +91,9 @@ mod frame_capture {
 
                 let mut graph = render_app.world.get_resource_mut::<RenderGraph>().unwrap();
 
-                graph.add_node(IMAGE_COPY, ImageCopyDriver);
+                graph.add_node(ImageCopy, ImageCopyDriver);
 
-                graph.add_node_edge(IMAGE_COPY, bevy::render::main_graph::node::CAMERA_DRIVER);
+                graph.add_node_edge(ImageCopy, bevy::render::);
             }
         }
 

@@ -1,10 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        Mutex,
-    },
-};
+use std::collections::HashMap;
 
 use bevy::{
     prelude::*,
@@ -48,6 +42,7 @@ use bevy::{
             NodeRunError,
             RenderGraphApp,
             RenderGraphContext,
+            RenderLabel,
         },
         Render,
         RenderApp,
@@ -89,9 +84,9 @@ assert_cfg!(
 const RADIX_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(6234673214);
 const TEMPORAL_SORT_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(1634543224);
 
-pub mod node {
-    pub const RADIX_SORT: &str = "radix_sort";
-}
+#[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
+pub struct RadixSortLabel;
+
 
 #[derive(Default)]
 pub struct RadixSortPlugin;
@@ -116,12 +111,12 @@ impl Plugin for RadixSortPlugin {
             render_app
                 .add_render_graph_node::<RadixSortNode>(
                     Core3d,
-                    node::RADIX_SORT,
+                    RadixSortLabel,
                 )
                 .add_render_graph_edge(
                     Core3d,
-                    node::RADIX_SORT,
-                     Node3d::PREPASS,
+                    RadixSortLabel,
+                    Node3d::Prepass,
                 );
 
             render_app

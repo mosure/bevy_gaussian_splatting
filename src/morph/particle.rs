@@ -119,7 +119,7 @@ impl Plugin for ParticleBehaviorPlugin {
                 .add_render_graph_edge(
                     Core3d,
                     node::MORPH,
-                    Node3d::PREPASS,
+                    Node3d::Prepass,
                 );
 
             render_app
