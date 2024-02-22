@@ -2,7 +2,6 @@ use rand::{
     seq::SliceRandom,
     Rng,
 };
-use std::iter::FromIterator;
 
 use bevy::prelude::*;
 use serde::{
