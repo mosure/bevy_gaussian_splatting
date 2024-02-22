@@ -4,10 +4,7 @@ use std::path::PathBuf;
 use bevy::{
     prelude::*,
     app::AppExit,
-    core::{
-        Name,
-        FrameCount,
-    },
+    core::FrameCount,
     core_pipeline::tonemapping::Tonemapping,
     diagnostic::{
         DiagnosticsStore,

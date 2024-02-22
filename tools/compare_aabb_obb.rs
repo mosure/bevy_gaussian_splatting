@@ -1,7 +1,6 @@
 use bevy::{
     prelude::*,
     app::AppExit,
-    core::Name,
     core_pipeline::tonemapping::Tonemapping,
 };
 use bevy_args::{
