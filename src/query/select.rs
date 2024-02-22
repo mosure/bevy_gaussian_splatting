@@ -1,5 +1,3 @@
-use std::iter::FromIterator;
-
 use bevy::{
     prelude::*,
     asset::LoadState,

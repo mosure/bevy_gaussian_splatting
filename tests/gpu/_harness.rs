@@ -25,7 +25,6 @@ pub fn test_harness_app(
         DefaultPlugins
         .set(WindowPlugin {
             primary_window: Some(Window {
-                fit_canvas_to_parent: false,
                 mode: bevy::window::WindowMode::Windowed,
                 present_mode: bevy::window::PresentMode::AutoVsync,
                 prevent_default_event_handling: false,

@@ -73,7 +73,8 @@ fn setup_gaussian_cloud(
 
 | `bevy_gaussian_splatting` | `bevy` |
 | :--                       | :--    |
-| `0.4 - 1.0`               | `0.12` |
+| `2.1`                     | `0.13` |
+| `0.4 - 2.0`               | `0.12` |
 | `0.1 - 0.3`               | `0.11` |
 
 ## projects using this plugin

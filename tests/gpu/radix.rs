@@ -10,10 +10,11 @@ use bevy::{
     prelude::*,
     core::FrameCount,
     core_pipeline::{
-        core_3d::{
-            CORE_3D,
-            Transparent3d,
+        core_3d::graph::{
+            Core3d,
+            Node3d,
         },
+        Transparent3d,
         tonemapping::Tonemapping,
     },
     render::{

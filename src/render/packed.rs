@@ -3,7 +3,6 @@ use bevy::render::{
         BindGroup,
         BindGroupEntry,
         BindGroupLayout,
-        BindGroupLayoutDescriptor,
         BindGroupLayoutEntry,
         BindingResource,
         BindingType,
@@ -56,9 +55,9 @@ pub fn get_bind_group_layout(
     render_device: &RenderDevice,
     read_only: bool
 ) -> BindGroupLayout {
-    render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-        label: Some("packed_gaussian_cloud_layout"),
-        entries: &[
+    render_device.create_bind_group_layout(
+        Some("packed_gaussian_cloud_layout"),
+        &[
             BindGroupLayoutEntry {
                 binding: 0,
                 visibility: ShaderStages::all(),
@@ -70,7 +69,7 @@ pub fn get_bind_group_layout(
                 count: None,
             },
         ],
-    })
+    )
 }
 
 

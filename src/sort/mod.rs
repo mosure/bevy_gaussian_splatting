@@ -5,12 +5,12 @@ use bevy::{
         lifetimeless::SRes,
         SystemParamItem,
     },
-    reflect::TypeUuid,
     render::{
         render_resource::*,
         render_asset::{
             RenderAsset,
             RenderAssetPlugin,
+            RenderAssetUsages,
             PrepareAssetError,
         },
         renderer::RenderDevice,
@@ -131,6 +131,7 @@ fn update_textures_on_change(
             AssetEvent::Added { id: _ } => {},
             AssetEvent::Removed { id: _ } => {},
             AssetEvent::LoadedWithDependencies { id: _ } => {},
+            AssetEvent::Unused { id: _ } => {},
         }
     }
 }
@@ -142,12 +143,14 @@ fn auto_insert_sorted_entries(
     asset_server: Res<AssetServer>,
     gaussian_clouds_res: Res<Assets<GaussianCloud>>,
     mut sorted_entries_res: ResMut<Assets<SortedEntries>>,
-    gaussian_clouds: Query<(
-        Entity,
-        &Handle<GaussianCloud>,
-        &GaussianCloudSettings,
-        Without<Handle<SortedEntries>>,
-    )>,
+    gaussian_clouds: Query<
+        (
+            Entity,
+            &Handle<GaussianCloud>,
+            &GaussianCloudSettings,
+        ),
+        Without<Handle<SortedEntries>>
+    >,
 
     #[cfg(feature = "buffer_texture")]
     mut images: ResMut<Assets<Image>>,
@@ -156,7 +159,6 @@ fn auto_insert_sorted_entries(
         entity,
         gaussian_cloud_handle,
         _settings,
-        _,
     ) in gaussian_clouds.iter() {
         // // TODO: specialize vertex shader for sort mode (e.g. draw_indirect but no sort indirection)
         // if settings.sort_mode == SortMode::None {
@@ -199,6 +201,7 @@ fn auto_insert_sorted_entries(
                 TextureDimension::D2,
                 bytemuck::cast_slice(sorted.as_slice()).to_vec(),
                 TextureFormat::Rg32Uint,
+                RenderAssetUsages::default(),
             )),
             sorted,
         });
@@ -233,9 +236,7 @@ pub struct SortEntry {
     Default,
     PartialEq,
     Reflect,
-    TypeUuid,
 )]
-#[uuid = "ac2f08eb-fa13-ccdd-ea11-51571ea332d5"]
 pub struct SortedEntries {
     pub sorted: Vec<SortEntry>,
 
@@ -244,33 +245,32 @@ pub struct SortedEntries {
 }
 
 impl RenderAsset for SortedEntries {
-    type ExtractedAsset = SortedEntries;
     type PreparedAsset = GpuSortedEntry;
     type Param = SRes<RenderDevice>;
 
-    fn extract_asset(&self) -> Self::ExtractedAsset {
-        self.clone()
-    }
-
     fn prepare_asset(
-        sorted_entries: Self::ExtractedAsset,
+        self,
         render_device: &mut SystemParamItem<Self::Param>,
-    ) -> Result<Self::PreparedAsset, PrepareAssetError<Self::ExtractedAsset>> {
+    ) -> Result<Self::PreparedAsset, PrepareAssetError<Self>> {
         let sorted_entry_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("sorted_entry_buffer"),
-            contents: bytemuck::cast_slice(sorted_entries.sorted.as_slice()),
+            contents: bytemuck::cast_slice(self.sorted.as_slice()),
             usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::STORAGE,
         });
 
-        let count = sorted_entries.sorted.len();
+        let count = self.sorted.len();
 
         Ok(GpuSortedEntry {
             sorted_entry_buffer,
             count,
 
             #[cfg(feature = "buffer_texture")]
-            texture: sorted_entries.texture,
+            texture: self.texture,
         })
+    }
+
+    fn asset_usage(&self) -> RenderAssetUsages {
+        RenderAssetUsages::default()
     }
 }
 

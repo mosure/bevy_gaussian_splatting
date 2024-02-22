@@ -1,7 +1,6 @@
 use bevy::{
     prelude::*,
     app::AppExit,
-    core::Name,
     core_pipeline::tonemapping::Tonemapping,
 };
 use bevy_args::{
@@ -112,7 +111,6 @@ fn compare_aabb_obb_app() {
         .set(ImagePlugin::default_nearest())
         .set(WindowPlugin {
             primary_window: Some(Window {
-                fit_canvas_to_parent: false,
                 mode: bevy::window::WindowMode::Windowed,
                 present_mode: bevy::window::PresentMode::AutoVsync,
                 prevent_default_event_handling: false,
@@ -142,7 +140,7 @@ fn compare_aabb_obb_app() {
 }
 
 pub fn esc_close(
-    keys: Res<Input<KeyCode>>,
+    keys: Res<ButtonInput<KeyCode>>,
     mut exit: EventWriter<AppExit>
 ) {
     if keys.just_pressed(KeyCode::Escape) {

@@ -10,10 +10,6 @@ use bevy::{
     render::renderer::RenderDevice,
 };
 use bevy_args::BevyArgsPlugin;
-use bevy_panorbit_camera::{
-    PanOrbitCamera,
-    PanOrbitCameraPlugin,
-};
 
 use bevy_gaussian_splatting::{
     GaussianCloud,
@@ -31,7 +27,7 @@ mod frame_capture {
 
         use bevy::prelude::*;
         use bevy::render::render_asset::RenderAssets;
-        use bevy::render::render_graph::{self, NodeRunError, RenderGraph, RenderGraphContext};
+        use bevy::render::render_graph::{self, NodeRunError, RenderGraph, RenderGraphContext, RenderLabel};
         use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue};
         use bevy::render::{Extract, RenderApp};
 
@@ -77,7 +73,8 @@ mod frame_capture {
             }
         }
 
-        pub const IMAGE_COPY: &str = "image_copy";
+        #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
+        pub struct ImageCopyLabel;
 
         pub struct ImageCopyPlugin;
         impl Plugin for ImageCopyPlugin {
@@ -90,9 +87,9 @@ mod frame_capture {
 
                 let mut graph = render_app.world.get_resource_mut::<RenderGraph>().unwrap();
 
-                graph.add_node(IMAGE_COPY, ImageCopyDriver);
+                graph.add_node(ImageCopyLabel, ImageCopyDriver);
 
-                graph.add_node_edge(IMAGE_COPY, bevy::render::main_graph::node::CAMERA_DRIVER);
+                graph.add_node_edge(ImageCopyLabel, bevy::render::graph::CameraDriverLabel);
             }
         }
 
@@ -171,7 +168,7 @@ mod frame_capture {
                         .create_command_encoder(&CommandEncoderDescriptor::default());
 
                     let block_dimensions = src_image.texture_format.block_dimensions();
-                    let block_size = src_image.texture_format.block_size(None).unwrap();
+                    let block_size = src_image.texture_format.block_copy_size(None).unwrap();
 
                     let padded_bytes_per_row = RenderDevice::align_copy_bytes_per_row(
                         (src_image.size.x as usize / block_dimensions.0 as usize)
