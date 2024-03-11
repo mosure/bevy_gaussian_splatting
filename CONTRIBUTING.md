@@ -1,6 +1,6 @@
 # contributing to bevy_gaussian_splatting
 
-![alt text](docs/notferris2.webp)
+![alt text](docs/assets/notferris2.webp)
 
 thank you for your interest in contributing to `bevy_gaussian_splatting`! contributions of all forms are welcome and appreciated. this includes code contributions, bug reports, documentation, or any other form of support.
 

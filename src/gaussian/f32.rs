@@ -53,6 +53,41 @@ impl From<[f32; 4]> for PositionVisibility {
     }
 }
 
+
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    Copy,
+    PartialEq,
+    Reflect,
+    ShaderType,
+    Pod,
+    Zeroable,
+    Serialize,
+    Deserialize,
+)]
+#[repr(C)]
+pub struct PositionOpacity {
+    pub position: Position,
+    pub opacity: f32,
+}
+
+impl From<[f32; 4]> for PositionOpacity {
+    fn from(position_visibility: [f32; 4]) -> Self {
+        Self {
+            position: [
+                position_visibility[0],
+                position_visibility[1],
+                position_visibility[2],
+            ],
+            opacity: position_visibility[3],
+        }
+    }
+}
+
+
+
 #[derive(
     Clone,
     Debug,
@@ -76,6 +111,32 @@ impl From<[f32; 4]> for Rotation {
         Self { rotation }
     }
 }
+
+
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    Copy,
+    PartialEq,
+    Reflect,
+    ShaderType,
+    Pod,
+    Zeroable,
+    Serialize,
+    Deserialize,
+)]
+#[repr(C)]
+pub struct Scale4d {
+    pub scale: [f32; 4],
+}
+
+impl From<[f32; 4]> for Scale4d {
+    fn from(scale: [f32; 4]) -> Self {
+        Self { scale }
+    }
+}
+
 
 #[derive(
     Clone,
