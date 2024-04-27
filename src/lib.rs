@@ -16,6 +16,7 @@ use render::RenderPipelinePlugin;
 pub mod gaussian;
 pub mod io;
 pub mod material;
+pub mod math;
 pub mod morph;
 pub mod query;
 pub mod render;
