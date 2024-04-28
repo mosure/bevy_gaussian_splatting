@@ -24,10 +24,10 @@ bevy gaussian splatting render pipeline plugin. view the [live demo](https://mos
 - [X] depth colorization
 - [X] f16 and f32 gcloud
 - [X] wgl2 and webgpu
-- [ ] spherical harmonic coefficients clustering
-- [ ] 4D gaussian cloud wavelet compression
+- [X] 3dgs
+- [X] surfel splatting
+- [ ] bevy_interleave codex support
 - [ ] accelerated spatial queries
-- [ ] temporal depth sorting
 - [ ] skeletons
 - [ ] volume masks
 - [ ] level of detail
@@ -82,6 +82,7 @@ fn setup_gaussian_cloud(
 
 # credits
 
+- [2d-gaussian-splatting](https://github.com/hbb1/2d-gaussian-splatting)
 - [4d gaussians](https://github.com/hustvl/4DGaussians)
 - [4d-gaussian-splatting](https://fudan-zvg.github.io/4d-gaussian-splatting/)
 - [bevy](https://github.com/bevyengine/bevy)

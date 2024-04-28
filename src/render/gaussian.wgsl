@@ -1,3 +1,5 @@
+#define_import_path bevy_gaussian_splatting::gaussian
+
 #import bevy_gaussian_splatting::bindings::{
     view,
     globals,

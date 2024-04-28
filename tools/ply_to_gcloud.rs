@@ -33,6 +33,8 @@ fn is_point_in_transformed_sphere(pos: &[f32; 3]) -> bool {
 }
 
 
+// TODO: check if the ply is 2d, 3d, or 4d gaussians and output proper gcloud (enum variant)
+
 #[allow(unused_mut)]
 fn main() {
     let filename = std::env::args().nth(1).expect("no filename given");

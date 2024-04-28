@@ -86,6 +86,9 @@ pub struct SphericalHarmonicCoefficients {
 }
 
 
+// TODO: modular bevy_interleave SH
+
+
 #[cfg(feature = "f32")]
 #[derive(
     Clone,
