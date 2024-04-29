@@ -154,7 +154,7 @@ rayon = { version = "1.8", optional = true }
 serde = "1.0"
 static_assertions = "1.1"
 typenum = "1.17.0"
-wgpu = "0.19.1"
+wgpu = "0.20.0"
 
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
