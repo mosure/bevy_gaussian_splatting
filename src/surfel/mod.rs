@@ -5,6 +5,8 @@ use bevy::{
 use bevy_interleave::prelude::*;
 
 
+// TODO: automate extraction and asset loading via derive macro
+// TODO: automate plugin & render pipeline
 #[derive(
     Debug,
     Planar,
@@ -27,4 +29,18 @@ pub struct SurfelGaussian {
 }
 
 
-// TODO: render pipeline for surfel rendering
+pub struct SurfelRenderPipelinePlugin;
+impl Plugin for SurfelRenderPipelinePlugin {
+    fn build(&self, _app: &mut App) {
+
+    }
+
+    fn finish(&self, _app: &mut App) {
+
+    }
+}
+
+
+// TODO: extract surfel asset
+// TODO: queue surfel clouds
+// TODO: render surfel node
