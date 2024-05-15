@@ -1,0 +1,58 @@
+
+name: deploy github pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: checkout repository
+        uses: actions/checkout@v3
+
+      - name: setup nightly rust toolchain with caching
+        uses: brndnmtthws/rust-action@v1
+        with:
+          toolchain: nightly
+          components: rustfmt, clippy
+          enable-sccache: "true"
+
+      - name: install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli
+
+      - name: build wasm artifacts
+        run: cargo build --target wasm32-unknown-unknown --release --no-default-features --features "web"
+
+      - name: generate bindings with wasm-bindgen
+        run: wasm-bindgen --out-dir ./www/out/ --target web ./target/wasm32-unknown-unknown/release/viewer.wasm
+
+      - name: upload artifact for github pages
+        uses: actions/upload-pages-artifact@v1
+        with:
+          path: ./www/out/
+
+  deploy:
+    needs: build
+    runs-on: macos-latest
+
+    steps:
+      - name: checkout repository
+        uses: actions/checkout@v3
+
+      - name: deploy to github pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: ./www/out
+          branch: www
