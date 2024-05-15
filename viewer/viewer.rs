@@ -180,7 +180,8 @@ fn example_app() {
 
     #[cfg(target_arch = "wasm32")]
     let primary_window = Some(Window {
-        fit_canvas_to_parent: true,
+        // fit_canvas_to_parent: true,
+        canvas: Some("#bevy".to_string()),
         mode: bevy::window::WindowMode::Windowed,
         prevent_default_event_handling: true,
         title: config.name.clone(),
@@ -195,7 +196,6 @@ fn example_app() {
 
     #[cfg(not(target_arch = "wasm32"))]
     let primary_window = Some(Window {
-        canvas: Some("#bevy".to_string()),
         mode: bevy::window::WindowMode::Windowed,
         prevent_default_event_handling: false,
         resolution: (config.width, config.height).into(),

@@ -1,4 +1,3 @@
-
 name: deploy github pages
 
 on:
@@ -41,10 +40,13 @@ jobs:
       - name: generate bindings with wasm-bindgen
         run: wasm-bindgen --out-dir ./www/out/ --target web ./target/wasm32-unknown-unknown/release/viewer.wasm
 
+      - name: copy assets
+        run: mkdir -p ./www/assets && cp -r ./assets/* ./www/assets/
+
       - name: upload artifact for github pages
         uses: actions/upload-pages-artifact@v1
         with:
-          path: ./www/out/
+          path: ./www
 
   deploy:
     needs: build
@@ -57,5 +59,5 @@ jobs:
       - name: deploy to github pages
         uses: JamesIves/github-pages-deploy-action@v4
         with:
-          folder: ./www/out
+          folder: ./www
           branch: www

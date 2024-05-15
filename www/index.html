@@ -17,10 +17,24 @@
     init()
   </script>
   <script>
-    // Disable right-click context menu
+    // disable right-click context menu
     document.addEventListener('contextmenu', event => event.preventDefault());
   </script>
+  <style>
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+    }
+
+    .full-size {
+      width: 100% !important;
+      height: 100% !important;
+    }
+  </style>
   <body>
-    <canvas id="bevy" style="width: 100%; height: 100%;"></canvas>
+    <canvas id="bevy" class="full-size"></canvas>
   </body>
 </html>
