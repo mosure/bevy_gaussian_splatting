@@ -13,8 +13,9 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+
 jobs:
-  build:
+  deploy:
     runs-on: macos-latest
 
     steps:
@@ -42,19 +43,6 @@ jobs:
 
       - name: copy assets
         run: mkdir -p ./www/assets && cp -r ./assets/* ./www/assets/
-
-      - name: upload artifact for github pages
-        uses: actions/upload-pages-artifact@v1
-        with:
-          path: ./www
-
-  deploy:
-    needs: build
-    runs-on: macos-latest
-
-    steps:
-      - name: checkout repository
-        uses: actions/checkout@v3
 
       - name: deploy to github pages
         uses: JamesIves/github-pages-deploy-action@v4

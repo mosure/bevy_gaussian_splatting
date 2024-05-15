@@ -119,7 +119,7 @@ viewer = [
 ]
 
 web = [
-  "buffer_texture",
+  "buffer_storage",
   "f16",
   "io_flexbuffers",
   "io_ply",
@@ -127,7 +127,7 @@ web = [
   "precompute_covariance_3d",
   "sort_std",
   "viewer",
-  "webgl2",
+  "webgpu",
 ]
 
 webgl2 = ["bevy/webgl2"]
