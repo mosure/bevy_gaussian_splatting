@@ -1,6 +1,3 @@
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::prelude::*;
-
 use bevy::prelude::*;
 use bevy_args::{
     Deserialize,
@@ -20,25 +17,34 @@ use bevy_args::{
 pub struct GaussianSplattingViewer {
     #[arg(long, default_value = "true")]
     pub editor: bool,
+
     #[arg(long, default_value = "true")]
     pub press_esc_close: bool,
+
     #[arg(long, default_value = "true")]
     pub press_s_screenshot: bool,
+
     #[arg(long, default_value = "true")]
     pub show_fps: bool,
+
     #[arg(long, default_value = "1920.0")]
     pub width: f32,
+
     #[arg(long, default_value = "1080.0")]
     pub height: f32,
+
     #[arg(long, default_value = "bevy_gaussian_splatting")]
     pub name: String,
+
     #[arg(long, default_value = "1")]
     pub msaa_samples: u8,
 
     #[arg(long, default_value = "")]
     pub input_file: String,
+
     #[arg(long, default_value = "0")]
     pub gaussian_count: usize,
+
     #[arg(long, default_value = "0")]
     pub particle_count: usize,
 }
@@ -71,15 +77,15 @@ pub fn setup_hooks() {
 }
 
 
-pub fn log(msg: &str) {
+pub fn log(_msg: &str) {
     #[cfg(debug_assertions)]
     #[cfg(target_arch = "wasm32")]
     {
-        web_sys::console::log_1(&msg.into());
+        web_sys::console::log_1(&_msg.into());
     }
     #[cfg(debug_assertions)]
     #[cfg(not(target_arch = "wasm32"))]
     {
-        println!("{}", msg);
+        println!("{}", _msg);
     }
 }
