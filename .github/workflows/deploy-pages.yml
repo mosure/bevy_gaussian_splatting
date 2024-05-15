@@ -29,6 +29,9 @@ jobs:
           components: rustfmt, clippy
           enable-sccache: "true"
 
+      - name: install wasm32-unknown-unknown
+        run: rustup target add wasm32-unknown-unknown
+
       - name: install wasm-bindgen-cli
         run: cargo install wasm-bindgen-cli
 
