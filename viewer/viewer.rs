@@ -101,11 +101,13 @@ fn setup_particle_behavior(
     mut commands: Commands,
     gaussian_splatting_viewer: Res<GaussianSplattingViewer>,
     mut particle_behavior_assets: ResMut<Assets<ParticleBehaviors>>,
-    gaussian_cloud: Query<(
-        Entity,
-        &Handle<GaussianCloud>,
+    gaussian_cloud: Query<
+        (
+            Entity,
+            &Handle<GaussianCloud>,
+        ),
         Without<Handle<ParticleBehaviors>>,
-    )>,
+    >,
 ) {
     if gaussian_cloud.is_empty() {
         return;

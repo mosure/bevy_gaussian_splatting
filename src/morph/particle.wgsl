@@ -3,7 +3,7 @@
 #import bevy_gaussian_splatting::bindings::{
     gaussian_uniforms,
     globals,
-    points,
+    position_visibility,
 }
 #import bevy_gaussian_splatting::spherical_harmonics::spherical_harmonics_lookup
 #import bevy_gaussian_splatting::transform::{
@@ -31,7 +31,7 @@ fn apply_particle_behaviors(
     let behavior = particle_behaviors[behavior_index];
 
     let point_index = behavior.indicies.x;
-    let point = points[point_index];
+    let point = position_visibility[point_index];
 
     // TODO: add gaussian attribute setters for 4d capability
 
@@ -39,7 +39,7 @@ fn apply_particle_behaviors(
     let delta_velocity = behavior.acceleration * globals.delta_time + 0.5 * behavior.jerk * globals.delta_time * globals.delta_time;
     let delta_acceleration = behavior.jerk * globals.delta_time;
 
-    let new_position = point.position_visibility + delta_position;
+    let new_position = point + delta_position;
     let new_velocity = behavior.velocity + delta_velocity;
     let new_acceleration = behavior.acceleration + delta_acceleration;
 
@@ -49,7 +49,7 @@ fn apply_particle_behaviors(
         return;
     }
 
-    points[point_index].position_visibility = new_position;
+    position_visibility[point_index] = new_position;
     particle_behaviors[behavior_index].velocity = new_velocity;
     particle_behaviors[behavior_index].acceleration = new_acceleration;
 }

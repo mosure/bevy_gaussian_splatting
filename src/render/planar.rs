@@ -163,7 +163,7 @@ pub fn get_bind_group_layout(
                 binding: 1,
                 visibility: ShaderStages::all(),
                 ty: BindingType::Buffer {
-                    ty: BufferBindingType::Storage { read_only },
+                    ty: BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
                     min_binding_size: BufferSize::new(std::mem::size_of::<SphericalHarmonicCoefficients>() as u64),
                 },
@@ -173,7 +173,7 @@ pub fn get_bind_group_layout(
                 binding: 2,
                 visibility: ShaderStages::all(),
                 ty: BindingType::Buffer {
-                    ty: BufferBindingType::Storage { read_only },
+                    ty: BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
                     min_binding_size: BufferSize::new(std::mem::size_of::<RotationScaleOpacityPacked128>() as u64),
                 },

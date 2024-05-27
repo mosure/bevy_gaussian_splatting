@@ -52,7 +52,7 @@ default = [
   "query_select",
   # "query_sparse",
 
-  # "morph_particles",
+  "morph_particles",
 
   # "sort_radix",  # TODO: fix macos radix sort
   "sort_rayon",

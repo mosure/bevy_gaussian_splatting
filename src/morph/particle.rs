@@ -61,6 +61,7 @@ use bevy::{
             NodeRunError,
             RenderGraphApp,
             RenderGraphContext,
+            RenderLabel,
         },
         Render,
         RenderApp,
@@ -88,9 +89,9 @@ use crate::render::{
 
 
 const PARTICLE_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(234553453455);
-pub mod node {
-    pub const MORPH: &str = "gaussian_cloud_particle_behavior";
-}
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
+pub struct MorphLabel;
 
 
 #[derive(Default)]
@@ -114,11 +115,11 @@ impl Plugin for ParticleBehaviorPlugin {
             render_app
                 .add_render_graph_node::<ParticleBehaviorNode>(
                     Core3d,
-                    node::MORPH,
+                    MorphLabel,
                 )
                 .add_render_graph_edge(
                     Core3d,
-                    node::MORPH,
+                    MorphLabel,
                     Node3d::Prepass,
                 );
 
