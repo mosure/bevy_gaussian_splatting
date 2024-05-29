@@ -171,6 +171,7 @@ features = [
   "bevy_core_pipeline",
   "bevy_render",
   "bevy_winit",
+  "x11",
 ]
 
 
