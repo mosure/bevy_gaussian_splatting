@@ -702,7 +702,7 @@ pub fn extract_gaussians(
         let cloud = gaussian_cloud_res.get(cloud_handle).unwrap();
 
         let settings_uniform = GaussianCloudUniform {
-            transform: settings.global_transform.compute_matrix(),
+            transform: settings.transform.compute_matrix(),
             global_scale: settings.global_scale,
             count: cloud.count as u32,
             count_root_ceil: (cloud.count as f32).sqrt().ceil() as u32,

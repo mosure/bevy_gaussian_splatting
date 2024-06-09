@@ -1,6 +1,7 @@
 use bevy::{
     prelude::*,
     asset::LoadState,
+    math::Vec3A,
     utils::Instant,
 };
 
@@ -36,10 +37,10 @@ pub fn rayon_sort(
         &GaussianCloudSettings,
     )>,
     cameras: Query<(
-        &GlobalTransform,
+        &Transform,
         &Camera3d,
     )>,
-    mut last_camera_position: Local<Vec3>,
+    mut last_camera_position: Local<Vec3A>,
     mut last_sort_time: Local<Option<Instant>>,
     mut period: Local<std::time::Duration>,
     mut sort_done: Local<bool>,
@@ -63,7 +64,7 @@ pub fn rayon_sort(
         camera_transform,
         _camera,
     ) in cameras.iter() {
-        let camera_position = camera_transform.compute_transform().translation;
+        let camera_position = camera_transform.compute_affine().translation;
         let camera_movement = *last_camera_position != camera_position;
 
         if camera_movement {
@@ -104,7 +105,9 @@ pub fn rayon_sort(
                         .zip(sorted_entries.sorted.par_iter_mut())
                         .enumerate()
                         .for_each(|(idx, (position, sort_entry))| {
-                            let position = Vec3::from_slice(position.as_ref());
+                            let position = Vec3A::from_slice(position.as_ref());
+                            let position = settings.transform.compute_affine().transform_point3a(position);
+
                             let delta = camera_position - position;
 
                             sort_entry.key = bytemuck::cast(delta.length_squared());
