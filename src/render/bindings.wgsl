@@ -8,7 +8,7 @@
 @group(0) @binding(1) var<uniform> globals: Globals;
 
 struct GaussianUniforms {
-    global_transform: mat4x4<f32>,
+    transform: mat4x4<f32>,
     global_scale: f32,
     count: u32,
     count_root_ceil: u32,

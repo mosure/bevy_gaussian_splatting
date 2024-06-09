@@ -144,6 +144,12 @@ fn compute_cov3d(scale: vec3<f32>, rotation: vec4<f32>) -> array<f32, 6> {
     let y = rotation.z;
     let z = rotation.w;
 
+    let T = mat3x3<f32>(
+        gaussian_uniforms.transform[0].xyz,
+        gaussian_uniforms.transform[1].xyz,
+        gaussian_uniforms.transform[2].xyz,
+    );
+
     let R = mat3x3<f32>(
         1.0 - 2.0 * (y * y + z * z),
         2.0 * (x * y - r * z),
@@ -160,14 +166,15 @@ fn compute_cov3d(scale: vec3<f32>, rotation: vec4<f32>) -> array<f32, 6> {
 
     let M = S * R;
     let Sigma = transpose(M) * M;
+    let TS = T * Sigma * transpose(T);
 
     return array<f32, 6>(
-        Sigma[0][0],
-        Sigma[0][1],
-        Sigma[0][2],
-        Sigma[1][1],
-        Sigma[1][2],
-        Sigma[2][2],
+        TS[0][0],
+        TS[0][1],
+        TS[0][2],
+        TS[1][1],
+        TS[1][2],
+        TS[2][2],
     );
 }
 
@@ -320,7 +327,7 @@ fn vs_points(
 
     let position = vec4<f32>(get_position(splat_index), 1.0);
 
-    let transformed_position = (gaussian_uniforms.global_transform * position).xyz;
+    let transformed_position = (gaussian_uniforms.transform * position).xyz;
     let projected_position = world_to_clip(transformed_position);
 
     discard_quad |= !in_frustum(projected_position.xyz);
@@ -353,8 +360,8 @@ fn vs_points(
     let first_position = vec4<f32>(get_position(get_entry(1u).value), 1.0);
     let last_position = vec4<f32>(get_position(get_entry(gaussian_uniforms.count - 1u).value), 1.0);
 
-    let min_position = (gaussian_uniforms.global_transform * first_position).xyz;
-    let max_position = (gaussian_uniforms.global_transform * last_position).xyz;
+    let min_position = (gaussian_uniforms.transform * first_position).xyz;
+    let max_position = (gaussian_uniforms.transform * last_position).xyz;
 
     let camera_position = view.world_position;
 

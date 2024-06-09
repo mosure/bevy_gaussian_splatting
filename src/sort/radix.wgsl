@@ -67,7 +67,7 @@ fn radix_sort_a(
         }
         var key: u32 = 0xFFFFFFFFu; // Stream compaction for frustum culling
         let position = vec4<f32>(get_position(entry_index), 1.0);
-        let transformed_position = (gaussian_uniforms.global_transform * position).xyz;
+        let transformed_position = (gaussian_uniforms.transform * position).xyz;
         let clip_space_pos = world_to_clip(transformed_position);
         if(in_frustum(clip_space_pos.xyz)) {
             // key = bitcast<u32>(1.0 - clip_space_pos.z);

@@ -25,7 +25,7 @@ pub enum GaussianCloudDrawMode {
 pub struct GaussianCloudSettings {
     pub aabb: bool,
     pub global_scale: f32,
-    pub global_transform: GlobalTransform,
+    pub transform: Transform,
     pub visualize_bounding_box: bool,
     pub visualize_depth: bool,
     pub sort_mode: SortMode,
@@ -37,7 +37,7 @@ impl Default for GaussianCloudSettings {
         Self {
             aabb: false,
             global_scale: 1.0,
-            global_transform: Transform::IDENTITY.into(),
+            transform: Transform::IDENTITY.into(),
             visualize_bounding_box: false,
             visualize_depth: false,
             sort_mode: SortMode::default(),
