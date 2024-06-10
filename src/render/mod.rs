@@ -61,6 +61,7 @@ use crate::{
         cloud::GaussianCloud,
         settings::{
             GaussianCloudDrawMode,
+            GaussianCloudRasterize,
             GaussianCloudSettings,
         },
     },
@@ -305,8 +306,8 @@ fn queue_gaussians(
             let key = GaussianCloudPipelineKey {
                 aabb: settings.aabb,
                 visualize_bounding_box: settings.visualize_bounding_box,
-                visualize_depth: settings.visualize_depth,
                 draw_mode: settings.draw_mode,
+                rasterize_mode: settings.rasterize_mode,
                 sample_count: msaa.samples(),
             };
 
@@ -521,10 +522,6 @@ pub fn shader_defs(
     #[cfg(feature = "morph_particles")]
     shader_defs.push("READ_WRITE_POINTS".into());
 
-    if key.visualize_depth {
-        shader_defs.push("VISUALIZE_DEPTH".into());
-    }
-
     #[cfg(feature = "packed")]
     shader_defs.push("PACKED".into());
 
@@ -561,6 +558,12 @@ pub fn shader_defs(
     #[cfg(feature = "webgl2")]
     shader_defs.push("WEBGL2".into());
 
+    match key.rasterize_mode {
+        GaussianCloudRasterize::Color => {},
+        GaussianCloudRasterize::Depth => shader_defs.push("RASTERIZE_DEPTH".into()),
+        GaussianCloudRasterize::Normal => shader_defs.push("RASTERIZE_NORMAL".into()),
+    }
+
     match key.draw_mode {
         GaussianCloudDrawMode::All => {},
         GaussianCloudDrawMode::Selected => shader_defs.push("DRAW_SELECTED".into()),
@@ -574,8 +577,8 @@ pub fn shader_defs(
 pub struct GaussianCloudPipelineKey {
     pub aabb: bool,
     pub visualize_bounding_box: bool,
-    pub visualize_depth: bool,
     pub draw_mode: GaussianCloudDrawMode,
+    pub rasterize_mode: GaussianCloudRasterize,
     pub sample_count: u32,
 }
 

@@ -130,27 +130,15 @@ struct GaussianVertexOutput {
 #endif
 
 
-// https://github.com/cvlab-epfl/gaussian-splatting-web/blob/905b3c0fb8961e42c79ef97e64609e82383ca1c2/src/shaders.ts#L185
-// TODO: precompute
-fn compute_cov3d(scale: vec3<f32>, rotation: vec4<f32>) -> array<f32, 6> {
-    let S = mat3x3<f32>(
-        scale.x * gaussian_uniforms.global_scale, 0.0, 0.0,
-        0.0, scale.y * gaussian_uniforms.global_scale, 0.0,
-        0.0, 0.0, scale.z * gaussian_uniforms.global_scale,
-    );
-
+fn get_rotation_matrix(
+    rotation: vec4<f32>,
+) -> mat3x3<f32> {
     let r = rotation.x;
     let x = rotation.y;
     let y = rotation.z;
     let z = rotation.w;
 
-    let T = mat3x3<f32>(
-        gaussian_uniforms.transform[0].xyz,
-        gaussian_uniforms.transform[1].xyz,
-        gaussian_uniforms.transform[2].xyz,
-    );
-
-    let R = mat3x3<f32>(
+    return mat3x3<f32>(
         1.0 - 2.0 * (y * y + z * z),
         2.0 * (x * y - r * z),
         2.0 * (x * z + r * y),
@@ -163,6 +151,31 @@ fn compute_cov3d(scale: vec3<f32>, rotation: vec4<f32>) -> array<f32, 6> {
         2.0 * (y * z + r * x),
         1.0 - 2.0 * (x * x + y * y),
     );
+}
+
+fn get_scale_matrix(
+    scale: vec3<f32>,
+) -> mat3x3<f32> {
+    return mat3x3<f32>(
+        scale.x * gaussian_uniforms.global_scale, 0.0, 0.0,
+        0.0, scale.y * gaussian_uniforms.global_scale, 0.0,
+        0.0, 0.0, scale.z * gaussian_uniforms.global_scale,
+    );
+}
+
+
+// https://github.com/cvlab-epfl/gaussian-splatting-web/blob/905b3c0fb8961e42c79ef97e64609e82383ca1c2/src/shaders.ts#L185
+// TODO: precompute
+fn compute_cov3d(scale: vec3<f32>, rotation: vec4<f32>) -> array<f32, 6> {
+    let S = get_scale_matrix(scale);
+
+    let T = mat3x3<f32>(
+        gaussian_uniforms.transform[0].xyz,
+        gaussian_uniforms.transform[1].xyz,
+        gaussian_uniforms.transform[2].xyz,
+    );
+
+    let R = get_rotation_matrix(rotation);
 
     let M = S * R;
     let Sigma = transpose(M) * M;
@@ -356,7 +369,7 @@ fn vs_points(
 
     var rgb = vec3<f32>(0.0);
 
-#ifdef VISUALIZE_DEPTH
+#ifdef RASTERIZE_DEPTH
     let first_position = vec4<f32>(get_position(get_entry(1u).value), 1.0);
     let last_position = vec4<f32>(get_position(get_entry(gaussian_uniforms.count - 1u).value), 1.0);
 
@@ -373,6 +386,33 @@ fn vs_points(
         depth,
         min_distance,
         max_distance,
+    );
+#else ifdef RASTERIZE_NORMAL
+    let T = mat3x3<f32>(
+        gaussian_uniforms.transform[0].xyz,
+        gaussian_uniforms.transform[1].xyz,
+        gaussian_uniforms.transform[2].xyz,
+    );
+
+    let R = get_rotation_matrix(get_rotation(splat_index));
+    let S = get_scale_matrix(get_scale(splat_index));
+
+    let M = S * R;
+    let Sigma = transpose(M) * M;
+
+    let N = T * Sigma * transpose(T);
+    let normal = vec3<f32>(
+        N[0][0],
+        N[0][1],
+        N[1][1],
+    );
+
+    let t = normalize(normal);
+
+    rgb = vec3<f32>(
+        0.5 * (t.x + 1.0),
+        0.5 * (t.y + 1.0),
+        0.5 * (t.z + 1.0)
     );
 #else
     rgb = get_color(splat_index, ray_direction);

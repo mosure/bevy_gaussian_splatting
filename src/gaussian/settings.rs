@@ -20,6 +20,25 @@ pub enum GaussianCloudDrawMode {
     HighlightSelected,
 }
 
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    Hash,
+    PartialEq,
+    Reflect,
+)]
+pub enum GaussianCloudRasterize {
+    #[default]
+    Color,
+    Depth,
+    Normal,
+}
+
+
 #[derive(Component, Reflect, Clone)]
 #[reflect(Component)]
 pub struct GaussianCloudSettings {
@@ -27,9 +46,9 @@ pub struct GaussianCloudSettings {
     pub global_scale: f32,
     pub transform: Transform,
     pub visualize_bounding_box: bool,
-    pub visualize_depth: bool,
     pub sort_mode: SortMode,
     pub draw_mode: GaussianCloudDrawMode,
+    pub rasterize_mode: GaussianCloudRasterize,
 }
 
 impl Default for GaussianCloudSettings {
@@ -39,9 +58,9 @@ impl Default for GaussianCloudSettings {
             global_scale: 1.0,
             transform: Transform::IDENTITY,
             visualize_bounding_box: false,
-            visualize_depth: false,
             sort_mode: SortMode::default(),
             draw_mode: GaussianCloudDrawMode::default(),
+            rasterize_mode: GaussianCloudRasterize::default(),
         }
     }
 }
