@@ -323,6 +323,17 @@ fn get_bounding_box(
 //     // TODO: compute cov2d, color (any non-quad gaussian property)
 // }
 
+fn inverted_infinity_norm(v: vec3<f32>) -> vec3<f32> {
+    let min_value = min(v.x, min(v.y, v.z));
+    let min_vec = vec3<f32>(min_value);
+
+    return select(
+        vec3<f32>(0.0),
+        vec3<f32>(1.0),
+        v == min_vec,
+    );
+}
+
 
 @vertex
 fn vs_points(
@@ -395,7 +406,9 @@ fn vs_points(
     );
 
     let R = get_rotation_matrix(get_rotation(splat_index));
-    let S = get_scale_matrix(get_scale(splat_index));
+    let scale = get_scale(splat_index);
+    let scale_inf = inverted_infinity_norm(scale);
+    let S = get_scale_matrix(scale_inf);
 
     let M = S * R;
     let Sigma = transpose(M) * M;
