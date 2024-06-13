@@ -136,6 +136,7 @@ webgpu = ["bevy/webgpu"]
 [dependencies]
 bevy_args = { version = "1.4", optional = true }
 bevy-inspector-egui = { version = "0.24", optional = true }
+bevy_interleave = "0.2"
 bevy_mod_picking = { version = "0.18", optional = true }
 bevy_panorbit_camera = { version = "0.18", optional = true }
 bevy_transform_gizmo = { version = "0.11", optional = true }

@@ -20,6 +20,7 @@ pub mod morph;
 pub mod query;
 pub mod render;
 pub mod sort;
+pub mod surfel;
 pub mod utils;
 
 #[cfg(feature = "noise")]
