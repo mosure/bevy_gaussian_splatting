@@ -30,6 +30,7 @@ mod frame_capture {
         use bevy::render::render_graph::{self, NodeRunError, RenderGraph, RenderGraphContext, RenderLabel};
         use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue};
         use bevy::render::{Extract, RenderApp};
+        use bevy::render::texture::GpuImage;
 
         use bevy::render::render_resource::{
             Buffer, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d,
@@ -344,14 +345,14 @@ mod frame_capture {
                             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("headless_output");
                         std::fs::create_dir_all(&images_dir).unwrap();
 
-                        let uuid = bevy::utils::Uuid::new_v4();
+                        let uuid = bevy::utils::uuid::new_v4();
                         let image_path = images_dir.join(format!("{uuid}.png"));
                         if let Err(e) = img.save(image_path){
                             panic!("Failed to save image: {}", e);
                         };
                     }
                     if scene_controller.single_image {
-                        app_exit_writer.send(AppExit);
+                        app_exit_writer.send(AppExit::Success);
                     }
                 } else {
                     scene_controller.state = SceneState::Render(n - 1);
@@ -427,7 +428,7 @@ fn headless_app() {
 
     // setup frame capture
     app.insert_resource(frame_capture::scene::SceneController::new(config.width, config.height, config.single_image));
-    app.insert_resource(ClearColor(Color::rgb_u8(0, 0, 0)));
+    app.insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)));
 
     app.add_plugins(
         DefaultPlugins

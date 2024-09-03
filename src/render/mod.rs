@@ -45,6 +45,7 @@ use bevy::{
         },
         render_resource::*,
         renderer::RenderDevice,
+        texture::GpuImage,
         view::{
             ExtractedView,
             ViewUniform,
