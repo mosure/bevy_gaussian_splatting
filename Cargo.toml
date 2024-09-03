@@ -109,7 +109,6 @@ headless = [
 ]
 
 viewer = [
-  "bevy_args",
   "bevy-inspector-egui",
   "bevy_panorbit_camera",
   # "bevy_transform_gizmo",
@@ -134,7 +133,7 @@ webgpu = ["bevy/webgpu"]
 
 
 [dependencies]
-bevy_args = { version = "1.4", optional = true }
+bevy_args = { version = "1.4.2" }
 bevy-inspector-egui = { version = "0.24", optional = true }
 bevy_mod_picking = { version = "0.18", optional = true }
 bevy_panorbit_camera = { version = "0.18", optional = true }
