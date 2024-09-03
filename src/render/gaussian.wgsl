@@ -381,6 +381,7 @@ fn vs_points(
     var rgb = vec3<f32>(0.0);
 
 #ifdef RASTERIZE_DEPTH
+    // TODO: unbiased depth rendering, see: https://zju3dv.github.io/pgsr/
     let first_position = vec4<f32>(get_position(get_entry(1u).value), 1.0);
     let last_position = vec4<f32>(get_position(get_entry(gaussian_uniforms.count - 1u).value), 1.0);
 
