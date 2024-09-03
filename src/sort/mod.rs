@@ -104,7 +104,7 @@ impl Plugin for SortPlugin {
         app.init_asset::<SortedEntries>();
         app.register_asset_reflect::<SortedEntries>();
 
-        app.add_plugins(RenderAssetPlugin::<SortedEntries>::default());
+        app.add_plugins(RenderAssetPlugin::<GpuSortedEntry>::default());
 
         app.add_systems(Update, auto_insert_sorted_entries);
 
@@ -244,32 +244,32 @@ pub struct SortedEntries {
     pub texture: Handle<Image>,
 }
 
-impl RenderAsset for SortedEntries {
-    type PreparedAsset = GpuSortedEntry;
+impl RenderAsset for GpuSortedEntry {
+    type SourceAsset = SortedEntries;
     type Param = SRes<RenderDevice>;
 
     fn prepare_asset(
-        self,
+        source: Self::SourceAsset,
         render_device: &mut SystemParamItem<Self::Param>,
-    ) -> Result<Self::PreparedAsset, PrepareAssetError<Self>> {
+    ) -> Result<Self, PrepareAssetError<Self::SourceAsset>> {
         let sorted_entry_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("sorted_entry_buffer"),
-            contents: bytemuck::cast_slice(self.sorted.as_slice()),
+            contents: bytemuck::cast_slice(source.sorted.as_slice()),
             usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::STORAGE,
         });
 
-        let count = self.sorted.len();
+        let count = source.sorted.len();
 
         Ok(GpuSortedEntry {
             sorted_entry_buffer,
             count,
 
             #[cfg(feature = "buffer_texture")]
-            texture: self.texture,
+            texture: source.texture,
         })
     }
 
-    fn asset_usage(&self) -> RenderAssetUsages {
+    fn asset_usage(_: &Self::SourceAsset) -> RenderAssetUsages {
         RenderAssetUsages::default()
     }
 }

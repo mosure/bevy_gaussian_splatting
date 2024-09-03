@@ -34,8 +34,8 @@ pub struct GaussianSplattingBundle {
 }
 
 
-#[derive(Component, Default)]
-struct GaussianSplattingCamera;
+// #[derive(Component, Default)]
+// struct GaussianSplattingCamera;
 // TODO: filter camera 3D entities
 
 pub struct GaussianSplattingPlugin;

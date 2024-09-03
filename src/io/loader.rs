@@ -5,14 +5,11 @@ use std::io::{
     ErrorKind,
 };
 
-use bevy::{
-    asset::{
-        AssetLoader,
-        AsyncReadExt,
-        LoadContext,
-        io::Reader,
-    },
-    utils::BoxedFuture,
+use bevy::asset::{
+    AssetLoader,
+    AsyncReadExt,
+    LoadContext,
+    io::Reader,
 };
 
 use crate::{
@@ -29,42 +26,39 @@ impl AssetLoader for GaussianCloudLoader {
     type Settings = ();
     type Error = std::io::Error;
 
-    fn load<'a>(
+    async fn load<'a>(
         &'a self,
-        reader: &'a mut Reader,
+        reader: &'a mut Reader<'_>,
         _settings: &'a Self::Settings,
-        load_context: &'a mut LoadContext,
-    ) -> BoxedFuture<'a, Result<Self::Asset, Self::Error>> {
+        load_context: &'a mut LoadContext<'_>,
+    ) -> Result<Self::Asset, Self::Error> {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await?;
 
-        Box::pin(async move {
-            let mut bytes = Vec::new();
-            reader.read_to_end(&mut bytes).await?;
+        match load_context.path().extension() {
+            Some(ext) if ext == "ply" => {
+                #[cfg(feature = "io_ply")]
+                {
+                    let cursor = Cursor::new(bytes);
+                    let mut f = BufReader::new(cursor);
 
-            match load_context.path().extension() {
-                Some(ext) if ext == "ply" => {
-                    #[cfg(feature = "io_ply")]
-                    {
-                        let cursor = Cursor::new(bytes);
-                        let mut f = BufReader::new(cursor);
+                    let gaussians = crate::io::ply::parse_ply(&mut f)?;
 
-                        let gaussians = crate::io::ply::parse_ply(&mut f)?;
+                    Ok(GaussianCloud::from_gaussians(gaussians))
+                }
 
-                        Ok(GaussianCloud::from_gaussians(gaussians))
-                    }
+                #[cfg(not(feature = "io_ply"))]
+                {
+                    Err(std::io::Error::new(ErrorKind::Other, "ply support not enabled, enable with io_ply feature"))
+                }
+            },
+            Some(ext) if ext == "gcloud" => {
+                let cloud = GaussianCloud::decode(bytes.as_slice());
 
-                    #[cfg(not(feature = "io_ply"))]
-                    {
-                        Err(std::io::Error::new(ErrorKind::Other, "ply support not enabled, enable with io_ply feature"))
-                    }
-                },
-                Some(ext) if ext == "gcloud" => {
-                    let cloud = GaussianCloud::decode(bytes.as_slice());
-
-                    Ok(cloud)
-                },
-                _ => Err(std::io::Error::new(ErrorKind::Other, "only .ply and .gcloud supported")),
-            }
-        })
+                Ok(cloud)
+            },
+            _ => Err(std::io::Error::new(ErrorKind::Other, "only .ply and .gcloud supported")),
+        }
     }
 
     fn extensions(&self) -> &[&str] {

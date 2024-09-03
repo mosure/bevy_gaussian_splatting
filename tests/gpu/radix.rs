@@ -30,7 +30,7 @@ use bevy::{
             RenderGraphApp,
             RenderGraphContext,
         },
-        render_phase::RenderPhase,
+        render_phase::SortedRenderPhase,
         view::ExtractedView,
     },
 };
@@ -65,7 +65,7 @@ fn main() {
 
     app.add_systems(Startup, setup);
 
-    if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
+    if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
         render_app
             .add_render_graph_node::<RadixTestNode>(
                 CORE_3D,
@@ -117,7 +117,7 @@ pub struct RadixTestNode {
     state: TestStateArc,
     views: QueryState<(
         &'static ExtractedView,
-        &'static RenderPhase<Transparent3d>,
+        &'static SortedRenderPhase<Transparent3d>,
     )>,
     start_frame: u32,
 }
@@ -171,8 +171,8 @@ impl Node for RadixTestNode {
                 cloud_handle,
                 sorted_entries_handle,
             ) in self.gaussian_clouds.iter_manual(world) {
-                let gaussian_cloud_res = world.get_resource::<RenderAssets<GaussianCloud>>().unwrap();
-                let sorted_entries_res = world.get_resource::<RenderAssets<SortedEntries>>().unwrap();
+                let gaussian_cloud_res = world.get_resource::<RenderAssets<GpuGaussianCloud>>().unwrap();
+                let sorted_entries_res = world.get_resource::<RenderAssets<GpuSortedEntry>>().unwrap();
 
                 let mut state = self.state.lock().unwrap();
                 if gaussian_cloud_res.get(cloud_handle).is_none() || sorted_entries_res.get(sorted_entries_handle).is_none() {

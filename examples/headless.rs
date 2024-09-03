@@ -85,10 +85,9 @@ mod frame_capture {
 
                 render_app.add_systems(ExtractSchedule, image_copy_extract);
 
-                let mut graph = render_app.world.get_resource_mut::<RenderGraph>().unwrap();
+                let mut graph = render_app.world_mut().get_resource_mut::<RenderGraph>().unwrap();
 
                 graph.add_node(ImageCopyLabel, ImageCopyDriver);
-
                 graph.add_node_edge(ImageCopyLabel, bevy::render::graph::CameraDriverLabel);
             }
         }
@@ -154,7 +153,7 @@ mod frame_capture {
                 world: &World,
             ) -> Result<(), NodeRunError> {
                 let image_copiers = world.get_resource::<ImageCopiers>().unwrap();
-                let gpu_images = world.get_resource::<RenderAssets<Image>>().unwrap();
+                let gpu_images = world.get_resource::<RenderAssets<GpuImage>>().unwrap();
 
                 for image_copier in image_copiers.iter() {
                     if !image_copier.enabled() {
