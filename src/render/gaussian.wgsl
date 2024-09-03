@@ -210,11 +210,11 @@ fn compute_cov2d(
         cov3d[2], cov3d[4], cov3d[5],
     );
 
-    var t = view.inverse_view * vec4<f32>(position, 1.0);
+    var t = view.view_from_world * vec4<f32>(position, 1.0);
 
     let focal = vec2<f32>(
-        view.projection.x.x * view.viewport.z,
-        view.projection.y.y * view.viewport.w,
+        view.clip_from_view .x.x * view.viewport.z,
+        view.clip_from_view .y.y * view.viewport.w,
     );
 
     let s = 1.0 / (t.z * t.z);
@@ -226,9 +226,9 @@ fn compute_cov2d(
 
     let W = transpose(
         mat3x3<f32>(
-            view.inverse_view.x.xyz,
-            view.inverse_view.y.xyz,
-            view.inverse_view.z.xyz,
+            view.view_from_world.x.xyz,
+            view.view_from_world.y.xyz,
+            view.view_from_world.z.xyz,
         )
     );
 
