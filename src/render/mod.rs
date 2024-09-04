@@ -45,7 +45,6 @@ use bevy::{
         },
         render_resource::*,
         renderer::RenderDevice,
-        texture::GpuImage,
         view::{
             ExtractedView,
             ViewUniform,
@@ -751,7 +750,7 @@ fn queue_gaussian_bind_group(
     gaussian_clouds: Query<GpuGaussianBundleQuery>,
 
     #[cfg(feature = "buffer_texture")]
-    gpu_images: Res<RenderAssets<GpuImage>>,
+    gpu_images: Res<RenderAssets<bevy::render::texture::GpuImage>>,
 ) {
     let Some(model) = gaussian_uniforms.buffer() else {
         return;
