@@ -333,7 +333,7 @@ mod frame_capture {
         ) {
             if let SceneState::Render(n) = scene_controller.state {
                 if n < 1 {
-                    for image in images_to_save.iter() {
+                    for (i, image) in images_to_save.iter().enumerate() {
                         let img_bytes = images.get_mut(image.id()).unwrap();
 
                         let img = match img_bytes.clone().try_into_dynamic() {
@@ -345,8 +345,7 @@ mod frame_capture {
                             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("headless_output");
                         std::fs::create_dir_all(&images_dir).unwrap();
 
-                        let uuid = bevy::utils::uuid::new_v4();
-                        let image_path = images_dir.join(format!("{uuid}.png"));
+                        let image_path = images_dir.join(format!("{i}.png"));
                         if let Err(e) = img.save(image_path){
                             panic!("Failed to save image: {}", e);
                         };
