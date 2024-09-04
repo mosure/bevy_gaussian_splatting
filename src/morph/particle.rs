@@ -109,9 +109,9 @@ impl Plugin for ParticleBehaviorPlugin {
         app.register_type::<ParticleBehaviors>();
         app.init_asset::<ParticleBehaviors>();
         app.register_asset_reflect::<ParticleBehaviors>();
-        app.add_plugins(RenderAssetPlugin::<ParticleBehaviors>::default());
+        app.add_plugins(RenderAssetPlugin::<GpuParticleBehaviorBuffers>::default());
 
-        if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
+        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .add_render_graph_node::<ParticleBehaviorNode>(
                     Core3d,
@@ -128,14 +128,14 @@ impl Plugin for ParticleBehaviorPlugin {
                 .add_systems(
                     Render,
                     (
-                        queue_particle_behavior_bind_group.in_set(RenderSet::QueueMeshes),
+                        queue_particle_behavior_bind_group.in_set(RenderSet::Queue),
                     ),
                 );
         }
     }
 
     fn finish(&self, app: &mut App) {
-        if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
+        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .init_resource::<ParticleBehaviorPipeline>();
         }
@@ -172,20 +172,20 @@ pub struct GpuParticleBehaviorBuffers {
     pub particle_behavior_buffer: Buffer,
 }
 
-impl RenderAsset for ParticleBehaviors {
-    type PreparedAsset = GpuParticleBehaviorBuffers;
+impl RenderAsset for GpuParticleBehaviorBuffers {
+    type SourceAsset = ParticleBehaviors;
     type Param = SRes<RenderDevice>;
 
     fn prepare_asset(
-        self,
+        source: Self::SourceAsset,
         render_device: &mut SystemParamItem<Self::Param>,
-    ) -> Result<Self::PreparedAsset, PrepareAssetError<Self>> {
-        let particle_behavior_count = self.0.len() as u32;
+    ) -> Result<Self, PrepareAssetError<Self::SourceAsset>> {
+        let particle_behavior_count = source.0.len() as u32;
 
         let particle_behavior_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("particle behavior buffer"),
             contents: bytemuck::cast_slice(
-                self.0.as_slice()
+                source.0.as_slice()
             ),
             usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::STORAGE,
         });
@@ -196,8 +196,8 @@ impl RenderAsset for ParticleBehaviors {
         })
     }
 
-    fn asset_usage(&self) -> RenderAssetUsages {
-        RenderAssetUsages::RENDER_WORLD
+    fn asset_usage(_: &Self::SourceAsset) -> RenderAssetUsages {
+        RenderAssetUsages::default()
     }
 }
 
@@ -265,7 +265,7 @@ pub fn queue_particle_behavior_bind_group(
     particle_behavior_pipeline: Res<ParticleBehaviorPipeline>,
     render_device: Res<RenderDevice>,
     asset_server: Res<AssetServer>,
-    particle_behaviors_res: Res<RenderAssets<ParticleBehaviors>>,
+    particle_behaviors_res: Res<RenderAssets<GpuParticleBehaviorBuffers>>,
     particle_behaviors: Query<(
         Entity,
         &Handle<ParticleBehaviors>,
@@ -276,11 +276,11 @@ pub fn queue_particle_behavior_bind_group(
             continue;
         }
 
-        if particle_behaviors_res.get(behaviors_handle).is_none() {
+        if particle_behaviors_res.get(behaviors_handle.id()).is_none() {
             continue;
         }
 
-        let behaviors = particle_behaviors_res.get(behaviors_handle).unwrap();
+        let behaviors = particle_behaviors_res.get(behaviors_handle.id()).unwrap();
 
         let particle_behavior_bindgroup = render_device.create_bind_group(
             "particle_behavior_bind_group",
@@ -375,7 +375,7 @@ impl Node for ParticleBehaviorNode {
                 behaviors_handle,
                 particle_behavior_bind_group,
             ) in self.gaussian_clouds.iter_manual(world) {
-                let behaviors = world.get_resource::<RenderAssets<ParticleBehaviors>>().unwrap().get(behaviors_handle).unwrap();
+                let behaviors = world.get_resource::<RenderAssets<GpuParticleBehaviorBuffers>>().unwrap().get(behaviors_handle.id()).unwrap();
                 let gaussian_uniforms = world.resource::<GaussianUniformBindGroups>();
 
                 {

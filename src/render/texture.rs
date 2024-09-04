@@ -115,7 +115,7 @@ pub fn queue_gpu_texture_buffers(
     // gaussian_cloud_pipeline: Res<GaussianCloudPipeline>,
     pipeline: ResMut<GaussianCloudPipeline>,
     render_device: ResMut<RenderDevice>,
-    gpu_images: Res<RenderAssets<Image>>,
+    gpu_images: Res<RenderAssets<GpuImage>>,
     clouds: Query<(
         Entity,
         &TextureBuffers,

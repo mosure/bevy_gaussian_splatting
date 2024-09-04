@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use bevy::{
     prelude::*,
     app::AppExit,
+    color::palettes::css::GOLD,
     core::FrameCount,
     core_pipeline::tonemapping::Tonemapping,
     diagnostic::{
@@ -212,7 +213,7 @@ fn example_app() {
     });
 
     // setup for gaussian viewer app
-    app.insert_resource(ClearColor(Color::rgb_u8(0, 0, 0)));
+    app.insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)));
     app.add_plugins(
         DefaultPlugins
         .set(ImagePlugin::default_nearest())
@@ -302,7 +303,7 @@ pub fn press_esc_close(
     mut exit: EventWriter<AppExit>
 ) {
     if keys.just_pressed(KeyCode::Escape) {
-        exit.send(AppExit);
+        exit.send(AppExit::Success);
     }
 }
 
@@ -345,7 +346,7 @@ fn fps_display_setup(
             TextSection::from_style(TextStyle {
                 font: asset_server.load("fonts/Caveat-Medium.ttf"),
                 font_size: 60.0,
-                color: Color::GOLD,
+                color: Color::Srgba(GOLD),
             }),
         ]).with_style(Style {
             position_type: PositionType::Absolute,

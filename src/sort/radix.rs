@@ -65,6 +65,7 @@ use crate::{
         shader_defs,
     },
     sort::{
+        GpuSortedEntry,
         SortEntry,
         SortedEntries,
         SortMode,
@@ -107,7 +108,7 @@ impl Plugin for RadixSortPlugin {
             Shader::from_wgsl
         );
 
-        if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
+        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .add_render_graph_node::<RadixSortNode>(
                     Core3d,
@@ -123,7 +124,7 @@ impl Plugin for RadixSortPlugin {
                 .add_systems(
                     Render,
                     (
-                        queue_radix_bind_group.in_set(RenderSet::QueueMeshes),
+                        queue_radix_bind_group.in_set(RenderSet::Queue),
                     ),
                 );
 
@@ -133,7 +134,7 @@ impl Plugin for RadixSortPlugin {
     }
 
     fn finish(&self, app: &mut App) {
-        if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
+        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .init_resource::<RadixSortPipeline>();
         }
@@ -205,7 +206,7 @@ impl GpuRadixBuffers {
 
 
 fn update_sort_buffers(
-    gpu_gaussian_clouds: Res<RenderAssets<GaussianCloud>>,
+    gpu_gaussian_clouds: Res<RenderAssets<GpuGaussianCloud>>,
     mut sort_buffers: ResMut<RadixSortBuffers>,
     render_device: Res<RenderDevice>,
 ) {
@@ -364,8 +365,8 @@ pub fn queue_radix_bind_group(
     radix_pipeline: Res<RadixSortPipeline>,
     render_device: Res<RenderDevice>,
     asset_server: Res<AssetServer>,
-    gaussian_cloud_res: Res<RenderAssets<GaussianCloud>>,
-    sorted_entries_res: Res<RenderAssets<SortedEntries>>,
+    gaussian_cloud_res: Res<RenderAssets<GpuGaussianCloud>>,
+    sorted_entries_res: Res<RenderAssets<GpuSortedEntry>>,
     gaussian_clouds: Query<(
         Entity,
         &Handle<GaussianCloud>,
@@ -566,7 +567,7 @@ impl Node for RadixSortNode {
                 cloud_bind_group,
                 radix_bind_group,
             ) in self.gaussian_clouds.iter_manual(world) {
-                let cloud = world.get_resource::<RenderAssets<GaussianCloud>>().unwrap().get(cloud_handle).unwrap();
+                let cloud = world.get_resource::<RenderAssets<GpuGaussianCloud>>().unwrap().get(cloud_handle).unwrap();
 
                 assert!(sort_buffers.asset_map.contains_key(&cloud_handle.id()));
                 let sorting_assets = &sort_buffers.asset_map[&cloud_handle.id()];

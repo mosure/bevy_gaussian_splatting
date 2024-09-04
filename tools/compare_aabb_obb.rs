@@ -105,7 +105,7 @@ fn compare_aabb_obb_app() {
     let mut app = App::new();
 
     // setup for gaussian viewer app
-    app.insert_resource(ClearColor(Color::rgb_u8(0, 0, 0)));
+    app.insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)));
     app.add_plugins(
         DefaultPlugins
         .set(ImagePlugin::default_nearest())
@@ -144,7 +144,7 @@ pub fn esc_close(
     mut exit: EventWriter<AppExit>
 ) {
     if keys.just_pressed(KeyCode::Escape) {
-        exit.send(AppExit);
+        exit.send(AppExit::Success);
     }
 }
 
