@@ -30,7 +30,7 @@ jobs:
       with:
         toolchain: ${{ matrix.rust-toolchain }}
         components: rustfmt, clippy
-        enable-sccache: "true"
+        enable-sccache: "false"
 
     - name: build
       run: cargo build
@@ -55,7 +55,7 @@ jobs:
       with:
         toolchain: ${{ matrix.rust-toolchain }}
         components: rustfmt, clippy
-        enable-sccache: "true"
+        enable-sccache: "false"
 
     - name: build_tools
       run: cargo build --bin ply_to_gcloud

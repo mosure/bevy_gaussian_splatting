@@ -27,7 +27,7 @@ jobs:
         with:
           toolchain: nightly
           components: rustfmt, clippy
-          enable-sccache: "true"
+          enable-sccache: "false"
 
       - name: install wasm32-unknown-unknown
         run: rustup target add wasm32-unknown-unknown
