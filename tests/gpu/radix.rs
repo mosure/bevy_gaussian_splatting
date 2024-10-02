@@ -36,6 +36,7 @@ use bevy::{
 };
 
 use bevy_gaussian_splatting::{
+    GaussianCamera,
     GaussianCloud,
     GaussianSplattingBundle,
     random_gaussians,
@@ -105,6 +106,7 @@ fn setup(
             tonemapping: Tonemapping::None,
             ..default()
         },
+        GaussianCamera,
     ));
 }
 

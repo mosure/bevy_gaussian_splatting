@@ -25,6 +25,7 @@ use bevy_panorbit_camera::{
 };
 
 use bevy_gaussian_splatting::{
+    GaussianCamera,
     GaussianCloud,
     GaussianSplattingBundle,
     GaussianSplattingPlugin,
@@ -93,6 +94,7 @@ fn setup_gaussian_cloud(
             zoom_smoothness: 0.0,
             ..default()
         },
+        GaussianCamera,
     ));
 }
 

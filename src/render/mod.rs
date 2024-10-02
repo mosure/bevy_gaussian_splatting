@@ -1,6 +1,7 @@
 use std::hash::Hash;
 
 use bevy::{
+    prelude::*,
     asset::{
         load_internal_asset,
         LoadState,
@@ -13,12 +14,13 @@ use bevy::{
             SystemParamItem,
         }
     },
-    prelude::*,
     render::{
         Extract,
         extract_component::{
             ComponentUniforms,
             DynamicUniformIndex,
+            ExtractComponent,
+            ExtractComponentPlugin,
             UniformComponentPlugin,
         },
         globals::{
@@ -144,6 +146,7 @@ impl Plugin for RenderPipelinePlugin {
             Shader::from_wgsl
         );
 
+        app.add_plugins(ExtractComponentPlugin::<GaussianCamera>::default());
         app.add_plugins(RenderAssetPlugin::<GpuGaussianCloud>::default());
         app.add_plugins(UniformComponentPlugin::<GaussianCloudUniform>::default());
 
@@ -273,7 +276,13 @@ fn queue_gaussians(
     gaussian_clouds: Res<RenderAssets<GpuGaussianCloud>>,
     sorted_entries: Res<RenderAssets<GpuSortedEntry>>,
     mut transparent_render_phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
-    mut views: Query<(Entity, &ExtractedView)>,
+    mut views: Query<
+        (
+            Entity,
+            &ExtractedView
+        ),
+        With<GaussianCamera>,
+    >,
     msaa: Res<Msaa>,
     gaussian_splatting_bundles: Query<GpuGaussianBundleQuery>,
 ) {
@@ -845,6 +854,16 @@ fn queue_gaussian_bind_group(
     }
 }
 
+#[derive(
+    Clone,
+    Component,
+    Debug,
+    Default,
+    ExtractComponent,
+    Reflect,
+)]
+pub struct GaussianCamera;
+
 #[derive(Component)]
 pub struct GaussianViewBindGroup {
     pub value: BindGroup,
@@ -855,10 +874,13 @@ pub fn queue_gaussian_view_bind_groups(
     render_device: Res<RenderDevice>,
     gaussian_cloud_pipeline: Res<GaussianCloudPipeline>,
     view_uniforms: Res<ViewUniforms>,
-    views: Query<(
-        Entity,
-        &ExtractedView,
-    )>,
+    views: Query<
+        (
+            Entity,
+            &ExtractedView,
+        ),
+        With<GaussianCamera>,
+    >,
     globals_buffer: Res<GlobalsBuffer>,
 ) {
     if let (
@@ -902,15 +924,20 @@ pub struct SetGaussianViewBindGroup<const I: usize>;
 impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianViewBindGroup<I> {
     type Param = ();
     type ViewQuery = (
-        Read<ViewUniformOffset>,
+        Read<GaussianCamera>,
         Read<GaussianViewBindGroup>,
+        Read<ViewUniformOffset>,
     );
     type ItemQuery = ();
 
     #[inline]
     fn render<'w>(
         _item: &P,
-        (view_uniform, gaussian_view_bind_group): ROQueryItem<
+        (
+            _gaussian_camera,
+            gaussian_view_bind_group,
+            view_uniform,
+        ): ROQueryItem<
             'w,
             Self::ViewQuery,
         >,

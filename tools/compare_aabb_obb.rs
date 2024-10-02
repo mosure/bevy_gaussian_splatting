@@ -15,6 +15,7 @@ use bevy_panorbit_camera::{
 
 use bevy_gaussian_splatting::{
     Gaussian,
+    GaussianCamera,
     GaussianCloud,
     GaussianCloudSettings,
     GaussianSplattingBundle,
@@ -97,6 +98,7 @@ pub fn setup_aabb_obb_compare(
             allow_upside_down: true,
             ..default()
         },
+        GaussianCamera,
     ));
 }
 

@@ -12,6 +12,7 @@ use bevy::{
 use bevy_args::BevyArgsPlugin;
 
 use bevy_gaussian_splatting::{
+    GaussianCamera,
     GaussianCloud,
     GaussianSplattingBundle,
     GaussianSplattingPlugin,
@@ -407,6 +408,7 @@ fn setup_gaussian_cloud(
             },
             ..default()
         },
+        GaussianCamera,
     ));
 }
 

@@ -500,6 +500,7 @@ pub struct RadixSortNode {
     )>,
     initialized: bool,
     view_bind_group: QueryState<(
+        &'static GaussianCamera,
         &'static GaussianViewBindGroup,
         &'static ViewUniformOffset,
     )>,

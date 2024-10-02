@@ -11,6 +11,7 @@ pub use material::spherical_harmonics::SphericalHarmonicCoefficients;
 
 use io::loader::GaussianCloudLoader;
 
+pub use render::GaussianCamera;
 use render::RenderPipelinePlugin;
 
 pub mod gaussian;

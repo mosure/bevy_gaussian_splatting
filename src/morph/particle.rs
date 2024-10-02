@@ -79,6 +79,7 @@ use serde::{
 };
 
 use crate::render::{
+    GaussianCamera,
     GaussianCloudBindGroup,
     GaussianCloudPipeline,
     GaussianCloudPipelineKey,
@@ -313,6 +314,7 @@ pub struct ParticleBehaviorNode {
     )>,
     initialized: bool,
     view_bind_group: QueryState<(
+        &'static GaussianCamera,
         &'static GaussianViewBindGroup,
         &'static ViewUniformOffset,
     )>,
@@ -367,6 +369,7 @@ impl Node for ParticleBehaviorNode {
         let command_encoder = render_context.command_encoder();
 
         for (
+            _gaussian_camera,
             view_bind_group,
             view_uniform_offset,
         ) in self.view_bind_group.iter_manual(world) {
