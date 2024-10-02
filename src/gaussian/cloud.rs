@@ -71,7 +71,6 @@ pub struct GaussianCloud {
     Default,
     PartialEq,
     Reflect,
-    TypePath,
     Serialize,
     Deserialize,
 )]
