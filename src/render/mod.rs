@@ -458,7 +458,7 @@ pub struct ShaderDefines {
 
 impl ShaderDefines {
     pub fn max_tile_count(&self, count: usize) -> u32 {
-        (count as u32 + self.workgroup_entries_c - 1) / self.workgroup_entries_c
+        (count as u32).div_ceil(self.workgroup_entries_c)
     }
 
     pub fn sorting_status_counters_buffer_size(&self, count: usize) -> usize {
