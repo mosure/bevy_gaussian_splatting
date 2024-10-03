@@ -1,7 +1,7 @@
 [package]
 name = "bevy_gaussian_splatting"
 description = "bevy gaussian splatting render pipeline plugin"
-version = "2.4.3"
+version = "2.5.0"
 edition = "2021"
 authors = ["mosure <mitchell@mosure.me>"]
 license = "MIT"
@@ -46,6 +46,7 @@ default = [
 
   # "f32",
   "f16",
+  "sh3",
 
   # "precompute_covariance_3d",
 
@@ -76,6 +77,11 @@ noise = []
 
 f32 = []
 f16 = ["half"]
+
+sh0 = []
+sh1 = []
+sh2 = []
+sh3 = []
 
 precompute_covariance_3d = []
 
@@ -119,6 +125,7 @@ viewer = [
 web = [
   "buffer_storage",
   "f16",
+  "sh0",
   "io_flexbuffers",
   "io_ply",
   "planar",

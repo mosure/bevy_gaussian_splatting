@@ -46,10 +46,16 @@ const fn num_sh_coefficients(degree: usize) -> usize {
 }
 
 
-#[cfg(feature = "web")]
+#[cfg(feature = "sh0")]
 const SH_DEGREE: usize = 0;
 
-#[cfg(not(feature = "web"))]
+#[cfg(feature = "sh1")]
+const SH_DEGREE: usize = 1;
+
+#[cfg(feature = "sh2")]
+const SH_DEGREE: usize = 2;
+
+#[cfg(feature = "sh3")]
 const SH_DEGREE: usize = 3;
 
 pub const SH_CHANNELS: usize = 3;
