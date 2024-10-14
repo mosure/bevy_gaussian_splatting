@@ -66,6 +66,7 @@ use crate::{
             GaussianCloudDrawMode,
             GaussianCloudRasterize,
             GaussianCloudSettings,
+            GaussianMode,
         },
     },
     material::spherical_harmonics::{
@@ -93,6 +94,8 @@ mod texture;
 
 const BINDINGS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(675257236);
 const GAUSSIAN_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(68294581);
+const GAUSSIAN_SURFEL_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(123166726);
+const HELPERS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(134646367);
 const PACKED_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(123623514);
 const PLANAR_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(72345231);
 const TEXTURE_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(26345735);
@@ -115,6 +118,20 @@ impl Plugin for RenderPipelinePlugin {
             app,
             GAUSSIAN_SHADER_HANDLE,
             "gaussian.wgsl",
+            Shader::from_wgsl
+        );
+
+        load_internal_asset!(
+            app,
+            GAUSSIAN_SURFEL_SHADER_HANDLE,
+            "surfel.wgsl",
+            Shader::from_wgsl
+        );
+
+        load_internal_asset!(
+            app,
+            HELPERS_SHADER_HANDLE,
+            "helpers.wgsl",
             Shader::from_wgsl
         );
 
@@ -315,8 +332,10 @@ fn queue_gaussians(
 
             let key = GaussianCloudPipelineKey {
                 aabb: settings.aabb,
+                opacity_adaptive_radius: settings.opacity_adaptive_radius,
                 visualize_bounding_box: settings.visualize_bounding_box,
                 draw_mode: settings.draw_mode,
+                gaussian_mode: settings.gaussian_mode,
                 rasterize_mode: settings.rasterize_mode,
                 sample_count: msaa.samples(),
             };
@@ -525,6 +544,10 @@ pub fn shader_defs(
         shader_defs.push("USE_OBB".into());
     }
 
+    if key.opacity_adaptive_radius {
+        shader_defs.push("OPACITY_ADAPTIVE_RADIUS".into());
+    }
+
     if key.visualize_bounding_box {
         shader_defs.push("VISUALIZE_BOUNDING_BOX".into());
     }
@@ -568,8 +591,13 @@ pub fn shader_defs(
     #[cfg(feature = "webgl2")]
     shader_defs.push("WEBGL2".into());
 
+    match key.gaussian_mode {
+        GaussianMode::Gaussian3d => shader_defs.push("GAUSSIAN_3D".into()),
+        GaussianMode::GaussianSurfel => shader_defs.push("GAUSSIAN_SURFEL".into()),
+    }
+
     match key.rasterize_mode {
-        GaussianCloudRasterize::Color => {},
+        GaussianCloudRasterize::Color => shader_defs.push("RASTERIZE_COLOR".into()),
         GaussianCloudRasterize::Depth => shader_defs.push("RASTERIZE_DEPTH".into()),
         GaussianCloudRasterize::Normal => shader_defs.push("RASTERIZE_NORMAL".into()),
     }
@@ -587,7 +615,9 @@ pub fn shader_defs(
 pub struct GaussianCloudPipelineKey {
     pub aabb: bool,
     pub visualize_bounding_box: bool,
+    pub opacity_adaptive_radius: bool,
     pub draw_mode: GaussianCloudDrawMode,
+    pub gaussian_mode: GaussianMode,
     pub rasterize_mode: GaussianCloudRasterize,
     pub sample_count: u32,
 }

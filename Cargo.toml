@@ -235,6 +235,11 @@ path = "tools/compare_aabb_obb.rs"
 required-features = ["tooling"]
 
 [[bin]]
+name = "surfel_plane"
+path = "tools/surfel_plane.rs"
+required-features = ["tooling"]
+
+[[bin]]
 name = "test_gaussian"
 path = "tests/gpu/gaussian.rs"
 required-features = ["testing"]

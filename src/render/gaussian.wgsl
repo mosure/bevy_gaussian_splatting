@@ -1,6 +1,5 @@
 #import bevy_gaussian_splatting::bindings::{
     view,
-    globals,
     gaussian_uniforms,
     sorting_pass_index,
     sorting,
@@ -11,6 +10,14 @@
 }
 #import bevy_gaussian_splatting::depth::{
     depth_to_rgb,
+}
+#import bevy_gaussian_splatting::helpers::{
+    get_rotation_matrix,
+    get_scale_matrix,
+}
+#import bevy_gaussian_splatting::surfel::{
+    compute_cov2d_surfel,
+    get_bounding_box_cov2d,
 }
 #import bevy_gaussian_splatting::transform::{
     world_to_clip,
@@ -130,40 +137,6 @@ struct GaussianVertexOutput {
 #endif
 
 
-fn get_rotation_matrix(
-    rotation: vec4<f32>,
-) -> mat3x3<f32> {
-    let r = rotation.x;
-    let x = rotation.y;
-    let y = rotation.z;
-    let z = rotation.w;
-
-    return mat3x3<f32>(
-        1.0 - 2.0 * (y * y + z * z),
-        2.0 * (x * y - r * z),
-        2.0 * (x * z + r * y),
-
-        2.0 * (x * y + r * z),
-        1.0 - 2.0 * (x * x + z * z),
-        2.0 * (y * z - r * x),
-
-        2.0 * (x * z - r * y),
-        2.0 * (y * z + r * x),
-        1.0 - 2.0 * (x * x + y * y),
-    );
-}
-
-fn get_scale_matrix(
-    scale: vec3<f32>,
-) -> mat3x3<f32> {
-    return mat3x3<f32>(
-        scale.x * gaussian_uniforms.global_scale, 0.0, 0.0,
-        0.0, scale.y * gaussian_uniforms.global_scale, 0.0,
-        0.0, 0.0, scale.z * gaussian_uniforms.global_scale,
-    );
-}
-
-
 // https://github.com/cvlab-epfl/gaussian-splatting-web/blob/905b3c0fb8961e42c79ef97e64609e82383ca1c2/src/shaders.ts#L185
 // TODO: precompute
 fn compute_cov3d(scale: vec3<f32>, rotation: vec4<f32>) -> array<f32, 6> {
@@ -191,7 +164,7 @@ fn compute_cov3d(scale: vec3<f32>, rotation: vec4<f32>) -> array<f32, 6> {
     );
 }
 
-fn compute_cov2d(
+fn compute_cov2d_3dgs(
     position: vec3<f32>,
     index: u32,
 ) -> vec3<f32> {
@@ -213,8 +186,8 @@ fn compute_cov2d(
     var t = view.view_from_world * vec4<f32>(position, 1.0);
 
     let focal = vec2<f32>(
-        view.clip_from_view .x.x * view.viewport.z,
-        view.clip_from_view .y.y * view.viewport.w,
+        view.clip_from_view.x.x * view.viewport.z,
+        view.clip_from_view.y.y * view.viewport.w,
     );
 
     let s = 1.0 / (t.z * t.z);
@@ -244,6 +217,7 @@ fn compute_cov2d(
 fn get_bounding_box(
     cov2d: vec3<f32>,
     direction: vec2<f32>,
+    cutoff: f32,
 ) -> vec4<f32> {
     // return vec4<f32>(offset, uv);
 
@@ -262,7 +236,7 @@ fn get_bounding_box(
 
 
 #ifdef USE_AABB
-    let radius_px = 3.5 * max(x_axis_length, y_axis_length);
+    let radius_px = cutoff * max(x_axis_length, y_axis_length);
     let radius_ndc = vec2<f32>(
         radius_px / view.viewport.zw,
     );
@@ -280,7 +254,7 @@ fn get_bounding_box(
     let major_radius = sqrt((cov2d.x + cov2d.z + b) * 0.5);
     let minor_radius = sqrt((cov2d.x + cov2d.z - b) * 0.5);
 
-    let bounds = 3.5 * vec2<f32>(
+    let bounds = cutoff * vec2<f32>(
         major_radius,
         minor_radius,
     );
@@ -400,6 +374,7 @@ fn vs_points(
         max_distance,
     );
 #else ifdef RASTERIZE_NORMAL
+    // TODO: support surfel normal rendering
     let T = mat3x3<f32>(
         gaussian_uniforms.transform[0].xyz,
         gaussian_uniforms.transform[1].xyz,
@@ -432,10 +407,18 @@ fn vs_points(
     rgb = get_color(splat_index, ray_direction);
 #endif
 
+    let opacity = get_opacity(splat_index);
+
+#ifdef OPACITY_ADAPTIVE_RADIUS
+    let cutoff = sqrt(max(9.0 + 2.0 * log(opacity), 0.000001));
+#else
+    let cutoff = 3.0;
+#endif
+
     // TODO: verify color benefit for ray_direction computed at quad verticies instead of gaussian center (same as current complexity)
     output.color = vec4<f32>(
         rgb,
-        get_opacity(splat_index),
+        opacity,
     );
 
 #ifdef HIGHLIGHT_SELECTED
@@ -444,7 +427,28 @@ fn vs_points(
     }
 #endif
 
-    let cov2d = compute_cov2d(transformed_position, splat_index);
+#ifdef GAUSSIAN_3D
+    let cov2d = compute_cov2d_3dgs(
+        transformed_position,
+        splat_index,
+    );
+    let bb = get_bounding_box(
+        cov2d,
+        quad_offset,
+        cutoff,
+    );
+#else ifdef GAUSSIAN_SURFEL
+    let cov2d = compute_cov2d_surfel(
+        transformed_position,
+        splat_index,
+        cutoff,
+    );
+    let bb = get_bounding_box_cov2d(
+        cov2d,
+        quad_offset,
+        cutoff,
+    );
+#endif
 
 #ifdef USE_AABB
     let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
@@ -454,16 +458,12 @@ fn vs_points(
         -cov2d.y * det_inv,
         cov2d.x * det_inv
     );
+    // TODO: this conic seems only valid in 3dgs
     output.conic = conic;
+    output.major_minor = bb.zw;
 #endif
 
-    let bb = get_bounding_box(
-        cov2d,
-        quad_offset,
-    );
-
     output.uv = quad_offset;
-    output.major_minor = bb.zw;
     output.position = vec4<f32>(
         projected_position.xy + bb.xy,
         projected_position.zw
@@ -474,6 +474,8 @@ fn vs_points(
 
 @fragment
 fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
+    // TODO: surfel accumulation
+
 #ifdef USE_AABB
     let d = -input.major_minor;
     let conic = input.conic;
@@ -485,13 +487,13 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
 #endif
 
 #ifdef USE_OBB
-    let sigma = 1.0 / 3.5;
+    let sigma = 1.0 / 3.0;
     let sigma_squared = 2.0 * sigma * sigma;
     let distance_squared = dot(input.uv, input.uv);
 
     let power = -distance_squared / sigma_squared;
 
-    if (distance_squared > 3.5 * 3.5) {
+    if (distance_squared > 3.0 * 3.0) {
         discard;
     }
 #endif
