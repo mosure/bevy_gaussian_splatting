@@ -53,7 +53,7 @@ pub fn setup_surfel_compare(
                 position_visibility: position.into(),
                 rotation: [0.0, 0.0, 0.0, 1.0].into(),
                 scale_opacity: scale.into(),
-                spherical_harmonic: blue_sh.clone(),
+                spherical_harmonic: blue_sh,
             };
             blue_gaussians.push(gaussian);
         }
@@ -89,7 +89,7 @@ pub fn setup_surfel_compare(
                 position_visibility: position.into(),
                 rotation: [0.0, 0.0, 0.0, 1.0].into(),
                 scale_opacity: scale.into(),
-                spherical_harmonic: red_sh.clone(),
+                spherical_harmonic: red_sh,
             };
             red_gaussians.push(gaussian);
         }
