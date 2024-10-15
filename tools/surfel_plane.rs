@@ -47,7 +47,7 @@ pub fn setup_surfel_compare(
             let x = i as f32 * spacing - (grid_size_x as f32 * spacing) / 2.0;
             let y = j as f32 * spacing - (grid_size_y as f32 * spacing) / 2.0;
             let position = [x, y, 0.0, 1.0];
-            let scale = [1.0, 1.0, 0.1, 0.5];
+            let scale = [1.0, 1.0, 0.01, 0.5];
 
             let gaussian = Gaussian {
                 position_visibility: position.into(),
@@ -100,6 +100,7 @@ pub fn setup_surfel_compare(
             cloud: gaussian_assets.add(GaussianCloud::from_gaussians(red_gaussians)),
             settings: GaussianCloudSettings {
                 visualize_bounding_box,
+                aabb: true,
                 transform: Transform::from_translation(Vec3::new(spacing, spacing, 0.0)),
                 gaussian_mode: GaussianMode::GaussianSurfel,
                 ..default()

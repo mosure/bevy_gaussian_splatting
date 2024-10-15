@@ -18,6 +18,7 @@
 #import bevy_gaussian_splatting::surfel::{
     compute_cov2d_surfel,
     get_bounding_box_cov2d,
+    surfel_fragment_power,
 }
 #import bevy_gaussian_splatting::transform::{
     world_to_clip,
@@ -122,17 +123,33 @@ fn get_entry(index: u32) -> Entry {
 struct GaussianVertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) color: vec4<f32>,
-    @location(1) conic: vec3<f32>,
-    @location(2) uv: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+#ifdef GAUSSIAN_3D
+    @location(2) conic: vec3<f32>,
     @location(3) major_minor: vec2<f32>,
+#else ifdef GAUSSIAN_SURFEL
+    @location(2) local_to_pixel_u: vec3<f32>,
+    @location(3) local_to_pixel_v: vec3<f32>,
+    @location(4) local_to_pixel_w: vec3<f32>,
+    @location(5) mean_2d: vec2<f32>,
+    @location(6) radius: vec2<f32>,
+#endif
 };
 #else
 struct GaussianVertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) @interpolate(flat) color: vec4<f32>,
-    @location(1) @interpolate(flat) conic: vec3<f32>,
-    @location(2) @interpolate(linear) uv: vec2<f32>,
+    @location(1) @interpolate(linear) uv: vec2<f32>,
+#ifdef GAUSSIAN_3D
+    @location(2) @interpolate(flat) conic: vec3<f32>,
     @location(3) @interpolate(linear) major_minor: vec2<f32>,
+#else ifdef GAUSSIAN_SURFEL
+    @location(2) @interpolate(flat) local_to_pixel_u: vec3<f32>,
+    @location(3) @interpolate(flat) local_to_pixel_v: vec3<f32>,
+    @location(4) @interpolate(flat) local_to_pixel_w: vec3<f32>,
+    @location(5) @interpolate(flat) mean_2d: vec2<f32>,
+    @location(6) @interpolate(flat) radius: vec2<f32>,
+#endif
 };
 #endif
 
@@ -437,18 +454,6 @@ fn vs_points(
         quad_offset,
         cutoff,
     );
-#else ifdef GAUSSIAN_SURFEL
-    let cov2d = compute_cov2d_surfel(
-        transformed_position,
-        splat_index,
-        cutoff,
-    );
-    let bb = get_bounding_box_cov2d(
-        cov2d,
-        quad_offset,
-        cutoff,
-    );
-#endif
 
 #ifdef USE_AABB
     let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
@@ -463,10 +468,30 @@ fn vs_points(
     output.major_minor = bb.zw;
 #endif
 
+#else ifdef GAUSSIAN_SURFEL
+    let surfel = compute_cov2d_surfel(
+        transformed_position,
+        splat_index,
+        cutoff,
+    );
+
+    output.local_to_pixel_u = surfel.local_to_pixel.x;
+    output.local_to_pixel_v = surfel.local_to_pixel.y;
+    output.local_to_pixel_w = surfel.local_to_pixel.z;
+    output.mean_2d = surfel.mean_2d;
+
+    let bb = get_bounding_box_cov2d(
+        surfel.extent,
+        quad_offset,
+        cutoff,
+    );
+    output.radius = bb.zw;
+#endif
+
     output.uv = quad_offset;
     output.position = vec4<f32>(
         projected_position.xy + bb.xy,
-        projected_position.zw
+        projected_position.zw,
     );
 
     return output;
@@ -474,12 +499,31 @@ fn vs_points(
 
 @fragment
 fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
-    // TODO: surfel accumulation
-
 #ifdef USE_AABB
+#ifdef GAUSSIAN_SURFEL
+    let radius = input.radius;
+    let mean_2d = input.mean_2d;
+    let aspect = vec2<f32>(
+        1.0,
+        view.viewport.z / view.viewport.w,
+    );
+    let pixel_coord = input.uv * radius * aspect + mean_2d;
+    // let pixel_coord = input.position.xy * view.viewport.zw + view.viewport.xy;
+
+    let power = surfel_fragment_power(
+        mat3x3<f32>(
+            input.local_to_pixel_u,
+            input.local_to_pixel_v,
+            input.local_to_pixel_w,
+        ),
+        pixel_coord,
+        mean_2d,
+    );
+#else ifdef GAUSSIAN_3D
     let d = -input.major_minor;
     let conic = input.conic;
     let power = -0.5 * (conic.x * d.x * d.x + conic.z * d.y * d.y) + conic.y * d.x * d.y;
+#endif
 
     if (power > 0.0) {
         discard;
@@ -499,7 +543,7 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
 #endif
 
 #ifdef VISUALIZE_BOUNDING_BOX
-    let uv = (input.uv + 1.0) / 2.0;
+    let uv = input.uv * 0.5 + 0.5;
     let edge_width = 0.08;
     if (
         (uv.x < edge_width || uv.x > 1.0 - edge_width) ||
@@ -509,13 +553,12 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
     }
 #endif
 
-    let alpha = exp(power);
-    let final_alpha = alpha * input.color.a;
+    let alpha = min(exp(power) * input.color.a, 0.999);
 
-    // TODO: round final_alpha to terminate depth test?
+    // TODO: round alpha to terminate depth test?
 
     return vec4<f32>(
-        input.color.rgb * final_alpha,
-        final_alpha,
+        input.color.rgb * alpha,
+        alpha,
     );
 }

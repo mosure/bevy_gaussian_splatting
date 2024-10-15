@@ -79,28 +79,38 @@
 #endif
 
 
-// TODO: analytic projection
+struct Surfel {
+    local_to_pixel: mat3x3<f32>,
+    mean_2d: vec2<f32>,
+    extent: vec2<f32>,
+};
+
+
 fn get_bounding_box_cov2d(
-    cov2d: vec3<f32>,
+    extent: vec2<f32>,
     direction: vec2<f32>,
     cutoff: f32,
 ) -> vec4<f32> {
     let fitler_size = 0.707106;
 
-    let extent = sqrt(max(
-        vec2<f32>(1.e-4, 1.e-4),
-        vec2<f32>(cov2d.x, cov2d.z),
+    if extent.x < 1.e-4 || extent.y < 1.e-4 {
+        return vec4<f32>(0.0);
+    }
+
+    let radius = sqrt(extent);
+    let max_radius = vec2<f32>(max(
+        max(radius.x, radius.y),
+        cutoff * fitler_size,
     ));
-    let radius = ceil(max(max(extent.x, extent.y), cutoff * fitler_size));
 
     // TODO: verify OBB capability
     let radius_ndc = vec2<f32>(
-        vec2<f32>(radius) / view.viewport.zw,
+        max_radius / view.viewport.zw,
     );
 
     return vec4<f32>(
         radius_ndc * direction,
-        radius * direction,
+        max_radius,
     );
 }
 
@@ -109,7 +119,9 @@ fn compute_cov2d_surfel(
     gaussian_position: vec3<f32>,
     index: u32,
     cutoff: f32,
-) -> vec3<f32> {
+) -> Surfel {
+    var output: Surfel;
+
     let rotation = get_rotation(index);
     let scale = get_scale(index);
 
@@ -122,7 +134,7 @@ fn compute_cov2d_surfel(
     let S = get_scale_matrix(scale);
     let R = get_rotation_matrix(rotation);
 
-    let L = R * S;// * transpose(T_r);
+    let L = T_r * S * R;
 
     let world_from_local = mat3x4<f32>(
         vec4<f32>(L.x, 0.0),
@@ -137,22 +149,49 @@ fn compute_cov2d_surfel(
 
     let test = vec3<f32>(cutoff * cutoff, cutoff * cutoff, -1.0);
     let d = dot(test * T[2], T[2]);
-    if abs(d) < 1.0e-6 {
-        return vec3<f32>(0.0, 0.0, 0.0);
+    if abs(d) < 1.0e-4 {
+        output.extent = vec2<f32>(0.0);
+        return output;
     }
 
     let f = (1.0 / d) * test;
-    let means2d = vec2<f32>(
-        dot(f * T[0], T[2]),
-        dot(f * T[1], T[2]),
+    let mean_2d = vec2<f32>(
+        dot(f, T[0] * T[2]),
+        dot(f, T[1] * T[2]),
     );
 
     let t = vec2<f32>(
         dot(f * T[0], T[0]),
         dot(f * T[1], T[1]),
     );
-    let extent = means2d * means2d - t;
-    let covariance = means2d.x * means2d.y - dot(f * T[0], T[1]);
+    let extent = mean_2d * mean_2d - t;
 
-    return vec3<f32>(extent.x, covariance, extent.y);
+    output.local_to_pixel = T;
+    output.mean_2d = mean_2d;
+    output.extent = extent;
+    return output;
+}
+
+fn surfel_fragment_power(
+    local_to_pixel: mat3x3<f32>,
+    pixel_coord: vec2<f32>,
+    mean_2d: vec2<f32>,
+) -> f32 {
+    let deltas = mean_2d - pixel_coord;
+
+    let hu = pixel_coord.x * local_to_pixel.z - local_to_pixel.x;
+    let hv = pixel_coord.y * local_to_pixel.z - local_to_pixel.y;
+
+    let p = cross(hu, hv);
+
+    let us = p.x / p.z;
+    let vs = p.y / p.z;
+
+    let sigmas_3d = us * us + vs * vs;
+    let sigmas_2d = 2.0 * (deltas.x * deltas.x + deltas.y * deltas.y);
+
+    let sigmas = 0.5 * min(sigmas_3d, sigmas_2d);
+    let power = -sigmas;
+
+    return power;
 }
