@@ -9,6 +9,7 @@
 
 struct GaussianUniforms {
     transform: mat4x4<f32>,
+    global_opacity: f32,
     global_scale: f32,
     count: u32,
     count_root_ceil: u32,

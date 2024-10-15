@@ -668,6 +668,7 @@ type DrawGaussians = (
 #[derive(Component, ShaderType, Clone)]
 pub struct GaussianCloudUniform {
     pub transform: Mat4,
+    pub global_opacity: f32,
     pub global_scale: f32,
     pub count: u32,
     pub count_root_ceil: u32,
@@ -716,6 +717,7 @@ pub fn extract_gaussians(
 
         let settings_uniform = GaussianCloudUniform {
             transform: settings.transform.compute_matrix(),
+            global_opacity: settings.global_opacity,
             global_scale: settings.global_scale,
             count: cloud.count as u32,
             count_root_ceil: (cloud.count as f32).sqrt().ceil() as u32,
