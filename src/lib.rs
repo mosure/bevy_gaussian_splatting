@@ -4,7 +4,11 @@ pub use gaussian::{
     packed::Gaussian,
     cloud::GaussianCloud,
     rand::random_gaussians,
-    settings::GaussianCloudSettings,
+    settings::{
+        GaussianCloudRasterize,
+        GaussianCloudSettings,
+        GaussianMode,
+    },
 };
 
 pub use material::spherical_harmonics::SphericalHarmonicCoefficients;

@@ -1,7 +1,7 @@
 [package]
 name = "bevy_gaussian_splatting"
 description = "bevy gaussian splatting render pipeline plugin"
-version = "2.5.0"
+version = "2.6.0"
 edition = "2021"
 authors = ["mosure <mitchell@mosure.me>"]
 license = "MIT"
@@ -232,6 +232,11 @@ required-features = ["io_ply", "tooling"]
 [[bin]]
 name = "compare_aabb_obb"
 path = "tools/compare_aabb_obb.rs"
+required-features = ["tooling"]
+
+[[bin]]
+name = "surfel_plane"
+path = "tools/surfel_plane.rs"
 required-features = ["tooling"]
 
 [[bin]]

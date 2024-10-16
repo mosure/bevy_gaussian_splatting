@@ -115,7 +115,7 @@ pub fn rayon_sort(
                         });
 
                     sorted_entries.sorted.par_sort_unstable_by(|a, b| {
-                        bytemuck::cast::<u32, f32>(b.key).partial_cmp(&bytemuck::cast::<u32, f32>(a.key)).unwrap()
+                        bytemuck::cast::<u32, f32>(b.key).partial_cmp(&bytemuck::cast::<u32, f32>(a.key)).unwrap_or(std::cmp::Ordering::Equal)
                     });
 
                     // TODO: update DrawIndirect buffer during sort phase (GPU sort will override default DrawIndirect)
