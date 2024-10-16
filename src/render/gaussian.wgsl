@@ -391,29 +391,19 @@ fn vs_points(
         max_distance,
     );
 #else ifdef RASTERIZE_NORMAL
-    // TODO: support surfel normal rendering
+    let R = get_rotation_matrix(get_rotation(splat_index));
+    let S = get_scale_matrix(get_scale(splat_index));
     let T = mat3x3<f32>(
         gaussian_uniforms.transform[0].xyz,
         gaussian_uniforms.transform[1].xyz,
         gaussian_uniforms.transform[2].xyz,
     );
+    let L = T * S * R;
 
-    let R = get_rotation_matrix(get_rotation(splat_index));
-    let scale = get_scale(splat_index);
-    let scale_inf = inverted_infinity_norm(scale);
-    let S = get_scale_matrix(scale_inf);
+    let local_normal = vec4<f32>(L.z, 0.0);
+    let world_normal = view.view_from_world * local_normal;
 
-    let M = S * R;
-    let Sigma = transpose(M) * M;
-
-    let N = T * Sigma * transpose(T);
-    let normal = vec3<f32>(
-        N[0][0],
-        N[0][1],
-        N[1][1],
-    );
-
-    let t = normalize(normal);
+    let t = normalize(world_normal);
 
     rgb = vec3<f32>(
         0.5 * (t.x + 1.0),

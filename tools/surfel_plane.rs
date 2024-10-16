@@ -80,7 +80,7 @@ pub fn setup_surfel_compare(
             let x = i as f32 * spacing - (grid_size_x as f32 * spacing) / 2.0;
             let y = j as f32 * spacing - (grid_size_y as f32 * spacing) / 2.0;
             let position = [x, y, 0.0, 1.0];
-            let scale = [1.0, 1.0, 0.0, 0.3];
+            let scale = [1.0, 1.0, 99.0, 0.3];
 
             // let angle = std::f32::consts::PI / 2.0;
             // let rotation = Quat::from_rotation_y(angle).to_array().into();
