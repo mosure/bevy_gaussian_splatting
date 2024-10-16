@@ -60,6 +60,7 @@ pub enum GaussianCloudRasterize {
 #[reflect(Component)]
 pub struct GaussianCloudSettings {
     pub aabb: bool,
+    pub global_opacity: f32,
     pub global_scale: f32,
     pub transform: Transform,
     pub opacity_adaptive_radius: bool,
@@ -74,6 +75,7 @@ impl Default for GaussianCloudSettings {
     fn default() -> Self {
         Self {
             aabb: false,
+            global_opacity: 1.0,
             global_scale: 1.0,
             transform: Transform::IDENTITY,
             opacity_adaptive_radius: true,

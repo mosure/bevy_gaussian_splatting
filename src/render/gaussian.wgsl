@@ -425,7 +425,7 @@ fn vs_points(
     // TODO: verify color benefit for ray_direction computed at quad verticies instead of gaussian center (same as current complexity)
     output.color = vec4<f32>(
         rgb,
-        opacity,
+        opacity * gaussian_uniforms.global_opacity,
     );
 
 #ifdef HIGHLIGHT_SELECTED
