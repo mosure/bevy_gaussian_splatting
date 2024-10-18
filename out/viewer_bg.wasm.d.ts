@@ -10,8 +10,8 @@ export function closure5749_externref_shim(a: number, b: number, c: number): voi
 export function closure33922_externref_shim(a: number, b: number, c: number): void;
 export function closure33942_externref_shim(a: number, b: number, c: number): void;
 export function closure34226_externref_shim(a: number, b: number, c: number): void;
-export function closure34233_externref_shim(a: number, b: number, c: number, d: number): void;
-export function _dyn_core__ops__function__FnMut_____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__hc58a29e89832e63e(a: number, b: number): void;
+export function closure34232_externref_shim(a: number, b: number, c: number, d: number): void;
+export function _dyn_core__ops__function__FnMut_____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__h1aa249d5b39d365c(a: number, b: number): void;
 export function __wbindgen_free(a: number, b: number, c: number): void;
 export function __wbindgen_exn_store(a: number): void;
 export function __externref_table_alloc(): number;
