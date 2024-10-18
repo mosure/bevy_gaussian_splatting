@@ -134,7 +134,7 @@ fn compute_cov2d_surfel(
     let S = get_scale_matrix(scale);
     let R = get_rotation_matrix(rotation);
 
-    let L = T_r * S * R;
+    let L = T_r * transpose(R) * S;
 
     let world_from_local = mat3x4<f32>(
         vec4<f32>(L.x, 0.0),

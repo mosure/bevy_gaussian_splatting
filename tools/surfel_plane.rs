@@ -21,6 +21,7 @@ use bevy_gaussian_splatting::{
     GaussianCloudSettings,
     GaussianSplattingBundle,
     GaussianSplattingPlugin,
+    gaussian::f32::Rotation,
     utils::{
         setup_hooks,
         GaussianSplattingViewer,
@@ -35,7 +36,7 @@ pub fn setup_surfel_compare(
 ) {
     let grid_size_x = 10;
     let grid_size_y = 10;
-    let spacing = 5.0;
+    let spacing = 12.0;
     let visualize_bounding_box = false;
 
     let mut blue_gaussians = Vec::new();
@@ -47,11 +48,22 @@ pub fn setup_surfel_compare(
             let x = i as f32 * spacing - (grid_size_x as f32 * spacing) / 2.0;
             let y = j as f32 * spacing - (grid_size_y as f32 * spacing) / 2.0;
             let position = [x, y, 0.0, 1.0];
-            let scale = [1.0, 1.0, 0.01, 0.5];
+            let scale = [2.0, 1.0, 0.01, 0.5];
+
+            let angle = std::f32::consts::PI / 2.0 * i as f32 / grid_size_x as f32;
+            let rotation = Quat::from_rotation_z(angle).to_array();
+            let rotation = [3usize, 0usize, 1usize, 2usize]
+                .iter()
+                .map(|i| rotation[*i])
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap();
 
             let gaussian = Gaussian {
                 position_visibility: position.into(),
-                rotation: [0.0, 0.0, 0.0, 1.0].into(),
+                rotation: Rotation {
+                    rotation,
+                },
                 scale_opacity: scale.into(),
                 spherical_harmonic: blue_sh,
             };
@@ -80,14 +92,22 @@ pub fn setup_surfel_compare(
             let x = i as f32 * spacing - (grid_size_x as f32 * spacing) / 2.0;
             let y = j as f32 * spacing - (grid_size_y as f32 * spacing) / 2.0;
             let position = [x, y, 0.0, 1.0];
-            let scale = [1.0, 1.0, 99.0, 0.3];
+            let scale = [2.0, 1.0, 0.01, 0.5];
 
-            // let angle = std::f32::consts::PI / 2.0;
-            // let rotation = Quat::from_rotation_y(angle).to_array().into();
+            let angle = std::f32::consts::PI / 2.0 * (i + 1) as f32 / grid_size_x as f32;
+            let rotation = Quat::from_rotation_z(angle).to_array();
+            let rotation = [3usize, 0usize, 1usize, 2usize]
+                .iter()
+                .map(|i| rotation[*i])
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap();
 
             let gaussian = Gaussian {
                 position_visibility: position.into(),
-                rotation: [0.0, 0.0, 0.0, 1.0].into(),
+                rotation: Rotation {
+                    rotation,
+                },
                 scale_opacity: scale.into(),
                 spherical_harmonic: red_sh,
             };
@@ -110,9 +130,12 @@ pub fn setup_surfel_compare(
         Name::new("gaussian_cloud_2dgs"),
     ));
 
+    let camera_transform = Transform::from_translation(Vec3::new(0.0, 1.5, 20.0));
+    info!("camera_transform: {:?}", camera_transform.compute_matrix().to_cols_array_2d());
+
     commands.spawn((
         Camera3dBundle {
-            transform: Transform::from_translation(Vec3::new(0.0, 1.5, 20.0)),
+            transform: camera_transform,
             tonemapping: Tonemapping::None,
             ..default()
         },
