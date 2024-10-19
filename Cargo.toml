@@ -257,6 +257,10 @@ path = "examples/minimal.rs"
 name = "headless"
 path = "examples/headless.rs"
 
+[[example]]
+name = "multi_camera"
+path = "examples/multi_camera.rs"
+
 
 [[bench]]
 name = "io"
