@@ -78,14 +78,16 @@ use serde::{
     Serialize,
 };
 
-use crate::render::{
-    GaussianCamera,
-    GaussianCloudBindGroup,
-    GaussianCloudPipeline,
-    GaussianCloudPipelineKey,
-    GaussianUniformBindGroups,
-    GaussianViewBindGroup,
-    shader_defs,
+use crate::{
+    camera::GaussianCamera,
+    render::{
+        GaussianCloudBindGroup,
+        GaussianCloudPipeline,
+        GaussianCloudPipelineKey,
+        GaussianUniformBindGroups,
+        GaussianViewBindGroup,
+        shader_defs,
+    },
 };
 
 

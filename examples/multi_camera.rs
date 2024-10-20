@@ -178,9 +178,6 @@ pub fn setup_surfel_compare(
         Name::new("gaussian_cloud_2dgs"),
     ));
 
-    let camera_transform = Transform::from_translation(Vec3::new(0.0, 1.5, 20.0));
-    info!("camera_transform: {:?}", camera_transform.compute_matrix().to_cols_array_2d());
-
     commands.spawn((
         GaussianCamera,
         Camera3dBundle {
@@ -188,7 +185,7 @@ pub fn setup_surfel_compare(
                 order: 0,
                 ..default()
             },
-            transform: camera_transform,
+            transform: Transform::from_translation(Vec3::new(0.0, 1.5, 20.0)),
             tonemapping: Tonemapping::None,
             ..default()
         },

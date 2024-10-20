@@ -19,7 +19,6 @@ use bevy::{
         extract_component::{
             ComponentUniforms,
             DynamicUniformIndex,
-            ExtractComponent,
             ExtractComponentPlugin,
             UniformComponentPlugin,
         },
@@ -60,6 +59,7 @@ use bevy::{
 };
 
 use crate::{
+    camera::GaussianCamera,
     gaussian::{
         cloud::GaussianCloud,
         settings::{
@@ -78,7 +78,9 @@ use crate::{
     sort::{
         GpuSortedEntry,
         SortPlugin,
+        SortEntry,
         SortedEntries,
+        SortTrigger,
     },
 };
 
@@ -296,7 +298,7 @@ fn queue_gaussians(
     mut views: Query<
         (
             Entity,
-            &ExtractedView
+            &ExtractedView,
         ),
         With<GaussianCamera>,
     >,
@@ -438,8 +440,8 @@ impl FromWorld for GaussianCloudPipeline {
                     visibility: ShaderStages::VERTEX_FRAGMENT,
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(std::mem::size_of::<(u32, u32)>() as u64),
+                        has_dynamic_offset: true,
+                        min_binding_size: BufferSize::new(std::mem::size_of::<SortEntry>() as u64),
                     },
                     count: None,
                 },
@@ -789,7 +791,6 @@ fn queue_gaussian_bind_group(
     gaussian_cloud_res: Res<RenderAssets<GpuGaussianCloud>>,
     sorted_entries_res: Res<RenderAssets<GpuSortedEntry>>,
     gaussian_clouds: Query<GpuGaussianBundleQuery>,
-
     #[cfg(feature = "buffer_texture")]
     gpu_images: Res<RenderAssets<bevy::render::texture::GpuImage>>,
 ) {
@@ -860,7 +861,7 @@ fn queue_gaussian_bind_group(
                     resource: BindingResource::Buffer(BufferBinding {
                         buffer: &sorted_entries.sorted_entry_buffer,
                         offset: 0,
-                        size: BufferSize::new((cloud.count * std::mem::size_of::<(u32, u32)>()) as u64),
+                        size: BufferSize::new((cloud.count * std::mem::size_of::<SortEntry>()) as u64),
                     }),
                 },
             ],
@@ -872,7 +873,7 @@ fn queue_gaussian_bind_group(
             &[
                 BindGroupEntry {
                     binding: 0,
-                    resource: BindingResource::TextureView(
+                    resource: BindingResource::TextureView( // TODO: convert to texture view array
                         &gpu_images.get(&sorted_entries.texture).unwrap().texture_view
                     ),
                 },
@@ -885,16 +886,6 @@ fn queue_gaussian_bind_group(
         });
     }
 }
-
-#[derive(
-    Clone,
-    Component,
-    Debug,
-    Default,
-    ExtractComponent,
-    Reflect,
-)]
-pub struct GaussianCamera;
 
 #[derive(Component)]
 pub struct GaussianViewBindGroup {
@@ -1016,7 +1007,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianUniformBindGr
 pub struct DrawGaussianInstanced;
 impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
     type Param = SRes<RenderAssets<GpuGaussianCloud>>;
-    type ViewQuery = ();
+    type ViewQuery = Read<SortTrigger>;
     type ItemQuery = (
         Read<Handle<GaussianCloud>>,
         Read<GaussianCloudBindGroup>,
@@ -1025,7 +1016,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
     #[inline]
     fn render<'w>(
         _item: &P,
-        _view: (),
+        view: &'w SortTrigger,
         entity: Option<(
             &'w Handle<GaussianCloud>,
             &'w GaussianCloudBindGroup,
@@ -1040,8 +1031,18 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
             None => return RenderCommandResult::Failure,
         };
 
-        pass.set_bind_group(2, &bind_groups.cloud_bind_group, &[]);
-        pass.set_bind_group(3, &bind_groups.sorted_bind_group, &[]);
+        pass.set_bind_group(
+            2,
+            &bind_groups.cloud_bind_group,
+            &[],
+        );
+        pass.set_bind_group(
+            3,
+            &bind_groups.sorted_bind_group,
+            &[
+                view.camera_index as u32 * std::mem::size_of::<SortEntry>() as u32 * gpu_gaussian_cloud.count as u32,
+            ],
+        );
 
         #[cfg(feature = "webgl2")]
         pass.draw(0..4, 0..gpu_gaussian_cloud.count as u32);

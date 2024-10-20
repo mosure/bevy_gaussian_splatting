@@ -5,7 +5,12 @@ use bevy::{
         lifetimeless::SRes,
         SystemParamItem,
     },
+    math::Vec3A,
     render::{
+        extract_component::{
+            ExtractComponent,
+            ExtractComponentPlugin,
+        },
         render_resource::*,
         render_asset::{
             RenderAsset,
@@ -15,6 +20,10 @@ use bevy::{
         },
         renderer::RenderDevice,
     },
+    utils::{
+        Duration,
+        Instant,
+    },
 };
 use bytemuck::{
     Pod,
@@ -23,6 +32,7 @@ use bytemuck::{
 use static_assertions::assert_cfg;
 
 use crate::{
+    camera::GaussianCamera,
     GaussianCloud,
     GaussianCloudSettings,
 };
@@ -85,6 +95,27 @@ impl Default for SortMode {
 }
 
 
+#[derive(
+    Resource,
+    Debug,
+    Clone,
+    PartialEq,
+    Reflect,
+)]
+#[reflect(Resource)]
+pub struct SortConfig {
+    pub period_ms: usize,
+}
+
+impl Default for SortConfig {
+    fn default() -> Self {
+        Self {
+            period_ms: 100,
+        }
+    }
+}
+
+
 #[derive(Default)]
 pub struct SortPlugin;
 
@@ -99,17 +130,93 @@ impl Plugin for SortPlugin {
         #[cfg(feature = "sort_std")]
         app.add_plugins(std::StdSortPlugin);
 
+        app.register_type::<SortConfig>();
+        app.init_resource::<SortConfig>();
 
         app.register_type::<SortedEntries>();
         app.init_asset::<SortedEntries>();
         app.register_asset_reflect::<SortedEntries>();
 
+        app.add_plugins(ExtractComponentPlugin::<SortTrigger>::default());
+
         app.add_plugins(RenderAssetPlugin::<GpuSortedEntry>::default());
 
-        app.add_systems(Update, auto_insert_sorted_entries);
+        app.add_systems(
+            Update,
+            (
+                auto_insert_sorted_entries,
+                update_sort_trigger,
+                update_sorted_entries_sizes,
+            )
+        );
 
         #[cfg(feature = "buffer_texture")]
         app.add_systems(PostUpdate, update_textures_on_change);
+    }
+}
+
+
+#[derive(
+    Component,
+    ExtractComponent,
+    Debug,
+    Default,
+    Clone,
+    PartialEq,
+    Reflect,
+)]
+#[reflect(Component)]
+pub struct SortTrigger {
+    pub camera_index: usize,
+    pub needs_sort: bool,
+    pub last_camera_position: Vec3A,
+    pub last_sort_time: Option<Instant>,
+} // TODO: extract the camera_index into extracted view
+
+fn update_sort_trigger(
+    mut commands: Commands,
+    new_gaussian_cameras: Query<
+        Entity,
+        (
+            With<GaussianCamera>,
+            Without<SortTrigger>,
+        ),
+    >,
+    mut existing_sort_triggers: Query<(
+        &Transform,
+        &Camera,
+        &mut SortTrigger,
+    )>,
+    sort_config: Res<SortConfig>,
+) {
+    for entity in new_gaussian_cameras.iter() {
+        commands.entity(entity)
+            .insert(SortTrigger::default());
+    }
+
+    for (
+        camera_transform,
+        camera,
+        mut sort_trigger,
+    ) in existing_sort_triggers.iter_mut() {
+        if sort_trigger.last_sort_time.is_none() {
+            assert!(camera.order >= 0, "camera order must be a non-negative index into gaussian cameras");
+
+            sort_trigger.camera_index = camera.order as usize;
+            sort_trigger.needs_sort = true;
+            sort_trigger.last_sort_time = Some(Instant::now());
+            continue;
+        } else if sort_trigger.last_sort_time.unwrap().elapsed() < Duration::from_millis(sort_config.period_ms as u64) {
+            continue;
+        }
+
+        let camera_position = camera_transform.compute_affine().translation;
+        let camera_movement = sort_trigger.last_camera_position != camera_position;
+
+        if camera_movement {
+            sort_trigger.needs_sort = true;
+            sort_trigger.last_camera_position = camera_position;
+        }
     }
 }
 
@@ -151,7 +258,7 @@ fn auto_insert_sorted_entries(
         ),
         Without<Handle<SortedEntries>>
     >,
-
+    gaussian_cameras: Query<Entity, With<GaussianCamera>>,
     #[cfg(feature = "buffer_texture")]
     mut images: ResMut<Assets<Image>>,
 ) {
@@ -175,39 +282,41 @@ fn auto_insert_sorted_entries(
         }
         let cloud = cloud.unwrap();
 
-        let sorted: Vec<SortEntry> = (0..cloud.len())
-            .map(|idx| {
-                SortEntry {
-                    key: 1,
-                    index: idx as u32,
-                }
-            })
-            .collect();
-
-        // TODO: move gaussian_cloud and sorted_entry assets into an asset bundle
-        #[cfg(feature = "buffer_storage")]
-        let sorted_entries = sorted_entries_res.add(SortedEntries {
-            sorted,
-        });
-
-        #[cfg(feature = "buffer_texture")]
-        let sorted_entries = sorted_entries_res.add(SortedEntries {
-            texture: images.add(Image::new(
-                Extent3d {
-                    width: cloud.len_sqrt_ceil() as u32,
-                    height: cloud.len_sqrt_ceil() as u32,
-                    depth_or_array_layers: 1,
-                },
-                TextureDimension::D2,
-                bytemuck::cast_slice(sorted.as_slice()).to_vec(),
-                TextureFormat::Rg32Uint,
-                RenderAssetUsages::default(),
-            )),
-            sorted,
-        });
+        let sorted_entries = sorted_entries_res.add(SortedEntries::new(
+            gaussian_cameras.iter().len(),
+            cloud.len_sqrt_ceil().pow(2),
+            #[cfg(feature = "buffer_texture")]
+            images,
+        ));
 
         commands.entity(entity)
             .insert(sorted_entries);
+    }
+}
+
+
+fn update_sorted_entries_sizes(
+    mut sorted_entries_res: ResMut<Assets<SortedEntries>>,
+    sorted_entries: Query<
+        &Handle<SortedEntries>,
+    >,
+    gaussian_cameras: Query<Entity, With<GaussianCamera>>,
+    #[cfg(feature = "buffer_texture")]
+    mut images: ResMut<Assets<Image>>,
+) {
+    let camera_count: usize = gaussian_cameras.iter().len();
+
+    for handle in sorted_entries.iter() {
+        let sorted_entries = sorted_entries_res.get(handle).unwrap();
+        if sorted_entries.camera_count != camera_count {
+            let new_entry = SortedEntries::new(
+                camera_count,
+                sorted_entries.entry_count,
+                #[cfg(feature = "buffer_texture")]
+                images,
+            );
+            sorted_entries_res.insert(handle, new_entry);
+        }
     }
 }
 
@@ -238,10 +347,61 @@ pub struct SortEntry {
     Reflect,
 )]
 pub struct SortedEntries {
+    pub camera_count: usize,
+    pub entry_count: usize,
     pub sorted: Vec<SortEntry>,
 
     #[cfg(feature = "buffer_texture")]
     pub texture: Handle<Image>,
+}
+
+impl SortedEntries {
+    pub fn new(
+        camera_count: usize,
+        entry_count: usize,
+        #[cfg(feature = "buffer_texture")]
+        mut images: ResMut<Assets<Image>>,
+    ) -> Self {
+        let sorted = (0..camera_count)
+            .flat_map(|_camera_idx| {
+                (0..entry_count)
+                    .map(|idx| {
+                        SortEntry {
+                            key: 1,
+                            index: idx as u32,
+                        }
+                    })
+            })
+            .collect();
+
+        // TODO: move gaussian_cloud and sorted_entry assets into an asset bundle
+        #[cfg(feature = "buffer_storage")]
+        let sorted_entries = SortedEntries {
+            camera_count,
+            entry_count,
+            sorted,
+        };
+
+        #[cfg(feature = "buffer_texture")]
+        let sorted_entries = SortedEntries {
+            camera_count,
+            entry_count,
+            sorted,
+            texture: images.add(Image::new(
+                Extent3d {
+                    width: cloud.len_sqrt_ceil() as u32,
+                    height: cloud.len_sqrt_ceil() as u32,
+                    depth_or_array_layers: gaussian_cameras.iter().len(),
+                },
+                TextureDimension::D2,
+                bytemuck::cast_slice(sorted.as_slice()).to_vec(),
+                TextureFormat::Rg32Uint,
+                RenderAssetUsages::default(),
+            )),
+        };
+
+        sorted_entries
+    }
 }
 
 impl RenderAsset for GpuSortedEntry {

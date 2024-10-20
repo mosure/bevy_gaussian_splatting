@@ -1,5 +1,7 @@
 use bevy::prelude::*;
 
+pub use camera::GaussianCamera;
+
 pub use gaussian::{
     packed::Gaussian,
     cloud::GaussianCloud,
@@ -15,9 +17,9 @@ pub use material::spherical_harmonics::SphericalHarmonicCoefficients;
 
 use io::loader::GaussianCloudLoader;
 
-pub use render::GaussianCamera;
 use render::RenderPipelinePlugin;
 
+pub mod camera;
 pub mod gaussian;
 pub mod io;
 pub mod material;
