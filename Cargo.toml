@@ -134,13 +134,14 @@ web = [
   "webgpu",
 ]
 
+# note: webgl2/buffer_texture are deprecated
 webgl2 = ["bevy/webgl2"]
 webgpu = ["bevy/webgpu"]
 
 
 [dependencies]
 bevy_args = "1.6"
-bevy-inspector-egui = { version = "0.26", optional = true }
+bevy-inspector-egui = { version = "0.27", optional = true }
 bevy_mod_picking = { version = "0.20", optional = true }
 bevy_panorbit_camera = { version = "0.19", optional = true, features = ["bevy_egui"] }
 bevy_transform_gizmo = { version = "0.12", optional = true }
