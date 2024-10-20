@@ -171,7 +171,7 @@ pub struct SortTrigger {
     pub needs_sort: bool,
     pub last_camera_position: Vec3A,
     pub last_sort_time: Option<Instant>,
-} // TODO: extract the camera_index into extracted view
+}
 
 fn update_sort_trigger(
     mut commands: Commands,
