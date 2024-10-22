@@ -27,7 +27,6 @@ use bevy_panorbit_camera::{
 use bevy_gaussian_splatting::{
     GaussianCamera,
     GaussianCloud,
-    GaussianMode,
     GaussianCloudSettings,
     GaussianSplattingBundle,
     GaussianSplattingPlugin,
