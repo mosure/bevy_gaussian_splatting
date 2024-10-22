@@ -1,4 +1,9 @@
 use bevy::prelude::*;
+use bevy_args::{
+    Deserialize,
+    Serialize,
+    ValueEnum,
+};
 
 use crate::sort::SortMode;
 
@@ -30,6 +35,9 @@ pub enum GaussianCloudDrawMode {
     Hash,
     PartialEq,
     Reflect,
+    Serialize,
+    Deserialize,
+    ValueEnum,
 )]
 pub enum GaussianMode {
     #[default]

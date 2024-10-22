@@ -5,6 +5,8 @@ use bevy_args::{
     Serialize,
 };
 
+use crate::gaussian::settings::GaussianMode;
+
 
 #[derive(
     Debug,
@@ -45,6 +47,9 @@ pub struct GaussianSplattingViewer {
     #[arg(long, default_value = "0")]
     pub gaussian_count: usize,
 
+    #[arg(long, value_enum, default_value_t = GaussianMode::Gaussian3d)]
+    pub gaussian_mode: GaussianMode,
+
     #[arg(long, default_value = "0")]
     pub particle_count: usize,
 }
@@ -62,6 +67,7 @@ impl Default for GaussianSplattingViewer {
             msaa_samples: 1,
             input_file: "".to_string(),
             gaussian_count: 0,
+            gaussian_mode: GaussianMode::Gaussian3d,
             particle_count: 0,
         }
     }
