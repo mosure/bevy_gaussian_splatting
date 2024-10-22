@@ -27,6 +27,8 @@ use bevy_panorbit_camera::{
 use bevy_gaussian_splatting::{
     GaussianCamera,
     GaussianCloud,
+    GaussianMode,
+    GaussianCloudSettings,
     GaussianSplattingBundle,
     GaussianSplattingPlugin,
     random_gaussians,
@@ -58,6 +60,7 @@ use bevy_gaussian_splatting::query::sparse::SparseSelect;
 
 fn setup_gaussian_cloud(
     mut commands: Commands,
+    args: Res<GaussianSplattingViewer>,
     asset_server: Res<AssetServer>,
     gaussian_splatting_viewer: Res<GaussianSplattingViewer>,
     mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
@@ -76,6 +79,10 @@ fn setup_gaussian_cloud(
     commands.spawn((
         GaussianSplattingBundle {
             cloud,
+            settings: GaussianCloudSettings {
+                gaussian_mode: args.gaussian_mode,
+                ..default()
+            },
             ..default()
         },
         Name::new("gaussian_cloud"),
