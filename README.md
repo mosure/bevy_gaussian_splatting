@@ -26,6 +26,7 @@ bevy gaussian splatting render pipeline plugin. view the [live demo](https://mos
 - [X] wgl2 and webgpu
 - [X] 3dgs
 - [X] 2dgs
+- [ ] [spz](https://github.com/nianticlabs/spz) format io
 - [ ] spherical harmonic coefficients clustering
 - [ ] 4D gaussian cloud wavelet compression
 - [ ] accelerated spatial queries
