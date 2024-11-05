@@ -17,8 +17,6 @@ pub use material::spherical_harmonics::SphericalHarmonicCoefficients;
 
 use io::loader::GaussianCloudLoader;
 
-use render::RenderPipelinePlugin;
-
 pub mod camera;
 pub mod gaussian;
 pub mod io;
@@ -61,7 +59,8 @@ impl Plugin for GaussianSplattingPlugin {
         app.register_type::<GaussianSplattingBundle>();
 
         app.add_plugins((
-            RenderPipelinePlugin,
+            camera::GaussianCameraPlugin,
+            render::RenderPipelinePlugin,
             material::MaterialPlugin,
             query::QueryPlugin,
         ));

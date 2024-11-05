@@ -137,6 +137,7 @@ impl Plugin for SortPlugin {
         app.init_asset::<SortedEntries>();
         app.register_asset_reflect::<SortedEntries>();
 
+        app.register_type::<SortTrigger>();
         app.add_plugins(ExtractComponentPlugin::<SortTrigger>::default());
 
         app.add_plugins(RenderAssetPlugin::<GpuSortedEntry>::default());
@@ -173,11 +174,13 @@ pub struct SortTrigger {
     pub last_sort_time: Option<Instant>,
 }
 
+#[allow(clippy::type_complexity)]
 fn update_sort_trigger(
     mut commands: Commands,
     new_gaussian_cameras: Query<
         Entity,
         (
+            With<Camera>,
             With<GaussianCamera>,
             Without<SortTrigger>,
         ),
@@ -258,7 +261,13 @@ fn auto_insert_sorted_entries(
         ),
         Without<Handle<SortedEntries>>
     >,
-    gaussian_cameras: Query<Entity, With<GaussianCamera>>,
+    gaussian_cameras: Query<
+        Entity,
+        (
+            With<Camera>,
+            With<GaussianCamera>
+        ),
+    >,
     #[cfg(feature = "buffer_texture")]
     mut images: ResMut<Assets<Image>>,
 ) {
@@ -300,7 +309,13 @@ fn update_sorted_entries_sizes(
     sorted_entries: Query<
         &Handle<SortedEntries>,
     >,
-    gaussian_cameras: Query<Entity, With<GaussianCamera>>,
+    gaussian_cameras: Query<
+        Entity,
+        (
+            With<Camera>,
+            With<GaussianCamera>
+        ),
+    >,
     #[cfg(feature = "buffer_texture")]
     mut images: ResMut<Assets<Image>>,
 ) {

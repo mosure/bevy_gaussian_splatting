@@ -19,7 +19,6 @@ use bevy::{
         extract_component::{
             ComponentUniforms,
             DynamicUniformIndex,
-            ExtractComponentPlugin,
             UniformComponentPlugin,
         },
         globals::{
@@ -165,7 +164,6 @@ impl Plugin for RenderPipelinePlugin {
             Shader::from_wgsl
         );
 
-        app.add_plugins(ExtractComponentPlugin::<GaussianCamera>::default());
         app.add_plugins(RenderAssetPlugin::<GpuGaussianCloud>::default());
         app.add_plugins(UniformComponentPlugin::<GaussianCloudUniform>::default());
 
@@ -299,12 +297,17 @@ fn queue_gaussians(
         (
             Entity,
             &ExtractedView,
+            &GaussianCamera,
         ),
-        With<GaussianCamera>,
     >,
     msaa: Res<Msaa>,
     gaussian_splatting_bundles: Query<GpuGaussianBundleQuery>,
 ) {
+    let warmup = views.iter().any(|(_, _, camera)| camera.warmup);
+    if warmup {
+        return;
+    }
+
     // TODO: condition this system based on GaussianCloudBindGroup attachment
     if gaussian_cloud_uniform.buffer().is_none() {
         return;
@@ -312,7 +315,7 @@ fn queue_gaussians(
 
     let draw_custom = transparent_3d_draw_functions.read().id::<DrawGaussians>();
 
-    for (view_entity, _view) in &mut views {
+    for (view_entity, _view, _) in &mut views {
         let Some(transparent_phase) = transparent_render_phases.get_mut(&view_entity) else {
             continue;
         };
@@ -947,7 +950,6 @@ pub struct SetGaussianViewBindGroup<const I: usize>;
 impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianViewBindGroup<I> {
     type Param = ();
     type ViewQuery = (
-        Read<GaussianCamera>,
         Read<GaussianViewBindGroup>,
         Read<ViewUniformOffset>,
     );
@@ -957,7 +959,6 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianViewBindGroup
     fn render<'w>(
         _item: &P,
         (
-            _gaussian_camera,
             gaussian_view_bind_group,
             view_uniform,
         ): ROQueryItem<
@@ -1036,6 +1037,8 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
             &bind_groups.cloud_bind_group,
             &[],
         );
+
+        // TODO: align dynamic offset to `min_storage_buffer_offset_alignment`
         pass.set_bind_group(
             3,
             &bind_groups.sorted_bind_group,

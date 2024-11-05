@@ -408,7 +408,7 @@ fn setup_gaussian_cloud(
             },
             ..default()
         },
-        GaussianCamera,
+        GaussianCamera::default(),
     ));
 }
 

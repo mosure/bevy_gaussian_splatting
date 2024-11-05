@@ -99,5 +99,9 @@ pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, std::io:
         }
     }
 
+    // pad with empty gaussians to multiple of 32
+    let pad = 32 - (cloud.len() % 32);
+    cloud.extend(std::iter::repeat(Gaussian::default()).take(pad));
+
     Ok(cloud)
 }

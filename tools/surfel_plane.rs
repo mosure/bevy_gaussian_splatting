@@ -143,7 +143,7 @@ pub fn setup_surfel_compare(
             allow_upside_down: true,
             ..default()
         },
-        GaussianCamera,
+        GaussianCamera::default(),
     ));
 }
 

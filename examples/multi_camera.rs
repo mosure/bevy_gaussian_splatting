@@ -69,7 +69,7 @@ fn compare_surfel_app() {
     app.add_systems(
         Update,
         (
-            // press_s_swap_cameras,
+            press_s_to_spawn_camera,
             set_camera_viewports,
         )
     );
@@ -80,56 +80,53 @@ fn compare_surfel_app() {
 
 pub fn setup_surfel_compare(
     mut commands: Commands,
+    _asset_server: Res<AssetServer>,
     mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
 ) {
     let grid_size_x = 10;
     let grid_size_y = 10;
     let spacing = 12.0;
-    let visualize_bounding_box = false;
 
-    let mut blue_gaussians = Vec::new();
-    let mut blue_sh = SphericalHarmonicCoefficients::default();
-    blue_sh.set(2, 5.0);
+    // let mut blue_gaussians = Vec::new();
+    // let mut blue_sh = SphericalHarmonicCoefficients::default();
+    // blue_sh.set(2, 5.0);
 
-    for i in 0..grid_size_x {
-        for j in 0..grid_size_y {
-            let x = i as f32 * spacing - (grid_size_x as f32 * spacing) / 2.0;
-            let y = j as f32 * spacing - (grid_size_y as f32 * spacing) / 2.0;
-            let position = [x, y, 0.0, 1.0];
-            let scale = [2.0, 1.0, 0.01, 0.5];
+    // for i in 0..grid_size_x {
+    //     for j in 0..grid_size_y {
+    //         let x = i as f32 * spacing - (grid_size_x as f32 * spacing) / 2.0;
+    //         let y = j as f32 * spacing - (grid_size_y as f32 * spacing) / 2.0;
+    //         let position = [x, y, 0.0, 1.0];
+    //         let scale = [2.0, 1.0, 0.01, 0.5];
 
-            let angle = std::f32::consts::PI / 2.0 * i as f32 / grid_size_x as f32;
-            let rotation = Quat::from_rotation_z(angle).to_array();
-            let rotation = [3usize, 0usize, 1usize, 2usize]
-                .iter()
-                .map(|i| rotation[*i])
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap();
+    //         let angle = std::f32::consts::PI / 2.0 * i as f32 / grid_size_x as f32;
+    //         let rotation = Quat::from_rotation_z(angle).to_array();
+    //         let rotation = [3usize, 0usize, 1usize, 2usize]
+    //             .iter()
+    //             .map(|i| rotation[*i])
+    //             .collect::<Vec<_>>()
+    //             .try_into()
+    //             .unwrap();
 
-            let gaussian = Gaussian {
-                position_visibility: position.into(),
-                rotation: Rotation {
-                    rotation,
-                },
-                scale_opacity: scale.into(),
-                spherical_harmonic: blue_sh,
-            };
-            blue_gaussians.push(gaussian);
-        }
-    }
+    //         let gaussian = Gaussian {
+    //             position_visibility: position.into(),
+    //             rotation: Rotation {
+    //                 rotation,
+    //             },
+    //             scale_opacity: scale.into(),
+    //             spherical_harmonic: blue_sh,
+    //         };
+    //         blue_gaussians.push(gaussian);
+    //     }
+    // }
 
-    commands.spawn((
-        GaussianSplattingBundle {
-            cloud: gaussian_assets.add(GaussianCloud::from_gaussians(blue_gaussians)),
-            settings: GaussianCloudSettings {
-                visualize_bounding_box,
-                ..default()
-            },
-            ..default()
-        },
-        Name::new("gaussian_cloud_3dgs"),
-    ));
+    // let cloud = asset_server.load("office.ply");
+    // commands.spawn((
+    //     GaussianSplattingBundle {
+    //         cloud,//: gaussian_assets.add(GaussianCloud::from_gaussians(blue_gaussians)),
+    //         ..default()
+    //     },
+    //     Name::new("gaussian_cloud_3dgs"),
+    // ));
 
     let mut red_gaussians = Vec::new();
     let mut red_sh = SphericalHarmonicCoefficients::default();
@@ -167,7 +164,6 @@ pub fn setup_surfel_compare(
         GaussianSplattingBundle {
             cloud: gaussian_assets.add(GaussianCloud::from_gaussians(red_gaussians)),
             settings: GaussianCloudSettings {
-                visualize_bounding_box,
                 aabb: true,
                 transform: Transform::from_translation(Vec3::new(spacing, spacing, 0.0)),
                 gaussian_mode: GaussianMode::GaussianSurfel,
@@ -179,7 +175,9 @@ pub fn setup_surfel_compare(
     ));
 
     commands.spawn((
-        GaussianCamera,
+        GaussianCamera {
+            warmup: true,
+        },
         Camera3dBundle {
             camera: Camera{
                 order: 0,
@@ -198,25 +196,65 @@ pub fn setup_surfel_compare(
         },
     ));
 
-    commands.spawn((
-        GaussianCamera,
-        Camera3dBundle {
-            camera: Camera{
-                order: 1,
+    // commands.spawn((
+    //     GaussianCamera,
+    //     Camera3dBundle {
+    //         camera: Camera{
+    //             order: 1,
+    //             ..default()
+    //         },
+    //         transform: Transform::from_translation(Vec3::new(0.0, 0.0, 40.0)),
+    //         tonemapping: Tonemapping::None,
+    //         ..default()
+    //     },
+    //     CameraPosition {
+    //         pos: UVec2::new(1, 0),
+    //     },
+    //     PanOrbitCamera {
+    //         allow_upside_down: true,
+    //         ..default()
+    //     },
+    // ));
+}
+
+
+fn press_s_to_spawn_camera(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut commands: Commands,
+    windows: Query<&Window>,
+) {
+    if keys.just_pressed(KeyCode::KeyS) {
+        let window = windows.single();
+        let size = window.physical_size() / UVec2::new(2, 1);
+        let pos = UVec2::new(1, 0);
+
+        commands.spawn((
+            GaussianCamera {
+                warmup: true,
+            },
+            Camera3dBundle {
+                camera: Camera{
+                    order: 1,
+                    viewport: Viewport {
+                        physical_position: pos * size,
+                        physical_size: size,
+                        ..default()
+                    }.into(),
+                    ..default()
+                },
+                transform: Transform::from_translation(Vec3::new(0.0, 0.0, 40.0)),
+                tonemapping: Tonemapping::None,
                 ..default()
             },
-            transform: Transform::from_translation(Vec3::new(0.0, 0.0, 40.0)),
-            tonemapping: Tonemapping::None,
-            ..default()
-        },
-        CameraPosition {
-            pos: UVec2::new(1, 0),
-        },
-        PanOrbitCamera {
-            allow_upside_down: true,
-            ..default()
-        },
-    ));
+            CameraPosition {
+                pos,
+            },
+            PanOrbitCamera {
+                allow_upside_down: true,
+                ..default()
+            },
+        ));
+    }
 }
 
 
@@ -228,13 +266,13 @@ struct CameraPosition {
 fn set_camera_viewports(
     windows: Query<&Window>,
     mut resize_events: EventReader<WindowResized>,
-    mut query: Query<(&CameraPosition, &mut Camera), With<GaussianCamera>>,
+    mut cameras: Query<(&CameraPosition, &mut Camera), With<GaussianCamera>>,
 ) {
     for resize_event in resize_events.read() {
         let window = windows.get(resize_event.window).unwrap();
         let size = window.physical_size() / UVec2::new(2, 1);
 
-        for (position, mut camera) in &mut query {
+        for (position, mut camera) in &mut cameras {
             camera.viewport = Some(Viewport {
                 physical_position: position.pos * size,
                 physical_size: size,
