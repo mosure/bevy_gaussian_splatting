@@ -32,6 +32,7 @@ impl Plugin for GaussianCameraPlugin {
 }
 
 
+// TODO: remove camera warmup when extracted view dynamic uniform offset synchronization is fixed
 fn apply_camera_warmup(
     mut cameras: Query<&mut GaussianCamera>,
 ) {
