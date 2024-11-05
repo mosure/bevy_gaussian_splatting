@@ -53,8 +53,6 @@ pub fn rayon_sort(
         if !trigger.needs_sort {
             continue;
         }
-        trigger.needs_sort = false;
-        performed_sort = true;
 
         for (
             gaussian_cloud_handle,
@@ -64,6 +62,9 @@ pub fn rayon_sort(
             if settings.sort_mode != SortMode::Rayon {
                 continue;
             }
+
+            trigger.needs_sort = false;
+            performed_sort = true;
 
             if Some(LoadState::Loading) == asset_server.get_load_state(gaussian_cloud_handle) {
                 continue;

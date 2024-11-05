@@ -58,6 +58,9 @@ const SH_DEGREE: usize = 2;
 #[cfg(feature = "sh3")]
 const SH_DEGREE: usize = 3;
 
+#[cfg(feature = "sh4")]
+const SH_DEGREE: usize = 4;
+
 pub const SH_CHANNELS: usize = 3;
 pub const SH_COEFF_COUNT_PER_CHANNEL: usize = num_sh_coefficients(SH_DEGREE);
 pub const SH_COEFF_COUNT: usize = (SH_COEFF_COUNT_PER_CHANNEL * SH_CHANNELS + 3) & !3;

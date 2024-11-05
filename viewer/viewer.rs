@@ -100,7 +100,7 @@ fn setup_gaussian_cloud(
             zoom_smoothness: 0.0,
             ..default()
         },
-        GaussianCamera,
+        GaussianCamera::default(),
     ));
 }
 
