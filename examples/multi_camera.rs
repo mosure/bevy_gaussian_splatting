@@ -80,7 +80,7 @@ fn compare_surfel_app() {
 
 pub fn setup_surfel_compare(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
+    _asset_server: Res<AssetServer>,
     mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
 ) {
     let grid_size_x = 10;
