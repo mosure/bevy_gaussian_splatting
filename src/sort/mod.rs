@@ -174,6 +174,7 @@ pub struct SortTrigger {
     pub last_sort_time: Option<Instant>,
 }
 
+#[allow(clippy::type_complexity)]
 fn update_sort_trigger(
     mut commands: Commands,
     new_gaussian_cameras: Query<
