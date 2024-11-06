@@ -271,6 +271,12 @@ fn auto_insert_sorted_entries(
     #[cfg(feature = "buffer_texture")]
     mut images: ResMut<Assets<Image>>,
 ) {
+    let camera_count = gaussian_cameras.iter().len();
+
+    if camera_count == 0 {
+        return;
+    }
+
     for (
         entity,
         gaussian_cloud_handle,
@@ -292,7 +298,7 @@ fn auto_insert_sorted_entries(
         let cloud = cloud.unwrap();
 
         let sorted_entries = sorted_entries_res.add(SortedEntries::new(
-            gaussian_cameras.iter().len(),
+            camera_count,
             cloud.len_sqrt_ceil().pow(2),
             #[cfg(feature = "buffer_texture")]
             images,
@@ -322,6 +328,11 @@ fn update_sorted_entries_sizes(
     let camera_count: usize = gaussian_cameras.iter().len();
 
     for handle in sorted_entries.iter() {
+        if camera_count == 0 {
+            sorted_entries_res.remove(handle);
+            continue;
+        }
+
         let sorted_entries = sorted_entries_res.get(handle).unwrap();
         if sorted_entries.camera_count != camera_count {
             let new_entry = SortedEntries::new(

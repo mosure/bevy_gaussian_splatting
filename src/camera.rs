@@ -38,7 +38,6 @@ fn apply_camera_warmup(
 ) {
     for mut camera in cameras.iter_mut() {
         if camera.warmup {
-            info!("camera warmup...");
             camera.warmup = false;
         }
     }
