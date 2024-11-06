@@ -315,7 +315,7 @@ fn queue_gaussians(
 
     let draw_custom = transparent_3d_draw_functions.read().id::<DrawGaussians>();
 
-    for (view_entity, _view, _) in &mut views {
+    for (view_entity, view, _) in &mut views {
         let Some(transparent_phase) = transparent_render_phases.get_mut(&view_entity) else {
             continue;
         };
@@ -343,6 +343,7 @@ fn queue_gaussians(
                 gaussian_mode: settings.gaussian_mode,
                 rasterize_mode: settings.rasterize_mode,
                 sample_count: msaa.samples(),
+                hdr: view.hdr,
             };
 
             let pipeline = pipelines.specialize(&pipeline_cache, &custom_pipeline, key);
@@ -625,6 +626,7 @@ pub struct GaussianCloudPipelineKey {
     pub gaussian_mode: GaussianMode,
     pub rasterize_mode: GaussianCloudRasterize,
     pub sample_count: u32,
+    pub hdr: bool,
 }
 
 impl SpecializedRenderPipeline for GaussianCloudPipeline {
@@ -632,6 +634,12 @@ impl SpecializedRenderPipeline for GaussianCloudPipeline {
 
     fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
         let shader_defs = shader_defs(key);
+
+        let format = if key.hdr {
+            TextureFormat::Rgba16Float
+        } else {
+            TextureFormat::Rgba8UnormSrgb
+        };
 
         RenderPipelineDescriptor {
             label: Some("gaussian cloud render pipeline".into()),
@@ -652,7 +660,7 @@ impl SpecializedRenderPipeline for GaussianCloudPipeline {
                 shader_defs,
                 entry_point: "fs_main".into(),
                 targets: vec![Some(ColorTargetState {
-                    format: TextureFormat::Rgba8UnormSrgb,
+                    format,
                     blend: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: ColorWrites::ALL,
                 })],
