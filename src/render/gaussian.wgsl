@@ -15,15 +15,18 @@
     get_rotation_matrix,
     get_scale_matrix,
 }
+#import bevy_gaussian_splatting::transform::{
+    world_to_clip,
+    in_frustum,
+}
+
+#ifdef GAUSSIAN_SURFEL
 #import bevy_gaussian_splatting::surfel::{
     compute_cov2d_surfel,
     get_bounding_box_cov2d,
     surfel_fragment_power,
 }
-#import bevy_gaussian_splatting::transform::{
-    world_to_clip,
-    in_frustum,
-}
+#endif
 
 #ifdef PACKED
 #ifdef PRECOMPUTE_COVARIANCE_3D
