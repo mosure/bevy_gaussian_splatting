@@ -24,8 +24,11 @@ bevy gaussian splatting render pipeline plugin. view the [live demo](https://mos
 - [X] depth colorization
 - [X] f16 and f32 gcloud
 - [X] wgl2 and webgpu
+- [ ] 4dgs
 - [X] 3dgs
 - [X] 2dgs
+- [ ] temporal gaussian hierarchy
+- [ ] gcloud, spherical harmonic coefficients Huffman encoding
 - [ ] [spz](https://github.com/nianticlabs/spz) format io
 - [ ] spherical harmonic coefficients clustering
 - [ ] 4D gaussian cloud wavelet compression
