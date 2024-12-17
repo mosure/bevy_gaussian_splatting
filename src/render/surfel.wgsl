@@ -1,5 +1,7 @@
 #define_import_path bevy_gaussian_splatting::surfel
 
+
+#ifdef GAUSSIAN_SURFEL
 #import bevy_gaussian_splatting::bindings::{
     view,
     gaussian_uniforms,
@@ -11,15 +13,6 @@
 }
 
 #ifdef PACKED
-#ifdef PRECOMPUTE_COVARIANCE_3D
-#import bevy_gaussian_splatting::packed::{
-    get_position,
-    get_color,
-    get_visibility,
-    get_opacity,
-    get_cov3d,
-}
-#else
 #import bevy_gaussian_splatting::packed::{
     get_position,
     get_color,
@@ -28,19 +21,9 @@
     get_rotation,
     get_scale,
 }
-#endif
 #else
 
 #ifdef BUFFER_STORAGE
-#ifdef PRECOMPUTE_COVARIANCE_3D
-#import bevy_gaussian_splatting::planar::{
-    get_position,
-    get_color,
-    get_visibility,
-    get_opacity,
-    get_cov3d,
-}
-#else
 #import bevy_gaussian_splatting::planar::{
     get_position,
     get_color,
@@ -49,23 +32,12 @@
     get_rotation,
     get_scale,
 }
-#endif
 #endif
 
 #endif
 
 
 #ifdef BUFFER_TEXTURE
-#ifdef PRECOMPUTE_COVARIANCE_3D
-#import bevy_gaussian_splatting::texture::{
-    get_position,
-    get_color,
-    get_visibility,
-    get_opacity,
-    get_cov3d,
-    location,
-}
-#else
 #import bevy_gaussian_splatting::texture::{
     get_position,
     get_color,
@@ -75,7 +47,6 @@
     get_scale,
     location,
 }
-#endif
 #endif
 
 
@@ -195,3 +166,5 @@ fn surfel_fragment_power(
 
     return power;
 }
+
+#endif  // GAUSSIAN_SURFEL

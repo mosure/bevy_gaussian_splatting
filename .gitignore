@@ -2,7 +2,6 @@ debug/
 target/
 vendor/
 out/
-Cargo.lock
 **/*.rs.bk
 *.pdb
 
