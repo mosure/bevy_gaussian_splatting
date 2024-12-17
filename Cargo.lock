@@ -677,7 +677,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_gaussian_splatting"
-version = "2.7.5"
+version = "2.7.6"
 dependencies = [
  "bevy",
  "bevy-inspector-egui",
