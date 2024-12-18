@@ -68,7 +68,8 @@ impl Plugin for GaussianCloudPlugin {
 }
 
 
-// TODO: handle aabb updates (e.g. gaussian movements)
+// TODO: handle aabb updates (e.g. gaussian particle movements)
+#[allow(clippy::type_complexity)]
 pub fn calculate_bounds(
     mut commands: Commands,
     gaussian_clouds: Res<Assets<GaussianCloud>>,

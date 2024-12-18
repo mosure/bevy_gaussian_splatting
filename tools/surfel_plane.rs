@@ -115,11 +115,11 @@ pub fn setup_surfel_compare(
 
     let cloud = gaussian_assets.add(GaussianCloud::from_gaussians(red_gaussians));
     commands.spawn((
+        Transform::from_translation(Vec3::new(spacing, spacing, 0.0)),
         GaussianCloudHandle(cloud),
         GaussianCloudSettings {
             visualize_bounding_box,
             aabb: true,
-            transform: Transform::from_translation(Vec3::new(spacing, spacing, 0.0)),
             gaussian_mode: GaussianMode::GaussianSurfel,
             ..default()
         },
