@@ -37,6 +37,7 @@ pub fn std_sort(
         &GaussianCloudHandle,
         &SortedEntriesHandle,
         &GaussianCloudSettings,
+        &GlobalTransform,
     )>,
     mut sorted_entries_res: ResMut<Assets<SortedEntries>>,
     mut cameras: Query<
@@ -59,6 +60,7 @@ pub fn std_sort(
             gaussian_cloud_handle,
             sorted_entries_handle,
             settings,
+            transform,
         ) in gaussian_clouds.iter() {
             if settings.sort_mode != SortMode::Std {
                 continue;
@@ -90,7 +92,7 @@ pub fn std_sort(
                         .enumerate()
                         .for_each(|(idx, (position, sort_entry))| {
                             let position = Vec3A::from_slice(position.as_ref());
-                            let position = settings.transform.compute_affine().transform_point3a(position);
+                            let position = transform.affine().transform_point3a(position);
 
                             let delta = trigger.last_camera_position - position;
 

@@ -7,6 +7,7 @@ use bevy::{
     prelude::*,
     render::{
         primitives::Aabb,
+        sync_world::SyncToRenderWorld,
         view::visibility::{
             check_visibility,
             NoFrustumCulling,
@@ -85,7 +86,6 @@ pub fn calculate_bounds(
     for (entity, cloud_handle) in &without_aabb {
         if let Some(cloud) = gaussian_clouds.get(cloud_handle) {
             if let Some(aabb) = cloud.compute_aabb() {
-                info!("Inserting aabb {:?}", aabb);
                 commands.entity(entity).try_insert(aabb);
             }
         }
@@ -102,7 +102,12 @@ pub fn calculate_bounds(
     Reflect,
 )]
 #[reflect(Component, Default)]
-#[require(GaussianCloudSettings, Transform, Visibility)]
+#[require(
+    GaussianCloudSettings,
+    SyncToRenderWorld,
+    Transform,
+    Visibility,
+)]
 pub struct GaussianCloudHandle(pub Handle<GaussianCloud>);
 
 impl From<Handle<GaussianCloud>> for GaussianCloudHandle {
@@ -225,9 +230,12 @@ impl GaussianCloud {
         let mut min = Vec3::splat(f32::INFINITY);
         let mut max = Vec3::splat(f32::NEG_INFINITY);
 
+        // TODO: find a more correct aabb bound derived from scalar max gaussian scale
+        let max_scale = 0.1;
+
         for position in self.position_iter() {
-            min = min.min(Vec3::from(*position));
-            max = max.max(Vec3::from(*position));
+            min = min.min(Vec3::from(*position) - Vec3::splat(max_scale));
+            max = max.max(Vec3::from(*position) + Vec3::splat(max_scale));
         }
 
         Aabb::from_min_max(min, max).into()

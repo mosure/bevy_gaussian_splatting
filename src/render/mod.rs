@@ -52,6 +52,7 @@ use bevy::{
         Render,
         RenderApp,
         RenderSet,
+        sync_world::RenderEntity,
     },
 };
 
@@ -184,8 +185,8 @@ impl Plugin for RenderPipelinePlugin {
                 .add_systems(
                     Render,
                     (
-                        queue_gaussian_bind_group.in_set(RenderSet::Queue),
-                        queue_gaussian_view_bind_groups.in_set(RenderSet::Queue),
+                        queue_gaussian_bind_group.in_set(RenderSet::PrepareBindGroups),
+                        queue_gaussian_view_bind_groups.in_set(RenderSet::PrepareBindGroups),
                         queue_gaussians.in_set(RenderSet::Queue),
                     ),
                 );
@@ -305,20 +306,15 @@ fn queue_gaussians(
     >,
     gaussian_splatting_bundles: Query<GpuGaussianBundleQuery>,
 ) {
-    info!("\nqueueing gaussians");
     let warmup = views.iter().any(|(_, _, camera, _, _)| camera.warmup);
     if warmup {
         return;
     }
 
-    info!("warmup complete");
-
     // TODO: condition this system based on GaussianCloudBindGroup attachment
     if gaussian_cloud_uniform.buffer().is_none() {
         return;
     };
-
-    info!("uniform buffer found");
 
     let draw_custom = transparent_3d_draw_functions.read().id::<DrawGaussians>();
 
@@ -329,13 +325,9 @@ fn queue_gaussians(
         visible_entities,
         msaa,
     ) in &mut views {
-        info!("view entity found");
-
         let Some(transparent_phase) = transparent_render_phases.get_mut(&view_entity) else {
             continue;
         };
-
-        info!("transparent phase found");
 
         for (
             _entity,
@@ -344,19 +336,13 @@ fn queue_gaussians(
             settings,
             _,
         ) in &gaussian_splatting_bundles {
-            info!("gaussian entity found");
-
             if gaussian_clouds.get(cloud_handle).is_none() {
                 return;
             }
 
-            info!("queue - gaussian cloud asset found");
-
             if sorted_entries.get(sorted_entries_handle).is_none() {
                 return;
             }
-
-            info!("sorted entries asset found");
 
             let msaa = msaa.cloned().unwrap_or_default();
 
@@ -377,8 +363,6 @@ fn queue_gaussians(
             // let rangefinder = view.rangefinder3d();
 
             for (render_entity, visible_entity) in visible_entities.iter::<With<GaussianCloudHandle>>() {
-                info!("adding transparent phase item");
-
                 transparent_phase.add(Transparent3d {
                     entity: (*render_entity, *visible_entity),
                     draw_function: draw_custom,
@@ -738,7 +722,7 @@ type DrawGaussians = (
 );
 
 
-#[derive(Component, ShaderType, Clone)]
+#[derive(Component, ShaderType, Clone, Copy)]
 pub struct GaussianCloudUniform {
     pub transform: Mat4,
     pub global_opacity: f32,
@@ -755,15 +739,15 @@ pub fn extract_gaussians(
     gaussian_cloud_res: Res<RenderAssets<GpuGaussianCloud>>,
     gaussians_query: Extract<
         Query<(
-            Entity,
+            RenderEntity,
             &ViewVisibility,
             &GaussianCloudHandle,
             &SortedEntriesHandle,
             &GaussianCloudSettings,
+            &GlobalTransform,
         )>,
     >,
 ) {
-    info!("\nextracting gaussians");
     let mut commands_list = Vec::with_capacity(*prev_commands_len);
     // let visible_gaussians = gaussians_query.iter().filter(|(_, vis, ..)| vis.is_visible());
 
@@ -773,14 +757,11 @@ pub fn extract_gaussians(
         cloud_handle,
         sorted_entries,
         settings,
+        transform,
     ) in gaussians_query.iter() {
-        info!("gaussian entity found");
-
-        // if !visibility.get() {
-        //     continue;
-        // }
-
-        info!("gaussian entity visible");
+        if !visibility.get() {
+            continue;
+        }
 
         if let Some(load_state) = asset_server.get_load_state(&cloud_handle.0) {
             if load_state.is_loading() {
@@ -788,23 +769,20 @@ pub fn extract_gaussians(
             }
         }
 
-        info!("gaussian cloud asset loaded");
-
         if gaussian_cloud_res.get(cloud_handle).is_none() {
             continue;
         }
 
-        info!("gaussian cloud asset found");
-
         let cloud = gaussian_cloud_res.get(cloud_handle).unwrap();
 
         let settings_uniform = GaussianCloudUniform {
-            transform: settings.transform.compute_matrix(),
+            transform: transform.compute_matrix(),
             global_opacity: settings.global_opacity,
             global_scale: settings.global_scale,
             count: cloud.count as u32,
             count_root_ceil: (cloud.count as f32).sqrt().ceil() as u32,
         };
+
         commands_list.push((
             entity,
             GpuGaussianSplattingBundle {
@@ -961,7 +939,6 @@ pub fn queue_gaussian_view_bind_groups(
     >,
     globals_buffer: Res<GlobalsBuffer>,
 ) {
-    info!("\nqueueing gaussian view bind groups");
     if let (
         Some(view_binding),
         Some(globals),
@@ -969,12 +946,10 @@ pub fn queue_gaussian_view_bind_groups(
         view_uniforms.uniforms.binding(),
         globals_buffer.buffer.binding(),
     ) {
-        info!("view binding and globals found");
         for (
             entity,
             _extracted_view,
         ) in &views {
-            info!("view entity found");
             let layout = &gaussian_cloud_pipeline.view_layout;
 
             let entries = vec![
@@ -1045,7 +1020,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianUniformBindGr
     fn render<'w>(
         _item: &P,
         _view: (),
-        gaussian_cloud_index: Option<ROQueryItem<Self::ItemQuery>>,
+        gaussian_cloud_index: Option<ROQueryItem<'w, Self::ItemQuery>>,
         bind_groups: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
@@ -1053,6 +1028,12 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianUniformBindGr
         let bind_group = bind_groups.base_bind_group.as_ref().expect("bind group not initialized");
 
         let mut set_bind_group = |indices: &[u32]| pass.set_bind_group(I, bind_group, indices);
+
+        if gaussian_cloud_index.is_none() {
+            info!("skipping gaussian uniform bind group\n");
+            return RenderCommandResult::Skip;
+        }
+
         let gaussian_cloud_index = gaussian_cloud_index.unwrap().index();
         set_bind_group(&[gaussian_cloud_index]);
 

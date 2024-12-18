@@ -161,12 +161,12 @@ pub fn setup_surfel_compare(
     }
 
     commands.spawn((
+        Transform::from_translation(Vec3::new(spacing, spacing, 0.0)),
         GaussianCloudHandle(
             gaussian_assets.add(GaussianCloud::from_gaussians(red_gaussians))
         ),
         GaussianCloudSettings {
             aabb: true,
-            transform: Transform::from_translation(Vec3::new(spacing, spacing, 0.0)),
             gaussian_mode: GaussianMode::GaussianSurfel,
             ..default()
         },
