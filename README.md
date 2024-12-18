@@ -22,11 +22,12 @@ bevy gaussian splatting render pipeline plugin. view the [live demo](https://mos
 - [X] gaussian cloud particle effects
 - [X] wasm support /w [live demo](https://mosure.github.io/bevy_gaussian_splatting/index.html?arg1=cactus.gcloud)
 - [X] depth colorization
+- [X] normal rendering
 - [X] f16 and f32 gcloud
 - [X] wgl2 and webgpu
-- [ ] 4dgs
-- [X] 3dgs
 - [X] 2dgs
+- [X] 3dgs
+- [ ] 4dgs
 - [ ] temporal gaussian hierarchy
 - [ ] gcloud, spherical harmonic coefficients Huffman encoding
 - [ ] [spz](https://github.com/nianticlabs/spz) format io
