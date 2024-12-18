@@ -15,7 +15,7 @@ use bevy::{
 use bevy_gaussian_splatting::{
     GaussianCamera,
     GaussianCloud,
-    GaussianSplattingBundle,
+    GaussianCloudHandle,
     random_gaussians,
 };
 
@@ -47,10 +47,7 @@ fn setup(
     let cloud = gaussian_assets.add(random_gaussians(10000));
 
     commands.spawn((
-        GaussianSplattingBundle {
-            cloud,
-            ..default()
-        },
+        GaussianCloudHandle(cloud),
         Name::new("gaussian_cloud"),
     ));
 
@@ -112,7 +109,7 @@ fn capture_ready(
     // asset_server: Res<AssetServer>,
     // gaussian_clouds: Query<
     //     Entity,
-    //     &Handle<GaussianCloud>,
+    //     &GaussianCloudHandle,
     // >,
     main_window: Query<Entity, With<PrimaryWindow>>,
     mut screenshot_manager: ResMut<ScreenshotManager>,

@@ -17,9 +17,9 @@ use bevy_gaussian_splatting::{
     Gaussian,
     GaussianCamera,
     GaussianCloud,
+    GaussianCloudHandle,
     GaussianMode,
     GaussianCloudSettings,
-    GaussianSplattingBundle,
     GaussianSplattingPlugin,
     gaussian::f32::Rotation,
     utils::{
@@ -71,13 +71,11 @@ pub fn setup_surfel_compare(
         }
     }
 
+    let cloud = gaussian_assets.add(GaussianCloud::from_gaussians(blue_gaussians));
     commands.spawn((
-        GaussianSplattingBundle {
-            cloud: gaussian_assets.add(GaussianCloud::from_gaussians(blue_gaussians)),
-            settings: GaussianCloudSettings {
-                visualize_bounding_box,
-                ..default()
-            },
+        GaussianCloudHandle(cloud),
+        GaussianCloudSettings {
+            visualize_bounding_box,
             ..default()
         },
         Name::new("gaussian_cloud_3dgs"),
@@ -115,16 +113,14 @@ pub fn setup_surfel_compare(
         }
     }
 
+    let cloud = gaussian_assets.add(GaussianCloud::from_gaussians(red_gaussians));
     commands.spawn((
-        GaussianSplattingBundle {
-            cloud: gaussian_assets.add(GaussianCloud::from_gaussians(red_gaussians)),
-            settings: GaussianCloudSettings {
-                visualize_bounding_box,
-                aabb: true,
-                transform: Transform::from_translation(Vec3::new(spacing, spacing, 0.0)),
-                gaussian_mode: GaussianMode::GaussianSurfel,
-                ..default()
-            },
+        Transform::from_translation(Vec3::new(spacing, spacing, 0.0)),
+        GaussianCloudHandle(cloud),
+        GaussianCloudSettings {
+            visualize_bounding_box,
+            aabb: true,
+            gaussian_mode: GaussianMode::GaussianSurfel,
             ..default()
         },
         Name::new("gaussian_cloud_2dgs"),
@@ -134,11 +130,9 @@ pub fn setup_surfel_compare(
     info!("camera_transform: {:?}", camera_transform.compute_matrix().to_cols_array_2d());
 
     commands.spawn((
-        Camera3dBundle {
-            transform: camera_transform,
-            tonemapping: Tonemapping::None,
-            ..default()
-        },
+        camera_transform,
+        Camera3d::default(),
+        Tonemapping::None,
         PanOrbitCamera {
             allow_upside_down: true,
             ..default()

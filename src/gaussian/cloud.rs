@@ -3,7 +3,18 @@ use rand::{
     Rng,
 };
 
-use bevy::prelude::*;
+use bevy::{
+    prelude::*,
+    render::{
+        primitives::Aabb,
+        sync_world::SyncToRenderWorld,
+        view::visibility::{
+            check_visibility,
+            NoFrustumCulling,
+            VisibilitySystems,
+        },
+    },
+};
 use serde::{
     Deserialize,
     Serialize,
@@ -23,6 +34,7 @@ use crate::{
             ScaleOpacity,
         },
         packed::Gaussian,
+        settings::GaussianCloudSettings,
     },
     material::spherical_harmonics::{
         HALF_SH_COEFF_COUNT,
@@ -38,6 +50,84 @@ use crate::gaussian::f16::{
     RotationScaleOpacityPacked128,
     pack_f32s_to_u32,
 };
+
+
+#[derive(Default)]
+pub struct GaussianCloudPlugin;
+
+impl Plugin for GaussianCloudPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            PostUpdate,
+            (
+                calculate_bounds.in_set(VisibilitySystems::CalculateBounds),
+                check_visibility::<With<GaussianCloudHandle>>.in_set(VisibilitySystems::CheckVisibility),
+            )
+        );
+    }
+}
+
+
+// TODO: handle aabb updates (e.g. gaussian particle movements)
+#[allow(clippy::type_complexity)]
+pub fn calculate_bounds(
+    mut commands: Commands,
+    gaussian_clouds: Res<Assets<GaussianCloud>>,
+    without_aabb: Query<
+        (
+            Entity,
+            &GaussianCloudHandle,
+        ),
+        (
+            Without<Aabb>,
+            Without<NoFrustumCulling>,
+        ),
+    >,
+) {
+    for (entity, cloud_handle) in &without_aabb {
+        if let Some(cloud) = gaussian_clouds.get(cloud_handle) {
+            if let Some(aabb) = cloud.compute_aabb() {
+                commands.entity(entity).try_insert(aabb);
+            }
+        }
+    }
+}
+
+
+#[derive(
+    Component,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Reflect,
+)]
+#[reflect(Component, Default)]
+#[require(
+    GaussianCloudSettings,
+    SyncToRenderWorld,
+    Transform,
+    Visibility,
+)]
+pub struct GaussianCloudHandle(pub Handle<GaussianCloud>);
+
+impl From<Handle<GaussianCloud>> for GaussianCloudHandle {
+    fn from(handle: Handle<GaussianCloud>) -> Self {
+        Self(handle)
+    }
+}
+
+impl From<GaussianCloudHandle> for AssetId<GaussianCloud> {
+    fn from(handle: GaussianCloudHandle) -> Self {
+        handle.0.id()
+    }
+}
+
+impl From<&GaussianCloudHandle> for AssetId<GaussianCloud> {
+    fn from(handle: &GaussianCloudHandle) -> Self {
+        handle.0.id()
+    }
+}
 
 
 #[cfg(feature = "f16")]
@@ -131,6 +221,25 @@ impl GaussianCloud {
 
     pub fn visibility_mut(&mut self, index: usize) -> &mut f32 {
         &mut self.position_visibility[index].visibility
+    }
+
+    pub fn compute_aabb(&self) -> Option<Aabb> {
+        if self.is_empty() {
+            return None;
+        }
+
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+
+        // TODO: find a more correct aabb bound derived from scalar max gaussian scale
+        let max_scale = 0.1;
+
+        for position in self.position_iter() {
+            min = min.min(Vec3::from(*position) - Vec3::splat(max_scale));
+            max = max.max(Vec3::from(*position) + Vec3::splat(max_scale));
+        }
+
+        Aabb::from_min_max(min, max).into()
     }
 
 

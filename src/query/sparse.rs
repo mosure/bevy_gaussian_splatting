@@ -12,6 +12,7 @@ use typenum::consts::U3;
 use crate::{
     Gaussian,
     GaussianCloud,
+    GaussianCloudHandle,
     query::select::Select,
 };
 
@@ -89,7 +90,7 @@ fn select_sparse_handler(
     gaussian_clouds_res: Res<Assets<GaussianCloud>>,
     mut selections: Query<(
         Entity,
-        &Handle<GaussianCloud>,
+        &GaussianCloudHandle,
         &mut SparseSelect,
     )>,
 ) {

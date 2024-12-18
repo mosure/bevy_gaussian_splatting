@@ -7,7 +7,6 @@ use std::io::{
 
 use bevy::asset::{
     AssetLoader,
-    AsyncReadExt,
     LoadContext,
     io::Reader,
 };
@@ -26,11 +25,11 @@ impl AssetLoader for GaussianCloudLoader {
     type Settings = ();
     type Error = std::io::Error;
 
-    async fn load<'a>(
-        &'a self,
-        reader: &'a mut Reader<'_>,
-        _settings: &'a Self::Settings,
-        load_context: &'a mut LoadContext<'_>,
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _: &Self::Settings,
+        load_context: &mut LoadContext<'_>,
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;

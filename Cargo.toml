@@ -1,7 +1,7 @@
 [package]
 name = "bevy_gaussian_splatting"
 description = "bevy gaussian splatting render pipeline plugin"
-version = "2.7.6"
+version = "3.0.0"
 edition = "2021"
 authors = ["mosure <mitchell@mosure.me>"]
 license = "MIT OR Apache-2.0"
@@ -106,6 +106,7 @@ tooling = ["byte-unit"]
 perftest = []
 
 headless = [
+  "bevy/png",
   "io_flexbuffers",
   "io_ply",
   "planar",
@@ -116,6 +117,7 @@ headless = [
 ]
 
 viewer = [
+  "bevy/png",
   "bevy-inspector-egui",
   "bevy_panorbit_camera",
   # "bevy_transform_gizmo",
@@ -141,20 +143,20 @@ webgpu = ["bevy/webgpu"]
 
 
 [dependencies]
-bevy_args = "1.6"
-bevy-inspector-egui = { version = "0.27", optional = true }
+bevy_args = "1.7"
+bevy-inspector-egui = { version = "0.28", optional = true }
 bevy_mod_picking = { version = "0.20", optional = true }
 # bevy_panorbit_camera = { git = "https://github.com/mosure/bevy_panorbit_camera.git", optional = true, features = ["bevy_egui"] }
-bevy_panorbit_camera = { version = "0.19.5", optional = true, features = ["bevy_egui"] }
+bevy_panorbit_camera = { version = "0.21", optional = true, features = ["bevy_egui"] }
 bevy_transform_gizmo = { version = "0.12", optional = true }
 bincode2 = { version = "2.0", optional = true }
 byte-unit = { version = "5.1", optional = true }
-bytemuck = "1.19"
+bytemuck = "1.20"
 clap = { version = "4.5", features = ["derive"] }
 flate2  = { version = "1.0", optional = true }
 flexbuffers = { version = "2.0", optional = true }
 half = { version = "2.3", optional = true, features = ["serde"] }
-image = { version = "0.25.0", default-features = false, features = ["png"] }
+image = { version = "0.25.2", default-features = false, features = ["png"] }
 kd-tree = { version = "0.6", optional = true }
 noise = { version = "0.9.0", optional = true }
 ply-rs = { version = "0.1", optional = true }
@@ -163,7 +165,7 @@ rayon = { version = "1.8", optional = true }
 serde = "1.0"
 static_assertions = "1.1"
 typenum = "1.17"
-wgpu = "0.20"
+wgpu = "23.0.1"
 
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -172,7 +174,7 @@ wasm-bindgen = "0.2"
 
 
 [dependencies.bevy]
-version = "0.14"
+version = "0.15"
 default-features = false
 features = [
   "bevy_asset",

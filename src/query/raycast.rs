@@ -9,6 +9,7 @@ struct Triangle {
     vertices: [Vec3; 3],
 }
 
+// TODO: update Handle<Mesh>
 fn point_in_mesh_system(
     mesh_query: Query<(&Handle<Mesh>, &Transform)>,
     point_query: Query<(&Point, Entity)>,

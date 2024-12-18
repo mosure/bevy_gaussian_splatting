@@ -17,8 +17,8 @@ use bevy_gaussian_splatting::{
     Gaussian,
     GaussianCamera,
     GaussianCloud,
+    GaussianCloudHandle,
     GaussianCloudSettings,
-    GaussianSplattingBundle,
     GaussianSplattingPlugin,
     utils::{
         setup_hooks,
@@ -43,18 +43,17 @@ pub fn setup_aabb_obb_compare(
     };
 
     commands.spawn((
-        GaussianSplattingBundle {
-            cloud: gaussian_assets.add(
-            GaussianCloud::from_gaussians(vec![
+        GaussianCloudHandle(
+            gaussian_assets.add(
+                GaussianCloud::from_gaussians(vec![
                     blue_aabb_gaussian,
                     blue_aabb_gaussian,
                 ])
-            ),
-            settings: GaussianCloudSettings {
-                aabb: true,
-                visualize_bounding_box: true,
-                ..default()
-            },
+            )
+        ),
+        GaussianCloudSettings {
+            aabb: true,
+            visualize_bounding_box: true,
             ..default()
         },
         Name::new("gaussian_cloud_aabb"),
@@ -71,29 +70,26 @@ pub fn setup_aabb_obb_compare(
     };
 
     commands.spawn((
-        GaussianSplattingBundle {
-            cloud: gaussian_assets.add(
+        GaussianCloudHandle(
+            gaussian_assets.add(
             GaussianCloud::from_gaussians(vec![
                     red_obb_gaussian,
                     red_obb_gaussian,
                 ])
-            ),
-            settings: GaussianCloudSettings {
-                aabb: false,
-                visualize_bounding_box: true,
-                ..default()
-            },
+            )
+        ),
+        GaussianCloudSettings {
+            aabb: false,
+            visualize_bounding_box: true,
             ..default()
         },
         Name::new("gaussian_cloud_obb"),
     ));
 
     commands.spawn((
-        Camera3dBundle {
-            transform: Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
-            tonemapping: Tonemapping::None,
-            ..default()
-        },
+        Camera3d::default(),
+        Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
+        Tonemapping::None,
         PanOrbitCamera{
             allow_upside_down: true,
             ..default()

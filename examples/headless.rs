@@ -14,7 +14,7 @@ use bevy_args::BevyArgsPlugin;
 use bevy_gaussian_splatting::{
     GaussianCamera,
     GaussianCloud,
-    GaussianSplattingBundle,
+    GaussianCloudHandle,
     GaussianSplattingPlugin,
     random_gaussians,
     utils::GaussianSplattingViewer,
@@ -394,18 +394,16 @@ fn setup_gaussian_cloud(
 
 
     commands.spawn((
-        GaussianSplattingBundle { cloud, ..default() },
+        GaussianCloudHandle(cloud),
         Name::new("gaussian_cloud"),
     ));
 
     commands.spawn((
-        Camera3dBundle {
-            transform: Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
-            tonemapping: Tonemapping::None,
-            camera: Camera {
-                target: render_target,
-                ..default()
-            },
+        Camera3d::default(),
+        Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
+        Tonemapping::None,
+        Camera {
+            target: render_target,
             ..default()
         },
         GaussianCamera::default(),

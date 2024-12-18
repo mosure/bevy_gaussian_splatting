@@ -15,7 +15,10 @@ use static_assertions::assert_cfg;
 #[allow(unused_imports)]
 use crate::{
     gaussian::{
-        cloud::GaussianCloud,
+        cloud::{
+            GaussianCloud,
+            GaussianCloudHandle,
+        },
         f32::{
             PositionVisibility,
             Rotation,
@@ -204,7 +207,7 @@ fn queue_textures(
     clouds: Query<
         (
             Entity,
-            &Handle<GaussianCloud>,
+            &GaussianCloudHandle,
         ),
         Without<TextureBuffers>,
     >,

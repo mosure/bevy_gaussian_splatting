@@ -11,8 +11,7 @@ use bevy::{
         DiagnosticsStore,
         FrameTimeDiagnosticsPlugin,
     },
-    render::view::screenshot::ScreenshotManager,
-    window::PrimaryWindow,
+    render::view::screenshot::{save_to_disk, Screenshot},
 };
 use bevy_args::{
     BevyArgsPlugin,
@@ -27,8 +26,8 @@ use bevy_panorbit_camera::{
 use bevy_gaussian_splatting::{
     GaussianCamera,
     GaussianCloud,
+    GaussianCloudHandle,
     GaussianCloudSettings,
-    GaussianSplattingBundle,
     GaussianSplattingPlugin,
     random_gaussians,
     utils::{
@@ -44,6 +43,7 @@ use bevy_gaussian_splatting::material::noise::NoiseMaterial;
 #[cfg(feature = "morph_particles")]
 use bevy_gaussian_splatting::morph::particle::{
     ParticleBehaviors,
+    ParticleBehaviorsHandle,
     random_particle_behaviors,
 };
 
@@ -76,23 +76,18 @@ fn setup_gaussian_cloud(
     }
 
     commands.spawn((
-        GaussianSplattingBundle {
-            cloud,
-            settings: GaussianCloudSettings {
-                gaussian_mode: args.gaussian_mode,
-                ..default()
-            },
+        GaussianCloudHandle(cloud),
+        GaussianCloudSettings {
+            gaussian_mode: args.gaussian_mode,
             ..default()
         },
         Name::new("gaussian_cloud"),
     ));
 
     commands.spawn((
-        Camera3dBundle {
-            transform: Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
-            tonemapping: Tonemapping::None,
-            ..default()
-        },
+        Camera3d::default(),
+        Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
+        Tonemapping::None,
         PanOrbitCamera {
             allow_upside_down: true,
             orbit_smoothness: 0.0,
@@ -113,9 +108,9 @@ fn setup_particle_behavior(
     gaussian_cloud: Query<
         (
             Entity,
-            &Handle<GaussianCloud>,
+            &GaussianCloudHandle,
         ),
-        Without<Handle<ParticleBehaviors>>,
+        Without<ParticleBehaviorsHandle>,
     >,
 ) {
     if gaussian_cloud.is_empty() {
@@ -130,7 +125,7 @@ fn setup_particle_behavior(
 
     if let Some(particle_behaviors) = particle_behaviors {
         commands.entity(gaussian_cloud.single().0)
-            .insert(particle_behaviors);
+            .insert(ParticleBehaviorsHandle(particle_behaviors));
     }
 }
 
@@ -140,7 +135,7 @@ fn setup_noise_material(
     asset_server: Res<AssetServer>,
     gaussian_clouds: Query<(
         Entity,
-        &Handle<GaussianCloud>,
+        &GaussianCloudHandle,
         Without<NoiseMaterial>,
     )>,
 ) {
@@ -167,7 +162,7 @@ fn setup_sparse_select(
     mut commands: Commands,
     gaussian_cloud: Query<(
         Entity,
-        &Handle<GaussianCloud>,
+        &GaussianCloudHandle,
         Without<SparseSelect>,
     )>,
 ) {
@@ -233,14 +228,6 @@ fn example_app() {
     app.add_plugins(BevyArgsPlugin::<GaussianSplattingViewer>::default());
     app.add_plugins(PanOrbitCameraPlugin);
 
-    app.insert_resource(match config.msaa_samples {
-        1 => Msaa::Off,
-        2 => Msaa::Sample2,
-        4 => Msaa::Sample4,
-        8 => Msaa::Sample8,
-        _ => Msaa::default(),
-    });
-
     if config.editor {
         app.add_plugins(WorldInspectorPlugin::new());
     }
@@ -284,25 +271,18 @@ fn example_app() {
 
 
 pub fn press_s_screenshot(
+    mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
-    main_window: Query<Entity, With<PrimaryWindow>>,
-    mut screenshot_manager: ResMut<ScreenshotManager>,
     current_frame: Res<FrameCount>,
 ) {
     if keys.just_pressed(KeyCode::KeyS) {
-        if let Ok(window_entity) = main_window.get_single() {
-            let images_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("screenshots");
-            std::fs::create_dir_all(&images_dir).unwrap();
-            let output_path = images_dir.join(format!("output_{}.png", current_frame.0));
+        let images_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("screenshots");
+        std::fs::create_dir_all(&images_dir).unwrap();
+        let output_path = images_dir.join(format!("output_{}.png", current_frame.0));
 
-            screenshot_manager.take_screenshot(window_entity, move |image: Image| {
-                let dyn_img = image.clone().try_into_dynamic().unwrap();
-                let img = dyn_img.to_rgba8();
-                img.save(&output_path).unwrap();
-
-                log(&format!("saved screenshot to {}", output_path.display()));
-            }).unwrap();
-        }
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk(output_path));
     }
 }
 
@@ -342,27 +322,29 @@ fn fps_display_setup(
     asset_server: Res<AssetServer>,
 ) {
     commands.spawn((
-        TextBundle::from_sections([
-            TextSection::new(
-                "fps: ",
-                TextStyle {
-                    font: asset_server.load("fonts/Caveat-Bold.ttf"),
-                    font_size: 60.0,
-                    color: Color::WHITE,
-                },
-            ),
-            TextSection::from_style(TextStyle {
-                font: asset_server.load("fonts/Caveat-Medium.ttf"),
-                font_size: 60.0,
-                color: Color::Srgba(GOLD),
-            }),
-        ]).with_style(Style {
+        Text("fps: ".to_string()),
+        TextFont {
+            font: asset_server.load("fonts/Caveat-Bold.ttf"),
+            font_size: 60.0,
+            ..Default::default()
+        },
+        TextColor(Color::WHITE),
+        Node {
             position_type: PositionType::Absolute,
             bottom: Val::Px(5.0),
             left: Val::Px(15.0),
             ..default()
-        }),
+        },
+        ZIndex(2),
+    )).with_child((
         FpsText,
+        TextColor(Color::Srgba(GOLD)),
+        TextFont {
+            font: asset_server.load("fonts/Caveat-Bold.ttf"),
+            font_size: 60.0,
+            ..Default::default()
+        },
+        TextSpan::default(),
     ));
 }
 
@@ -371,12 +353,12 @@ struct FpsText;
 
 fn fps_update_system(
     diagnostics: Res<DiagnosticsStore>,
-    mut query: Query<&mut Text, With<FpsText>>,
+    mut query: Query<&mut TextSpan, With<FpsText>>,
 ) {
     for mut text in &mut query {
         if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) {
             if let Some(value) = fps.smoothed() {
-                text.sections[1].value = format!("{value:.2}");
+                **text = format!("{value:.2}");
             }
         }
     }
