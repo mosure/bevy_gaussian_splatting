@@ -53,7 +53,10 @@ use bevy::{
 use static_assertions::assert_cfg;
 
 use crate::{
-    gaussian::cloud::GaussianCloud,
+    gaussian::cloud::{
+        GaussianCloud,
+        GaussianCloudHandle,
+    },
     GaussianCloudSettings,
     render::{
         GaussianCloudBindGroup,
@@ -369,8 +372,8 @@ pub fn queue_radix_bind_group(
     sorted_entries_res: Res<RenderAssets<GpuSortedEntry>>,
     gaussian_clouds: Query<(
         Entity,
-        &Handle<GaussianCloud>,
-        &Handle<SortedEntries>,
+        &GaussianCloudHandle,
+        &SortedEntriesHandle,
         &GaussianCloudSettings,
     )>,
     sort_buffers: Res<RadixSortBuffers>,
@@ -494,7 +497,7 @@ pub fn queue_radix_bind_group(
 
 pub struct RadixSortNode {
     gaussian_clouds: QueryState<(
-        &'static Handle<GaussianCloud>,
+        &'static GaussianCloudHandle,
         &'static GaussianCloudBindGroup,
         &'static RadixBindGroup,
     )>,

@@ -1,6 +1,5 @@
 use bevy::{
     prelude::*,
-    asset::LoadState,
     math::Vec3A,
     utils::Instant,
 };
@@ -9,12 +8,14 @@ use rayon::prelude::*;
 use crate::{
     camera::GaussianCamera,
     GaussianCloud,
+    GaussianCloudHandle,
     GaussianCloudSettings,
     sort::{
         SortConfig,
         SortMode,
         SortTrigger,
         SortedEntries,
+        SortedEntriesHandle,
     },
 };
 
@@ -33,8 +34,8 @@ pub fn rayon_sort(
     asset_server: Res<AssetServer>,
     gaussian_clouds_res: Res<Assets<GaussianCloud>>,
     gaussian_clouds: Query<(
-        &Handle<GaussianCloud>,
-        &Handle<SortedEntries>,
+        &GaussianCloudHandle,
+        &SortedEntriesHandle,
         &GaussianCloudSettings,
     )>,
     mut sorted_entries_res: ResMut<Assets<SortedEntries>>,
@@ -66,12 +67,16 @@ pub fn rayon_sort(
             trigger.needs_sort = false;
             performed_sort = true;
 
-            if Some(LoadState::Loading) == asset_server.get_load_state(gaussian_cloud_handle) {
-                continue;
+            if let Some(load_state) = asset_server.get_load_state(&gaussian_cloud_handle.0) {
+                if load_state.is_loading() {
+                    continue;
+                }
             }
 
-            if Some(LoadState::Loading) == asset_server.get_load_state(sorted_entries_handle) {
-                continue;
+            if let Some(load_state) = asset_server.get_load_state(&sorted_entries_handle.0) {
+                if load_state.is_loading() {
+                    continue;
+                }
             }
 
             if let Some(gaussian_cloud) = gaussian_clouds_res.get(gaussian_cloud_handle) {

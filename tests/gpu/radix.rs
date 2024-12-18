@@ -38,7 +38,7 @@ use bevy::{
 use bevy_gaussian_splatting::{
     GaussianCamera,
     GaussianCloud,
-    GaussianSplattingBundle,
+    GaussianCloudHandle,
     random_gaussians,
     sort::SortedEntries,
 };
@@ -89,12 +89,9 @@ fn setup(
     let cloud = gaussian_assets.add(random_gaussians(10000));
 
     commands.spawn((
-        GaussianSplattingBundle {
-            cloud,
-            settings: GaussianCloudSettings {
-                sort_mode: SortMode::Radix,
-                ..default()
-            },
+        GaussianCloudHandle(cloud),
+        GaussianCloudSettings {
+            sort_mode: SortMode::Radix,
             ..default()
         },
         Name::new("gaussian_cloud"),
@@ -113,8 +110,8 @@ fn setup(
 
 pub struct RadixTestNode {
     gaussian_clouds: QueryState<(
-        &'static Handle<GaussianCloud>,
-        &'static Handle<SortedEntries>,
+        &'static GaussianCloudHandle,
+        &'static SortedEntriesHandle,
     )>,
     state: TestStateArc,
     views: QueryState<(

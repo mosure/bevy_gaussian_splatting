@@ -59,10 +59,10 @@ fn setup_gaussian_cloud(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
 ) {
-    commands.spawn(GaussianSplattingBundle {
-        cloud: asset_server.load("scenes/icecream.gcloud"),
-        ..Default::default()
-    });
+    // GaussianCloudSettings and Visibility are automatically added
+    commands.spawn(
+        GaussianCloudHandle(asset_server.load("scenes/icecream.gcloud")),
+    );
 
     commands.spawn(Camera3dBundle::default());
 }
@@ -79,6 +79,7 @@ fn setup_gaussian_cloud(
 
 | `bevy_gaussian_splatting` | `bevy` |
 | :--                       | :--    |
+| `2.8`                     | `0.15` |
 | `2.3`                     | `0.14` |
 | `2.1`                     | `0.13` |
 | `0.4 - 2.0`               | `0.12` |

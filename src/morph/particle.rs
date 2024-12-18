@@ -110,6 +110,8 @@ impl Plugin for ParticleBehaviorPlugin {
         );
 
         app.register_type::<ParticleBehaviors>();
+        app.register_type::<ParticleBehaviorsHandle>();
+        app.init_asset::<ParticleBehaviors>();
         app.init_asset::<ParticleBehaviors>();
         app.register_asset_reflect::<ParticleBehaviors>();
         app.add_plugins(RenderAssetPlugin::<GpuParticleBehaviorBuffers>::default());
@@ -152,7 +154,7 @@ pub fn extract_particle_behaviors(
     gaussians_query: Extract<
         Query<(
             Entity,
-            &Handle<ParticleBehaviors>,
+            &ParticleBehaviorsHandle,
         )>,
     >,
 ) {
@@ -247,6 +249,7 @@ impl FromWorld for ParticleBehaviorPipeline {
             shader: PARTICLE_SHADER_HANDLE,
             shader_defs: shader_defs.clone(),
             entry_point: "apply_particle_behaviors".into(),
+            zero_initialize_workgroup_memory: true,
         });
 
         ParticleBehaviorPipeline {
@@ -271,19 +274,21 @@ pub fn queue_particle_behavior_bind_group(
     particle_behaviors_res: Res<RenderAssets<GpuParticleBehaviorBuffers>>,
     particle_behaviors: Query<(
         Entity,
-        &Handle<ParticleBehaviors>,
+        &ParticleBehaviorsHandle,
     )>,
 ) {
     for (entity, behaviors_handle) in particle_behaviors.iter() {
-        if Some(LoadState::Loading) == asset_server.get_load_state(behaviors_handle) {
+        if let Some(load_state) = asset_server.get_load_state(&behaviors_handle.0) {
+            if load_state.is_loading() {
+                continue;
+            }
+        }
+
+        if particle_behaviors_res.get(&behaviors_handle.0).is_none() {
             continue;
         }
 
-        if particle_behaviors_res.get(behaviors_handle.id()).is_none() {
-            continue;
-        }
-
-        let behaviors = particle_behaviors_res.get(behaviors_handle.id()).unwrap();
+        let behaviors = particle_behaviors_res.get(&behaviors_handle.0).unwrap();
 
         let particle_behavior_bindgroup = render_device.create_bind_group(
             "particle_behavior_bind_group",
@@ -311,7 +316,7 @@ pub fn queue_particle_behavior_bind_group(
 pub struct ParticleBehaviorNode {
     gaussian_clouds: QueryState<(
         &'static GaussianCloudBindGroup,
-        &'static Handle<ParticleBehaviors>,
+        &'static ParticleBehaviorsHandle,
         &'static ParticleBehaviorBindGroup,
     )>,
     initialized: bool,
@@ -380,7 +385,7 @@ impl Node for ParticleBehaviorNode {
                 behaviors_handle,
                 particle_behavior_bind_group,
             ) in self.gaussian_clouds.iter_manual(world) {
-                let behaviors = world.get_resource::<RenderAssets<GpuParticleBehaviorBuffers>>().unwrap().get(behaviors_handle.id()).unwrap();
+                let behaviors = world.get_resource::<RenderAssets<GpuParticleBehaviorBuffers>>().unwrap().get(behaviors_handle.0.id()).unwrap();
                 let gaussian_uniforms = world.resource::<GaussianUniformBindGroups>();
 
                 {
@@ -419,6 +424,34 @@ impl Node for ParticleBehaviorNode {
 }
 
 
+#[derive(
+    Component,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Reflect,
+)]
+#[reflect(Component, Default)]
+pub struct ParticleBehaviorsHandle(pub Handle<ParticleBehaviors>);
+
+impl From<Handle<ParticleBehaviors>> for ParticleBehaviorsHandle {
+    fn from(handle: Handle<ParticleBehaviors>) -> Self {
+        Self(handle)
+    }
+}
+
+impl From<ParticleBehaviorsHandle> for AssetId<ParticleBehaviors> {
+    fn from(handle: ParticleBehaviorsHandle) -> Self {
+        handle.0.id()
+    }
+}
+
+impl From<&ParticleBehaviorsHandle> for AssetId<ParticleBehaviors> {
+    fn from(handle: &ParticleBehaviorsHandle) -> Self {
+        handle.0.id()
+    }
+}
 
 
 // TODO: add more particle system functionality (e.g. lifetime, color)

@@ -64,12 +64,14 @@ pub enum GaussianCloudRasterize {
 }
 
 
+// TODO: breakdown into components
 #[derive(Component, Reflect, Clone)]
 #[reflect(Component)]
 pub struct GaussianCloudSettings {
     pub aabb: bool,
     pub global_opacity: f32,
     pub global_scale: f32,
+    // TODO: move transform to GaussianCloudHandle entity
     pub transform: Transform,
     pub opacity_adaptive_radius: bool,
     pub visualize_bounding_box: bool,

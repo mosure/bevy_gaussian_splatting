@@ -4,7 +4,10 @@ pub use camera::GaussianCamera;
 
 pub use gaussian::{
     packed::Gaussian,
-    cloud::GaussianCloud,
+    cloud::{
+        GaussianCloud,
+        GaussianCloudHandle,
+    },
     rand::random_gaussians,
     settings::{
         GaussianCloudRasterize,
@@ -31,18 +34,6 @@ pub mod utils;
 pub mod noise;
 
 
-#[derive(Bundle, Default, Reflect)]
-pub struct GaussianSplattingBundle {
-    pub settings: GaussianCloudSettings,
-    pub cloud: Handle<GaussianCloud>,
-    pub visibility: Visibility,
-}
-
-
-// #[derive(Component, Default)]
-// struct GaussianSplattingCamera;
-// TODO: filter camera 3D entities
-
 pub struct GaussianSplattingPlugin;
 
 impl Plugin for GaussianSplattingPlugin {
@@ -50,16 +41,17 @@ impl Plugin for GaussianSplattingPlugin {
         // TODO: allow hot reloading of GaussianCloud handle through inspector UI
         app.register_type::<SphericalHarmonicCoefficients>();
         app.register_type::<GaussianCloud>();
+        app.register_type::<GaussianCloudHandle>();
         app.init_asset::<GaussianCloud>();
         app.register_asset_reflect::<GaussianCloud>();
 
         app.init_asset_loader::<GaussianCloudLoader>();
 
         app.register_type::<GaussianCloudSettings>();
-        app.register_type::<GaussianSplattingBundle>();
 
         app.add_plugins((
             camera::GaussianCameraPlugin,
+            gaussian::cloud::GaussianCloudPlugin,
             render::RenderPipelinePlugin,
             material::MaterialPlugin,
             query::QueryPlugin,

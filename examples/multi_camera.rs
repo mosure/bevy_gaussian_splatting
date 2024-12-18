@@ -19,9 +19,9 @@ use bevy_gaussian_splatting::{
     Gaussian,
     GaussianCamera,
     GaussianCloud,
-    GaussianMode,
+    GaussianCloudHandle,
     GaussianCloudSettings,
-    GaussianSplattingBundle,
+    GaussianMode,
     GaussianSplattingPlugin,
     gaussian::f32::Rotation,
     utils::{
@@ -161,14 +161,13 @@ pub fn setup_surfel_compare(
     }
 
     commands.spawn((
-        GaussianSplattingBundle {
-            cloud: gaussian_assets.add(GaussianCloud::from_gaussians(red_gaussians)),
-            settings: GaussianCloudSettings {
-                aabb: true,
-                transform: Transform::from_translation(Vec3::new(spacing, spacing, 0.0)),
-                gaussian_mode: GaussianMode::GaussianSurfel,
-                ..default()
-            },
+        GaussianCloudHandle(
+            gaussian_assets.add(GaussianCloud::from_gaussians(red_gaussians))
+        ),
+        GaussianCloudSettings {
+            aabb: true,
+            transform: Transform::from_translation(Vec3::new(spacing, spacing, 0.0)),
+            gaussian_mode: GaussianMode::GaussianSurfel,
             ..default()
         },
         Name::new("gaussian_cloud_2dgs"),
@@ -178,15 +177,13 @@ pub fn setup_surfel_compare(
         GaussianCamera {
             warmup: true,
         },
-        Camera3dBundle {
-            camera: Camera{
-                order: 0,
-                ..default()
-            },
-            transform: Transform::from_translation(Vec3::new(0.0, 1.5, 20.0)),
-            tonemapping: Tonemapping::None,
+        Camera3d::default(),
+        Camera{
+            order: 0,
             ..default()
         },
+        Transform::from_translation(Vec3::new(0.0, 1.5, 20.0)),
+        Tonemapping::None,
         CameraPosition {
             pos: UVec2::new(0, 0),
         },
@@ -232,20 +229,18 @@ fn press_s_to_spawn_camera(
             GaussianCamera {
                 warmup: true,
             },
-            Camera3dBundle {
-                camera: Camera{
-                    order: 1,
-                    viewport: Viewport {
-                        physical_position: pos * size,
-                        physical_size: size,
-                        ..default()
-                    }.into(),
+            Camera3d::default(),
+            Camera{
+                order: 1,
+                viewport: Viewport {
+                    physical_position: pos * size,
+                    physical_size: size,
                     ..default()
-                },
-                transform: Transform::from_translation(Vec3::new(0.0, 0.0, 40.0)),
-                tonemapping: Tonemapping::None,
+                }.into(),
                 ..default()
             },
+            Transform::from_translation(Vec3::new(0.0, 0.0, 40.0)),
+            Tonemapping::None,
             CameraPosition {
                 pos,
             },

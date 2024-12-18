@@ -1,6 +1,5 @@
 use bevy::{
     prelude::*,
-    asset::LoadState,
     ecs::system::{
         lifetimeless::SRes,
         SystemParamItem,
@@ -34,6 +33,7 @@ use static_assertions::assert_cfg;
 use crate::{
     camera::GaussianCamera,
     GaussianCloud,
+    GaussianCloudHandle,
     GaussianCloudSettings,
 };
 
@@ -134,6 +134,7 @@ impl Plugin for SortPlugin {
         app.init_resource::<SortConfig>();
 
         app.register_type::<SortedEntries>();
+        app.register_type::<SortedEntriesHandle>();
         app.init_asset::<SortedEntries>();
         app.register_asset_reflect::<SortedEntries>();
 
@@ -256,10 +257,10 @@ fn auto_insert_sorted_entries(
     gaussian_clouds: Query<
         (
             Entity,
-            &Handle<GaussianCloud>,
+            &GaussianCloudHandle,
             &GaussianCloudSettings,
         ),
-        Without<Handle<SortedEntries>>
+        Without<SortedEntriesHandle>
     >,
     gaussian_cameras: Query<
         Entity,
@@ -287,8 +288,10 @@ fn auto_insert_sorted_entries(
         //     continue;
         // }
 
-        if Some(LoadState::Loading) == asset_server.get_load_state(gaussian_cloud_handle) {
-            continue;
+        if let Some(load_state) = asset_server.get_load_state(&gaussian_cloud_handle.0) {
+            if load_state.is_loading() {
+                continue;
+            }
         }
 
         let cloud = gaussian_clouds_res.get(gaussian_cloud_handle);
@@ -305,7 +308,7 @@ fn auto_insert_sorted_entries(
         ));
 
         commands.entity(entity)
-            .insert(sorted_entries);
+            .insert(SortedEntriesHandle(sorted_entries));
     }
 }
 
@@ -313,7 +316,7 @@ fn auto_insert_sorted_entries(
 fn update_sorted_entries_sizes(
     mut sorted_entries_res: ResMut<Assets<SortedEntries>>,
     sorted_entries: Query<
-        &Handle<SortedEntries>,
+        &SortedEntriesHandle,
     >,
     gaussian_cameras: Query<
         Entity,
@@ -343,6 +346,36 @@ fn update_sorted_entries_sizes(
             );
             sorted_entries_res.insert(handle, new_entry);
         }
+    }
+}
+
+
+#[derive(
+    Component,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Reflect,
+)]
+#[reflect(Component, Default)]
+pub struct SortedEntriesHandle(pub Handle<SortedEntries>);
+
+impl From<Handle<SortedEntries>> for SortedEntriesHandle {
+    fn from(handle: Handle<SortedEntries>) -> Self {
+        Self(handle)
+    }
+}
+
+impl From<SortedEntriesHandle> for AssetId<SortedEntries> {
+    fn from(handle: SortedEntriesHandle) -> Self {
+        handle.0.id()
+    }
+}
+
+impl From<&SortedEntriesHandle> for AssetId<SortedEntries> {
+    fn from(handle: &SortedEntriesHandle) -> Self {
+        handle.0.id()
     }
 }
 

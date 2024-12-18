@@ -1,9 +1,10 @@
-use bevy::{
-    prelude::*,
-    asset::LoadState,
-};
+use bevy::prelude::*;
 
-use crate::{GaussianCloud, io::writer::write_gaussian_cloud_to_file};
+use crate::{
+    GaussianCloud,
+    GaussianCloudHandle,
+    io::writer::write_gaussian_cloud_to_file,
+};
 
 
 #[derive(Component, Debug, Default, Reflect)]
@@ -57,7 +58,7 @@ fn apply_selection(
     mut gaussian_clouds_res: ResMut<Assets<GaussianCloud>>,
     mut selections: Query<(
         Entity,
-        &Handle<GaussianCloud>,
+        &GaussianCloudHandle,
         &mut Select,
     )>,
 ) {
@@ -70,12 +71,10 @@ fn apply_selection(
             continue;
         }
 
-        if Some(LoadState::Loading) == asset_server.get_load_state(cloud_handle) {
-            continue;
-        }
-
-        if Some(LoadState::Loading) == asset_server.get_load_state(cloud_handle) {
-            continue;
+        if let Some(load_state) = asset_server.get_load_state(&cloud_handle.0) {
+            if load_state.is_loading() {
+                continue;
+            }
         }
 
         let cloud = gaussian_clouds_res.get_mut(cloud_handle).unwrap();
@@ -104,7 +103,7 @@ fn invert_selection(
     mut gaussian_clouds_res: ResMut<Assets<GaussianCloud>>,
     mut selections: Query<(
         Entity,
-        &Handle<GaussianCloud>,
+        &GaussianCloudHandle,
         &mut Select,
     )>,
 ) {
@@ -153,7 +152,7 @@ pub fn save_selection(
     mut gaussian_clouds_res: ResMut<Assets<GaussianCloud>>,
     mut selections: Query<(
         Entity,
-        &Handle<GaussianCloud>,
+        &GaussianCloudHandle,
         &Select,
     )>,
 ) {
