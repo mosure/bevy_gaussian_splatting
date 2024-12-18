@@ -3648,7 +3648,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror",
- "windows 0.58.0",
+ "windows 0.54.0",
 ]
 
 [[package]]
