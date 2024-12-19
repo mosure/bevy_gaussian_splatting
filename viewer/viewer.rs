@@ -56,6 +56,9 @@ use bevy_gaussian_splatting::query::select::{
 #[cfg(feature = "query_sparse")]
 use bevy_gaussian_splatting::query::sparse::SparseSelect;
 
+#[cfg(feature = "web_asset")]
+use bevy_web_asset::WebAssetPlugin;
+
 
 fn setup_gaussian_cloud(
     mut commands: Commands,
@@ -215,10 +218,17 @@ fn example_app() {
         ..default()
     });
 
+    #[cfg(feature = "web_asset")]
+    app.add_plugins(WebAssetPlugin::default());
+
     // setup for gaussian viewer app
     app.insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)));
     app.add_plugins(
         DefaultPlugins
+        .set(AssetPlugin {
+            meta_check: bevy::asset::AssetMetaCheck::Never,
+            ..default()
+        })
         .set(ImagePlugin::default_nearest())
         .set(WindowPlugin {
             primary_window,
