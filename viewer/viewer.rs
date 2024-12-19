@@ -219,7 +219,7 @@ fn example_app() {
     });
 
     #[cfg(feature = "web_asset")]
-    app.add_plugins(WebAssetPlugin::default());
+    app.add_plugins(WebAssetPlugin);
 
     // setup for gaussian viewer app
     app.insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)));
