@@ -69,6 +69,12 @@ fn setup_gaussian_cloud(
 }
 ```
 
+
+### web viewer
+
+`https://mosure.github.io/bevy_gaussian_splatting?input_file=https%3A%2F%2Fmitchell.mosure.me%2Fgo_board.gcloud`
+
+
 ## tools
 
 - [ply to gcloud converter](tools/README.md#ply-to-gcloud-converter)
