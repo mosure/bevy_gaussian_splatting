@@ -40,10 +40,10 @@ pub const HALF_SH_4D_COEFF_COUNT: usize = pad_4(SH_4D_COEFF_COUNT / 2);
 
 // TODO: calculate POD_PLANE_COUNT for f16 and f32 based on a switch for HALF_SH_4D_COEFF_COUNT vs. SH_4D_COEFF_COUNT
 pub const MAX_POD_U32_ARRAY_SIZE: usize = 32;
-pub const POD_ARRAY_SIZE: usize = gcd(HALF_SH_4D_COEFF_COUNT, MAX_POD_U32_ARRAY_SIZE);
-pub const POD_PLANE_COUNT: usize = HALF_SH_4D_COEFF_COUNT / POD_ARRAY_SIZE;
+pub const POD_ARRAY_SIZE: usize = gcd(SH_4D_COEFF_COUNT, MAX_POD_U32_ARRAY_SIZE);
+pub const POD_PLANE_COUNT: usize = SH_4D_COEFF_COUNT / POD_ARRAY_SIZE;
 
-pub const WASTE: usize = POD_PLANE_COUNT * POD_ARRAY_SIZE - HALF_SH_4D_COEFF_COUNT;
+pub const WASTE: usize = POD_PLANE_COUNT * POD_ARRAY_SIZE - SH_4D_COEFF_COUNT;
 static_assertions::const_assert_eq!(WASTE, 0);
 
 
@@ -101,9 +101,8 @@ pub struct SpherindricalHarmonicCoefficients {
 )]
 #[repr(C)]
 pub struct SpherindricalHarmonicCoefficients {
-    #[reflect(ignore)]
     #[serde(serialize_with = "coefficients_serializer", deserialize_with = "coefficients_deserializer")]
-    pub coefficients: [f32; SH_4D_COEFF_COUNT],
+    pub coefficients: [[f32; POD_ARRAY_SIZE]; POD_PLANE_COUNT],
 }
 
 
@@ -119,7 +118,22 @@ impl Default for SpherindricalHarmonicCoefficients {
 impl Default for SpherindricalHarmonicCoefficients {
     fn default() -> Self {
         Self {
-            coefficients: [0.0; SH_4D_COEFF_COUNT],
+            coefficients: [[0.0; POD_ARRAY_SIZE]; POD_PLANE_COUNT],
+        }
+    }
+}
+
+
+impl From<[f32; SH_4D_COEFF_COUNT]> for SpherindricalHarmonicCoefficients {
+    fn from(flat_coefficients: [f32; SH_4D_COEFF_COUNT]) -> Self {
+        let mut coefficients = [[0.0; POD_ARRAY_SIZE]; POD_PLANE_COUNT];
+
+        for (i, coefficient) in flat_coefficients.iter().enumerate() {
+            coefficients[i / POD_ARRAY_SIZE][i % POD_ARRAY_SIZE] = *coefficient;
+        }
+
+        Self {
+            coefficients,
         }
     }
 }
@@ -141,7 +155,10 @@ impl SpherindricalHarmonicCoefficients {
     }
 
     pub fn set(&mut self, index: usize, value: f32) {
-        self.coefficients[index] = value;
+        let pod_index = index / POD_ARRAY_SIZE;
+        let pod_offset = index % POD_ARRAY_SIZE;
+
+        self.coefficients[pod_index][pod_offset] = value;
     }
 }
 
@@ -193,7 +210,7 @@ where
 }
 
 
-fn coefficients_serializer<S>(n: &[f32; SH_4D_COEFF_COUNT], s: S) -> Result<S::Ok, S::Error>
+fn coefficients_serializer<S>(n: &[[f32; POD_ARRAY_SIZE]; POD_PLANE_COUNT], s: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -205,24 +222,24 @@ where
     tup.end()
 }
 
-fn coefficients_deserializer<'de, D>(d: D) -> Result<[f32; SH_4D_COEFF_COUNT], D::Error>
+fn coefficients_deserializer<'de, D>(d: D) -> Result<[[f32; POD_ARRAY_SIZE]; POD_PLANE_COUNT], D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     struct CoefficientsVisitor;
 
     impl<'de> serde::de::Visitor<'de> for CoefficientsVisitor {
-        type Value = [f32; SH_4D_COEFF_COUNT];
+        type Value = [[f32; POD_ARRAY_SIZE]; POD_PLANE_COUNT];
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
             formatter.write_str("an array of floats")
         }
 
-        fn visit_seq<A>(self, mut seq: A) -> Result<[f32; SH_4D_COEFF_COUNT], A::Error>
+        fn visit_seq<A>(self, mut seq: A) -> Result<[[f32; POD_ARRAY_SIZE]; POD_PLANE_COUNT], A::Error>
         where
             A: serde::de::SeqAccess<'de>,
         {
-            let mut coefficients = [0.0; SH_4D_COEFF_COUNT];
+            let mut coefficients = [[0.0; POD_ARRAY_SIZE]; POD_PLANE_COUNT];
 
             for (i, coefficient) in coefficients.iter_mut().enumerate().take(SH_4D_COEFF_COUNT) {
                 *coefficient = seq

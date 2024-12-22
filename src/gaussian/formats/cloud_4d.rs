@@ -321,6 +321,11 @@ impl TestCloud for Cloud4d {
     fn test_model() -> Self {
         let mut rng = rand::thread_rng();
 
+        let mut coefficients = [0.0; SH_4D_COEFF_COUNT];
+        for coefficient in coefficients.iter_mut() {
+            *coefficient = rng.gen_range(-1.0..1.0);
+        }
+
         let origin = Gaussian4d {
             isomorphic_rotations: [
                 1.0,
@@ -344,17 +349,7 @@ impl TestCloud for Cloud4d {
                 0.5,
                 0.5,
             ].into(),
-            spherindrical_harmonic: SpherindricalHarmonicCoefficients {
-                coefficients: {
-                    let mut coefficients = [0.0; SH_4D_COEFF_COUNT];
-
-                    for coefficient in coefficients.iter_mut() {
-                        *coefficient = rng.gen_range(-1.0..1.0);
-                    }
-
-                    coefficients
-                },
-            },
+            spherindrical_harmonic: coefficients.into(),
             timestamp_timescale: [
                 0.0,
                 0.0,

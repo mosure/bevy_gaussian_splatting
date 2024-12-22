@@ -85,6 +85,11 @@ impl Distribution<Gaussian> for rand::distributions::Standard {
 
 impl Distribution<Gaussian4d> for rand::distributions::Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Gaussian4d {
+        let mut coefficients = [0.0; SH_4D_COEFF_COUNT];
+        for coefficient in coefficients.iter_mut() {
+            *coefficient = rng.gen_range(-1.0..1.0);
+        }
+
         Gaussian4d {
             isomorphic_rotations: [
                 rng.gen_range(-1.0..1.0),
@@ -108,29 +113,7 @@ impl Distribution<Gaussian4d> for rand::distributions::Standard {
                 rng.gen_range(0.0..1.0),
                 rng.gen_range(0.0..0.8),
             ].into(),
-            spherindrical_harmonic: SpherindricalHarmonicCoefficients {
-                coefficients: {
-                    #[cfg(feature = "f16")]
-                    {
-                        let mut coefficients: [u32; HALF_SH_4D_COEFF_COUNT] = [0; HALF_SH_4D_COEFF_COUNT];
-                        for coefficient in coefficients.iter_mut() {
-                            let upper = rng.gen_range(-1.0..1.0);
-                            let lower = rng.gen_range(-1.0..1.0);
-
-                            *coefficient = pack_f32s_to_u32(upper, lower);
-                        }
-                        coefficients
-                    }
-
-                    {
-                        let mut coefficients = [0.0; SH_4D_COEFF_COUNT];
-                        for coefficient in coefficients.iter_mut() {
-                            *coefficient = rng.gen_range(-1.0..1.0);
-                        }
-                        coefficients
-                    }
-                },
-            },
+            spherindrical_harmonic: coefficients.into(),
             timestamp_timescale: [
                 rng.gen_range(-1.0..1.0),
                 rng.gen_range(-1.0..1.0),

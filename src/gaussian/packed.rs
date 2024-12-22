@@ -62,6 +62,7 @@ pub struct Gaussian4d {
     pub isomorphic_rotations: IsotropicRotations,
     pub position_visibility: PositionVisibility,
     pub scale_opacity: ScaleOpacity,
+    #[reflect(ignore)]
     pub spherindrical_harmonic: SpherindricalHarmonicCoefficients,
     pub timestamp_timescale: TimestampTimescale,
 }
