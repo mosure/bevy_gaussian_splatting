@@ -12,16 +12,16 @@ use bevy::asset::{
 };
 
 use crate::{
-    GaussianCloud,
-    io::codec::GaussianCloudCodec,
+    Cloud,
+    io::codec::CloudCodec,
 };
 
 
 #[derive(Default)]
-pub struct GaussianCloudLoader;
+pub struct CloudLoader;
 
-impl AssetLoader for GaussianCloudLoader {
-    type Asset = GaussianCloud;
+impl AssetLoader for CloudLoader {
+    type Asset = Cloud;
     type Settings = ();
     type Error = std::io::Error;
 
@@ -41,9 +41,7 @@ impl AssetLoader for GaussianCloudLoader {
                     let cursor = Cursor::new(bytes);
                     let mut f = BufReader::new(cursor);
 
-                    let gaussians = crate::io::ply::parse_ply(&mut f)?;
-
-                    Ok(GaussianCloud::from_gaussians(gaussians))
+                    Ok(crate::io::ply::parse_ply(&mut f)?)
                 }
 
                 #[cfg(not(feature = "io_ply"))]
@@ -52,7 +50,7 @@ impl AssetLoader for GaussianCloudLoader {
                 }
             },
             Some(ext) if ext == "gcloud" => {
-                let cloud = GaussianCloud::decode(bytes.as_slice());
+                let cloud = Cloud::decode(bytes.as_slice());
 
                 Ok(cloud)
             },

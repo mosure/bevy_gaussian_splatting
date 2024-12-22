@@ -1,13 +1,13 @@
 use std::io::Write;
 
 use crate::{
-    GaussianCloud,
-    io::codec::GaussianCloudCodec,
+    Cloud,
+    io::codec::CloudCodec,
 };
 
 
 pub fn write_gaussian_cloud_to_file(
-    cloud: &GaussianCloud,
+    cloud: &Cloud,
     path: &str,
 ) {
     let gcloud_file = std::fs::File::create(path).expect("failed to create file");

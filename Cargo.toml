@@ -1,7 +1,7 @@
 [package]
 name = "bevy_gaussian_splatting"
 description = "bevy gaussian splatting render pipeline plugin"
-version = "3.0.0"
+version = "3.1.0"
 edition = "2021"
 authors = ["mosure <mitchell@mosure.me>"]
 license = "MIT OR Apache-2.0"
@@ -44,8 +44,6 @@ default = [
   "buffer_storage",
   # "buffer_texture",
 
-  # "f32",
-  "f16",
   "sh3",
 
   # "precompute_covariance_3d",
@@ -61,6 +59,8 @@ default = [
 
   "tooling",
   "viewer",
+
+  "web_asset",
 ]
 
 debug_gpu = []
@@ -74,9 +74,6 @@ material_noise = ["noise", "dep:noise"]
 morph_particles = []
 
 noise = []
-
-f32 = []
-f16 = ["half"]
 
 sh0 = []
 sh1 = []
@@ -111,7 +108,6 @@ headless = [
   "io_ply",
   "planar",
   "buffer_storage",
-  "f16",
   "sort_rayon",
   "sort_std",
 ]
@@ -127,7 +123,6 @@ viewer = [
 
 web = [
   "buffer_storage",
-  "f16",
   "sh0",
   "io_flexbuffers",
   "io_ply",
@@ -136,6 +131,7 @@ web = [
   "viewer",
   "webgpu",
 ]
+web_asset = ["bevy_web_asset"]
 
 # note: webgl2/buffer_texture are deprecated
 webgl2 = ["bevy/webgl2"]
@@ -148,13 +144,14 @@ bevy-inspector-egui = { version = "0.28", optional = true }
 # bevy_panorbit_camera = { git = "https://github.com/mosure/bevy_panorbit_camera.git", optional = true, features = ["bevy_egui"] }
 bevy_panorbit_camera = { version = "0.21", optional = true, features = ["bevy_egui"] }
 bevy_transform_gizmo = { version = "0.12", optional = true }
+bevy_web_asset = { git = "https://github.com/mosure/bevy_web_asset.git", rev = "3a89a7b748d05d8d7c2547976b10522e24386eb0", version = "0.10", optional = true }
 bincode2 = { version = "2.0", optional = true }
 byte-unit = { version = "5.1", optional = true }
-bytemuck = "1.20"
+bytemuck = "1.21"
 clap = { version = "4.5", features = ["derive"] }
 flate2  = { version = "1.0", optional = true }
 flexbuffers = { version = "2.0", optional = true }
-half = { version = "2.3", optional = true, features = ["serde"] }
+half = { version = "2.3", features = ["serde"] }
 image = { version = "0.25.5", default-features = false, features = ["png"] }
 kd-tree = { version = "0.6", optional = true }
 noise = { version = "0.9.0", optional = true }

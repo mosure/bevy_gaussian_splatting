@@ -7,7 +7,7 @@ use bevy::render::{
 #[allow(unused_imports)]
 use crate::{
     gaussian::{
-        cloud::GaussianCloud,
+        cloud::Cloud,
         f32::{
             PositionVisibility,
             Rotation,
@@ -15,8 +15,8 @@ use crate::{
         },
     },
     render::{
-        GaussianCloudPipeline,
-        GpuGaussianCloud,
+        CloudPipeline,
+        GpuCloud,
     },
     material::spherical_harmonics::SphericalHarmonicCoefficients,
 };
@@ -39,7 +39,6 @@ pub struct PlanarBuffers {
 }
 
 
-#[cfg(feature = "f32")]
 #[derive(Debug, Clone)]
 pub struct PlanarBuffers {
     position_visibility: Buffer,
@@ -58,7 +57,7 @@ pub struct PlanarBuffers {
 #[cfg(feature = "f16")]
 pub fn prepare_cloud(
     render_device: &RenderDevice,
-    cloud: &GaussianCloud,
+    cloud: &Cloud,
 ) -> PlanarBuffers {
     let position_visibility = render_device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("planar_position_visibility_buffer"),
@@ -98,10 +97,9 @@ pub fn prepare_cloud(
 }
 
 
-#[cfg(feature = "f32")]
 pub fn prepare_cloud(
     render_device: &RenderDevice,
-    cloud: &GaussianCloud,
+    cloud: &Cloud,
 ) -> PlanarBuffers {
     let position_visibility = render_device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("planar_f32_position_visibility_buffer"),
@@ -184,7 +182,6 @@ pub fn get_bind_group_layout(
 }
 
 
-#[cfg(feature = "f32")]
 pub fn get_bind_group_layout(
     render_device: &RenderDevice,
     read_only: bool
@@ -240,8 +237,8 @@ pub fn get_bind_group_layout(
 #[cfg(all(feature = "planar", feature = "f16"))]
 pub fn get_bind_group(
     render_device: &RenderDevice,
-    gaussian_cloud_pipeline: &GaussianCloudPipeline,
-    cloud: &GpuGaussianCloud,
+    gaussian_cloud_pipeline: &CloudPipeline,
+    cloud: &GpuCloud,
 ) -> BindGroup {
     render_device.create_bind_group(
         "planar_gaussian_cloud_bind_group",
@@ -287,11 +284,11 @@ pub fn get_bind_group(
 }
 
 
-#[cfg(all(feature = "planar", feature = "f32"))]
+#[cfg(all(feature = "planar"))]
 pub fn get_bind_group(
     render_device: &RenderDevice,
-    gaussian_cloud_pipeline: &GaussianCloudPipeline,
-    cloud: &GpuGaussianCloud,
+    gaussian_cloud_pipeline: &CloudPipeline,
+    cloud: &GpuCloud,
 ) -> BindGroup {
     render_device.create_bind_group(
         "planar_gaussian_cloud_bind_group",

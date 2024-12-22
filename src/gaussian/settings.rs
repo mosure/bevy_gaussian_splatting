@@ -18,7 +18,7 @@ use crate::sort::SortMode;
     PartialEq,
     Reflect,
 )]
-pub enum GaussianCloudDrawMode {
+pub enum DrawMode {
     #[default]
     All,
     Selected,
@@ -40,9 +40,10 @@ pub enum GaussianCloudDrawMode {
     ValueEnum,
 )]
 pub enum GaussianMode {
+    Gaussian2d,
     #[default]
     Gaussian3d,
-    GaussianSurfel,
+    Gaussian4d,
 }
 
 
@@ -56,7 +57,7 @@ pub enum GaussianMode {
     PartialEq,
     Reflect,
 )]
-pub enum GaussianCloudRasterize {
+pub enum RasterizeMode {
     #[default]
     Color,
     Depth,
@@ -67,19 +68,20 @@ pub enum GaussianCloudRasterize {
 // TODO: breakdown into components
 #[derive(Component, Reflect, Clone)]
 #[reflect(Component)]
-pub struct GaussianCloudSettings {
+pub struct CloudSettings {
     pub aabb: bool,
     pub global_opacity: f32,
     pub global_scale: f32,
     pub opacity_adaptive_radius: bool,
     pub visualize_bounding_box: bool,
     pub sort_mode: SortMode,
-    pub draw_mode: GaussianCloudDrawMode,
+    pub draw_mode: DrawMode,
     pub gaussian_mode: GaussianMode,
-    pub rasterize_mode: GaussianCloudRasterize,
+    pub rasterize_mode: RasterizeMode,
+    // TODO: time, time scale, playback mode
 }
 
-impl Default for GaussianCloudSettings {
+impl Default for CloudSettings {
     fn default() -> Self {
         Self {
             aabb: false,
@@ -88,9 +90,9 @@ impl Default for GaussianCloudSettings {
             opacity_adaptive_radius: true,
             visualize_bounding_box: false,
             sort_mode: SortMode::default(),
-            draw_mode: GaussianCloudDrawMode::default(),
+            draw_mode: DrawMode::default(),
             gaussian_mode: GaussianMode::default(),
-            rasterize_mode: GaussianCloudRasterize::default(),
+            rasterize_mode: RasterizeMode::default(),
         }
     }
 }

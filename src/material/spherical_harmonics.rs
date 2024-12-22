@@ -19,6 +19,8 @@ use serde::{
 #[cfg(feature = "f16")]
 use half::f16;
 
+use crate::math::pad_4;
+
 
 const SPHERICAL_HARMONICS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(834667312);
 
@@ -47,30 +49,29 @@ const fn num_sh_coefficients(degree: usize) -> usize {
 
 
 #[cfg(feature = "sh0")]
-const SH_DEGREE: usize = 0;
+pub const SH_DEGREE: usize = 0;
 
 #[cfg(feature = "sh1")]
-const SH_DEGREE: usize = 1;
+pub const SH_DEGREE: usize = 1;
 
 #[cfg(feature = "sh2")]
-const SH_DEGREE: usize = 2;
+pub const SH_DEGREE: usize = 2;
 
 #[cfg(feature = "sh3")]
-const SH_DEGREE: usize = 3;
+pub const SH_DEGREE: usize = 3;
 
 #[cfg(feature = "sh4")]
-const SH_DEGREE: usize = 4;
+pub const SH_DEGREE: usize = 4;
 
 pub const SH_CHANNELS: usize = 3;
 pub const SH_COEFF_COUNT_PER_CHANNEL: usize = num_sh_coefficients(SH_DEGREE);
-pub const SH_COEFF_COUNT: usize = (SH_COEFF_COUNT_PER_CHANNEL * SH_CHANNELS + 3) & !3;
+pub const SH_COEFF_COUNT: usize = pad_4(SH_COEFF_COUNT_PER_CHANNEL * SH_CHANNELS);
 
 pub const HALF_SH_COEFF_COUNT: usize = SH_COEFF_COUNT / 2;
-pub const PADDED_HALF_SH_COEFF_COUNT: usize = (HALF_SH_COEFF_COUNT + 3) & !3;
+pub const PADDED_HALF_SH_COEFF_COUNT: usize = pad_4(HALF_SH_COEFF_COUNT);
 
 #[cfg(feature = "f16")]
 pub const SH_VEC4_PLANES: usize = PADDED_HALF_SH_COEFF_COUNT / 4;
-#[cfg(feature = "f32")]
 pub const SH_VEC4_PLANES: usize = SH_COEFF_COUNT / 4;
 
 
@@ -95,7 +96,6 @@ pub struct SphericalHarmonicCoefficients {
 }
 
 
-#[cfg(feature = "f32")]
 #[derive(
     Clone,
     Copy,
@@ -124,7 +124,6 @@ impl Default for SphericalHarmonicCoefficients {
     }
 }
 
-#[cfg(feature = "f32")]
 impl Default for SphericalHarmonicCoefficients {
     fn default() -> Self {
         Self {
@@ -145,7 +144,6 @@ impl SphericalHarmonicCoefficients {
         };
     }
 
-    #[cfg(feature = "f32")]
     pub fn set(&mut self, index: usize, value: f32) {
         self.coefficients[index] = value;
     }
@@ -158,7 +156,7 @@ fn coefficients_serializer<S>(n: &[u32; HALF_SH_COEFF_COUNT], s: S) -> Result<S:
 where
     S: Serializer,
 {
-    let mut tup = s.serialize_tuple(SH_COEFF_COUNT)?;
+    let mut tup = s.serialize_tuple(HALF_SH_COEFF_COUNT)?;
     for &x in n.iter() {
         tup.serialize_element(&x)?;
     }
@@ -195,11 +193,10 @@ where
         }
     }
 
-    d.deserialize_tuple(SH_COEFF_COUNT, CoefficientsVisitor)
+    d.deserialize_tuple(HALF_SH_COEFF_COUNT, CoefficientsVisitor)
 }
 
 
-#[cfg(feature = "f32")]
 fn coefficients_serializer<S>(n: &[f32; SH_COEFF_COUNT], s: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
@@ -212,7 +209,6 @@ where
     tup.end()
 }
 
-#[cfg(feature = "f32")]
 fn coefficients_deserializer<'de, D>(d: D) -> Result<[f32; SH_COEFF_COUNT], D::Error>
 where
     D: serde::Deserializer<'de>,

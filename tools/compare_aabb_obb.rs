@@ -16,9 +16,9 @@ use bevy_panorbit_camera::{
 use bevy_gaussian_splatting::{
     Gaussian,
     GaussianCamera,
-    GaussianCloud,
-    GaussianCloudHandle,
-    GaussianCloudSettings,
+    Cloud,
+    CloudHandle,
+    CloudSettings,
     GaussianSplattingPlugin,
     utils::{
         setup_hooks,
@@ -30,7 +30,7 @@ use bevy_gaussian_splatting::{
 
 pub fn setup_aabb_obb_compare(
     mut commands: Commands,
-    mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_assets: ResMut<Assets<Cloud>>,
 ) {
     let mut blue_sh = SphericalHarmonicCoefficients::default();
     blue_sh.set(2, 5.0);
@@ -43,15 +43,15 @@ pub fn setup_aabb_obb_compare(
     };
 
     commands.spawn((
-        GaussianCloudHandle(
+        CloudHandle(
             gaussian_assets.add(
-                GaussianCloud::from_gaussians(vec![
+                Cloud::Gaussian3d(vec![
                     blue_aabb_gaussian,
                     blue_aabb_gaussian,
-                ])
+                ].into())
             )
         ),
-        GaussianCloudSettings {
+        CloudSettings {
             aabb: true,
             visualize_bounding_box: true,
             ..default()
@@ -70,15 +70,15 @@ pub fn setup_aabb_obb_compare(
     };
 
     commands.spawn((
-        GaussianCloudHandle(
+        CloudHandle(
             gaussian_assets.add(
-            GaussianCloud::from_gaussians(vec![
+            Cloud::Gaussian3d(vec![
                     red_obb_gaussian,
                     red_obb_gaussian,
                 ])
             )
         ),
-        GaussianCloudSettings {
+        CloudSettings {
             aabb: false,
             visualize_bounding_box: true,
             ..default()

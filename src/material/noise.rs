@@ -7,8 +7,8 @@ use noise::{
 
 use crate::{
     Gaussian,
-    GaussianCloud,
-    GaussianCloudHandle,
+    Cloud,
+    CloudHandle,
 };
 
 
@@ -39,10 +39,10 @@ impl Plugin for NoiseMaterialPlugin {
 
 
 fn apply_noise_cpu(
-    mut gaussian_clouds_res: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_clouds_res: ResMut<Assets<Cloud>>,
     mut selections: Query<(
         Entity,
-        &GaussianCloudHandle,
+        &CloudHandle,
         &NoiseMaterial,
         Changed<NoiseMaterial>,
     )>,

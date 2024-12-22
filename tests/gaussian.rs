@@ -1,6 +1,6 @@
 use bevy_gaussian_splatting::{
-    GaussianCloud,
-    io::codec::GaussianCloudCodec,
+    Cloud,
+    io::codec::CloudCodec,
     random_gaussians,
 };
 
@@ -11,7 +11,7 @@ fn test_codec() {
 
     let gaussians = random_gaussians(count);
     let encoded = gaussians.encode();
-    let decoded = GaussianCloud::decode(encoded.as_slice());
+    let decoded = Cloud::decode(encoded.as_slice());
 
     assert_eq!(gaussians, decoded);
 }

@@ -9,12 +9,15 @@ use ply_rs::{
 };
 
 use crate::{
+    gaussian::{
+        cloud::Cloud,
+        packed::Gaussian,
+    },
     material::spherical_harmonics::{
         SH_CHANNELS,
         SH_COEFF_COUNT,
         SH_COEFF_COUNT_PER_CHANNEL,
     },
-    gaussian::packed::Gaussian,
 };
 
 
@@ -70,7 +73,8 @@ impl PropertyAccess for Gaussian {
     }
 }
 
-pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, std::io::Error> {
+pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Cloud, std::io::Error> {
+    // TODO: detect and parse Gaussian vs Gaussian4d
     let gaussian_parser = Parser::<Gaussian>::new();
     let header = gaussian_parser.read_header(&mut reader)?;
 
@@ -103,5 +107,5 @@ pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Vec<Gaussian>, std::io:
     let pad = 32 - (cloud.len() % 32);
     cloud.extend(std::iter::repeat(Gaussian::default()).take(pad));
 
-    Ok(cloud)
+    Ok(Cloud::Gaussian3d(cloud.into()))
 }

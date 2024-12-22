@@ -81,9 +81,9 @@ use serde::{
 use crate::{
     camera::GaussianCamera,
     render::{
-        GaussianCloudBindGroup,
-        GaussianCloudPipeline,
-        GaussianCloudPipelineKey,
+        CloudBindGroup,
+        CloudPipeline,
+        CloudPipelineKey,
         GaussianUniformBindGroups,
         GaussianViewBindGroup,
         shader_defs,
@@ -216,7 +216,7 @@ pub struct ParticleBehaviorPipeline {
 impl FromWorld for ParticleBehaviorPipeline {
     fn from_world(render_world: &mut World) -> Self {
         let render_device = render_world.resource::<RenderDevice>();
-        let gaussian_cloud_pipeline = render_world.resource::<GaussianCloudPipeline>();
+        let gaussian_cloud_pipeline = render_world.resource::<CloudPipeline>();
 
         let particle_behavior_layout = render_device.create_bind_group_layout(
             Some("gaussian_cloud_particle_behavior_layout"),
@@ -234,7 +234,7 @@ impl FromWorld for ParticleBehaviorPipeline {
             ],
         );
 
-        let shader_defs = shader_defs(GaussianCloudPipelineKey::default());
+        let shader_defs = shader_defs(CloudPipelineKey::default());
         let pipeline_cache = render_world.resource::<PipelineCache>();
 
         let particle_behavior_pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
@@ -315,7 +315,7 @@ pub fn queue_particle_behavior_bind_group(
 
 pub struct ParticleBehaviorNode {
     gaussian_clouds: QueryState<(
-        &'static GaussianCloudBindGroup,
+        &'static CloudBindGroup,
         &'static ParticleBehaviorsHandle,
         &'static ParticleBehaviorBindGroup,
     )>,

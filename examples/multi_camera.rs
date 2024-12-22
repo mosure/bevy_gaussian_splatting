@@ -18,9 +18,9 @@ use bevy_panorbit_camera::{
 use bevy_gaussian_splatting::{
     Gaussian,
     GaussianCamera,
-    GaussianCloud,
-    GaussianCloudHandle,
-    GaussianCloudSettings,
+    Cloud,
+    CloudHandle,
+    CloudSettings,
     GaussianMode,
     GaussianSplattingPlugin,
     gaussian::f32::Rotation,
@@ -32,7 +32,7 @@ use bevy_gaussian_splatting::{
 };
 
 
-fn compare_surfel_app() {
+fn multi_camera_app() {
     let config = parse_args::<GaussianSplattingViewer>();
     let mut app = App::new();
 
@@ -65,7 +65,7 @@ fn compare_surfel_app() {
     }
 
     app.add_plugins(GaussianSplattingPlugin);
-    app.add_systems(Startup, setup_surfel_compare);
+    app.add_systems(Startup, setup_multi_camera);
     app.add_systems(
         Update,
         (
@@ -78,10 +78,10 @@ fn compare_surfel_app() {
 }
 
 
-pub fn setup_surfel_compare(
+pub fn setup_multi_camera(
     mut commands: Commands,
     _asset_server: Res<AssetServer>,
-    mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_assets: ResMut<Assets<Cloud>>,
 ) {
     let grid_size_x = 10;
     let grid_size_y = 10;
@@ -122,7 +122,7 @@ pub fn setup_surfel_compare(
     // let cloud = asset_server.load("office.ply");
     // commands.spawn((
     //     GaussianSplattingBundle {
-    //         cloud,//: gaussian_assets.add(GaussianCloud::from_gaussians(blue_gaussians)),
+    //         cloud,//: gaussian_assets.add(blue_gaussians.into()),
     //         ..default()
     //     },
     //     Name::new("gaussian_cloud_3dgs"),
@@ -162,12 +162,12 @@ pub fn setup_surfel_compare(
 
     commands.spawn((
         Transform::from_translation(Vec3::new(spacing, spacing, 0.0)),
-        GaussianCloudHandle(
-            gaussian_assets.add(GaussianCloud::from_gaussians(red_gaussians))
+        CloudHandle(
+            gaussian_assets.add(red_gaussians.into())
         ),
-        GaussianCloudSettings {
+        CloudSettings {
             aabb: true,
-            gaussian_mode: GaussianMode::GaussianSurfel,
+            gaussian_mode: GaussianMode::Gaussian2d,
             ..default()
         },
         Name::new("gaussian_cloud_2dgs"),
@@ -288,5 +288,5 @@ fn esc_close(
 
 pub fn main() {
     setup_hooks();
-    compare_surfel_app();
+    multi_camera_app();
 }

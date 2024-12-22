@@ -60,20 +60,27 @@ use crate::{
     camera::GaussianCamera,
     gaussian::{
         cloud::{
-            GaussianCloud,
-            GaussianCloudHandle,
+            Cloud,
+            CloudHandle,
         },
+        interface::CommonCloud,
         settings::{
-            GaussianCloudDrawMode,
-            GaussianCloudRasterize,
-            GaussianCloudSettings,
+            DrawMode,
+            RasterizeMode,
+            CloudSettings,
             GaussianMode,
         },
     },
-    material::spherical_harmonics::{
-        HALF_SH_COEFF_COUNT,
-        SH_COEFF_COUNT,
-        SH_VEC4_PLANES,
+    material::{
+        spherical_harmonics::{
+            HALF_SH_COEFF_COUNT,
+            SH_COEFF_COUNT,
+            SH_DEGREE,
+            SH_VEC4_PLANES,
+        },
+        spherindrical_harmonics::{
+            SH_4D_DEGREE_TIME,
+        },
     },
     morph::MorphPlugin,
     sort::{
@@ -97,7 +104,9 @@ mod texture;
 
 const BINDINGS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(675257236);
 const GAUSSIAN_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(68294581);
-const GAUSSIAN_SURFEL_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(123166726);
+const GAUSSIAN_2D_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(123166726);
+const GAUSSIAN_3D_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(1236134564);
+const GAUSSIAN_4D_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(513623421);
 const HELPERS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(134646367);
 const PACKED_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(123623514);
 const PLANAR_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(72345231);
@@ -126,8 +135,22 @@ impl Plugin for RenderPipelinePlugin {
 
         load_internal_asset!(
             app,
-            GAUSSIAN_SURFEL_SHADER_HANDLE,
-            "surfel.wgsl",
+            GAUSSIAN_2D_SHADER_HANDLE,
+            "gaussian_2d.wgsl",
+            Shader::from_wgsl
+        );
+
+        load_internal_asset!(
+            app,
+            GAUSSIAN_3D_SHADER_HANDLE,
+            "gaussian_3d.wgsl",
+            Shader::from_wgsl
+        );
+
+        load_internal_asset!(
+            app,
+            GAUSSIAN_4D_SHADER_HANDLE,
+            "gaussian_4d.wgsl",
             Shader::from_wgsl
         );
 
@@ -166,8 +189,8 @@ impl Plugin for RenderPipelinePlugin {
             Shader::from_wgsl
         );
 
-        app.add_plugins(RenderAssetPlugin::<GpuGaussianCloud>::default());
-        app.add_plugins(UniformComponentPlugin::<GaussianCloudUniform>::default());
+        app.add_plugins(RenderAssetPlugin::<GpuCloud>::default());
+        app.add_plugins(UniformComponentPlugin::<CloudUniform>::default());
 
         app.add_plugins((
             MorphPlugin,
@@ -196,8 +219,8 @@ impl Plugin for RenderPipelinePlugin {
     fn finish(&self, app: &mut App) {
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
-                .init_resource::<GaussianCloudPipeline>()
-                .init_resource::<SpecializedRenderPipelines<GaussianCloudPipeline>>();
+                .init_resource::<CloudPipeline>()
+                .init_resource::<SpecializedRenderPipelines<CloudPipeline>>();
         }
     }
 }
@@ -205,14 +228,14 @@ impl Plugin for RenderPipelinePlugin {
 
 #[derive(Bundle)]
 pub struct GpuGaussianSplattingBundle {
-    pub settings: GaussianCloudSettings,
-    pub settings_uniform: GaussianCloudUniform,
+    pub settings: CloudSettings,
+    pub settings_uniform: CloudUniform,
     pub sorted_entries: SortedEntriesHandle,
-    pub cloud_handle: GaussianCloudHandle,
+    pub cloud_handle: CloudHandle,
 }
 
 #[derive(Debug, Clone)]
-pub struct GpuGaussianCloud {
+pub struct GpuCloud {
     #[cfg(feature = "packed")]
     pub packed: packed::PackedBuffers,
     #[cfg(feature = "buffer_storage")]
@@ -223,10 +246,10 @@ pub struct GpuGaussianCloud {
     pub draw_indirect_buffer: Buffer,
 
     #[cfg(feature = "debug_gpu")]
-    pub debug_gpu: GaussianCloud,
+    pub debug_gpu: Cloud,
 }
-impl RenderAsset for GpuGaussianCloud {
-    type SourceAsset = GaussianCloud;
+impl RenderAsset for GpuCloud {
+    type SourceAsset = Cloud;
     type Param = SRes<RenderDevice>;
 
     fn prepare_asset(
@@ -246,9 +269,9 @@ impl RenderAsset for GpuGaussianCloud {
             usage: BufferUsages::INDIRECT | BufferUsages::COPY_DST | BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         });
 
-        // TODO: (extract GaussianCloud, TextureBuffers) when feature buffer_texture is enabled
+        // TODO: (extract Cloud, TextureBuffers) when feature buffer_texture is enabled
 
-        Ok(GpuGaussianCloud {
+        Ok(GpuCloud {
             count,
             draw_indirect_buffer,
 
@@ -270,29 +293,29 @@ impl RenderAsset for GpuGaussianCloud {
 #[cfg(feature = "buffer_storage")]
 type GpuGaussianBundleQuery = (
     Entity,
-    &'static GaussianCloudHandle,
+    &'static CloudHandle,
     &'static SortedEntriesHandle,
-    &'static GaussianCloudSettings,
+    &'static CloudSettings,
     (),
 );
 
 #[cfg(feature = "buffer_texture")]
 type GpuGaussianBundleQuery = (
     Entity,
-    &'static GaussianCloudHandle,
+    &'static CloudHandle,
     &'static SortedEntriesHandle,
-    &'static GaussianCloudSettings,
+    &'static CloudSettings,
     &'static texture::GpuTextureBuffers,
 );
 
 #[allow(clippy::too_many_arguments)]
 fn queue_gaussians(
-    gaussian_cloud_uniform: Res<ComponentUniforms<GaussianCloudUniform>>,
+    gaussian_cloud_uniform: Res<ComponentUniforms<CloudUniform>>,
     transparent_3d_draw_functions: Res<DrawFunctions<Transparent3d>>,
-    custom_pipeline: Res<GaussianCloudPipeline>,
-    mut pipelines: ResMut<SpecializedRenderPipelines<GaussianCloudPipeline>>,
+    custom_pipeline: Res<CloudPipeline>,
+    mut pipelines: ResMut<SpecializedRenderPipelines<CloudPipeline>>,
     pipeline_cache: Res<PipelineCache>,
-    gaussian_clouds: Res<RenderAssets<GpuGaussianCloud>>,
+    gaussian_clouds: Res<RenderAssets<GpuCloud>>,
     sorted_entries: Res<RenderAssets<GpuSortedEntry>>,
     mut transparent_render_phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
     mut views: Query<
@@ -311,7 +334,7 @@ fn queue_gaussians(
         return;
     }
 
-    // TODO: condition this system based on GaussianCloudBindGroup attachment
+    // TODO: condition this system based on CloudBindGroup attachment
     if gaussian_cloud_uniform.buffer().is_none() {
         return;
     };
@@ -346,7 +369,7 @@ fn queue_gaussians(
 
             let msaa = msaa.cloned().unwrap_or_default();
 
-            let key = GaussianCloudPipelineKey {
+            let key = CloudPipelineKey {
                 aabb: settings.aabb,
                 opacity_adaptive_radius: settings.opacity_adaptive_radius,
                 visualize_bounding_box: settings.visualize_bounding_box,
@@ -362,7 +385,7 @@ fn queue_gaussians(
             // // TODO: distance to gaussian cloud centroid
             // let rangefinder = view.rangefinder3d();
 
-            for (render_entity, visible_entity) in visible_entities.iter::<With<GaussianCloudHandle>>() {
+            for (render_entity, visible_entity) in visible_entities.iter::<With<CloudHandle>>() {
                 transparent_phase.add(Transparent3d {
                     entity: (*render_entity, *visible_entity),
                     draw_function: draw_custom,
@@ -380,7 +403,7 @@ fn queue_gaussians(
 
 
 #[derive(Resource)]
-pub struct GaussianCloudPipeline {
+pub struct CloudPipeline {
     shader: Handle<Shader>,
     pub gaussian_cloud_layout: BindGroupLayout,
     pub gaussian_uniform_layout: BindGroupLayout,
@@ -388,7 +411,7 @@ pub struct GaussianCloudPipeline {
     pub sorted_layout: BindGroupLayout,
 }
 
-impl FromWorld for GaussianCloudPipeline {
+impl FromWorld for CloudPipeline {
     fn from_world(render_world: &mut World) -> Self {
         let render_device = render_world.resource::<RenderDevice>();
 
@@ -429,7 +452,7 @@ impl FromWorld for GaussianCloudPipeline {
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Uniform,
                         has_dynamic_offset: true,
-                        min_binding_size: Some(GaussianCloudUniform::min_size()),
+                        min_binding_size: Some(CloudUniform::min_size()),
                     },
                     count: None,
                 },
@@ -467,7 +490,7 @@ impl FromWorld for GaussianCloudPipeline {
         #[cfg(feature = "buffer_texture")]
         let sorted_layout = texture::get_sorted_bind_group_layout(render_device);
 
-        GaussianCloudPipeline {
+        CloudPipeline {
             gaussian_cloud_layout,
             gaussian_uniform_layout,
             view_layout,
@@ -536,11 +559,13 @@ impl Default for ShaderDefines {
 }
 
 pub fn shader_defs(
-    key: GaussianCloudPipelineKey,
+    key: CloudPipelineKey,
 ) -> Vec<ShaderDefVal> {
     let defines = ShaderDefines::default();
     let mut shader_defs = vec![
         ShaderDefVal::UInt("SH_COEFF_COUNT".into(), SH_COEFF_COUNT as u32),
+        ShaderDefVal::UInt("SH_DEGREE".into(), SH_DEGREE as u32),
+        ShaderDefVal::UInt("SH_DEGREE_TIME".into(), SH_4D_DEGREE_TIME as u32),
         ShaderDefVal::UInt("HALF_SH_COEFF_COUNT".into(), HALF_SH_COEFF_COUNT as u32),
         ShaderDefVal::UInt("SH_VEC4_PLANES".into(), SH_VEC4_PLANES as u32),
         ShaderDefVal::UInt("RADIX_BASE".into(), defines.radix_base),
@@ -586,7 +611,6 @@ pub fn shader_defs(
     #[cfg(feature = "f16")]
     shader_defs.push("F16".into());
 
-    #[cfg(feature = "f32")]
     shader_defs.push("F32".into());
 
     #[cfg(all(feature = "packed", feature = "f32"))]
@@ -611,39 +635,40 @@ pub fn shader_defs(
     shader_defs.push("WEBGL2".into());
 
     match key.gaussian_mode {
+        GaussianMode::Gaussian2d => shader_defs.push("GAUSSIAN_2D".into()),
         GaussianMode::Gaussian3d => shader_defs.push("GAUSSIAN_3D".into()),
-        GaussianMode::GaussianSurfel => shader_defs.push("GAUSSIAN_SURFEL".into()),
+        GaussianMode::Gaussian4d => shader_defs.push("GAUSSIAN_4D".into()),
     }
 
     match key.rasterize_mode {
-        GaussianCloudRasterize::Color => shader_defs.push("RASTERIZE_COLOR".into()),
-        GaussianCloudRasterize::Depth => shader_defs.push("RASTERIZE_DEPTH".into()),
-        GaussianCloudRasterize::Normal => shader_defs.push("RASTERIZE_NORMAL".into()),
+        RasterizeMode::Color => shader_defs.push("RASTERIZE_COLOR".into()),
+        RasterizeMode::Depth => shader_defs.push("RASTERIZE_DEPTH".into()),
+        RasterizeMode::Normal => shader_defs.push("RASTERIZE_NORMAL".into()),
     }
 
     match key.draw_mode {
-        GaussianCloudDrawMode::All => {},
-        GaussianCloudDrawMode::Selected => shader_defs.push("DRAW_SELECTED".into()),
-        GaussianCloudDrawMode::HighlightSelected => shader_defs.push("HIGHLIGHT_SELECTED".into()),
+        DrawMode::All => {},
+        DrawMode::Selected => shader_defs.push("DRAW_SELECTED".into()),
+        DrawMode::HighlightSelected => shader_defs.push("HIGHLIGHT_SELECTED".into()),
     }
 
     shader_defs
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Default)]
-pub struct GaussianCloudPipelineKey {
+pub struct CloudPipelineKey {
     pub aabb: bool,
     pub visualize_bounding_box: bool,
     pub opacity_adaptive_radius: bool,
-    pub draw_mode: GaussianCloudDrawMode,
+    pub draw_mode: DrawMode,
     pub gaussian_mode: GaussianMode,
-    pub rasterize_mode: GaussianCloudRasterize,
+    pub rasterize_mode: RasterizeMode,
     pub sample_count: u32,
     pub hdr: bool,
 }
 
-impl SpecializedRenderPipeline for GaussianCloudPipeline {
-    type Key = GaussianCloudPipelineKey;
+impl SpecializedRenderPipeline for CloudPipeline {
+    type Key = CloudPipelineKey;
 
     fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
         let shader_defs = shader_defs(key);
@@ -723,7 +748,7 @@ type DrawGaussians = (
 
 
 #[derive(Component, ShaderType, Clone, Copy)]
-pub struct GaussianCloudUniform {
+pub struct CloudUniform {
     pub transform: Mat4,
     pub global_opacity: f32,
     pub global_scale: f32,
@@ -736,14 +761,14 @@ pub fn extract_gaussians(
     mut commands: Commands,
     mut prev_commands_len: Local<usize>,
     asset_server: Res<AssetServer>,
-    gaussian_cloud_res: Res<RenderAssets<GpuGaussianCloud>>,
+    gaussian_cloud_res: Res<RenderAssets<GpuCloud>>,
     gaussians_query: Extract<
         Query<(
             RenderEntity,
             &ViewVisibility,
-            &GaussianCloudHandle,
+            &CloudHandle,
             &SortedEntriesHandle,
-            &GaussianCloudSettings,
+            &CloudSettings,
             &GlobalTransform,
         )>,
     >,
@@ -775,7 +800,7 @@ pub fn extract_gaussians(
 
         let cloud = gaussian_cloud_res.get(cloud_handle).unwrap();
 
-        let settings_uniform = GaussianCloudUniform {
+        let settings_uniform = CloudUniform {
             transform: transform.compute_matrix(),
             global_opacity: settings.global_opacity,
             global_scale: settings.global_scale,
@@ -804,7 +829,7 @@ pub struct GaussianUniformBindGroups {
 }
 
 #[derive(Component)]
-pub struct GaussianCloudBindGroup {
+pub struct CloudBindGroup {
     pub cloud_bind_group: BindGroup,
     pub sorted_bind_group: BindGroup,
 }
@@ -813,11 +838,11 @@ pub struct GaussianCloudBindGroup {
 fn queue_gaussian_bind_group(
     mut commands: Commands,
     mut groups: ResMut<GaussianUniformBindGroups>,
-    gaussian_cloud_pipeline: Res<GaussianCloudPipeline>,
+    gaussian_cloud_pipeline: Res<CloudPipeline>,
     render_device: Res<RenderDevice>,
-    gaussian_uniforms: Res<ComponentUniforms<GaussianCloudUniform>>,
+    gaussian_uniforms: Res<ComponentUniforms<CloudUniform>>,
     asset_server: Res<AssetServer>,
-    gaussian_cloud_res: Res<RenderAssets<GpuGaussianCloud>>,
+    gaussian_cloud_res: Res<RenderAssets<GpuCloud>>,
     sorted_entries_res: Res<RenderAssets<GpuSortedEntry>>,
     gaussian_clouds: Query<GpuGaussianBundleQuery>,
     #[cfg(feature = "buffer_texture")]
@@ -837,7 +862,7 @@ fn queue_gaussian_bind_group(
                 resource: BindingResource::Buffer(BufferBinding {
                     buffer: model,
                     offset: 0,
-                    size: GaussianCloudUniform::min_size().into(),
+                    size: CloudUniform::min_size().into(),
                 }),
             },
         ],
@@ -873,7 +898,7 @@ fn queue_gaussian_bind_group(
         }
 
         #[cfg(not(feature = "buffer_texture"))]
-        let cloud: &GpuGaussianCloud = gaussian_cloud_res.get(cloud_handle).unwrap();
+        let cloud: &GpuCloud = gaussian_cloud_res.get(cloud_handle).unwrap();
 
         let sorted_entries = sorted_entries_res.get(&sorted_entries_handle.0).unwrap();
 
@@ -913,7 +938,7 @@ fn queue_gaussian_bind_group(
             ],
         );
 
-        commands.entity(entity).insert(GaussianCloudBindGroup {
+        commands.entity(entity).insert(CloudBindGroup {
             cloud_bind_group,
             sorted_bind_group,
         });
@@ -928,7 +953,7 @@ pub struct GaussianViewBindGroup {
 pub fn queue_gaussian_view_bind_groups(
     mut commands: Commands,
     render_device: Res<RenderDevice>,
-    gaussian_cloud_pipeline: Res<GaussianCloudPipeline>,
+    gaussian_cloud_pipeline: Res<CloudPipeline>,
     view_uniforms: Res<ViewUniforms>,
     views: Query<
         (
@@ -1014,7 +1039,7 @@ pub struct SetGaussianUniformBindGroup<const I: usize>;
 impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianUniformBindGroup<I> {
     type Param = SRes<GaussianUniformBindGroups>;
     type ViewQuery = ();
-    type ItemQuery = Read<DynamicUniformIndex<GaussianCloudUniform>>;
+    type ItemQuery = Read<DynamicUniformIndex<CloudUniform>>;
 
     #[inline]
     fn render<'w>(
@@ -1043,11 +1068,11 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianUniformBindGr
 
 pub struct DrawGaussianInstanced;
 impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
-    type Param = SRes<RenderAssets<GpuGaussianCloud>>;
+    type Param = SRes<RenderAssets<GpuCloud>>;
     type ViewQuery = Read<SortTrigger>;
     type ItemQuery = (
-        Read<GaussianCloudHandle>,
-        Read<GaussianCloudBindGroup>,
+        Read<CloudHandle>,
+        Read<CloudBindGroup>,
     );
 
     #[inline]
@@ -1055,8 +1080,8 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
         _item: &P,
         view: &'w SortTrigger,
         entity: Option<(
-            &'w GaussianCloudHandle,
-            &'w GaussianCloudBindGroup,
+            &'w CloudHandle,
+            &'w CloudBindGroup,
         )>,
         gaussian_clouds: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,

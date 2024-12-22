@@ -13,6 +13,8 @@ struct GaussianUniforms {
     global_scale: f32,
     count: u32,
     count_root_ceil: u32,
+    time: f32,
+    duration: f32,
 };
 @group(1) @binding(0) var<uniform> gaussian_uniforms: GaussianUniforms;
 

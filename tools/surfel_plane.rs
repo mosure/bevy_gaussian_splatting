@@ -16,10 +16,10 @@ use bevy_panorbit_camera::{
 use bevy_gaussian_splatting::{
     Gaussian,
     GaussianCamera,
-    GaussianCloud,
-    GaussianCloudHandle,
+    Cloud,
+    CloudHandle,
     GaussianMode,
-    GaussianCloudSettings,
+    CloudSettings,
     GaussianSplattingPlugin,
     gaussian::f32::Rotation,
     utils::{
@@ -32,7 +32,7 @@ use bevy_gaussian_splatting::{
 
 pub fn setup_surfel_compare(
     mut commands: Commands,
-    mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_assets: ResMut<Assets<Cloud>>,
 ) {
     let grid_size_x = 10;
     let grid_size_y = 10;
@@ -71,10 +71,10 @@ pub fn setup_surfel_compare(
         }
     }
 
-    let cloud = gaussian_assets.add(GaussianCloud::from_gaussians(blue_gaussians));
+    let cloud = gaussian_assets.add(Cloud::Gaussian3d(blue_gaussians));
     commands.spawn((
-        GaussianCloudHandle(cloud),
-        GaussianCloudSettings {
+        CloudHandle(cloud),
+        CloudSettings {
             visualize_bounding_box,
             ..default()
         },
@@ -113,14 +113,14 @@ pub fn setup_surfel_compare(
         }
     }
 
-    let cloud = gaussian_assets.add(GaussianCloud::from_gaussians(red_gaussians));
+    let cloud = gaussian_assets.add(Cloud::Gaussian2d(red_gaussians));
     commands.spawn((
         Transform::from_translation(Vec3::new(spacing, spacing, 0.0)),
-        GaussianCloudHandle(cloud),
-        GaussianCloudSettings {
+        CloudHandle(cloud),
+        CloudSettings {
             visualize_bounding_box,
             aabb: true,
-            gaussian_mode: GaussianMode::GaussianSurfel,
+            gaussian_mode: GaussianMode::Gaussian2d,
             ..default()
         },
         Name::new("gaussian_cloud_2dgs"),

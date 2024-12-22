@@ -1,8 +1,9 @@
 use bevy::prelude::*;
 
 use crate::{
-    GaussianCloud,
-    GaussianCloudHandle,
+    Cloud,
+    CloudHandle,
+    gaussian::interface::CommonCloud,
     io::writer::write_gaussian_cloud_to_file,
 };
 
@@ -55,10 +56,10 @@ impl Plugin for SelectPlugin {
 
 fn apply_selection(
     asset_server: Res<AssetServer>,
-    mut gaussian_clouds_res: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_clouds_res: ResMut<Assets<Cloud>>,
     mut selections: Query<(
         Entity,
-        &GaussianCloudHandle,
+        &CloudHandle,
         &mut Select,
     )>,
 ) {
@@ -100,10 +101,10 @@ pub struct InvertSelectionEvent;
 
 fn invert_selection(
     mut events: EventReader<InvertSelectionEvent>,
-    mut gaussian_clouds_res: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_clouds_res: ResMut<Assets<Cloud>>,
     mut selections: Query<(
         Entity,
-        &GaussianCloudHandle,
+        &CloudHandle,
         &mut Select,
     )>,
 ) {
@@ -149,10 +150,10 @@ pub struct SaveSelectionEvent;
 
 pub fn save_selection(
     mut events: EventReader<SaveSelectionEvent>,
-    mut gaussian_clouds_res: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_clouds_res: ResMut<Assets<Cloud>>,
     mut selections: Query<(
         Entity,
-        &GaussianCloudHandle,
+        &CloudHandle,
         &Select,
     )>,
 ) {

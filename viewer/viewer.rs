@@ -25,9 +25,9 @@ use bevy_panorbit_camera::{
 
 use bevy_gaussian_splatting::{
     GaussianCamera,
-    GaussianCloud,
-    GaussianCloudHandle,
-    GaussianCloudSettings,
+    Cloud,
+    CloudHandle,
+    CloudSettings,
     GaussianSplattingPlugin,
     random_gaussians,
     utils::{
@@ -62,9 +62,9 @@ fn setup_gaussian_cloud(
     args: Res<GaussianSplattingViewer>,
     asset_server: Res<AssetServer>,
     gaussian_splatting_viewer: Res<GaussianSplattingViewer>,
-    mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_assets: ResMut<Assets<Cloud>>,
 ) {
-    let cloud: Handle<GaussianCloud>;
+    let cloud: Handle<Cloud>;
     if gaussian_splatting_viewer.gaussian_count > 0 {
         log(&format!("generating {} gaussians", gaussian_splatting_viewer.gaussian_count));
         cloud = gaussian_assets.add(random_gaussians(gaussian_splatting_viewer.gaussian_count));
@@ -72,12 +72,12 @@ fn setup_gaussian_cloud(
         log(&format!("loading {}", gaussian_splatting_viewer.input_file));
         cloud = asset_server.load(&gaussian_splatting_viewer.input_file);
     } else {
-        cloud = gaussian_assets.add(GaussianCloud::test_model());
+        cloud = gaussian_assets.add(Cloud::test_model());
     }
 
     commands.spawn((
-        GaussianCloudHandle(cloud),
-        GaussianCloudSettings {
+        CloudHandle(cloud),
+        CloudSettings {
             gaussian_mode: args.gaussian_mode,
             ..default()
         },
@@ -108,7 +108,7 @@ fn setup_particle_behavior(
     gaussian_cloud: Query<
         (
             Entity,
-            &GaussianCloudHandle,
+            &CloudHandle,
         ),
         Without<ParticleBehaviorsHandle>,
     >,
@@ -135,7 +135,7 @@ fn setup_noise_material(
     asset_server: Res<AssetServer>,
     gaussian_clouds: Query<(
         Entity,
-        &GaussianCloudHandle,
+        &CloudHandle,
         Without<NoiseMaterial>,
     )>,
 ) {
@@ -162,7 +162,7 @@ fn setup_sparse_select(
     mut commands: Commands,
     gaussian_cloud: Query<(
         Entity,
-        &GaussianCloudHandle,
+        &CloudHandle,
         Without<SparseSelect>,
     )>,
 ) {

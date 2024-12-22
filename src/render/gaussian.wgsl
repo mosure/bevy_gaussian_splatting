@@ -1,11 +1,6 @@
 #import bevy_gaussian_splatting::bindings::{
     view,
     gaussian_uniforms,
-    sorting_pass_index,
-    sorting,
-    draw_indirect,
-    input_entries,
-    output_entries,
     Entry,
 }
 #import bevy_gaussian_splatting::depth::{
@@ -20,313 +15,135 @@
     in_frustum,
 }
 
-#ifdef GAUSSIAN_SURFEL
-#import bevy_gaussian_splatting::surfel::{
-    compute_cov2d_surfel,
-    get_bounding_box_cov2d,
-    surfel_fragment_power,
-}
+#ifdef GAUSSIAN_2D
+    #import bevy_gaussian_splatting::gaussian_2d::{
+        compute_cov2d_surfel,
+        get_bounding_box_cov2d,
+        surfel_fragment_power,
+    }
+#else ifdef GAUSSIAN_3D
+    #import bevy_gaussian_splatting::gaussian_3d::{
+        compute_cov2d_3dgs,
+        get_bounding_box_clip,
+    }
 #endif
 
 #ifdef PACKED
-#ifdef PRECOMPUTE_COVARIANCE_3D
-#import bevy_gaussian_splatting::packed::{
-    get_position,
-    get_color,
-    get_visibility,
-    get_opacity,
-    get_cov3d,
-}
-#else
-#import bevy_gaussian_splatting::packed::{
-    get_position,
-    get_color,
-    get_visibility,
-    get_opacity,
-    get_rotation,
-    get_scale,
-}
-#endif
-#else
-
-#ifdef BUFFER_STORAGE
-#ifdef PRECOMPUTE_COVARIANCE_3D
-#import bevy_gaussian_splatting::planar::{
-    get_position,
-    get_color,
-    get_visibility,
-    get_opacity,
-    get_cov3d,
-}
-#else
-#import bevy_gaussian_splatting::planar::{
-    get_position,
-    get_color,
-    get_visibility,
-    get_opacity,
-    get_rotation,
-    get_scale,
-}
-#endif
-#endif
-
-#endif
-
-
-#ifdef BUFFER_TEXTURE
-#ifdef PRECOMPUTE_COVARIANCE_3D
-#import bevy_gaussian_splatting::texture::{
-    get_position,
-    get_color,
-    get_visibility,
-    get_opacity,
-    get_cov3d,
-    location,
-}
-#else
-#import bevy_gaussian_splatting::texture::{
-    get_position,
-    get_color,
-    get_visibility,
-    get_opacity,
-    get_rotation,
-    get_scale,
-    location,
-}
-#endif
+    #ifdef PRECOMPUTE_COVARIANCE_3D
+        #import bevy_gaussian_splatting::packed::{
+            get_position,
+            get_color,
+            get_visibility,
+            get_opacity,
+            get_cov3d,
+        }
+    #else
+        #import bevy_gaussian_splatting::packed::{
+            get_position,
+            get_color,
+            get_visibility,
+            get_opacity,
+            get_rotation,
+            get_scale,
+        }
+    #endif
+#else ifdef BUFFER_STORAGE
+    #ifdef PRECOMPUTE_COVARIANCE_3D
+        #import bevy_gaussian_splatting::planar::{
+            get_position,
+            get_color,
+            get_visibility,
+            get_opacity,
+            get_cov3d,
+        }
+    #else
+        #import bevy_gaussian_splatting::planar::{
+            get_position,
+            get_color,
+            get_visibility,
+            get_opacity,
+            get_rotation,
+            get_scale,
+        }
+    #endif
+#else ifdef BUFFER_TEXTURE
+    #ifdef PRECOMPUTE_COVARIANCE_3D
+        #import bevy_gaussian_splatting::texture::{
+            get_position,
+            get_color,
+            get_visibility,
+            get_opacity,
+            get_cov3d,
+            location,
+        }
+    #else
+        #import bevy_gaussian_splatting::texture::{
+            get_position,
+            get_color,
+            get_visibility,
+            get_opacity,
+            get_rotation,
+            get_scale,
+            location,
+        }
+    #endif
 #endif
 
 
 #ifdef BUFFER_STORAGE
-@group(3) @binding(0) var<storage, read> sorted_entries: array<Entry>;
+    @group(3) @binding(0) var<storage, read> sorted_entries: array<Entry>;
+    fn get_entry(index: u32) -> Entry {
+        return sorted_entries[index];
+    }
+#else ifdef BUFFER_TEXTURE
+    @group(3) @binding(0) var sorted_entries: texture_2d<u32>;
+    fn get_entry(index: u32) -> Entry {
+        let sample = textureLoad(
+            sorted_entries,
+            location(index),
+            0,
+        );
 
-fn get_entry(index: u32) -> Entry {
-    return sorted_entries[index];
-}
-#endif
-
-#ifdef BUFFER_TEXTURE
-@group(3) @binding(0) var sorted_entries: texture_2d<u32>;
-
-fn get_entry(index: u32) -> Entry {
-    let sample = textureLoad(
-        sorted_entries,
-        location(index),
-        0,
-    );
-
-    return Entry(
-        sample.r,
-        sample.g,
-    );
-}
+        return Entry(
+            sample.r,
+            sample.g,
+        );
+    }
 #endif
 
 #ifdef WEBGL2
-struct GaussianVertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
-    @location(1) uv: vec2<f32>,
-#ifdef GAUSSIAN_3D
-    @location(2) conic: vec3<f32>,
-    @location(3) major_minor: vec2<f32>,
-#else ifdef GAUSSIAN_SURFEL
-    @location(2) local_to_pixel_u: vec3<f32>,
-    @location(3) local_to_pixel_v: vec3<f32>,
-    @location(4) local_to_pixel_w: vec3<f32>,
-    @location(5) mean_2d: vec2<f32>,
-    @location(6) radius: vec2<f32>,
-#endif
-};
+    struct GaussianVertexOutput {
+        @builtin(position) position: vec4<f32>,
+        @location(0) color: vec4<f32>,
+        @location(1) uv: vec2<f32>,
+    #ifdef GAUSSIAN_3D
+        @location(2) conic: vec3<f32>,
+        @location(3) major_minor: vec2<f32>,
+    #else ifdef GAUSSIAN_2D
+        @location(2) local_to_pixel_u: vec3<f32>,
+        @location(3) local_to_pixel_v: vec3<f32>,
+        @location(4) local_to_pixel_w: vec3<f32>,
+        @location(5) mean_2d: vec2<f32>,
+        @location(6) radius: vec2<f32>,
+    #endif
+    };
 #else
-struct GaussianVertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) @interpolate(flat) color: vec4<f32>,
-    @location(1) @interpolate(linear) uv: vec2<f32>,
-#ifdef GAUSSIAN_3D
-    @location(2) @interpolate(flat) conic: vec3<f32>,
-    @location(3) @interpolate(linear) major_minor: vec2<f32>,
-#else ifdef GAUSSIAN_SURFEL
-    @location(2) @interpolate(flat) local_to_pixel_u: vec3<f32>,
-    @location(3) @interpolate(flat) local_to_pixel_v: vec3<f32>,
-    @location(4) @interpolate(flat) local_to_pixel_w: vec3<f32>,
-    @location(5) @interpolate(flat) mean_2d: vec2<f32>,
-    @location(6) @interpolate(flat) radius: vec2<f32>,
+    struct GaussianVertexOutput {
+        @builtin(position) position: vec4<f32>,
+        @location(0) @interpolate(flat) color: vec4<f32>,
+        @location(1) @interpolate(linear) uv: vec2<f32>,
+    #ifdef GAUSSIAN_3D
+        @location(2) @interpolate(flat) conic: vec3<f32>,
+        @location(3) @interpolate(linear) major_minor: vec2<f32>,
+    #else ifdef GAUSSIAN_2D
+        @location(2) @interpolate(flat) local_to_pixel_u: vec3<f32>,
+        @location(3) @interpolate(flat) local_to_pixel_v: vec3<f32>,
+        @location(4) @interpolate(flat) local_to_pixel_w: vec3<f32>,
+        @location(5) @interpolate(flat) mean_2d: vec2<f32>,
+        @location(6) @interpolate(flat) radius: vec2<f32>,
+    #endif
+    };
 #endif
-};
-#endif
-
-
-// https://github.com/cvlab-epfl/gaussian-splatting-web/blob/905b3c0fb8961e42c79ef97e64609e82383ca1c2/src/shaders.ts#L185
-// TODO: precompute
-fn compute_cov3d(scale: vec3<f32>, rotation: vec4<f32>) -> array<f32, 6> {
-    let S = get_scale_matrix(scale);
-
-    let T = mat3x3<f32>(
-        gaussian_uniforms.transform[0].xyz,
-        gaussian_uniforms.transform[1].xyz,
-        gaussian_uniforms.transform[2].xyz,
-    );
-
-    let R = get_rotation_matrix(rotation);
-
-    let M = S * R;
-    let Sigma = transpose(M) * M;
-    let TS = T * Sigma * transpose(T);
-
-    return array<f32, 6>(
-        TS[0][0],
-        TS[0][1],
-        TS[0][2],
-        TS[1][1],
-        TS[1][2],
-        TS[2][2],
-    );
-}
-
-fn compute_cov2d_3dgs(
-    position: vec3<f32>,
-    index: u32,
-) -> vec3<f32> {
-#ifdef PRECOMPUTE_COVARIANCE_3D
-    let cov3d = get_cov3d(index);
-#else
-    let rotation = get_rotation(index);
-    let scale = get_scale(index);
-
-    let cov3d = compute_cov3d(scale, rotation);
-#endif
-
-    let Vrk = mat3x3(
-        cov3d[0], cov3d[1], cov3d[2],
-        cov3d[1], cov3d[3], cov3d[4],
-        cov3d[2], cov3d[4], cov3d[5],
-    );
-
-    var t = view.view_from_world * vec4<f32>(position, 1.0);
-
-    let focal = vec2<f32>(
-        view.clip_from_view.x.x * view.viewport.z,
-        view.clip_from_view.y.y * view.viewport.w,
-    );
-
-    let s = 1.0 / (t.z * t.z);
-    let J = mat3x3(
-        focal.x / t.z, 0.0, -(focal.x * t.x) * s,
-        0.0, -focal.y / t.z, (focal.y * t.y) * s,
-        0.0, 0.0, 0.0,
-    );
-
-    let W = transpose(
-        mat3x3<f32>(
-            view.view_from_world.x.xyz,
-            view.view_from_world.y.xyz,
-            view.view_from_world.z.xyz,
-        )
-    );
-
-    let T = W * J;
-
-    var cov = transpose(T) * transpose(Vrk) * T;
-    cov[0][0] += 0.3f;
-    cov[1][1] += 0.3f;
-
-    return vec3<f32>(cov[0][0], cov[0][1], cov[1][1]);
-}
-
-fn get_bounding_box(
-    cov2d: vec3<f32>,
-    direction: vec2<f32>,
-    cutoff: f32,
-) -> vec4<f32> {
-    // return vec4<f32>(offset, uv);
-
-    let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
-    let trace = cov2d.x + cov2d.z;
-    let mid = 0.5 * trace;
-    let discriminant = max(0.0, mid * mid - det);
-
-    let term = sqrt(discriminant);
-
-    let lambda1 = mid + term;
-    let lambda2 = max(mid - term, 0.0);
-
-    let x_axis_length = sqrt(lambda1);
-    let y_axis_length = sqrt(lambda2);
-
-
-#ifdef USE_AABB
-    let radius_px = cutoff * max(x_axis_length, y_axis_length);
-    let radius_ndc = vec2<f32>(
-        radius_px / view.viewport.zw,
-    );
-
-    return vec4<f32>(
-        radius_ndc * direction,
-        radius_px * direction,
-    );
-#endif
-
-#ifdef USE_OBB
-
-    let a = (cov2d.x - cov2d.z) * (cov2d.x - cov2d.z);
-    let b = sqrt(a + 4.0 * cov2d.y * cov2d.y);
-    let major_radius = sqrt((cov2d.x + cov2d.z + b) * 0.5);
-    let minor_radius = sqrt((cov2d.x + cov2d.z - b) * 0.5);
-
-    let bounds = cutoff * vec2<f32>(
-        major_radius,
-        minor_radius,
-    );
-
-    let eigvec1 = normalize(vec2<f32>(
-        -cov2d.y,
-        lambda1 - cov2d.x,
-    ));
-    let eigvec2 = vec2<f32>(
-        eigvec1.y,
-        -eigvec1.x
-    );
-
-    let rotation_matrix = transpose(
-        mat2x2(
-            eigvec1,
-            eigvec2,
-        )
-    );
-
-    let scaled_vertex = direction * bounds;
-    let rotated_vertex = scaled_vertex * rotation_matrix;
-
-    let scaling_factor = 1.0 / view.viewport.zw;
-    let ndc_vertex = rotated_vertex * scaling_factor;
-
-    return vec4<f32>(
-        ndc_vertex,
-        rotated_vertex,
-    );
-#endif
-}
-
-
-// @compute @workgroup_size(#{RADIX_BASE}, #{RADIX_DIGIT_PLACES})
-// fn gaussian_compute(
-//     @builtin(local_invocation_id) gl_LocalInvocationID: vec3<u32>,
-//     @builtin(global_invocation_id) gl_GlobalInvocationID: vec3<u32>,
-// ) {
-//     // TODO: compute cov2d, color (any non-quad gaussian property)
-// }
-
-fn inverted_infinity_norm(v: vec3<f32>) -> vec3<f32> {
-    let min_value = min(v.x, min(v.y, v.z));
-    let min_vec = vec3<f32>(min_value);
-
-    return select(
-        vec3<f32>(0.0),
-        vec3<f32>(1.0),
-        v == min_vec,
-    );
-}
 
 
 @vertex
@@ -370,8 +187,6 @@ fn vs_points(
     let quad_index = vertex_index % 4u;
     let quad_offset = quad_vertices[quad_index];
 
-    let ray_direction = normalize(transformed_position - view.world_position);
-
     var rgb = vec3<f32>(0.0);
 
 #ifdef RASTERIZE_DEPTH
@@ -414,6 +229,8 @@ fn vs_points(
         0.5 * (t.z + 1.0)
     );
 #else
+    // TODO: verify color benefit for ray_direction computed at quad verticies instead of gaussian center (same as current complexity)
+    let ray_direction = normalize(transformed_position - view.world_position);
     rgb = get_color(splat_index, ray_direction);
 #endif
 
@@ -425,7 +242,6 @@ fn vs_points(
     let cutoff = 3.0;
 #endif
 
-    // TODO: verify color benefit for ray_direction computed at quad verticies instead of gaussian center (same as current complexity)
     output.color = vec4<f32>(
         rgb,
         opacity * gaussian_uniforms.global_opacity,
@@ -442,7 +258,7 @@ fn vs_points(
         transformed_position,
         splat_index,
     );
-    let bb = get_bounding_box(
+    let bb = get_bounding_box_clip(
         cov2d,
         quad_offset,
         cutoff,
@@ -456,12 +272,11 @@ fn vs_points(
         -cov2d.y * det_inv,
         cov2d.x * det_inv
     );
-    // TODO: this conic seems only valid in 3dgs
     output.conic = conic;
     output.major_minor = bb.zw;
 #endif
 
-#else ifdef GAUSSIAN_SURFEL
+#else ifdef GAUSSIAN_2D
     let surfel = compute_cov2d_surfel(
         transformed_position,
         splat_index,
@@ -493,7 +308,7 @@ fn vs_points(
 @fragment
 fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
 #ifdef USE_AABB
-#ifdef GAUSSIAN_SURFEL
+#ifdef GAUSSIAN_2D
     let radius = input.radius;
     let mean_2d = input.mean_2d;
     let aspect = vec2<f32>(
@@ -501,7 +316,6 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
         view.viewport.z / view.viewport.w,
     );
     let pixel_coord = input.uv * radius * aspect + mean_2d;
-    // let pixel_coord = input.position.xy * view.viewport.zw + view.viewport.xy;
 
     let power = surfel_fragment_power(
         mat3x3<f32>(

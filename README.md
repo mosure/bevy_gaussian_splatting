@@ -60,9 +60,9 @@ fn setup_gaussian_cloud(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
 ) {
-    // GaussianCloudSettings and Visibility are automatically added
+    // CloudSettings and Visibility are automatically added
     commands.spawn(
-        GaussianCloudHandle(asset_server.load("scenes/icecream.gcloud")),
+        CloudHandle(asset_server.load("scenes/icecream.gcloud")),
     );
 
     commands.spawn(Camera3dBundle::default());
@@ -74,6 +74,22 @@ fn setup_gaussian_cloud(
 - [ply to gcloud converter](tools/README.md#ply-to-gcloud-converter)
 - [gaussian cloud training pipeline](https://github.com/mosure/burn_gaussian_splatting)
 - aabb vs. obb gaussian comparison via `cargo run --bin compare_aabb_obb`
+
+### creating gaussian clouds
+
+the following tools are compatible with `bevy_gaussian_splatting`:
+
+- [X] 2d gaussian clouds:
+    - [gsplat](https://docs.gsplat.studio/main/)
+
+- [X] 3d gaussian clouds:
+    - [brush](https://github.com/ArthurBrussee/brush)
+    - [gsplat](https://docs.gsplat.studio/main/)
+    - [gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting)
+
+- [X] 4d gaussian clouds:
+    - [4d-gaussian-splatting](https://fudan-zvg.github.io/4d-gaussian-splatting/)
+    - [easy-volcap](https://github.com/zju3dv/EasyVolcap)
 
 
 ## compatible bevy versions
@@ -88,7 +104,6 @@ fn setup_gaussian_cloud(
 
 
 ## license
-
 licensed under either of
 
  * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
@@ -101,3 +116,7 @@ at your option.
 unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any
 additional terms or conditions.
+
+
+## analytics
+![alt](https://repobeats.axiom.co/api/embed/4f273f05f00ec57e90be34727e85952039e1a712.svg "analytics")

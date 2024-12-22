@@ -16,8 +16,8 @@ use static_assertions::assert_cfg;
 use crate::{
     gaussian::{
         cloud::{
-            GaussianCloud,
-            GaussianCloudHandle,
+            Cloud,
+            CloudHandle,
         },
         f32::{
             PositionVisibility,
@@ -31,8 +31,8 @@ use crate::{
         SphericalHarmonicCoefficients,
     },
     render::{
-        GaussianCloudPipeline,
-        GpuGaussianCloud,
+        CloudPipeline,
+        GpuCloud,
     },
 };
 
@@ -63,7 +63,6 @@ pub struct TextureBuffers {
     rotation_scale_opacity: Handle<Image>,
 }
 
-#[cfg(feature = "f32")]
 #[derive(Component, Clone, Debug, Reflect)]
 pub struct TextureBuffers {
     position_visibility: Handle<Image>,
@@ -115,8 +114,8 @@ pub struct GpuTextureBuffers {
 
 pub fn queue_gpu_texture_buffers(
     mut commands: Commands,
-    // gaussian_cloud_pipeline: Res<GaussianCloudPipeline>,
-    pipeline: ResMut<GaussianCloudPipeline>,
+    // gaussian_cloud_pipeline: Res<CloudPipeline>,
+    pipeline: ResMut<CloudPipeline>,
     render_device: ResMut<RenderDevice>,
     gpu_images: Res<RenderAssets<GpuImage>>,
     clouds: Query<(
@@ -161,7 +160,6 @@ pub fn queue_gpu_texture_buffers(
             ],
         );
 
-        #[cfg(feature = "f32")]
         let bind_group = render_device.create_bind_group(
             Some("texture_gaussian_cloud_bind_group"),
             &pipeline.gaussian_cloud_layout,
@@ -202,12 +200,12 @@ pub fn queue_gpu_texture_buffers(
 fn queue_textures(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    gaussian_cloud_res: Res<Assets<GaussianCloud>>,
+    gaussian_cloud_res: Res<Assets<Cloud>>,
     mut images: ResMut<Assets<Image>>,
     clouds: Query<
         (
             Entity,
-            &GaussianCloudHandle,
+            &CloudHandle,
         ),
         Without<TextureBuffers>,
     >,
@@ -312,7 +310,6 @@ fn queue_textures(
             }
         }
 
-        #[cfg(feature = "f32")]
         {
             texture_buffers = TextureBuffers {
                 position_visibility,
@@ -399,7 +396,6 @@ pub fn get_bind_group_layout(
 }
 
 
-#[cfg(feature = "f32")]
 pub fn get_bind_group_layout(
     render_device: &RenderDevice,
     read_only: bool

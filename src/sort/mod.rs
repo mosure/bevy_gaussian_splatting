@@ -32,9 +32,10 @@ use static_assertions::assert_cfg;
 
 use crate::{
     camera::GaussianCamera,
-    GaussianCloud,
-    GaussianCloudHandle,
-    GaussianCloudSettings,
+    Cloud,
+    CloudHandle,
+    CloudSettings,
+    gaussian::interface::CommonCloud,
 };
 
 
@@ -252,13 +253,13 @@ fn update_textures_on_change(
 fn auto_insert_sorted_entries(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    gaussian_clouds_res: Res<Assets<GaussianCloud>>,
+    gaussian_clouds_res: Res<Assets<Cloud>>,
     mut sorted_entries_res: ResMut<Assets<SortedEntries>>,
     gaussian_clouds: Query<
         (
             Entity,
-            &GaussianCloudHandle,
-            &GaussianCloudSettings,
+            &CloudHandle,
+            &CloudSettings,
         ),
         Without<SortedEntriesHandle>
     >,

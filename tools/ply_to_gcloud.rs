@@ -4,7 +4,7 @@ use byte_unit::{
 };
 
 use bevy_gaussian_splatting::{
-    GaussianCloud,
+    Cloud,
     io::{
         ply::parse_ply,
         writer::write_gaussian_cloud_to_file,
@@ -42,9 +42,7 @@ fn main() {
     let file = std::fs::File::open(&filename).expect("failed to open file");
     let mut reader = std::io::BufReader::new(file);
 
-    let mut cloud = GaussianCloud::from_gaussians(
-        parse_ply(&mut reader).expect("failed to parse ply file"),
-    );
+    let mut cloud = parse_ply(&mut reader).expect("failed to parse ply file");
 
     // TODO: prioritize mesh selection over export filter
     // println!("initial cloud size: {}", cloud.len());

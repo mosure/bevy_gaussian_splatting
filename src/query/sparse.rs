@@ -11,8 +11,8 @@ use typenum::consts::U3;
 
 use crate::{
     Gaussian,
-    GaussianCloud,
-    GaussianCloudHandle,
+    Cloud,
+    CloudHandle,
     query::select::Select,
 };
 
@@ -45,7 +45,7 @@ impl Default for SparseSelect {
 impl SparseSelect {
     pub fn select(
         &self,
-        cloud: &GaussianCloud,
+        cloud: &Cloud,
     ) -> Select {
         let tree = KdTree::build_by_ordered_float(cloud.gaussian_iter().collect());
 
@@ -87,10 +87,10 @@ impl KdPoint for Gaussian {
 fn select_sparse_handler(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    gaussian_clouds_res: Res<Assets<GaussianCloud>>,
+    gaussian_clouds_res: Res<Assets<Cloud>>,
     mut selections: Query<(
         Entity,
-        &GaussianCloudHandle,
+        &CloudHandle,
         &mut SparseSelect,
     )>,
 ) {

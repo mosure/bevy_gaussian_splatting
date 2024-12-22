@@ -54,14 +54,14 @@ use static_assertions::assert_cfg;
 
 use crate::{
     gaussian::cloud::{
-        GaussianCloud,
-        GaussianCloudHandle,
+        Cloud,
+        CloudHandle,
     },
-    GaussianCloudSettings,
+    CloudSettings,
     render::{
-        GaussianCloudBindGroup,
-        GaussianCloudPipeline,
-        GaussianCloudPipelineKey,
+        CloudBindGroup,
+        CloudPipeline,
+        CloudPipelineKey,
         GaussianUniformBindGroups,
         GaussianViewBindGroup,
         ShaderDefines,
@@ -148,7 +148,7 @@ impl Plugin for RadixSortPlugin {
 pub struct RadixSortBuffers {
     // TODO: use a more ECS-friendly approach
     pub asset_map: HashMap<
-        AssetId<GaussianCloud>,
+        AssetId<Cloud>,
         GpuRadixBuffers,
     >,
 }
@@ -209,7 +209,7 @@ impl GpuRadixBuffers {
 
 
 fn update_sort_buffers(
-    gpu_gaussian_clouds: Res<RenderAssets<GpuGaussianCloud>>,
+    gpu_gaussian_clouds: Res<RenderAssets<GpuCloud>>,
     mut sort_buffers: ResMut<RadixSortBuffers>,
     render_device: Res<RenderDevice>,
 ) {
@@ -234,7 +234,7 @@ pub struct RadixSortPipeline {
 impl FromWorld for RadixSortPipeline {
     fn from_world(render_world: &mut World) -> Self {
         let render_device = render_world.resource::<RenderDevice>();
-        let gaussian_cloud_pipeline = render_world.resource::<GaussianCloudPipeline>();
+        let gaussian_cloud_pipeline = render_world.resource::<CloudPipeline>();
 
         let sorting_buffer_entry = BindGroupLayoutEntry {
             binding: 1,
@@ -314,7 +314,7 @@ impl FromWorld for RadixSortPipeline {
             gaussian_cloud_pipeline.gaussian_cloud_layout.clone(),
             radix_sort_layout.clone(),
         ];
-        let shader_defs = shader_defs(GaussianCloudPipelineKey::default());
+        let shader_defs = shader_defs(CloudPipelineKey::default());
 
         let pipeline_cache = render_world.resource::<PipelineCache>();
         let radix_sort_a = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
@@ -368,13 +368,13 @@ pub fn queue_radix_bind_group(
     radix_pipeline: Res<RadixSortPipeline>,
     render_device: Res<RenderDevice>,
     asset_server: Res<AssetServer>,
-    gaussian_cloud_res: Res<RenderAssets<GpuGaussianCloud>>,
+    gaussian_cloud_res: Res<RenderAssets<GpuCloud>>,
     sorted_entries_res: Res<RenderAssets<GpuSortedEntry>>,
     gaussian_clouds: Query<(
         Entity,
-        &GaussianCloudHandle,
+        &CloudHandle,
         &SortedEntriesHandle,
-        &GaussianCloudSettings,
+        &CloudSettings,
     )>,
     sort_buffers: Res<RadixSortBuffers>,
 ) {
@@ -497,8 +497,8 @@ pub fn queue_radix_bind_group(
 
 pub struct RadixSortNode {
     gaussian_clouds: QueryState<(
-        &'static GaussianCloudHandle,
-        &'static GaussianCloudBindGroup,
+        &'static CloudHandle,
+        &'static CloudBindGroup,
         &'static RadixBindGroup,
     )>,
     initialized: bool,
@@ -571,7 +571,7 @@ impl Node for RadixSortNode {
                 cloud_bind_group,
                 radix_bind_group,
             ) in self.gaussian_clouds.iter_manual(world) {
-                let cloud = world.get_resource::<RenderAssets<GpuGaussianCloud>>().unwrap().get(cloud_handle).unwrap();
+                let cloud = world.get_resource::<RenderAssets<GpuCloud>>().unwrap().get(cloud_handle).unwrap();
 
                 assert!(sort_buffers.asset_map.contains_key(&cloud_handle.id()));
                 let sorting_assets = &sort_buffers.asset_map[&cloud_handle.id()];

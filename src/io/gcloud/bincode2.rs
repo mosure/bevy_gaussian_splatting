@@ -9,12 +9,12 @@ use flate2::{
 };
 
 use crate::{
-    gaussian::GaussianCloud,
-    io::codec::GaussianCloudCodec,
+    gaussian::Cloud,
+    io::codec::CloudCodec,
 };
 
 
-impl GaussianCloudCodec for GaussianCloud {
+impl CloudCodec for Cloud {
     fn encode(&self) -> Vec<u8> {
         let mut output = Vec::new();
 
@@ -28,7 +28,7 @@ impl GaussianCloudCodec for GaussianCloud {
 
     fn decode(data: &[u8]) -> Self {
         let decompressed = GzDecoder::new(data);
-        let cloud: GaussianCloud = deserialize_from(decompressed).expect("failed to decode cloud");
+        let cloud: Cloud = deserialize_from(decompressed).expect("failed to decode cloud");
 
         cloud
     }

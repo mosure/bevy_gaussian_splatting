@@ -6,9 +6,10 @@ use bevy::{
 
 use crate::{
     camera::GaussianCamera,
-    GaussianCloud,
-    GaussianCloudHandle,
-    GaussianCloudSettings,
+    Cloud,
+    CloudHandle,
+    CloudSettings,
+    gaussian::interface::CommonCloud,
     sort::{
         SortConfig,
         SortMode,
@@ -32,11 +33,11 @@ impl Plugin for StdSortPlugin {
 #[allow(clippy::too_many_arguments)]
 pub fn std_sort(
     asset_server: Res<AssetServer>,
-    gaussian_clouds_res: Res<Assets<GaussianCloud>>,
+    gaussian_clouds_res: Res<Assets<Cloud>>,
     gaussian_clouds: Query<(
-        &GaussianCloudHandle,
+        &CloudHandle,
         &SortedEntriesHandle,
-        &GaussianCloudSettings,
+        &CloudSettings,
         &GlobalTransform,
     )>,
     mut sorted_entries_res: ResMut<Assets<SortedEntries>>,

@@ -19,12 +19,12 @@ use bevy::render::{
 
 use crate::{
     gaussian::{
-        cloud::GaussianCloud,
+        cloud::Cloud,
         packed::Gaussian,
     },
     render::{
-        GaussianCloudPipeline,
-        GpuGaussianCloud,
+        CloudPipeline,
+        GpuCloud,
     },
 };
 
@@ -37,7 +37,7 @@ pub struct PackedBuffers {
 
 pub fn prepare_cloud(
     render_device: &RenderDevice,
-    cloud: &GaussianCloud,
+    cloud: &Cloud,
 ) -> PackedBuffers {
     let gaussians = render_device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("packed_gaussian_cloud_buffer"),
@@ -76,8 +76,8 @@ pub fn get_bind_group_layout(
 #[cfg(feature = "packed")]
 pub fn get_bind_group(
     render_device: &RenderDevice,
-    gaussian_cloud_pipeline: &GaussianCloudPipeline,
-    cloud: &GpuGaussianCloud,
+    gaussian_cloud_pipeline: &CloudPipeline,
+    cloud: &GpuCloud,
 ) -> BindGroup {
     render_device.create_bind_group(
         "packed_gaussian_cloud_bind_group",

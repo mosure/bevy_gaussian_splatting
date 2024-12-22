@@ -15,11 +15,46 @@ use serde::{
 
 use crate::gaussian::{
     covariance::compute_covariance_3d,
-    packed::Gaussian,
+    packed::{Gaussian, Gaussian4d},
 };
 
 
 pub type Position = [f32; 3];
+pub type Positions<'a> = std::slice::Iter<'a, Position>;
+
+
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    Copy,
+    PartialEq,
+    Reflect,
+    ShaderType,
+    Pod,
+    Zeroable,
+    Serialize,
+    Deserialize,
+)]
+#[repr(C)]
+pub struct PositionTimestamp {
+    pub position: Position,
+    pub timestamp: f32,
+}
+
+impl From<[f32; 4]> for PositionTimestamp {
+    fn from(position_timestamp: [f32; 4]) -> Self {
+        Self {
+            position: [
+                position_timestamp[0],
+                position_timestamp[1],
+                position_timestamp[2],
+            ],
+            timestamp: position_timestamp[3],
+        }
+    }
+}
+
 
 #[derive(
     Clone,
@@ -53,6 +88,7 @@ impl From<[f32; 4]> for PositionVisibility {
     }
 }
 
+
 #[derive(
     Clone,
     Debug,
@@ -76,6 +112,65 @@ impl From<[f32; 4]> for Rotation {
         Self { rotation }
     }
 }
+
+
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    Copy,
+    PartialEq,
+    Reflect,
+    ShaderType,
+    Pod,
+    Zeroable,
+    Serialize,
+    Deserialize,
+)]
+#[repr(C)]
+pub struct IsotropicRotations {
+    pub rotation: [f32; 4],
+    pub rotation_r: [f32; 4],
+}
+
+impl IsotropicRotations {
+    pub fn from_gaussian(gaussian: &Gaussian4d) -> Self {
+        let rotation = gaussian.isomorphic_rotations.rotation;
+        let rotation_r = gaussian.isomorphic_rotations.rotation_r;
+
+        Self {
+            rotation,
+            rotation_r,
+        }
+    }
+
+    pub fn rotations(&self) -> [Rotation; 2] {
+        [
+            Rotation {
+                rotation: self.rotation,
+            },
+            Rotation {
+                rotation: self.rotation_r,
+            },
+        ]
+    }
+}
+
+impl From<[f32; 8]> for IsotropicRotations {
+    fn from(rotations: [f32; 8]) -> Self {
+        Self {
+            rotation: [
+                rotations[0], rotations[1],
+                rotations[2], rotations[3],
+            ],
+            rotation_r: [
+                rotations[4], rotations[5],
+                rotations[6], rotations[7],
+            ],
+        }
+    }
+}
+
 
 #[derive(
     Clone,
@@ -105,6 +200,37 @@ impl From<[f32; 4]> for ScaleOpacity {
                 scale_opacity[2],
             ],
             opacity: scale_opacity[3],
+        }
+    }
+}
+
+
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    Copy,
+    PartialEq,
+    Reflect,
+    ShaderType,
+    Pod,
+    Zeroable,
+    Serialize,
+    Deserialize,
+)]
+#[repr(C)]
+pub struct TimestampTimescale {
+    pub timestamp: f32,
+    pub timescale: f32,
+    pub _pad: [f32; 2],
+}
+
+impl From<[f32; 4]> for TimestampTimescale {
+    fn from(timestamp_timescale: [f32; 4]) -> Self {
+        Self {
+            timestamp: timestamp_timescale[0],
+            timescale: timestamp_timescale[1],
+            _pad: [0.0, 0.0],
         }
     }
 }
