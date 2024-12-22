@@ -17,7 +17,6 @@ use crate::{
     gaussian::{
         f32::{
             Covariance3dOpacity,
-            Positions,
             PositionVisibility,
             Rotation,
             ScaleOpacity,
@@ -25,6 +24,10 @@ use crate::{
         interface::{
             CommonCloud,
             TestCloud,
+        },
+        iter::{
+            PositionIter,
+            PositionParIter,
         },
         packed::Gaussian,
         settings::CloudSettings,
@@ -67,6 +70,7 @@ pub struct Cloud3d {
 }
 
 #[derive(
+    Clone,
     Debug,
     Default,
     PartialEq,
@@ -93,17 +97,6 @@ impl CommonCloud for Cloud3d {
 
     fn len(&self) -> usize {
         self.position_visibility.len()
-    }
-
-    fn position_iter(&self) -> Positions<'_> {
-        self.position_visibility.iter()
-            .map(|position_visibility| &position_visibility.position)
-    }
-
-    #[cfg(feature = "sort_rayon")]
-    fn position_par_iter(&self) -> impl IndexedParallelIterator<Item = &Position> + '_ {
-        self.position_visibility.par_iter()
-            .map(|position_visibility| &position_visibility.position)
     }
 
     #[cfg(feature = "f16")]
@@ -210,7 +203,30 @@ impl CommonCloud for Cloud3d {
             self.covariance_3d.resize(self.square_len(), Covariance3dOpacity::default());
         }
     }
+
+
+    fn position_iter(&self) -> PositionIter<'_> {
+        PositionIter::new(&self.position_visibility)
+    }
+
+    #[cfg(feature = "sort_rayon")]
+    fn position_par_iter(&self) -> PositionParIter<'_> {
+        PositionParIter::new(&self.position_visibility)
+    }
 }
+
+impl FromIterator<Gaussian> for Cloud3d {
+    fn from_iter<I: IntoIterator<Item = Gaussian>>(iter: I) -> Self {
+        iter.into_iter().collect::<Vec<Gaussian>>().into()
+    }
+}
+
+impl From<Vec<Gaussian>> for Cloud3d {
+    fn from(packed: Vec<Gaussian>) -> Self {
+        Self::from_packed(packed)
+    }
+}
+
 
 impl TestCloud for Cloud3d {
     fn test_model() -> Self {
@@ -278,8 +294,7 @@ impl TestCloud for Cloud3d {
         }
 
         gaussians.push(gaussians[0]);
-
-        gaussians
+        gaussians.into()
     }
 }
 

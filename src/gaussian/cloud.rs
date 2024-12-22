@@ -16,20 +16,28 @@ use serde::{
 };
 
 use crate::gaussian::{
-    f32::Positions,
     formats::{
         cloud_3d::Cloud3d,
         cloud_4d::Cloud4d,
     },
     interface::CommonCloud,
-    packed::Gaussian,
+    iter::{
+        PositionIter,
+        PositionParIter,
+    },
+    packed::{
+        Gaussian,
+        Gaussian4d,
+    },
     settings::CloudSettings,
 };
 
 
 // TODO: support packed vs. planar switch at runtime
+// TODO: support storage vs texture switch at runtime
 #[derive(
     Asset,
+    Clone,
     Debug,
     PartialEq,
     Reflect,
@@ -45,7 +53,6 @@ pub enum Cloud {
     // QuantizedGaussian4d(HalfCloud4d),
 }
 
-// TODO: enum macro /w support for associated type
 impl CommonCloud for Cloud {
     // default to gaussian 3d
     type PackedType = Gaussian;
@@ -55,23 +62,6 @@ impl CommonCloud for Cloud {
             Self::Gaussian2d(cloud) => cloud.len(),
             Self::Gaussian3d(cloud) => cloud.len(),
             Self::Gaussian4d(cloud) => cloud.len(),
-        }
-    }
-
-    fn position_iter(&self) -> Positions<'_> {
-        match self {
-            Self::Gaussian2d(cloud) => cloud.position_iter(),
-            Self::Gaussian3d(cloud) => cloud.position_iter(),
-            Self::Gaussian4d(cloud) => cloud.position_iter(),
-        }
-    }
-
-    #[cfg(feature = "sort_rayon")]
-    fn position_par_iter(&self) -> impl rayon::prelude::IndexedParallelIterator<Item = &super::f32::Position> + '_ {
-        match self {
-            Self::Gaussian2d(cloud) => cloud.position_par_iter(),
-            Self::Gaussian3d(cloud) => cloud.position_par_iter(),
-            Self::Gaussian4d(cloud) => cloud.position_par_iter(),
         }
     }
 
@@ -109,6 +99,48 @@ impl CommonCloud for Cloud {
             Self::Gaussian3d(cloud) => cloud.resize_to_square(),
             Self::Gaussian4d(cloud) => cloud.resize_to_square(),
         }
+    }
+
+
+    fn position_iter(&self) -> PositionIter<'_> {
+        match self {
+            Self::Gaussian2d(cloud) => cloud.position_iter(),
+            Self::Gaussian3d(cloud) => cloud.position_iter(),
+            Self::Gaussian4d(cloud) => cloud.position_iter(),
+        }
+    }
+
+    #[cfg(feature = "sort_rayon")]
+    fn position_par_iter(&self) -> PositionParIter<'_> {
+        match self {
+            Self::Gaussian2d(cloud) => cloud.position_par_iter(),
+            Self::Gaussian3d(cloud) => cloud.position_par_iter(),
+            Self::Gaussian4d(cloud) => cloud.position_par_iter(),
+        }
+    }
+}
+
+impl FromIterator<Gaussian> for Cloud {
+    fn from_iter<I: IntoIterator<Item = Gaussian>>(iter: I) -> Self {
+        iter.into_iter().collect::<Vec<Gaussian>>().into()
+    }
+}
+
+impl From<Vec<Gaussian>> for Cloud {
+    fn from(packed: Vec<Gaussian>) -> Self {
+        Cloud::Gaussian3d(packed.into())
+    }
+}
+
+impl FromIterator<Gaussian4d> for Cloud {
+    fn from_iter<I: IntoIterator<Item = Gaussian4d>>(iter: I) -> Self {
+        iter.into_iter().collect::<Vec<Gaussian4d>>().into()
+    }
+}
+
+impl From<Vec<Gaussian4d>> for Cloud {
+    fn from(packed: Vec<Gaussian4d>) -> Self {
+        Cloud::Gaussian4d(packed.into())
     }
 }
 

@@ -20,7 +20,6 @@ use crate::gaussian::{
 
 
 pub type Position = [f32; 3];
-pub type Positions<'a> = std::slice::Iter<'a, Position>;
 
 
 #[derive(

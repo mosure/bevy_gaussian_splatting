@@ -16,7 +16,6 @@ use crate::{
     gaussian::{
         f32::{
             IsotropicRotations,
-            Positions,
             PositionVisibility,
             ScaleOpacity,
             TimestampTimescale,
@@ -24,6 +23,10 @@ use crate::{
         interface::{
             CommonCloud,
             TestCloud,
+        },
+        iter::{
+            PositionIter,
+            PositionParIter,
         },
         packed::Gaussian4d,
     },
@@ -188,6 +191,7 @@ use crate::{
 
 
 #[derive(
+    Clone,
     Debug,
     Default,
     PartialEq,
@@ -208,17 +212,6 @@ impl CommonCloud for Cloud4d {
 
     fn len(&self) -> usize {
         self.position_visibility.len()
-    }
-
-    fn position_iter(&self) -> Positions<'_> {
-        self.position_visibility.iter()
-            .map(|position_visibility| &position_visibility.position)
-    }
-
-    #[cfg(feature = "sort_rayon")]
-    fn position_par_iter(&self) -> impl IndexedParallelIterator<Item = &Position> + '_ {
-        self.position_visibility.par_iter()
-            .map(|position_visibility| &position_visibility.position)
     }
 
     fn subset(&self, indicies: &[usize]) -> Self {
@@ -289,7 +282,7 @@ impl CommonCloud for Cloud4d {
             self.rotation_scale_opacity_packed128.resize(self.square_len(), RotationScaleOpacityPacked128::default());
         }
 
-        #[cfg(all(feature = "buffer_texture", feature = "f32"))]
+        #[cfg(all(feature = "buffer_texture"))]
         {
             self.position_visibility.resize(self.square_len(), PositionVisibility::default());
             self.spherindrical_harmonic.resize(self.square_len(), SpherindricalHarmonicCoefficients::default());
@@ -297,6 +290,28 @@ impl CommonCloud for Cloud4d {
             self.scale_opacity.resize(self.square_len(), ScaleOpacity::default());
             self.covariance_3d.resize(self.square_len(), Covariance3dOpacity::default());
         }
+    }
+
+
+    fn position_iter(&self) -> PositionIter<'_> {
+        PositionIter::new(&self.position_visibility)
+    }
+
+    #[cfg(feature = "sort_rayon")]
+    fn position_par_iter(&self) -> PositionParIter<'_> {
+        PositionParIter::new(&self.position_visibility)
+    }
+}
+
+impl FromIterator<Gaussian4d> for Cloud4d {
+    fn from_iter<I: IntoIterator<Item = Gaussian4d>>(iter: I) -> Self {
+        iter.into_iter().collect::<Vec<Gaussian4d>>().into()
+    }
+}
+
+impl From<Vec<Gaussian4d>> for Cloud4d {
+    fn from(packed: Vec<Gaussian4d>) -> Self {
+        Self::from_packed(packed)
     }
 }
 
@@ -341,6 +356,8 @@ impl TestCloud for Cloud4d {
                 },
             },
             timestamp_timescale: [
+                0.0,
+                0.0,
                 0.0,
                 0.0,
             ].into(),

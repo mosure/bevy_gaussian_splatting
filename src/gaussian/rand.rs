@@ -70,7 +70,7 @@ impl Distribution<Gaussian> for rand::distributions::Standard {
                     }
 
                     {
-                        let mut coefficients = [0.0; SH_4D_COEFF_COUNT];
+                        let mut coefficients = [0.0; SH_COEFF_COUNT];
                         for coefficient in coefficients.iter_mut() {
                             *coefficient = rng.gen_range(-1.0..1.0);
                         }
@@ -87,6 +87,10 @@ impl Distribution<Gaussian4d> for rand::distributions::Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Gaussian4d {
         Gaussian4d {
             isomorphic_rotations: [
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
                 rng.gen_range(-1.0..1.0),
                 rng.gen_range(-1.0..1.0),
                 rng.gen_range(-1.0..1.0),
@@ -119,7 +123,7 @@ impl Distribution<Gaussian4d> for rand::distributions::Standard {
                     }
 
                     {
-                        let mut coefficients = [0.0; SH_COEFF_COUNT];
+                        let mut coefficients = [0.0; SH_4D_COEFF_COUNT];
                         for coefficient in coefficients.iter_mut() {
                             *coefficient = rng.gen_range(-1.0..1.0);
                         }

@@ -6,9 +6,15 @@ use bevy::{
 #[cfg(feature = "sort_rayon")]
 use rayon::prelude::*;
 
-use crate::gaussian::f32::{
-    Position,
-    Positions,
+use crate::gaussian::{
+    f32::{
+        Position,
+        PositionVisibility,
+    },
+    iter::{
+        PositionIter,
+        PositionParIter,
+    },
 };
 
 
@@ -47,11 +53,6 @@ pub trait CommonCloud {
         Aabb::from_min_max(min, max).into()
     }
 
-    fn position_iter(&self) -> Positions<'_>;
-
-    #[cfg(feature = "sort_rayon")]
-    fn position_par_iter(&self) -> impl IndexedParallelIterator<Item = &Position> + '_;
-
     fn subset(&self, indicies: &[usize]) -> Self;
 
     fn from_packed(packed_array: Vec<Self::PackedType>) -> Self;
@@ -60,25 +61,13 @@ pub trait CommonCloud {
     fn visibility_mut(&mut self, index: usize) -> &mut f32;
 
     fn resize_to_square(&mut self);
-}
 
-impl<T> FromIterator<T::PackedType> for T
-where
-    T: CommonCloud,
-{
-    fn from_iter<I: IntoIterator<Item = T::PackedType>>(iter: I) -> Self {
-        let packed = iter.into_iter().collect();
-        T::from_packed(packed)
-    }
-}
 
-impl<T> From<Vec<T::PackedType>> for T
-where
-    T: CommonCloud,
-{
-    fn from(packed: Vec<T::PackedType>) -> Self {
-        T::from_packed(packed)
-    }
+    // TODO: type erasure for position iterators
+    fn position_iter(&self) -> PositionIter<'_>;
+
+    #[cfg(feature = "sort_rayon")]
+    fn position_par_iter(&self) -> PositionParIter<'_>;
 }
 
 
