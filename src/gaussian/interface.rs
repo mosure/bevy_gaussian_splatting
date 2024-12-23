@@ -3,9 +3,6 @@ use bevy::{
     render::primitives::Aabb,
 };
 
-#[cfg(feature = "sort_rayon")]
-use rayon::prelude::*;
-
 use crate::gaussian::{
     f32::{
         Position,
@@ -20,7 +17,7 @@ use crate::gaussian::{
 
 pub trait CommonCloud {
     type PackedType;
-    // type GpuPlanarType;
+    type GpuPlanarType;
 
     fn is_empty(&self) -> bool {
         self.len() == 0
@@ -68,6 +65,25 @@ pub trait CommonCloud {
 
     #[cfg(feature = "sort_rayon")]
     fn position_par_iter(&self) -> PositionParIter<'_>;
+
+
+    fn prepare_cloud(
+        &self,
+        render_device: &RenderDevice,
+    ) -> Self::GpuPlanarType;
+
+    // TODO: auto-generate from bevy_interleave, access on GpuPlanarType
+    fn get_bind_group_layout(
+        render_device: &RenderDevice,
+        read_only: bool
+    ) -> BindGroupLayout;
+
+    // TODO: move to fn on GpuPlanarType
+    fn get_bind_group(
+        render_device: &RenderDevice,
+        gaussian_cloud_pipeline: &CloudPipeline,
+        gpu_planar: &Self::GpuPlanarType,
+    ) -> BindGroup;
 }
 
 

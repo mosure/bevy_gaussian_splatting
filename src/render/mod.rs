@@ -278,7 +278,7 @@ impl RenderAsset for GpuCloud {
             #[cfg(feature = "packed")]
             packed: packed::prepare_cloud(render_device, &source),
             #[cfg(feature = "buffer_storage")]
-            planar: planar::prepare_cloud(render_device, &source),
+            planar: cloud.prepare_cloud(render_device),
 
             #[cfg(feature = "debug_gpu")]
             debug_gpu: gaussian_cloud,
@@ -684,7 +684,7 @@ impl SpecializedRenderPipeline for CloudPipeline {
             layout: vec![
                 self.view_layout.clone(),
                 self.gaussian_uniform_layout.clone(),
-                self.gaussian_cloud_layout.clone(),
+                self.gaussian_cloud_layout.clone(),  // TODO: match the layout with GaussianMode
                 self.sorted_layout.clone(),
             ],
             vertex: VertexState {

@@ -9,9 +9,6 @@ use serde::{
     Serialize,
 };
 
-#[cfg(feature = "sort_rayon")]
-use rayon::prelude::*;
-
 use crate::{
     gaussian::{
         f32::{
