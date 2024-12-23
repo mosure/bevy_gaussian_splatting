@@ -1,6 +1,12 @@
 use bevy::{
     prelude::*,
-    render::primitives::Aabb,
+    render::{
+        primitives::Aabb,
+        render_resource::{
+            BindGroup,
+            BindGroupLayout,
+        },
+    },
 };
 
 use crate::gaussian::{
@@ -17,7 +23,7 @@ use crate::gaussian::{
 
 pub trait CommonCloud {
     type PackedType;
-    type GpuPlanarType;
+    type GpuCloud;
 
     fn is_empty(&self) -> bool {
         self.len() == 0
@@ -70,19 +76,18 @@ pub trait CommonCloud {
     fn prepare_cloud(
         &self,
         render_device: &RenderDevice,
-    ) -> Self::GpuPlanarType;
+    ) -> Self::GpuCloud;
 
-    // TODO: auto-generate from bevy_interleave, access on GpuPlanarType
+    // TODO: auto-generate from bevy_interleave, access on GpuCloud
     fn get_bind_group_layout(
         render_device: &RenderDevice,
         read_only: bool
     ) -> BindGroupLayout;
 
-    // TODO: move to fn on GpuPlanarType
+    // TODO: move to fn on GpuCloud
     fn get_bind_group(
         render_device: &RenderDevice,
-        gaussian_cloud_pipeline: &CloudPipeline,
-        gpu_planar: &Self::GpuPlanarType,
+        gpu_planar: &Self::GpuCloud,
     ) -> BindGroup;
 }
 

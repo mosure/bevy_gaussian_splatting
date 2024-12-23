@@ -278,7 +278,7 @@ impl RenderAsset for GpuCloud {
             #[cfg(feature = "packed")]
             packed: packed::prepare_cloud(render_device, &source),
             #[cfg(feature = "buffer_storage")]
-            planar: cloud.prepare_cloud(render_device),
+            planar: source.prepare_cloud(render_device),
 
             #[cfg(feature = "debug_gpu")]
             debug_gpu: gaussian_cloud,

@@ -7,12 +7,14 @@
 }
 
 
+const PI = radians(180.0);
+
+
 fn spherindrical_harmonics_lookup(
     ray_direction: vec3<f32>,
     sh: array<f32, #{SH_COEFF_COUNT}>,
 ) -> vec3<f32> {
     let rds = ray_direction * ray_direction;
-    let dir_t = globals.time;
 
     var color = vec3<f32>(0.5);
 
@@ -43,7 +45,8 @@ fn spherindrical_harmonics_lookup(
 #endif
 
 #if SH_DEGREE_TIME > 0
-
+    let dir_t = globals.time;
+    let t1 = cos(2.0 * PI * dir_t / time_duration);
 #endif
 
 #if SH_DEGREE_TIME > 1
