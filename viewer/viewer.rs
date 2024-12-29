@@ -166,7 +166,7 @@ fn setup_noise_material(
     asset_server: Res<AssetServer>,
     gaussian_clouds: Query<(
         Entity,
-        &CloudHandle,
+        &PlanarGaussian3dHandle,
         Without<NoiseMaterial>,
     )>,
 ) {
@@ -193,7 +193,7 @@ fn setup_sparse_select(
     mut commands: Commands,
     gaussian_cloud: Query<(
         Entity,
-        &CloudHandle,
+        &PlanarGaussian3dHandle,
         Without<SparseSelect>,
     )>,
 ) {

@@ -4,8 +4,8 @@ use rand::{
     Rng,
 };
 
-#[cfg(feature = "f16")]
-use crate::gaussian::f16::pack_f32s_to_u32;
+// #[cfg(feature = "f16")]
+// use crate::gaussian::f16::pack_f32s_to_u32;
 
 #[allow(unused_imports)]
 use crate::{
@@ -53,17 +53,17 @@ impl Distribution<Gaussian3d> for rand::distributions::Standard {
             ].into(),
             spherical_harmonic: SphericalHarmonicCoefficients {
                 coefficients: {
-                    #[cfg(feature = "f16")]
-                    {
-                        let mut coefficients: [u32; HALF_SH_COEFF_COUNT] = [0; HALF_SH_COEFF_COUNT];
-                        for coefficient in coefficients.iter_mut() {
-                            let upper = rng.gen_range(-1.0..1.0);
-                            let lower = rng.gen_range(-1.0..1.0);
+                    // #[cfg(feature = "f16")]
+                    // {
+                    //     let mut coefficients: [u32; HALF_SH_COEFF_COUNT] = [0; HALF_SH_COEFF_COUNT];
+                    //     for coefficient in coefficients.iter_mut() {
+                    //         let upper = rng.gen_range(-1.0..1.0);
+                    //         let lower = rng.gen_range(-1.0..1.0);
 
-                            *coefficient = pack_f32s_to_u32(upper, lower);
-                        }
-                        coefficients
-                    }
+                    //         *coefficient = pack_f32s_to_u32(upper, lower);
+                    //     }
+                    //     coefficients
+                    // }
 
                     {
                         let mut coefficients = [0.0; SH_COEFF_COUNT];

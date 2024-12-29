@@ -8,7 +8,7 @@
 // use bevy::core_pipeline::core_3d::graph::Core3d;
 
 // use crate::{
-//     gaussian::cloud::CloudHandle,
+//     gaussian::cloud::PlanarGaussian3dHandle,
 //     render::GpuCloud,
 //     CloudSettings,
 // };
@@ -66,7 +66,7 @@
 
 
 // pub struct GaussianSliceNode {
-//     query_gaussian: QueryState<(&'static CloudHandle, &'static CloudSettings)>,
+//     query_gaussian: QueryState<(&'static PlanarGaussian3dHandle, &'static CloudSettings)>,
 //     initialized: bool,
 // }
 

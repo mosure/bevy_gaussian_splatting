@@ -37,9 +37,9 @@ use bevy::{
 
 use bevy_gaussian_splatting::{
     GaussianCamera,
-    Cloud,
-    CloudHandle,
-    random_gaussians,
+    PlanarGaussian3d,
+    PlanarGaussian3dHandle,
+    random_gaussians_3d,
     sort::SortedEntries,
 };
 
@@ -86,10 +86,10 @@ fn setup(
     mut commands: Commands,
     mut gaussian_assets: ResMut<Assets<Cloud>>,
 ) {
-    let cloud = gaussian_assets.add(random_gaussians(10000));
+    let cloud = gaussian_assets.add(random_gaussians_3d(10000));
 
     commands.spawn((
-        CloudHandle(cloud),
+        PlanarGaussian3dHandle(cloud),
         CloudSettings {
             sort_mode: SortMode::Radix,
             ..default()
@@ -110,7 +110,7 @@ fn setup(
 
 pub struct RadixTestNode {
     gaussian_clouds: QueryState<(
-        &'static CloudHandle,
+        &'static PlanarGaussian3dHandle,
         &'static SortedEntriesHandle,
     )>,
     state: TestStateArc,
@@ -133,6 +133,7 @@ impl FromWorld for RadixTestNode {
 }
 
 
+// TODO: update radix sort to latest paradigm
 impl Node for RadixTestNode {
     fn update(
         &mut self,

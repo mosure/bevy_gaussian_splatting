@@ -32,35 +32,35 @@ use crate::{
     },
 };
 
-#[allow(unused_imports)]
-#[cfg(feature = "f16")]
-use crate::gaussian::f16::{
-    Covariance3dOpacityPacked128,
-    RotationScaleOpacityPacked128,
-    pack_f32s_to_u32,
-};
+// #[allow(unused_imports)]
+// #[cfg(feature = "f16")]
+// use crate::gaussian::f16::{
+//     Covariance3dOpacityPacked128,
+//     RotationScaleOpacityPacked128,
+//     pack_f32s_to_u32,
+// };
 
 
-#[cfg(feature = "f16")]
-#[derive(
-    Debug,
-    Default,
-    PartialEq,
-    Reflect,
-    Serialize,
-    Deserialize,
-)]
-pub struct Cloud3d {
-    pub position_visibility: Vec<PositionVisibility>,
+// #[cfg(feature = "f16")]
+// #[derive(
+//     Debug,
+//     Default,
+//     PartialEq,
+//     Reflect,
+//     Serialize,
+//     Deserialize,
+// )]
+// pub struct Cloud3d {
+//     pub position_visibility: Vec<PositionVisibility>,
 
-    pub spherical_harmonic: Vec<SphericalHarmonicCoefficients>,
+//     pub spherical_harmonic: Vec<SphericalHarmonicCoefficients>,
 
-    #[cfg(not(feature = "precompute_covariance_3d"))]
-    pub rotation_scale_opacity_packed128: Vec<RotationScaleOpacityPacked128>,
+//     #[cfg(not(feature = "precompute_covariance_3d"))]
+//     pub rotation_scale_opacity_packed128: Vec<RotationScaleOpacityPacked128>,
 
-    #[cfg(feature = "precompute_covariance_3d")]
-    pub covariance_3d_opacity_packed128: Vec<Covariance3dOpacityPacked128>,
-}
+//     #[cfg(feature = "precompute_covariance_3d")]
+//     pub covariance_3d_opacity_packed128: Vec<Covariance3dOpacityPacked128>,
+// }
 
 
 impl CommonCloud for PlanarGaussian3d {

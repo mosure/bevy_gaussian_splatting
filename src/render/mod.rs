@@ -551,22 +551,22 @@ pub fn shader_defs(
     #[cfg(feature = "buffer_texture")]
     shader_defs.push("BUFFER_TEXTURE".into());
 
-    #[cfg(feature = "f16")]
-    shader_defs.push("F16".into());
+    // #[cfg(feature = "f16")]
+    // shader_defs.push("F16".into());
 
     shader_defs.push("F32".into());
 
     #[cfg(all(feature = "packed"))]
     shader_defs.push("PACKED_F32".into());
 
-    #[cfg(all(feature = "f16", feature = "buffer_storage"))]
-    shader_defs.push("PLANAR_F16".into());
+    // #[cfg(all(feature = "f16", feature = "buffer_storage"))]
+    // shader_defs.push("PLANAR_F16".into());
 
     #[cfg(all(feature = "buffer_storage"))]
     shader_defs.push("PLANAR_F32".into());
 
-    #[cfg(all(feature = "f16", feature = "buffer_texture"))]
-    shader_defs.push("PLANAR_TEXTURE_F16".into());
+    // #[cfg(all(feature = "f16", feature = "buffer_texture"))]
+    // shader_defs.push("PLANAR_TEXTURE_F16".into());
 
     #[cfg(all(feature = "buffer_texture"))]
     shader_defs.push("PLANAR_TEXTURE_F32".into());

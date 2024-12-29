@@ -55,7 +55,7 @@ use static_assertions::assert_cfg;
 use crate::{
     gaussian::cloud::{
         Cloud,
-        CloudHandle,
+        PlanarGaussian3dHandle,
     },
     CloudSettings,
     render::{
@@ -372,7 +372,7 @@ pub fn queue_radix_bind_group(
     sorted_entries_res: Res<RenderAssets<GpuSortedEntry>>,
     gaussian_clouds: Query<(
         Entity,
-        &CloudHandle,
+        &PlanarGaussian3dHandle,
         &SortedEntriesHandle,
         &CloudSettings,
     )>,
@@ -497,7 +497,7 @@ pub fn queue_radix_bind_group(
 
 pub struct RadixSortNode {
     gaussian_clouds: QueryState<(
-        &'static CloudHandle,
+        &'static PlanarGaussian3dHandle,
         &'static CloudBindGroup,
         &'static RadixBindGroup,
     )>,

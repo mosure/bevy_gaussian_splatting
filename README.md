@@ -63,7 +63,7 @@ fn setup_gaussian_cloud(
 ) {
     // CloudSettings and Visibility are automatically added
     commands.spawn(
-        CloudHandle(asset_server.load("scenes/icecream.gcloud")),
+        PlanarGaussian3dHandle(asset_server.load("scenes/icecream.gcloud")),
     );
 
     commands.spawn(Camera3dBundle::default());
