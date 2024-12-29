@@ -24,6 +24,7 @@ use bevy::{
         Instant,
     },
 };
+use bevy_interleave::prelude::*;
 use bytemuck::{
     Pod,
     Zeroable,
@@ -32,10 +33,14 @@ use static_assertions::assert_cfg;
 
 use crate::{
     camera::GaussianCamera,
-    Cloud,
-    CloudHandle,
     CloudSettings,
-    gaussian::interface::CommonCloud,
+    gaussian::{
+        interface::CommonCloud,
+        packed::{
+            Gaussian3d,
+            Gaussian4d,
+        },
+    },
 };
 
 
@@ -147,7 +152,8 @@ impl Plugin for SortPlugin {
         app.add_systems(
             Update,
             (
-                auto_insert_sorted_entries,
+                auto_insert_sorted_entries::<Gaussian3d>,
+                auto_insert_sorted_entries::<Gaussian4d>,
                 update_sort_trigger,
                 update_sorted_entries_sizes,
             )
@@ -250,15 +256,15 @@ fn update_textures_on_change(
 
 
 #[allow(clippy::type_complexity)]
-fn auto_insert_sorted_entries(
+fn auto_insert_sorted_entries<R: PlanarStorage>(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    gaussian_clouds_res: Res<Assets<Cloud>>,
+    gaussian_clouds_res: Res<Assets<R::PlanarType>>,
     mut sorted_entries_res: ResMut<Assets<SortedEntries>>,
     gaussian_clouds: Query<
         (
             Entity,
-            &CloudHandle,
+            &R::PlanarTypeHandle,
             &CloudSettings,
         ),
         Without<SortedEntriesHandle>
@@ -272,7 +278,10 @@ fn auto_insert_sorted_entries(
     >,
     #[cfg(feature = "buffer_texture")]
     mut images: ResMut<Assets<Image>>,
-) {
+)
+where
+    R::PlanarType: CommonCloud,
+{
     let camera_count = gaussian_cameras.iter().len();
 
     if camera_count == 0 {
@@ -289,13 +298,13 @@ fn auto_insert_sorted_entries(
         //     continue;
         // }
 
-        if let Some(load_state) = asset_server.get_load_state(&gaussian_cloud_handle.0) {
+        if let Some(load_state) = asset_server.get_load_state(gaussian_cloud_handle.handle()) {
             if load_state.is_loading() {
                 continue;
             }
         }
 
-        let cloud = gaussian_clouds_res.get(gaussian_cloud_handle);
+        let cloud = gaussian_clouds_res.get(gaussian_cloud_handle.handle());
         if cloud.is_none() {
             continue;
         }

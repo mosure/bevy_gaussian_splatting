@@ -6,7 +6,7 @@ use noise::{
 };
 
 use crate::{
-    Gaussian,
+    Gaussian3d,
     Cloud,
     CloudHandle,
 };
@@ -64,7 +64,7 @@ fn apply_noise_cpu(
 
         cloud.gaussians.iter_mut()
             .for_each(|gaussian| {
-                let point = |gaussian: &Gaussian, idx| {
+                let point = |gaussian: &Gaussian3d, idx| {
                     let x = gaussian.position_visibility[0];
                     let y = gaussian.position_visibility[1];
                     let z = gaussian.position_visibility[2];

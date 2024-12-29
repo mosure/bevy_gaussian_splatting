@@ -1,6 +1,7 @@
 use std::marker::Copy;
 
 use bevy::prelude::*;
+use bevy_interleave::prelude::*;
 use bytemuck::{
     Pod,
     Zeroable,
@@ -30,6 +31,9 @@ use crate::{
     Default,
     Copy,
     PartialEq,
+    Planar,
+    ReflectInterleaved,
+    StorageBindings,
     Reflect,
     Pod,
     Zeroable,
@@ -37,12 +41,15 @@ use crate::{
     Deserialize,
 )]
 #[repr(C)]
-pub struct Gaussian {
+pub struct Gaussian3d {
     pub rotation: Rotation,
     pub position_visibility: PositionVisibility,
     pub scale_opacity: ScaleOpacity,
     pub spherical_harmonic: SphericalHarmonicCoefficients,
 }
+
+// GaussianMode::Gaussian2d /w Gaussian3d structure
+pub type Gaussian2d = Gaussian3d;
 
 
 #[derive(
@@ -51,6 +58,9 @@ pub struct Gaussian {
     Default,
     Copy,
     PartialEq,
+    Planar,
+    ReflectInterleaved,
+    StorageBindings,
     Reflect,
     Pod,
     Zeroable,

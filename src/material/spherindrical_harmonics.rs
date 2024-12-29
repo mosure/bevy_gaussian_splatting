@@ -38,7 +38,7 @@ pub const SH_4D_COEFF_COUNT: usize = pad_4(SH_4D_COEFF_COUNT_PER_CHANNEL * SH_CH
 
 pub const HALF_SH_4D_COEFF_COUNT: usize = pad_4(SH_4D_COEFF_COUNT / 2);
 
-// TODO: calculate POD_PLANE_COUNT for f16 and f32 based on a switch for HALF_SH_4D_COEFF_COUNT vs. SH_4D_COEFF_COUNT
+// TODO: calculate POD_PLANE_COUNT for both f16 and f32
 pub const MAX_POD_U32_ARRAY_SIZE: usize = 32;
 pub const POD_ARRAY_SIZE: usize = gcd(SH_4D_COEFF_COUNT, MAX_POD_U32_ARRAY_SIZE);
 pub const POD_PLANE_COUNT: usize = SH_4D_COEFF_COUNT / POD_ARRAY_SIZE;

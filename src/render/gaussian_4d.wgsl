@@ -15,14 +15,17 @@ struct DecomposedGaussian4d {
 }
 
 
-fn compute_cov3d_conditional(
+fn conditional_cov3d(
     position: vec3<f32>,
+    index: u32,
+) -> DecomposedGaussian4d {
+    // TODO: get from bindings
     scale: vec4<f32>,
     rotation: vec4<f32>,
     rotation_r: vec4<f32>,
-) -> DecomposedGaussian4d {
-    // let dt = globals.delta_time;
-    // TODO: timestamp - per_gaussian time
+    gaussian_ts: f32,
+
+    let dt = gaussian_ts - gaussian_uniforms.time;
 
     let S = mat4x4<f32>(
         gaussian_uniforms.global_scale * scale.x, 0.0, 0.0, 0.0,
@@ -96,4 +99,17 @@ fn compute_cov3d_conditional(
         opacity_modifier,
         mask,
     );
+}
+
+
+fn compute_cov2d_4dgs(
+    position: vec3<f32>,
+    index: u32,
+) -> vec3<f32> {
+    let gaussian_4d = conditional_cov3d(
+        position,
+        index,
+    );
+
+    return cov2d(position, cov3d);
 }

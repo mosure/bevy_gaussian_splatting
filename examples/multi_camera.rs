@@ -16,10 +16,10 @@ use bevy_panorbit_camera::{
 };
 
 use bevy_gaussian_splatting::{
-    Gaussian,
+    Gaussian3d,
     GaussianCamera,
-    Cloud,
-    CloudHandle,
+    PlanarGaussian3d,
+    PlanarGaussian3dHandle,
     CloudSettings,
     GaussianMode,
     GaussianSplattingPlugin,
@@ -81,7 +81,7 @@ fn multi_camera_app() {
 pub fn setup_multi_camera(
     mut commands: Commands,
     _asset_server: Res<AssetServer>,
-    mut gaussian_assets: ResMut<Assets<Cloud>>,
+    mut gaussian_assets: ResMut<Assets<PlanarGaussian3d>>,
 ) {
     let grid_size_x = 10;
     let grid_size_y = 10;
@@ -148,7 +148,7 @@ pub fn setup_multi_camera(
                 .try_into()
                 .unwrap();
 
-            let gaussian = Gaussian {
+            let gaussian = Gaussian3d {
                 position_visibility: position.into(),
                 rotation: Rotation {
                     rotation,
@@ -162,8 +162,8 @@ pub fn setup_multi_camera(
 
     commands.spawn((
         Transform::from_translation(Vec3::new(spacing, spacing, 0.0)),
-        CloudHandle(
-            gaussian_assets.add(red_gaussians.into())
+        PlanarGaussian3dHandle(
+            gaussian_assets.add(red_gaussians)
         ),
         CloudSettings {
             aabb: true,

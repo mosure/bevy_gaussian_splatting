@@ -46,6 +46,23 @@ pub enum GaussianMode {
     Gaussian4d,
 }
 
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    Hash,
+    PartialEq,
+    Reflect,
+)]
+pub enum PlaybackMode {
+    #[default]
+    Forward,
+    Reverse,
+    Still,
+}
+
 
 #[derive(
     Clone,
@@ -77,8 +94,12 @@ pub struct CloudSettings {
     pub sort_mode: SortMode,
     pub draw_mode: DrawMode,
     pub gaussian_mode: GaussianMode,
+    pub playback_mode: PlaybackMode,
     pub rasterize_mode: RasterizeMode,
-    // TODO: time, time scale, playback mode
+    pub time: f32,
+    pub time_scale: f32,
+    pub time_start: f32,
+    pub time_stop: f32,
 }
 
 impl Default for CloudSettings {
@@ -93,6 +114,11 @@ impl Default for CloudSettings {
             draw_mode: DrawMode::default(),
             gaussian_mode: GaussianMode::default(),
             rasterize_mode: RasterizeMode::default(),
+            playback_mode: PlaybackMode::default(),
+            time: 0.0,
+            time_scale: 1.0,
+            time_start: 0.0,
+            time_stop: 1.0,
         }
     }
 }

@@ -69,6 +69,7 @@ use bevy::{
         view::ViewUniformOffset,
     },
 };
+use bevy_interleave::prelude::*;
 use bytemuck::{
     Pod,
     Zeroable,
@@ -81,12 +82,7 @@ use serde::{
 use crate::{
     camera::GaussianCamera,
     render::{
-        CloudBindGroup,
-        CloudPipeline,
-        CloudPipelineKey,
-        GaussianUniformBindGroups,
-        GaussianViewBindGroup,
-        shader_defs,
+        self, shader_defs, CloudPipeline, CloudPipelineKey, GaussianUniformBindGroups, GaussianViewBindGroup
     },
 };
 
@@ -97,11 +93,53 @@ const PARTICLE_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(2345534534
 pub struct MorphLabel;
 
 
-#[derive(Default)]
-pub struct ParticleBehaviorPlugin;
+pub struct ParticleBehaviorPlugin<R: PlanarStorage> {
+    phantom: std::marker::PhantomData<R>,
+}
+impl<R: PlanarStorage> Default for ParticleBehaviorPlugin<R> {
+    fn default() -> Self {
+        Self {
+            phantom: std::marker::PhantomData,
+        }
+    }
+}
 
-impl Plugin for ParticleBehaviorPlugin {
+impl<R: PlanarStorage> Plugin for ParticleBehaviorPlugin<R> {
     fn build(&self, app: &mut App) {
+        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+            render_app
+                .add_render_graph_node::<ParticleBehaviorNode<R>>(
+                    Core3d,
+                    MorphLabel,
+                );
+
+            // TODO: avoid duplicating the extract system
+            render_app
+                .add_systems(
+                    Render,
+                    (
+                        queue_particle_behavior_bind_group::<R>.in_set(RenderSet::Queue),
+                    ),
+                );
+        }
+
+        if app.is_plugin_added::<RenderAssetPlugin::<GpuParticleBehaviorBuffers>>() {
+            return;
+        }
+
+        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+            render_app.add_render_graph_edge(
+                Core3d,
+                MorphLabel,
+                Node3d::Prepass,
+            );
+        }
+
+        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+            render_app
+                .add_systems(ExtractSchedule, extract_particle_behaviors);
+        }
+
         load_internal_asset!(
             app,
             PARTICLE_SHADER_HANDLE,
@@ -115,34 +153,12 @@ impl Plugin for ParticleBehaviorPlugin {
         app.init_asset::<ParticleBehaviors>();
         app.register_asset_reflect::<ParticleBehaviors>();
         app.add_plugins(RenderAssetPlugin::<GpuParticleBehaviorBuffers>::default());
-
-        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app
-                .add_render_graph_node::<ParticleBehaviorNode>(
-                    Core3d,
-                    MorphLabel,
-                )
-                .add_render_graph_edge(
-                    Core3d,
-                    MorphLabel,
-                    Node3d::Prepass,
-                );
-
-            render_app
-                .add_systems(ExtractSchedule, extract_particle_behaviors)
-                .add_systems(
-                    Render,
-                    (
-                        queue_particle_behavior_bind_group.in_set(RenderSet::Queue),
-                    ),
-                );
-        }
     }
 
     fn finish(&self, app: &mut App) {
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
-                .init_resource::<ParticleBehaviorPipeline>();
+                .init_resource::<ParticleBehaviorPipeline<R>>();
         }
     }
 }
@@ -208,15 +224,16 @@ impl RenderAsset for GpuParticleBehaviorBuffers {
 
 
 #[derive(Resource)]
-pub struct ParticleBehaviorPipeline {
+pub struct ParticleBehaviorPipeline<R: PlanarStorage> {
     pub particle_behavior_layout: BindGroupLayout,
     pub particle_behavior_pipeline: CachedComputePipelineId,
+    phantom: std::marker::PhantomData<R>,
 }
 
-impl FromWorld for ParticleBehaviorPipeline {
+impl<R: PlanarStorage> FromWorld for ParticleBehaviorPipeline<R> {
     fn from_world(render_world: &mut World) -> Self {
         let render_device = render_world.resource::<RenderDevice>();
-        let gaussian_cloud_pipeline = render_world.resource::<CloudPipeline>();
+        let gaussian_cloud_pipeline = render_world.resource::<CloudPipeline<R>>();
 
         let particle_behavior_layout = render_device.create_bind_group_layout(
             Some("gaussian_cloud_particle_behavior_layout"),
@@ -252,9 +269,10 @@ impl FromWorld for ParticleBehaviorPipeline {
             zero_initialize_workgroup_memory: true,
         });
 
-        ParticleBehaviorPipeline {
+        Self {
             particle_behavior_layout,
             particle_behavior_pipeline,
+            phantom: std::marker::PhantomData,
         }
     }
 }
@@ -266,9 +284,9 @@ pub struct ParticleBehaviorBindGroup {
     pub particle_behavior_bindgroup: BindGroup,
 }
 
-pub fn queue_particle_behavior_bind_group(
+pub fn queue_particle_behavior_bind_group<R: PlanarStorage>(
     mut commands: Commands,
-    particle_behavior_pipeline: Res<ParticleBehaviorPipeline>,
+    particle_behavior_pipeline: Res<ParticleBehaviorPipeline<R>>,
     render_device: Res<RenderDevice>,
     asset_server: Res<AssetServer>,
     particle_behaviors_res: Res<RenderAssets<GpuParticleBehaviorBuffers>>,
@@ -313,9 +331,9 @@ pub fn queue_particle_behavior_bind_group(
 
 
 
-pub struct ParticleBehaviorNode {
+pub struct ParticleBehaviorNode<R: PlanarStorage> {
     gaussian_clouds: QueryState<(
-        &'static CloudBindGroup,
+        &'static PlanarStorageBindGroup<R>,
         &'static ParticleBehaviorsHandle,
         &'static ParticleBehaviorBindGroup,
     )>,
@@ -325,22 +343,24 @@ pub struct ParticleBehaviorNode {
         &'static GaussianViewBindGroup,
         &'static ViewUniformOffset,
     )>,
+    phantom: std::marker::PhantomData<R>,
 }
 
 
-impl FromWorld for ParticleBehaviorNode {
+impl<R: PlanarStorage> FromWorld for ParticleBehaviorNode<R> {
     fn from_world(world: &mut World) -> Self {
         Self {
             gaussian_clouds: world.query(),
             initialized: false,
             view_bind_group: world.query(),
+            phantom: std::marker::PhantomData,
         }
     }
 }
 
-impl Node for ParticleBehaviorNode {
+impl<R: PlanarStorage> Node for ParticleBehaviorNode<R> {
     fn update(&mut self, world: &mut World) {
-        let pipeline = world.resource::<ParticleBehaviorPipeline>();
+        let pipeline = world.resource::<ParticleBehaviorPipeline<R>>();
         let pipeline_cache = world.resource::<PipelineCache>();
 
         if !self.initialized {
@@ -371,7 +391,7 @@ impl Node for ParticleBehaviorNode {
         }
 
         let pipeline_cache = world.resource::<PipelineCache>();
-        let pipeline = world.resource::<ParticleBehaviorPipeline>();
+        let pipeline = world.resource::<ParticleBehaviorPipeline<R>>();
 
         let command_encoder = render_context.command_encoder();
 
@@ -381,7 +401,7 @@ impl Node for ParticleBehaviorNode {
             view_uniform_offset,
         ) in self.view_bind_group.iter_manual(world) {
             for (
-                cloud_bind_group,
+                planar_storage_bind_group,
                 behaviors_handle,
                 particle_behavior_bind_group,
             ) in self.gaussian_clouds.iter_manual(world) {
@@ -403,7 +423,7 @@ impl Node for ParticleBehaviorNode {
                     );
                     pass.set_bind_group(
                         2,
-                        &cloud_bind_group.cloud_bind_group,
+                        &planar_storage_bind_group.bind_group,
                         &[]
                     );
                     pass.set_bind_group(

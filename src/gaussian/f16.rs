@@ -22,7 +22,7 @@ use crate::gaussian::{
         ScaleOpacity,
     },
     packed::{
-        Gaussian,
+        Gaussian3d,
         Gaussian4d,
     },
 };
@@ -50,7 +50,7 @@ pub struct RotationScaleOpacityPacked128 {
 }
 
 impl RotationScaleOpacityPacked128 {
-    pub fn from_gaussian(gaussian: &Gaussian) -> Self {
+    pub fn from_gaussian(gaussian: &Gaussian3d) -> Self {
         Self {
             rotation: [
                 pack_f32s_to_u32(gaussian.rotation.rotation[0], gaussian.rotation.rotation[1]),
@@ -153,7 +153,7 @@ pub struct Covariance3dOpacityPacked128 {
 }
 
 impl Covariance3dOpacityPacked128 {
-    pub fn from_gaussian(gaussian: &Gaussian) -> Self {
+    pub fn from_gaussian(gaussian: &Gaussian3d) -> Self {
         let cov3d: Covariance3dOpacity = gaussian.into();
         let cov3d = cov3d.cov3d;
 

@@ -13,10 +13,11 @@ use bevy_args::BevyArgsPlugin;
 
 use bevy_gaussian_splatting::{
     GaussianCamera,
-    Cloud,
-    CloudHandle,
+    PlanarGaussian3d,
+    PlanarGaussian3dHandle,
     GaussianSplattingPlugin,
-    random_gaussians,
+    gaussian::interface::TestCloud,
+    random_gaussians_3d,
     utils::GaussianSplattingViewer,
 };
 
@@ -365,22 +366,22 @@ mod frame_capture {
 fn setup_gaussian_cloud(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    gaussian_splatting_viewer: Res<GaussianSplattingViewer>,
-    mut gaussian_assets: ResMut<Assets<Cloud>>,
+    args: Res<GaussianSplattingViewer>,
+    mut gaussian_assets: ResMut<Assets<PlanarGaussian3d>>,
     mut scene_controller: ResMut<frame_capture::scene::SceneController>,
     mut images: ResMut<Assets<Image>>,
     render_device: Res<RenderDevice>,
 ) {
-    let cloud: Handle<Cloud>;
+    let cloud: Handle<PlanarGaussian3d>;
 
-    if gaussian_splatting_viewer.gaussian_count > 0 {
-        println!("generating {} gaussians", gaussian_splatting_viewer.gaussian_count);
-        cloud = gaussian_assets.add(random_gaussians(gaussian_splatting_viewer.gaussian_count));
-    } else if !gaussian_splatting_viewer.input_file.is_empty() {
-        println!("loading {}", gaussian_splatting_viewer.input_file);
-        cloud = asset_server.load(&gaussian_splatting_viewer.input_file);
+    if args.gaussian_count > 0 {
+        println!("generating {} gaussians", args.gaussian_count);
+        cloud = gaussian_assets.add(random_gaussians_3d(args.gaussian_count));
+    } else if !args.input_file.is_empty() {
+        println!("loading {}", args.input_file);
+        cloud = asset_server.load(&args.input_file);
     } else {
-        cloud = gaussian_assets.add(Cloud::test_model());
+        cloud = gaussian_assets.add(PlanarGaussian3d::test_model());
     }
 
     let render_target = frame_capture::scene::setup_render_target(
@@ -394,7 +395,7 @@ fn setup_gaussian_cloud(
 
 
     commands.spawn((
-        CloudHandle(cloud),
+        PlanarGaussian3dHandle(cloud),
         Name::new("gaussian_cloud"),
     ));
 

@@ -22,13 +22,7 @@ use bevy::{
             GlobalsBuffer,
             GlobalsUniform,
         },
-        render_asset::{
-            PrepareAssetError,
-            RenderAsset,
-            RenderAssetPlugin,
-            RenderAssetUsages,
-            RenderAssets,
-        },
+        render_asset::RenderAssets,
         render_phase::{
             AddRenderCommand,
             DrawFunctions,
@@ -55,21 +49,15 @@ use bevy::{
         sync_world::RenderEntity,
     },
 };
+use bevy_interleave::prelude::*;
 
 use crate::{
     camera::GaussianCamera,
-    gaussian::{
-        cloud::{
-            Cloud,
-            CloudHandle,
-        },
-        interface::CommonCloud,
-        settings::{
-            DrawMode,
-            RasterizeMode,
-            CloudSettings,
-            GaussianMode,
-        },
+    gaussian::settings::{
+        DrawMode,
+        RasterizeMode,
+        CloudSettings,
+        GaussianMode,
     },
     material::{
         spherical_harmonics::{
@@ -78,9 +66,7 @@ use crate::{
             SH_DEGREE,
             SH_VEC4_PLANES,
         },
-        spherindrical_harmonics::{
-            SH_4D_DEGREE_TIME,
-        },
+        spherindrical_harmonics::SH_4D_DEGREE_TIME,
     },
     morph::MorphPlugin,
     sort::{
@@ -114,11 +100,42 @@ const TEXTURE_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(26345735);
 const TRANSFORM_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(734523534);
 
 
-#[derive(Default)]
-pub struct RenderPipelinePlugin;
+pub struct RenderPipelinePlugin<R: PlanarStorage> {
+    _phantom: std::marker::PhantomData<R>,
+}
 
-impl Plugin for RenderPipelinePlugin {
+impl<R: PlanarStorage> Default for RenderPipelinePlugin<R> {
+    fn default() -> Self {
+        Self {
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<R: PlanarStorage> Plugin for RenderPipelinePlugin<R> {
     fn build(&self, app: &mut App) {
+        app.add_plugins(MorphPlugin::<R>::default());
+
+        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+            render_app
+                .add_render_command::<Transparent3d, DrawGaussians<R>>()
+                .init_resource::<GaussianUniformBindGroups>()
+                .add_systems(ExtractSchedule, extract_gaussians::<R>)
+                .add_systems(
+                    Render,
+                    (
+                        queue_gaussian_bind_group::<R>.in_set(RenderSet::PrepareBindGroups),
+                        queue_gaussian_view_bind_groups::<R>.in_set(RenderSet::PrepareBindGroups),
+                        queue_gaussians::<R>.in_set(RenderSet::Queue),
+                    ),
+                );
+        }
+
+        // TODO: refactor common resources into a common plugin
+        if app.is_plugin_added::<SortPlugin>() {
+            return;
+        }
+
         load_internal_asset!(
             app,
             BINDINGS_SHADER_HANDLE,
@@ -189,133 +206,57 @@ impl Plugin for RenderPipelinePlugin {
             Shader::from_wgsl
         );
 
-        app.add_plugins(RenderAssetPlugin::<GpuCloud>::default());
         app.add_plugins(UniformComponentPlugin::<CloudUniform>::default());
-
-        app.add_plugins((
-            MorphPlugin,
-            SortPlugin,
-        ));
+        app.add_plugins(SortPlugin);
 
         #[cfg(feature = "buffer_texture")]
         app.add_plugins(texture::BufferTexturePlugin);
-
-        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app
-                .add_render_command::<Transparent3d, DrawGaussians>()
-                .init_resource::<GaussianUniformBindGroups>()
-                .add_systems(ExtractSchedule, extract_gaussians)
-                .add_systems(
-                    Render,
-                    (
-                        queue_gaussian_bind_group.in_set(RenderSet::PrepareBindGroups),
-                        queue_gaussian_view_bind_groups.in_set(RenderSet::PrepareBindGroups),
-                        queue_gaussians.in_set(RenderSet::Queue),
-                    ),
-                );
-        }
     }
 
     fn finish(&self, app: &mut App) {
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
-                .init_resource::<CloudPipeline>()
-                .init_resource::<SpecializedRenderPipelines<CloudPipeline>>();
+                .init_resource::<CloudPipeline<R>>()
+                .init_resource::<SpecializedRenderPipelines<CloudPipeline<R>>>();
         }
     }
 }
 
 
 #[derive(Bundle)]
-pub struct GpuGaussianSplattingBundle {
+pub struct GpuCloudBundle<R: PlanarStorage> {
     pub settings: CloudSettings,
     pub settings_uniform: CloudUniform,
     pub sorted_entries: SortedEntriesHandle,
-    pub cloud_handle: CloudHandle,
-}
-
-#[derive(Debug, Clone)]
-pub struct GpuCloud {
-    #[cfg(feature = "packed")]
-    pub packed: packed::PackedBuffers,
-    #[cfg(feature = "buffer_storage")]
-    pub planar: planar::PlanarBuffers,
-
-    pub count: usize,
-
-    pub draw_indirect_buffer: Buffer,
-
-    #[cfg(feature = "debug_gpu")]
-    pub debug_gpu: Cloud,
-}
-impl RenderAsset for GpuCloud {
-    type SourceAsset = Cloud;
-    type Param = SRes<RenderDevice>;
-
-    fn prepare_asset(
-        source: Self::SourceAsset,
-        render_device: &mut SystemParamItem<Self::Param>,
-    ) -> Result<Self, PrepareAssetError<Self::SourceAsset>> {
-        let count = source.len();
-
-        let draw_indirect_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
-            label: Some("draw indirect buffer"),
-            contents: wgpu::util::DrawIndirectArgs {
-                vertex_count: 4,
-                instance_count: count as u32,
-                first_vertex: 0,
-                first_instance: 0,
-            }.as_bytes(),
-            usage: BufferUsages::INDIRECT | BufferUsages::COPY_DST | BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-        });
-
-        // TODO: (extract Cloud, TextureBuffers) when feature buffer_texture is enabled
-
-        Ok(GpuCloud {
-            count,
-            draw_indirect_buffer,
-
-            #[cfg(feature = "packed")]
-            packed: packed::prepare_cloud(render_device, &source),
-            #[cfg(feature = "buffer_storage")]
-            planar: source.prepare_cloud(render_device),
-
-            #[cfg(feature = "debug_gpu")]
-            debug_gpu: gaussian_cloud,
-        })
-    }
-
-    fn asset_usage(_: &Self::SourceAsset) -> RenderAssetUsages {
-        RenderAssetUsages::default()
-    }
+    pub cloud_handle: R::PlanarTypeHandle,
 }
 
 #[cfg(feature = "buffer_storage")]
-type GpuGaussianBundleQuery = (
+type GpuCloudBundleQuery<R: PlanarStorage> = (
     Entity,
-    &'static CloudHandle,
+    &'static R::PlanarTypeHandle,
     &'static SortedEntriesHandle,
     &'static CloudSettings,
     (),
 );
 
 #[cfg(feature = "buffer_texture")]
-type GpuGaussianBundleQuery = (
+type GpuCloudBundleQuery<R: PlanarTexture> = (
     Entity,
-    &'static CloudHandle,
+    &'static R::PlanarTypeHandle,
     &'static SortedEntriesHandle,
     &'static CloudSettings,
     &'static texture::GpuTextureBuffers,
 );
 
 #[allow(clippy::too_many_arguments)]
-fn queue_gaussians(
+fn queue_gaussians<R: PlanarStorage>(
     gaussian_cloud_uniform: Res<ComponentUniforms<CloudUniform>>,
     transparent_3d_draw_functions: Res<DrawFunctions<Transparent3d>>,
-    custom_pipeline: Res<CloudPipeline>,
-    mut pipelines: ResMut<SpecializedRenderPipelines<CloudPipeline>>,
+    custom_pipeline: Res<CloudPipeline<R>>,
+    mut pipelines: ResMut<SpecializedRenderPipelines<CloudPipeline<R>>>,
     pipeline_cache: Res<PipelineCache>,
-    gaussian_clouds: Res<RenderAssets<GpuCloud>>,
+    gaussian_clouds: Res<RenderAssets<R::GpuPlanarType>>,
     sorted_entries: Res<RenderAssets<GpuSortedEntry>>,
     mut transparent_render_phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
     mut views: Query<
@@ -327,7 +268,7 @@ fn queue_gaussians(
             Option<&Msaa>,
         ),
     >,
-    gaussian_splatting_bundles: Query<GpuGaussianBundleQuery>,
+    gaussian_splatting_bundles: Query<GpuCloudBundleQuery<R>>,
 ) {
     let warmup = views.iter().any(|(_, _, camera, _, _)| camera.warmup);
     if warmup {
@@ -339,7 +280,7 @@ fn queue_gaussians(
         return;
     };
 
-    let draw_custom = transparent_3d_draw_functions.read().id::<DrawGaussians>();
+    let draw_custom = transparent_3d_draw_functions.read().id::<DrawGaussians<R>>();
 
     for (
         view_entity,
@@ -359,7 +300,7 @@ fn queue_gaussians(
             settings,
             _,
         ) in &gaussian_splatting_bundles {
-            if gaussian_clouds.get(cloud_handle).is_none() {
+            if gaussian_clouds.get(cloud_handle.handle()).is_none() {
                 return;
             }
 
@@ -385,7 +326,10 @@ fn queue_gaussians(
             // // TODO: distance to gaussian cloud centroid
             // let rangefinder = view.rangefinder3d();
 
-            for (render_entity, visible_entity) in visible_entities.iter::<With<CloudHandle>>() {
+            for (
+                render_entity,
+                visible_entity,
+            ) in visible_entities.iter::<With<R::PlanarTypeHandle>>() {
                 transparent_phase.add(Transparent3d {
                     entity: (*render_entity, *visible_entity),
                     draw_function: draw_custom,
@@ -402,16 +346,19 @@ fn queue_gaussians(
 }
 
 
+// TODO: pipeline trait
+// TODO: support extendions /w ComputePipelineDescriptor builder
 #[derive(Resource)]
-pub struct CloudPipeline {
+pub struct CloudPipeline<R: PlanarStorage> {
     shader: Handle<Shader>,
     pub gaussian_cloud_layout: BindGroupLayout,
     pub gaussian_uniform_layout: BindGroupLayout,
     pub view_layout: BindGroupLayout,
     pub sorted_layout: BindGroupLayout,
+    phantom: std::marker::PhantomData<R>,
 }
 
-impl FromWorld for CloudPipeline {
+impl<R: PlanarStorage> FromWorld for CloudPipeline<R> {
     fn from_world(render_world: &mut World) -> Self {
         let render_device = render_world.resource::<RenderDevice>();
 
@@ -464,12 +411,7 @@ impl FromWorld for CloudPipeline {
         #[cfg(feature = "morph_particles")]
         let read_only = false;
 
-        #[cfg(feature = "packed")]
-        let gaussian_cloud_layout = packed::get_bind_group_layout(render_device, read_only);
-        #[cfg(all(feature = "buffer_storage", not(feature = "packed")))]
-        let gaussian_cloud_layout = planar::get_bind_group_layout(render_device, read_only);
-        #[cfg(feature = "buffer_texture")]
-        let gaussian_cloud_layout = texture::get_bind_group_layout(render_device, read_only);
+        let gaussian_cloud_layout = R::GpuPlanarType::bind_group_layout(render_device, read_only);
 
         #[cfg(feature = "buffer_storage")]
         let sorted_layout = render_device.create_bind_group_layout(
@@ -490,12 +432,13 @@ impl FromWorld for CloudPipeline {
         #[cfg(feature = "buffer_texture")]
         let sorted_layout = texture::get_sorted_bind_group_layout(render_device);
 
-        CloudPipeline {
+        Self {
             gaussian_cloud_layout,
             gaussian_uniform_layout,
             view_layout,
             shader: GAUSSIAN_SHADER_HANDLE,
             sorted_layout,
+            phantom: std::marker::PhantomData,
         }
     }
 }
@@ -667,7 +610,7 @@ pub struct CloudPipelineKey {
     pub hdr: bool,
 }
 
-impl SpecializedRenderPipeline for CloudPipeline {
+impl<R: PlanarStorage> SpecializedRenderPipeline for CloudPipeline<R> {
     type Key = CloudPipelineKey;
 
     fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
@@ -739,11 +682,11 @@ impl SpecializedRenderPipeline for CloudPipeline {
     }
 }
 
-type DrawGaussians = (
+type DrawGaussians<R: PlanarStorage> = (
     SetItemPipeline,
     SetGaussianViewBindGroup<0>,
     SetGaussianUniformBindGroup<1>,
-    DrawGaussianInstanced,
+    DrawGaussianInstanced<R>,
 );
 
 
@@ -754,19 +697,22 @@ pub struct CloudUniform {
     pub global_scale: f32,
     pub count: u32,
     pub count_root_ceil: u32,
+    pub time: f32,
+    pub time_start: f32,
+    pub time_stop: f32,
 }
 
 #[allow(clippy::type_complexity)]
-pub fn extract_gaussians(
+pub fn extract_gaussians<R: PlanarStorage>(
     mut commands: Commands,
     mut prev_commands_len: Local<usize>,
     asset_server: Res<AssetServer>,
-    gaussian_cloud_res: Res<RenderAssets<GpuCloud>>,
+    gaussian_cloud_res: Res<RenderAssets<R::GpuPlanarType>>,
     gaussians_query: Extract<
         Query<(
             RenderEntity,
             &ViewVisibility,
-            &CloudHandle,
+            &R::PlanarTypeHandle,
             &SortedEntriesHandle,
             &CloudSettings,
             &GlobalTransform,
@@ -788,29 +734,32 @@ pub fn extract_gaussians(
             continue;
         }
 
-        if let Some(load_state) = asset_server.get_load_state(&cloud_handle.0) {
+        if let Some(load_state) = asset_server.get_load_state(cloud_handle.handle()) {
             if load_state.is_loading() {
                 continue;
             }
         }
 
-        if gaussian_cloud_res.get(cloud_handle).is_none() {
+        if gaussian_cloud_res.get(cloud_handle.handle()).is_none() {
             continue;
         }
 
-        let cloud = gaussian_cloud_res.get(cloud_handle).unwrap();
+        let cloud = gaussian_cloud_res.get(cloud_handle.handle()).unwrap();
 
         let settings_uniform = CloudUniform {
             transform: transform.compute_matrix(),
             global_opacity: settings.global_opacity,
             global_scale: settings.global_scale,
-            count: cloud.count as u32,
-            count_root_ceil: (cloud.count as f32).sqrt().ceil() as u32,
+            count: cloud.len() as u32,
+            count_root_ceil: (cloud.len() as f32).sqrt().ceil() as u32,
+            time: settings.time,
+            time_start: settings.time_start,
+            time_stop: settings.time_stop,
         };
 
         commands_list.push((
             entity,
-            GpuGaussianSplattingBundle {
+            GpuCloudBundle::<R> {
                 settings: settings.clone(),
                 settings_uniform,
                 sorted_entries: sorted_entries.clone(),
@@ -829,22 +778,21 @@ pub struct GaussianUniformBindGroups {
 }
 
 #[derive(Component)]
-pub struct CloudBindGroup {
-    pub cloud_bind_group: BindGroup,
+pub struct SortBindGroup {
     pub sorted_bind_group: BindGroup,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn queue_gaussian_bind_group(
+fn queue_gaussian_bind_group<R: PlanarStorage>(
     mut commands: Commands,
     mut groups: ResMut<GaussianUniformBindGroups>,
-    gaussian_cloud_pipeline: Res<CloudPipeline>,
+    gaussian_cloud_pipeline: Res<CloudPipeline<R>>,
     render_device: Res<RenderDevice>,
     gaussian_uniforms: Res<ComponentUniforms<CloudUniform>>,
     asset_server: Res<AssetServer>,
-    gaussian_cloud_res: Res<RenderAssets<GpuCloud>>,
+    gaussian_cloud_res: Res<RenderAssets<R::GpuPlanarType>>,
     sorted_entries_res: Res<RenderAssets<GpuSortedEntry>>,
-    gaussian_clouds: Query<GpuGaussianBundleQuery>,
+    gaussian_clouds: Query<GpuCloudBundleQuery<R>>,
     #[cfg(feature = "buffer_texture")]
     gpu_images: Res<RenderAssets<bevy::render::texture::GpuImage>>,
 ) {
@@ -877,13 +825,13 @@ fn queue_gaussian_bind_group(
         let texture_buffers = query.4;
 
         // TODO: add asset loading indicator (and maybe streamed loading)
-        if let Some(load_state) = asset_server.get_load_state(&cloud_handle.0) {
+        if let Some(load_state) = asset_server.get_load_state(cloud_handle.handle()) {
             if load_state.is_loading() {
                 continue;
             }
         }
 
-        if gaussian_cloud_res.get(cloud_handle).is_none() {
+        if gaussian_cloud_res.get(cloud_handle.handle()).is_none() {
             continue;
         }
 
@@ -898,16 +846,9 @@ fn queue_gaussian_bind_group(
         }
 
         #[cfg(not(feature = "buffer_texture"))]
-        let cloud: &GpuCloud = gaussian_cloud_res.get(cloud_handle).unwrap();
+        let cloud = gaussian_cloud_res.get(cloud_handle.handle()).unwrap();
 
         let sorted_entries = sorted_entries_res.get(&sorted_entries_handle.0).unwrap();
-
-        #[cfg(feature = "packed")]
-        let cloud_bind_group = packed::get_bind_group(&render_device, &gaussian_cloud_pipeline, cloud);
-        #[cfg(all(feature = "buffer_storage", not(feature = "packed")))]
-        let cloud_bind_group = planar::get_bind_group(&render_device, &gaussian_cloud_pipeline, cloud);
-        #[cfg(feature = "buffer_texture")]
-        let cloud_bind_group = texture_buffers.bind_group.clone();
 
         #[cfg(feature = "buffer_storage")]
         let sorted_bind_group = render_device.create_bind_group(
@@ -919,7 +860,7 @@ fn queue_gaussian_bind_group(
                     resource: BindingResource::Buffer(BufferBinding {
                         buffer: &sorted_entries.sorted_entry_buffer,
                         offset: 0,
-                        size: BufferSize::new((cloud.count * std::mem::size_of::<SortEntry>()) as u64),
+                        size: BufferSize::new((cloud.len() * std::mem::size_of::<SortEntry>()) as u64),
                     }),
                 },
             ],
@@ -938,8 +879,7 @@ fn queue_gaussian_bind_group(
             ],
         );
 
-        commands.entity(entity).insert(CloudBindGroup {
-            cloud_bind_group,
+        commands.entity(entity).insert(SortBindGroup {
             sorted_bind_group,
         });
     }
@@ -950,10 +890,12 @@ pub struct GaussianViewBindGroup {
     pub value: BindGroup,
 }
 
-pub fn queue_gaussian_view_bind_groups(
+// TODO: move to gaussian camera module
+// TODO: remove cloud pipeline dependency by separating view layout
+pub fn queue_gaussian_view_bind_groups<R: PlanarStorage>(
     mut commands: Commands,
     render_device: Res<RenderDevice>,
-    gaussian_cloud_pipeline: Res<CloudPipeline>,
+    gaussian_cloud_pipeline: Res<CloudPipeline<R>>,
     view_uniforms: Res<ViewUniforms>,
     views: Query<
         (
@@ -1066,13 +1008,25 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianUniformBindGr
     }
 }
 
-pub struct DrawGaussianInstanced;
-impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
-    type Param = SRes<RenderAssets<GpuCloud>>;
+pub struct DrawGaussianInstanced<R: PlanarStorage> {
+    phantom: std::marker::PhantomData<R>,
+}
+
+impl<R: PlanarStorage> Default for DrawGaussianInstanced<R> {
+    fn default() -> Self {
+        Self {
+            phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<P: PhaseItem, R: PlanarStorage> RenderCommand<P> for DrawGaussianInstanced<R> {
+    type Param = SRes<RenderAssets<R::GpuPlanarType>>;
     type ViewQuery = Read<SortTrigger>;
     type ItemQuery = (
-        Read<CloudHandle>,
-        Read<CloudBindGroup>,
+        Read<R::PlanarTypeHandle>,
+        Read<PlanarStorageBindGroup<R>>,
+        Read<SortBindGroup>,
     );
 
     #[inline]
@@ -1080,31 +1034,36 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
         _item: &P,
         view: &'w SortTrigger,
         entity: Option<(
-            &'w CloudHandle,
-            &'w CloudBindGroup,
+            &'w R::PlanarTypeHandle,
+            &'w PlanarStorageBindGroup<R>,
+            &'w SortBindGroup,
         )>,
         gaussian_clouds: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
-        let (handle, bind_groups) = entity.expect("gaussian cloud entity not found");
+        let (
+            handle,
+            planar_bind_groups,
+            sort_bind_groups,
+        ) = entity.expect("gaussian cloud entity not found");
 
-        let gpu_gaussian_cloud = match gaussian_clouds.into_inner().get(handle) {
+        let gpu_gaussian_cloud = match gaussian_clouds.into_inner().get(handle.handle()) {
             Some(gpu_gaussian_cloud) => gpu_gaussian_cloud,
             None => return RenderCommandResult::Skip,
         };
 
         pass.set_bind_group(
             2,
-            &bind_groups.cloud_bind_group,
+            &planar_bind_groups.bind_group,
             &[],
         );
 
         // TODO: align dynamic offset to `min_storage_buffer_offset_alignment`
         pass.set_bind_group(
             3,
-            &bind_groups.sorted_bind_group,
+            &sort_bind_groups.sorted_bind_group,
             &[
-                view.camera_index as u32 * std::mem::size_of::<SortEntry>() as u32 * gpu_gaussian_cloud.count as u32,
+                view.camera_index as u32 * std::mem::size_of::<SortEntry>() as u32 * gpu_gaussian_cloud.len() as u32,
             ],
         );
 
@@ -1112,7 +1071,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGaussianInstanced {
         pass.draw(0..4, 0..gpu_gaussian_cloud.count as u32);
 
         #[cfg(not(feature = "webgl2"))]
-        pass.draw_indirect(&gpu_gaussian_cloud.draw_indirect_buffer, 0);
+        pass.draw_indirect(&gpu_gaussian_cloud.draw_indirect_buffer(), 0);
 
         RenderCommandResult::Success
     }

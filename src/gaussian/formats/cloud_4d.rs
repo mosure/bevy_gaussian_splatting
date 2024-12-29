@@ -3,20 +3,10 @@ use rand::{
     Rng,
 };
 
-use bevy::prelude::*;
-use serde::{
-    Deserialize,
-    Serialize,
-};
+use bevy_interleave::prelude::*;
 
 use crate::{
     gaussian::{
-        f32::{
-            IsotropicRotations,
-            PositionVisibility,
-            ScaleOpacity,
-            TimestampTimescale,
-        },
         interface::{
             CommonCloud,
             TestCloud,
@@ -25,12 +15,9 @@ use crate::{
             PositionIter,
             PositionParIter,
         },
-        packed::Gaussian4d,
+        packed::{Gaussian4d, PlanarGaussian4d},
     },
-    material::spherindrical_harmonics::{
-        SH_4D_COEFF_COUNT,
-        SpherindricalHarmonicCoefficients,
-    },
+    material::spherindrical_harmonics::SH_4D_COEFF_COUNT,
 };
 
 // TODO: quantize 4d representation
@@ -184,80 +171,8 @@ use crate::{
 // }
 
 
-
-
-
-#[derive(
-    Clone,
-    Debug,
-    Default,
-    PartialEq,
-    Reflect,
-    Serialize,
-    Deserialize,
-)]
-pub struct Cloud4d {
-    pub isomorphic_rotations: Vec<IsotropicRotations>,
-    pub position_visibility: Vec<PositionVisibility>,
-    pub scale_opacity: Vec<ScaleOpacity>,
-    pub spherindrical_harmonic: Vec<SpherindricalHarmonicCoefficients>,
-    pub timestamp_timescale: Vec<TimestampTimescale>,
-}
-
-impl CommonCloud for Cloud4d {
+impl CommonCloud for PlanarGaussian4d {
     type PackedType = Gaussian4d;
-
-    fn len(&self) -> usize {
-        self.position_visibility.len()
-    }
-
-    fn subset(&self, indicies: &[usize]) -> Self {
-        let mut isomorphic_rotations = Vec::with_capacity(indicies.len());
-        let mut position_visibility = Vec::with_capacity(indicies.len());
-        let mut scale_opacity = Vec::with_capacity(indicies.len());
-        let mut spherindrical_harmonic = Vec::with_capacity(indicies.len());
-        let mut timestamp_timescale = Vec::with_capacity(indicies.len());
-
-        for &index in indicies.iter() {
-            position_visibility.push(self.position_visibility[index]);
-            spherindrical_harmonic.push(self.spherindrical_harmonic[index]);
-            isomorphic_rotations.push(self.isomorphic_rotations[index]);
-            scale_opacity.push(self.scale_opacity[index]);
-            timestamp_timescale.push(self.timestamp_timescale[index]);
-        }
-
-        Self {
-            isomorphic_rotations,
-            position_visibility,
-            spherindrical_harmonic,
-            scale_opacity,
-            timestamp_timescale,
-        }
-    }
-
-    fn from_packed(gaussians: Vec<Self::PackedType>) -> Self {
-        let mut isomorphic_rotations = Vec::with_capacity(gaussians.len());
-        let mut position_visibility = Vec::with_capacity(gaussians.len());
-        let mut scale_opacity = Vec::with_capacity(gaussians.len());
-        let mut spherindrical_harmonic = Vec::with_capacity(gaussians.len());
-        let mut timestamp_timescale = Vec::with_capacity(gaussians.len());
-
-        for gaussian in gaussians {
-            isomorphic_rotations.push(gaussian.isomorphic_rotations);
-            position_visibility.push(gaussian.position_visibility);
-            scale_opacity.push(gaussian.scale_opacity);
-            spherindrical_harmonic.push(gaussian.spherindrical_harmonic);
-            timestamp_timescale.push(gaussian.timestamp_timescale);
-        }
-
-        Self {
-            isomorphic_rotations,
-            position_visibility,
-            scale_opacity,
-            spherindrical_harmonic,
-            timestamp_timescale,
-        }
-    }
 
     fn visibility(&self, index: usize) -> f32 {
         self.position_visibility[index].visibility
@@ -266,29 +181,6 @@ impl CommonCloud for Cloud4d {
     fn visibility_mut(&mut self, index: usize) -> &mut f32 {
         &mut self.position_visibility[index].visibility
     }
-
-    fn resize_to_square(&mut self) {
-        #[cfg(all(feature = "buffer_texture", feature = "f16"))]
-        {
-            self.position_visibility.resize(self.square_len(), PositionVisibility::default());
-            self.spherindrical_harmonic.resize(self.square_len(), SpherindricalHarmonicCoefficients::default());
-
-            #[cfg(feature = "precompute_covariance_3d")]
-            self.covariance_3d_opacity_packed128.resize(self.square_len(), Covariance3dOpacityPacked128::default());
-            #[cfg(not(feature = "precompute_covariance_3d"))]
-            self.rotation_scale_opacity_packed128.resize(self.square_len(), RotationScaleOpacityPacked128::default());
-        }
-
-        #[cfg(all(feature = "buffer_texture"))]
-        {
-            self.position_visibility.resize(self.square_len(), PositionVisibility::default());
-            self.spherindrical_harmonic.resize(self.square_len(), SpherindricalHarmonicCoefficients::default());
-            self.rotation.resize(self.square_len(), Rotation::default());
-            self.scale_opacity.resize(self.square_len(), ScaleOpacity::default());
-            self.covariance_3d.resize(self.square_len(), Covariance3dOpacity::default());
-        }
-    }
-
 
     fn position_iter(&self) -> PositionIter<'_> {
         PositionIter::new(&self.position_visibility)
@@ -300,21 +192,20 @@ impl CommonCloud for Cloud4d {
     }
 }
 
-impl FromIterator<Gaussian4d> for Cloud4d {
+impl FromIterator<Gaussian4d> for PlanarGaussian4d {
     fn from_iter<I: IntoIterator<Item = Gaussian4d>>(iter: I) -> Self {
         iter.into_iter().collect::<Vec<Gaussian4d>>().into()
     }
 }
 
-impl From<Vec<Gaussian4d>> for Cloud4d {
+impl From<Vec<Gaussian4d>> for PlanarGaussian4d {
     fn from(packed: Vec<Gaussian4d>) -> Self {
-        Self::from_packed(packed)
+        Self::from_interleaved(packed)
     }
 }
 
 
-
-impl TestCloud for Cloud4d {
+impl TestCloud for PlanarGaussian4d {
     fn test_model() -> Self {
         let mut rng = rand::thread_rng();
 
@@ -370,6 +261,6 @@ impl TestCloud for Cloud4d {
 
         gaussians.push(gaussians[0]);
 
-        Cloud4d::from_packed(gaussians)
+        PlanarGaussian4d::from_interleaved(gaussians)
     }
 }

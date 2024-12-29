@@ -24,12 +24,17 @@ use bevy_panorbit_camera::{
 };
 
 use bevy_gaussian_splatting::{
-    GaussianCamera,
-    Cloud,
-    CloudHandle,
     CloudSettings,
+    GaussianCamera,
+    GaussianMode,
     GaussianSplattingPlugin,
-    random_gaussians,
+    PlanarGaussian3d,
+    PlanarGaussian4d,
+    PlanarGaussian3dHandle,
+    PlanarGaussian4dHandle,
+    gaussian::interface::TestCloud,
+    random_gaussians_3d,
+    random_gaussians_4d,
     utils::{
         GaussianSplattingViewer,
         log,
@@ -62,27 +67,53 @@ fn setup_gaussian_cloud(
     args: Res<GaussianSplattingViewer>,
     asset_server: Res<AssetServer>,
     gaussian_splatting_viewer: Res<GaussianSplattingViewer>,
-    mut gaussian_assets: ResMut<Assets<Cloud>>,
+    mut gaussian_3d_assets: ResMut<Assets<PlanarGaussian3d>>,
+    mut gaussian_4d_assets: ResMut<Assets<PlanarGaussian4d>>,
 ) {
-    let cloud: Handle<Cloud>;
-    if gaussian_splatting_viewer.gaussian_count > 0 {
-        log(&format!("generating {} gaussians", gaussian_splatting_viewer.gaussian_count));
-        cloud = gaussian_assets.add(random_gaussians(gaussian_splatting_viewer.gaussian_count));
-    } else if !gaussian_splatting_viewer.input_file.is_empty() {
-        log(&format!("loading {}", gaussian_splatting_viewer.input_file));
-        cloud = asset_server.load(&gaussian_splatting_viewer.input_file);
-    } else {
-        cloud = gaussian_assets.add(Cloud::test_model());
-    }
+    match args.gaussian_mode {
+        GaussianMode::Gaussian2d | GaussianMode::Gaussian3d => {
+            let cloud: Handle<PlanarGaussian3d>;
+            if gaussian_splatting_viewer.gaussian_count > 0 {
+                log(&format!("generating {} gaussians", gaussian_splatting_viewer.gaussian_count));
+                cloud = gaussian_3d_assets.add(random_gaussians_3d(gaussian_splatting_viewer.gaussian_count));
+            } else if !gaussian_splatting_viewer.input_file.is_empty() {
+                log(&format!("loading {}", gaussian_splatting_viewer.input_file));
+                cloud = asset_server.load(&gaussian_splatting_viewer.input_file);
+            } else {
+                cloud = gaussian_3d_assets.add(PlanarGaussian3d::test_model());
+            }
 
-    commands.spawn((
-        CloudHandle(cloud),
-        CloudSettings {
-            gaussian_mode: args.gaussian_mode,
-            ..default()
-        },
-        Name::new("gaussian_cloud"),
-    ));
+            commands.spawn((
+                PlanarGaussian3dHandle(cloud),
+                CloudSettings {
+                    gaussian_mode: args.gaussian_mode,
+                    ..default()
+                },
+                Name::new("gaussian_cloud"),
+            ));
+        }
+        GaussianMode::Gaussian4d => {
+            let cloud: Handle<PlanarGaussian4d>;
+            if gaussian_splatting_viewer.gaussian_count > 0 {
+                log(&format!("generating {} gaussians", gaussian_splatting_viewer.gaussian_count));
+                cloud = gaussian_4d_assets.add(random_gaussians_4d(gaussian_splatting_viewer.gaussian_count));
+            } else if !gaussian_splatting_viewer.input_file.is_empty() {
+                log(&format!("loading {}", gaussian_splatting_viewer.input_file));
+                cloud = asset_server.load(&gaussian_splatting_viewer.input_file);
+            } else {
+                cloud = gaussian_4d_assets.add(PlanarGaussian4d::test_model());
+            }
+
+            commands.spawn((
+                PlanarGaussian4dHandle(cloud),
+                CloudSettings {
+                    gaussian_mode: args.gaussian_mode,
+                    ..default()
+                },
+                Name::new("gaussian_cloud"),
+            ));
+        }
+    }
 
     commands.spawn((
         Camera3d::default(),
@@ -108,7 +139,7 @@ fn setup_particle_behavior(
     gaussian_cloud: Query<
         (
             Entity,
-            &CloudHandle,
+            &PlanarGaussian3dHandle,
         ),
         Without<ParticleBehaviorsHandle>,
     >,

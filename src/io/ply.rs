@@ -1,5 +1,6 @@
 use std::io::BufRead;
 
+use bevy_interleave::prelude::Planar;
 use ply_rs::{
     ply::{
         Property,
@@ -9,10 +10,7 @@ use ply_rs::{
 };
 
 use crate::{
-    gaussian::{
-        cloud::Cloud,
-        packed::Gaussian,
-    },
+    gaussian::packed::{Gaussian3d, PlanarGaussian3d},
     material::spherical_harmonics::{
         SH_CHANNELS,
         SH_COEFF_COUNT,
@@ -23,9 +21,9 @@ use crate::{
 
 pub const MAX_SIZE_VARIANCE: f32 = 5.0;
 
-impl PropertyAccess for Gaussian {
+impl PropertyAccess for Gaussian3d {
     fn new() -> Self {
-        Gaussian::default()
+        Gaussian3d::default()
     }
 
     fn set_property(&mut self, key: String, property: Property) {
@@ -73,9 +71,9 @@ impl PropertyAccess for Gaussian {
     }
 }
 
-pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Cloud, std::io::Error> {
+pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<PlanarGaussian3d, std::io::Error> {
     // TODO: detect and parse Gaussian vs Gaussian4d
-    let gaussian_parser = Parser::<Gaussian>::new();
+    let gaussian_parser = Parser::<Gaussian3d>::new();
     let header = gaussian_parser.read_header(&mut reader)?;
 
     let mut cloud = Vec::new();
@@ -105,7 +103,7 @@ pub fn parse_ply(mut reader: &mut dyn BufRead) -> Result<Cloud, std::io::Error> 
 
     // pad with empty gaussians to multiple of 32
     let pad = 32 - (cloud.len() % 32);
-    cloud.extend(std::iter::repeat(Gaussian::default()).take(pad));
+    cloud.extend(std::iter::repeat(Gaussian3d::default()).take(pad));
 
-    Ok(Cloud::Gaussian3d(cloud.into()))
+    Ok(PlanarGaussian3d::from_interleaved(cloud))
 }

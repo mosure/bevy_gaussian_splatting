@@ -15,7 +15,7 @@ use serde::{
 
 use crate::gaussian::{
     covariance::compute_covariance_3d,
-    packed::{Gaussian, Gaussian4d},
+    packed::{Gaussian3d, Gaussian4d},
 };
 
 
@@ -255,8 +255,8 @@ pub struct Covariance3dOpacity {
     pub pad: f32,
 }
 
-impl From<&Gaussian> for Covariance3dOpacity {
-    fn from(gaussian: &Gaussian) -> Self {
+impl From<&Gaussian3d> for Covariance3dOpacity {
+    fn from(gaussian: &Gaussian3d) -> Self {
         let cov3d = compute_covariance_3d(
             Vec4::from_slice(gaussian.rotation.rotation.as_slice()),
             Vec3::from_slice(gaussian.scale_opacity.scale.as_slice()),

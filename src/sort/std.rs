@@ -3,13 +3,15 @@ use bevy::{
     math::Vec3A,
     utils::Instant,
 };
+use bevy_interleave::prelude::*;
 
 use crate::{
     camera::GaussianCamera,
-    Cloud,
-    CloudHandle,
     CloudSettings,
-    gaussian::interface::CommonCloud,
+    gaussian::{
+        interface::CommonCloud,
+        packed::Gaussian3d,
+    },
     sort::{
         SortConfig,
         SortMode,
@@ -25,17 +27,17 @@ pub struct StdSortPlugin;
 
 impl Plugin for StdSortPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, std_sort);
+        app.add_systems(Update, std_sort::<Gaussian3d>);
     }
 }
 
 // TODO: async CPU sort to prevent frame drops on large clouds
 #[allow(clippy::too_many_arguments)]
-pub fn std_sort(
+pub fn std_sort<R: PlanarStorage>(
     asset_server: Res<AssetServer>,
-    gaussian_clouds_res: Res<Assets<Cloud>>,
+    gaussian_clouds_res: Res<Assets<R::PlanarType>>,
     gaussian_clouds: Query<(
-        &CloudHandle,
+        &R::PlanarTypeHandle,
         &SortedEntriesHandle,
         &CloudSettings,
         &GlobalTransform,
@@ -46,7 +48,10 @@ pub fn std_sort(
         With<GaussianCamera>,
     >,
     mut sort_config: ResMut<SortConfig>,
-) {
+)
+where
+    R::PlanarType: CommonCloud,
+{
     // TODO: move sort to render world, use extracted views and update the existing buffer instead of creating new
 
     let sort_start_time = Instant::now();
@@ -70,7 +75,7 @@ pub fn std_sort(
             trigger.needs_sort = false;
             performed_sort = true;
 
-            if let Some(load_state) = asset_server.get_load_state(&gaussian_cloud_handle.0) {
+            if let Some(load_state) = asset_server.get_load_state(gaussian_cloud_handle.handle()) {
                 if load_state.is_loading() {
                     continue;
                 }
@@ -82,7 +87,7 @@ pub fn std_sort(
                 }
             }
 
-            if let Some(gaussian_cloud) = gaussian_clouds_res.get(gaussian_cloud_handle) {
+            if let Some(gaussian_cloud) = gaussian_clouds_res.get(gaussian_cloud_handle.handle()) {
                 if let Some(sorted_entries) = sorted_entries_res.get_mut(sorted_entries_handle) {
                     let gaussians = gaussian_cloud.len();
                     let mut chunks = sorted_entries.sorted.chunks_mut(gaussians);

@@ -10,7 +10,7 @@ use static_assertions::assert_cfg;
 use typenum::consts::U3;
 
 use crate::{
-    Gaussian,
+    Gaussian3d,
     Cloud,
     CloudHandle,
     query::select::Select,

@@ -12,16 +12,19 @@ use bevy::asset::{
 };
 
 use crate::{
-    Cloud,
     io::codec::CloudCodec,
+    gaussian::packed::{
+        PlanarGaussian3d,
+        PlanarGaussian4d,
+    },
 };
 
 
 #[derive(Default)]
-pub struct CloudLoader;
+pub struct Gaussian3dLoader;
 
-impl AssetLoader for CloudLoader {
-    type Asset = Cloud;
+impl AssetLoader for Gaussian3dLoader {
+    type Asset = PlanarGaussian3d;
     type Settings = ();
     type Error = std::io::Error;
 
@@ -50,7 +53,7 @@ impl AssetLoader for CloudLoader {
                 }
             },
             Some(ext) if ext == "gcloud" => {
-                let cloud = Cloud::decode(bytes.as_slice());
+                let cloud = PlanarGaussian3d::decode(bytes.as_slice());
 
                 Ok(cloud)
             },

@@ -8,16 +8,17 @@ use bevy_args::{
     parse_args,
 };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
+use bevy_interleave::prelude::Planar;
 use bevy_panorbit_camera::{
     PanOrbitCamera,
     PanOrbitCameraPlugin,
 };
 
 use bevy_gaussian_splatting::{
-    Gaussian,
+    Gaussian3d,
     GaussianCamera,
-    Cloud,
-    CloudHandle,
+    PlanarGaussian3d,
+    PlanarGaussian3dHandle,
     GaussianMode,
     CloudSettings,
     GaussianSplattingPlugin,
@@ -32,7 +33,7 @@ use bevy_gaussian_splatting::{
 
 pub fn setup_surfel_compare(
     mut commands: Commands,
-    mut gaussian_assets: ResMut<Assets<Cloud>>,
+    mut gaussian_assets: ResMut<Assets<PlanarGaussian3d>>,
 ) {
     let grid_size_x = 10;
     let grid_size_y = 10;
@@ -59,7 +60,7 @@ pub fn setup_surfel_compare(
                 .try_into()
                 .unwrap();
 
-            let gaussian = Gaussian {
+            let gaussian = Gaussian3d {
                 position_visibility: position.into(),
                 rotation: Rotation {
                     rotation,
@@ -71,9 +72,11 @@ pub fn setup_surfel_compare(
         }
     }
 
-    let cloud = gaussian_assets.add(Cloud::Gaussian3d(blue_gaussians));
+    let cloud = gaussian_assets.add(
+        PlanarGaussian3d::from_interleaved(blue_gaussians)
+    );
     commands.spawn((
-        CloudHandle(cloud),
+        PlanarGaussian3dHandle(cloud),
         CloudSettings {
             visualize_bounding_box,
             ..default()
@@ -101,7 +104,7 @@ pub fn setup_surfel_compare(
                 .try_into()
                 .unwrap();
 
-            let gaussian = Gaussian {
+            let gaussian = Gaussian3d {
                 position_visibility: position.into(),
                 rotation: Rotation {
                     rotation,
@@ -113,10 +116,12 @@ pub fn setup_surfel_compare(
         }
     }
 
-    let cloud = gaussian_assets.add(Cloud::Gaussian2d(red_gaussians));
+    let cloud = gaussian_assets.add(
+        PlanarGaussian3d::from_interleaved(red_gaussians)
+    );
     commands.spawn((
         Transform::from_translation(Vec3::new(spacing, spacing, 0.0)),
-        CloudHandle(cloud),
+        PlanarGaussian3dHandle(cloud),
         CloudSettings {
             visualize_bounding_box,
             aabb: true,

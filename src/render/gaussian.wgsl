@@ -26,6 +26,10 @@
         compute_cov2d_3dgs,
         get_bounding_box_clip,
     }
+#else ifdef GAUSSIAN_4D
+    #import bevy_gaussian_splatting::gaussian_4d::{
+        compute_cov2d_4dgs,
+    }
 #endif
 
 #ifdef PACKED
@@ -253,30 +257,7 @@ fn vs_points(
     }
 #endif
 
-#ifdef GAUSSIAN_3D
-    let cov2d = compute_cov2d_3dgs(
-        transformed_position,
-        splat_index,
-    );
-    let bb = get_bounding_box_clip(
-        cov2d,
-        quad_offset,
-        cutoff,
-    );
-
-#ifdef USE_AABB
-    let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
-    let det_inv = 1.0 / det;
-    let conic = vec3<f32>(
-        cov2d.z * det_inv,
-        -cov2d.y * det_inv,
-        cov2d.x * det_inv
-    );
-    output.conic = conic;
-    output.major_minor = bb.zw;
-#endif
-
-#else ifdef GAUSSIAN_2D
+#ifdef GAUSSIAN_2D
     let surfel = compute_cov2d_surfel(
         transformed_position,
         splat_index,
@@ -294,6 +275,36 @@ fn vs_points(
         cutoff,
     );
     output.radius = bb.zw;
+#else
+    #ifdef GAUSSIAN_3D
+        let cov2d = compute_cov2d_3dgs(
+            transformed_position,
+            splat_index,
+        );
+    #else ifdef GAUSSIAN_4D
+        let cov2d = compute_cov2d_4dgs(
+            transformed_position,
+            splat_index,
+        );
+    #endif
+
+    let bb = get_bounding_box_clip(
+        cov2d,
+        quad_offset,
+        cutoff,
+    );
+
+    #ifdef USE_AABB
+        let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
+        let det_inv = 1.0 / det;
+        let conic = vec3<f32>(
+            cov2d.z * det_inv,
+            -cov2d.y * det_inv,
+            cov2d.x * det_inv
+        );
+        output.conic = conic;
+        output.major_minor = bb.zw;
+    #endif
 #endif
 
     output.uv = quad_offset;

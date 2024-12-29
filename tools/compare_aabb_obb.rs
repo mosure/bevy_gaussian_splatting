@@ -8,16 +8,17 @@ use bevy_args::{
     parse_args,
 };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
+use bevy_interleave::prelude::Planar;
 use bevy_panorbit_camera::{
     PanOrbitCamera,
     PanOrbitCameraPlugin,
 };
 
 use bevy_gaussian_splatting::{
-    Gaussian,
+    Gaussian3d,
     GaussianCamera,
-    Cloud,
-    CloudHandle,
+    PlanarGaussian3d,
+    PlanarGaussian3dHandle,
     CloudSettings,
     GaussianSplattingPlugin,
     utils::{
@@ -30,12 +31,12 @@ use bevy_gaussian_splatting::{
 
 pub fn setup_aabb_obb_compare(
     mut commands: Commands,
-    mut gaussian_assets: ResMut<Assets<Cloud>>,
+    mut gaussian_assets: ResMut<Assets<PlanarGaussian3d>>,
 ) {
     let mut blue_sh = SphericalHarmonicCoefficients::default();
     blue_sh.set(2, 5.0);
 
-    let blue_aabb_gaussian = Gaussian {
+    let blue_aabb_gaussian = Gaussian3d {
         position_visibility: [0.0, 0.0, 0.0, 1.0].into(),
         rotation: [0.89, 0.0, -0.432, 0.144].into(),
         scale_opacity: [10.0, 1.0, 1.0, 0.5].into(),
@@ -43,12 +44,12 @@ pub fn setup_aabb_obb_compare(
     };
 
     commands.spawn((
-        CloudHandle(
+        PlanarGaussian3dHandle(
             gaussian_assets.add(
-                Cloud::Gaussian3d(vec![
+                PlanarGaussian3d::from_interleaved(vec![
                     blue_aabb_gaussian,
                     blue_aabb_gaussian,
-                ].into())
+                ])
             )
         ),
         CloudSettings {
@@ -62,7 +63,7 @@ pub fn setup_aabb_obb_compare(
     let mut red_sh = SphericalHarmonicCoefficients::default();
     red_sh.set(0, 5.0);
 
-    let red_obb_gaussian = Gaussian {
+    let red_obb_gaussian = Gaussian3d {
         position_visibility: [0.0, 0.0, 0.0, 1.0].into(),
         rotation: [0.89, 0.0, -0.432, 0.144].into(),
         scale_opacity: [10.0, 1.0, 1.0, 0.5].into(),
@@ -70,9 +71,9 @@ pub fn setup_aabb_obb_compare(
     };
 
     commands.spawn((
-        CloudHandle(
+        PlanarGaussian3dHandle(
             gaussian_assets.add(
-            Cloud::Gaussian3d(vec![
+            PlanarGaussian3d::from_interleaved(vec![
                     red_obb_gaussian,
                     red_obb_gaussian,
                 ])

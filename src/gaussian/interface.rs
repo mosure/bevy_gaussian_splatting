@@ -1,35 +1,24 @@
 use bevy::{
     prelude::*,
-    render::{
-        primitives::Aabb,
-        render_resource::{
-            BindGroup,
-            BindGroupLayout,
-        },
-    },
+    render::primitives::Aabb,
 };
+use bevy_interleave::prelude::Planar;
 
-use crate::gaussian::{
-    f32::{
-        Position,
-        PositionVisibility,
-    },
-    iter::{
-        PositionIter,
-        PositionParIter,
-    },
+#[cfg(feature = "sort_rayon")]
+use rayon::prelude::*;
+
+use crate::gaussian::iter::{
+    PositionIter,
+    PositionParIter,
 };
 
 
-pub trait CommonCloud {
+pub trait CommonCloud
+where
+    Self: Planar,
+{
     type PackedType;
-    type GpuCloud;
 
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    fn len(&self) -> usize;
     fn len_sqrt_ceil(&self) -> usize {
         (self.len() as f32).sqrt().ceil() as usize
     }
@@ -48,50 +37,48 @@ pub trait CommonCloud {
         // TODO: find a more correct aabb bound derived from scalar max gaussian scale
         let max_scale = 0.1;
 
-        for position in self.position_iter() {
-            min = min.min(Vec3::from(*position) - Vec3::splat(max_scale));
-            max = max.max(Vec3::from(*position) + Vec3::splat(max_scale));
+        #[cfg(feature = "sort_rayon")]
+        {
+            (min, max) = self.position_par_iter()
+                .fold(
+                    || (min, max),
+                    |(curr_min, curr_max), position| {
+                        let pos = Vec3::from(*position);
+                        let offset = Vec3::splat(max_scale);
+                        (
+                            curr_min.min(pos - offset),
+                            curr_max.max(pos + offset),
+                        )
+                    },
+                )
+                .reduce(
+                    || (min, max),
+                    |(a_min, a_max), (b_min, b_max)| {
+                        (a_min.min(b_min), a_max.max(b_max))
+                    },
+                );
+        }
+
+        #[cfg(not(feature = "sort_rayon"))]
+        {
+            for position in self.position_iter() {
+                min = min.min(Vec3::from(*position) - Vec3::splat(max_scale));
+                max = max.max(Vec3::from(*position) + Vec3::splat(max_scale));
+            }
         }
 
         Aabb::from_min_max(min, max).into()
     }
 
-    fn subset(&self, indicies: &[usize]) -> Self;
-
-    fn from_packed(packed_array: Vec<Self::PackedType>) -> Self;
-
     fn visibility(&self, index: usize) -> f32;
     fn visibility_mut(&mut self, index: usize) -> &mut f32;
-
-    fn resize_to_square(&mut self);
-
 
     // TODO: type erasure for position iterators
     fn position_iter(&self) -> PositionIter<'_>;
 
     #[cfg(feature = "sort_rayon")]
     fn position_par_iter(&self) -> PositionParIter<'_>;
-
-
-    fn prepare_cloud(
-        &self,
-        render_device: &RenderDevice,
-    ) -> Self::GpuCloud;
-
-    // TODO: auto-generate from bevy_interleave, access on GpuCloud
-    fn get_bind_group_layout(
-        render_device: &RenderDevice,
-        read_only: bool
-    ) -> BindGroupLayout;
-
-    // TODO: move to fn on GpuCloud
-    fn get_bind_group(
-        render_device: &RenderDevice,
-        gpu_planar: &Self::GpuCloud,
-    ) -> BindGroup;
 }
-
-
 
 pub trait TestCloud {
     fn test_model() -> Self;

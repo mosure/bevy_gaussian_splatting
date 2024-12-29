@@ -1,3 +1,4 @@
+use bevy_interleave::prelude::Planar;
 use rand::{
     prelude::Distribution,
     Rng,
@@ -8,16 +9,11 @@ use crate::gaussian::f16::pack_f32s_to_u32;
 
 #[allow(unused_imports)]
 use crate::{
-    gaussian::{
-        cloud::Cloud,
-        formats::{
-            cloud_3d::Cloud3d,
-            cloud_4d::Cloud4d,
-        },
-        packed::{
-            Gaussian,
-            Gaussian4d,
-        },
+    gaussian::packed::{
+        Gaussian3d,
+        Gaussian4d,
+        PlanarGaussian3d,
+        PlanarGaussian4d,
     },
     material::{
         spherical_harmonics::{
@@ -34,9 +30,9 @@ use crate::{
 };
 
 
-impl Distribution<Gaussian> for rand::distributions::Standard {
-    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Gaussian {
-        Gaussian {
+impl Distribution<Gaussian3d> for rand::distributions::Standard {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Gaussian3d {
+        Gaussian3d {
             rotation: [
                 rng.gen_range(-1.0..1.0),
                 rng.gen_range(-1.0..1.0),
@@ -126,18 +122,18 @@ impl Distribution<Gaussian4d> for rand::distributions::Standard {
 
 
 
-pub fn random_gaussians(n: usize) -> Cloud {
+pub fn random_gaussians_3d(n: usize) -> PlanarGaussian3d {
     let mut rng = rand::thread_rng();
-    let mut gaussians: Vec<Gaussian> = Vec::with_capacity(n);
+    let mut gaussians: Vec<Gaussian3d> = Vec::with_capacity(n);
 
     for _ in 0..n {
         gaussians.push(rng.gen());
     }
 
-    Cloud::Gaussian3d(gaussians.into())
+    PlanarGaussian3d::from_interleaved(gaussians)
 }
 
-pub fn random_gaussians_4d(n: usize) -> Cloud {
+pub fn random_gaussians_4d(n: usize) -> PlanarGaussian4d {
     let mut rng = rand::thread_rng();
     let mut gaussians: Vec<Gaussian4d> = Vec::with_capacity(n);
 
@@ -145,5 +141,5 @@ pub fn random_gaussians_4d(n: usize) -> Cloud {
         gaussians.push(rng.gen());
     }
 
-    Cloud::Gaussian4d(gaussians.into())
+    PlanarGaussian4d::from_interleaved(gaussians)
 }

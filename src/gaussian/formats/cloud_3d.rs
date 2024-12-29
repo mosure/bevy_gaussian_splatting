@@ -3,11 +3,7 @@ use rand::{
     Rng,
 };
 
-use bevy::prelude::*;
-use serde::{
-    Deserialize,
-    Serialize,
-};
+use bevy_interleave::prelude::*;
 
 #[allow(unused_imports)]
 use crate::{
@@ -26,7 +22,7 @@ use crate::{
             PositionIter,
             PositionParIter,
         },
-        packed::Gaussian,
+        packed::{Gaussian3d, PlanarGaussian3d},
         settings::CloudSettings,
     },
     material::spherical_harmonics::{
@@ -66,110 +62,9 @@ pub struct Cloud3d {
     pub covariance_3d_opacity_packed128: Vec<Covariance3dOpacityPacked128>,
 }
 
-#[derive(
-    Clone,
-    Debug,
-    Default,
-    PartialEq,
-    Reflect,
-    Serialize,
-    Deserialize,
-)]
-pub struct Cloud3d {
-    pub position_visibility: Vec<PositionVisibility>,
 
-    pub spherical_harmonic: Vec<SphericalHarmonicCoefficients>,
-
-    #[cfg(feature = "precompute_covariance_3d")]
-    pub covariance_3d: Vec<Covariance3dOpacity>,
-
-    #[cfg(not(feature = "precompute_covariance_3d"))]
-    pub rotation: Vec<Rotation>,
-    #[cfg(not(feature = "precompute_covariance_3d"))]
-    pub scale_opacity: Vec<ScaleOpacity>,
-}
-
-impl CommonCloud for Cloud3d {
-    type PackedType = Gaussian;
-
-    fn len(&self) -> usize {
-        self.position_visibility.len()
-    }
-
-    #[cfg(feature = "f16")]
-    fn subset(&self, indicies: &[usize]) -> Self {
-        let mut position_visibility = Vec::with_capacity(indicies.len());
-        let mut spherical_harmonic = Vec::with_capacity(indicies.len());
-
-        #[cfg(feature = "precompute_covariance_3d")]
-        let mut covariance_3d_opacity_packed128 = Vec::with_capacity(indicies.len());
-
-        #[cfg(not(feature = "precompute_covariance_3d"))]
-        let mut rotation_scale_opacity_packed128 = Vec::with_capacity(indicies.len());
-
-        for &index in indicies.iter() {
-            position_visibility.push(self.position_visibility[index]);
-            spherical_harmonic.push(self.spherical_harmonic[index]);
-
-            #[cfg(feature = "precompute_covariance_3d")]
-            covariance_3d_opacity_packed128.push(self.covariance_3d_opacity_packed128[index]);
-
-            #[cfg(not(feature = "precompute_covariance_3d"))]
-            rotation_scale_opacity_packed128.push(self.rotation_scale_opacity_packed128[index]);
-        }
-
-        Self {
-            position_visibility,
-            spherical_harmonic,
-
-            #[cfg(feature = "precompute_covariance_3d")]
-            covariance_3d_opacity_packed128,
-            #[cfg(not(feature = "precompute_covariance_3d"))]
-            rotation_scale_opacity_packed128,
-        }
-    }
-
-    fn subset(&self, indicies: &[usize]) -> Self {
-        let mut position_visibility = Vec::with_capacity(indicies.len());
-        let mut spherical_harmonic = Vec::with_capacity(indicies.len());
-        let mut rotation = Vec::with_capacity(indicies.len());
-        let mut scale_opacity = Vec::with_capacity(indicies.len());
-
-        for &index in indicies.iter() {
-            position_visibility.push(self.position_visibility[index]);
-            spherical_harmonic.push(self.spherical_harmonic[index]);
-            rotation.push(self.rotation[index]);
-            scale_opacity.push(self.scale_opacity[index]);
-        }
-
-        Self {
-            position_visibility,
-            spherical_harmonic,
-            rotation,
-            scale_opacity,
-        }
-    }
-
-    fn from_packed(gaussians: Vec<Self::PackedType>) -> Self {
-        let mut position_visibility = Vec::with_capacity(gaussians.len());
-        let mut spherical_harmonic = Vec::with_capacity(gaussians.len());
-        let mut rotation = Vec::with_capacity(gaussians.len());
-        let mut scale_opacity = Vec::with_capacity(gaussians.len());
-
-        for gaussian in gaussians {
-            position_visibility.push(gaussian.position_visibility);
-            spherical_harmonic.push(gaussian.spherical_harmonic);
-            rotation.push(gaussian.rotation);
-            scale_opacity.push(gaussian.scale_opacity);
-        }
-
-        Self {
-            position_visibility,
-            spherical_harmonic,
-            rotation,
-            scale_opacity,
-        }
-    }
+impl CommonCloud for PlanarGaussian3d {
+    type PackedType = Gaussian3d;
 
     fn visibility(&self, index: usize) -> f32 {
         self.position_visibility[index].visibility
@@ -178,29 +73,6 @@ impl CommonCloud for Cloud3d {
     fn visibility_mut(&mut self, index: usize) -> &mut f32 {
         &mut self.position_visibility[index].visibility
     }
-
-    fn resize_to_square(&mut self) {
-        #[cfg(all(feature = "buffer_texture", feature = "f16"))]
-        {
-            self.position_visibility.resize(self.square_len(), PositionVisibility::default());
-            self.spherical_harmonic.resize(self.square_len(), SphericalHarmonicCoefficients::default());
-
-            #[cfg(feature = "precompute_covariance_3d")]
-            self.covariance_3d_opacity_packed128.resize(self.square_len(), Covariance3dOpacityPacked128::default());
-            #[cfg(not(feature = "precompute_covariance_3d"))]
-            self.rotation_scale_opacity_packed128.resize(self.square_len(), RotationScaleOpacityPacked128::default());
-        }
-
-        #[cfg(all(feature = "buffer_texture"))]
-        {
-            self.position_visibility.resize(self.square_len(), PositionVisibility::default());
-            self.spherical_harmonic.resize(self.square_len(), SphericalHarmonicCoefficients::default());
-            self.rotation.resize(self.square_len(), Rotation::default());
-            self.scale_opacity.resize(self.square_len(), ScaleOpacity::default());
-            self.covariance_3d.resize(self.square_len(), Covariance3dOpacity::default());
-        }
-    }
-
 
     fn position_iter(&self) -> PositionIter<'_> {
         PositionIter::new(&self.position_visibility)
@@ -212,24 +84,24 @@ impl CommonCloud for Cloud3d {
     }
 }
 
-impl FromIterator<Gaussian> for Cloud3d {
-    fn from_iter<I: IntoIterator<Item = Gaussian>>(iter: I) -> Self {
-        iter.into_iter().collect::<Vec<Gaussian>>().into()
+impl FromIterator<Gaussian3d> for PlanarGaussian3d {
+    fn from_iter<I: IntoIterator<Item = Gaussian3d>>(iter: I) -> Self {
+        iter.into_iter().collect::<Vec<Gaussian3d>>().into()
     }
 }
 
-impl From<Vec<Gaussian>> for Cloud3d {
-    fn from(packed: Vec<Gaussian>) -> Self {
-        Self::from_packed(packed)
+impl From<Vec<Gaussian3d>> for PlanarGaussian3d {
+    fn from(packed: Vec<Gaussian3d>) -> Self {
+        Self::from_interleaved(packed)
     }
 }
 
 
-impl TestCloud for Cloud3d {
+impl TestCloud for PlanarGaussian3d {
     fn test_model() -> Self {
         let mut rng = rand::thread_rng();
 
-        let origin = Gaussian {
+        let origin = Gaussian3d {
             rotation: [
                 1.0,
                 0.0,
@@ -276,7 +148,7 @@ impl TestCloud for Cloud3d {
                 },
             },
         };
-        let mut gaussians: Vec<Gaussian> = Vec::new();
+        let mut gaussians: Vec<Gaussian3d> = Vec::new();
 
         for &x in [-0.5, 0.5].iter() {
             for &y in [-0.5, 0.5].iter() {
@@ -296,60 +168,15 @@ impl TestCloud for Cloud3d {
 }
 
 
-impl Cloud3d {
-    #[cfg(all(
-        not(feature = "precompute_covariance_3d"),
-        feature = "f16",
-    ))]
-    pub fn gaussian(&self, index: usize) -> Gaussian {
-        let rso = self.rotation_scale_opacity_packed128[index];
-
-        let rotation = rso.rotation();
-        let scale_opacity = rso.scale_opacity();
-
-        Gaussian {
-            position_visibility: self.position_visibility[index],
-            spherical_harmonic: self.spherical_harmonic[index],
-            rotation,
-            scale_opacity,
-        }
-    }
-
-    pub fn gaussian(&self, index: usize) -> Gaussian {
-        Gaussian {
-            position_visibility: self.position_visibility[index],
-            spherical_harmonic: self.spherical_harmonic[index],
-            rotation: self.rotation[index],
-            scale_opacity: self.scale_opacity[index],
-        }
-    }
-
-    #[cfg(all(
-        not(feature = "precompute_covariance_3d"),
-        feature = "f16",
-    ))]
-    pub fn gaussian_iter(&self) -> impl Iterator<Item=Gaussian> + '_ {
-        self.position_visibility.iter()
-            .zip(self.spherical_harmonic.iter())
-            .zip(self.rotation_scale_opacity_packed128.iter())
-            .map(|((position_visibility, spherical_harmonic), rotation_scale_opacity)| {
-                Gaussian {
-                    position_visibility: *position_visibility,
-                    spherical_harmonic: *spherical_harmonic,
-
-                    rotation: rotation_scale_opacity.rotation(),
-                    scale_opacity: rotation_scale_opacity.scale_opacity(),
-                }
-            })
-    }
-
-    pub fn gaussian_iter(&self) -> impl Iterator<Item=Gaussian> + '_ {
+// TODO: attempt iter() on the Planar trait
+impl PlanarGaussian3d {
+    pub fn iter(&self) -> impl Iterator<Item=Gaussian3d> + '_ {
         self.position_visibility.iter()
             .zip(self.spherical_harmonic.iter())
             .zip(self.rotation.iter())
             .zip(self.scale_opacity.iter())
             .map(|(((position_visibility, spherical_harmonic), rotation), scale_opacity)| {
-                Gaussian {
+                Gaussian3d {
                     position_visibility: *position_visibility,
                     spherical_harmonic: *spherical_harmonic,
 
