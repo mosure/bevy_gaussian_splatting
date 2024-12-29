@@ -285,7 +285,7 @@ where
     let camera_count = gaussian_cameras.iter().len();
 
     if camera_count == 0 {
-        info!("no gaussian cameras found");
+        debug!("no gaussian cameras found");
         return;
     }
 
@@ -301,14 +301,14 @@ where
 
         if let Some(load_state) = asset_server.get_load_state(gaussian_cloud_handle.handle()) {
             if load_state.is_loading() {
-                info!("cloud asset is still loading");
+                debug!("cloud asset is still loading");
                 continue;
             }
         }
 
         let cloud = gaussian_clouds_res.get(gaussian_cloud_handle.handle());
         if cloud.is_none() {
-            info!("cloud asset is not loaded");
+            debug!("cloud asset is not loaded");
             continue;
         }
         let cloud = cloud.unwrap();

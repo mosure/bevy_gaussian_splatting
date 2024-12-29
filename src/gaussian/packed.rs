@@ -71,7 +71,7 @@ pub type Gaussian2d = Gaussian3d;
 pub struct Gaussian4d {
     pub position_visibility: PositionVisibility,
     pub spherindrical_harmonic: SpherindricalHarmonicCoefficients,
-    pub timestamp_timescale: TimestampTimescale,
     pub isotropic_rotations: IsotropicRotations,
     pub scale_opacity: ScaleOpacity,
+    pub timestamp_timescale: TimestampTimescale,
 }

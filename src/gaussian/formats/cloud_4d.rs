@@ -1,8 +1,3 @@
-use rand::{
-    seq::SliceRandom,
-    Rng,
-};
-
 use bevy_interleave::prelude::*;
 
 use crate::{
@@ -17,7 +12,7 @@ use crate::{
         },
         packed::{Gaussian4d, PlanarGaussian4d},
     },
-    material::spherindrical_harmonics::SH_4D_COEFF_COUNT,
+    random_gaussians_4d,
 };
 
 // TODO: quantize 4d representation
@@ -207,60 +202,6 @@ impl From<Vec<Gaussian4d>> for PlanarGaussian4d {
 
 impl TestCloud for PlanarGaussian4d {
     fn test_model() -> Self {
-        let mut rng = rand::thread_rng();
-
-        let mut coefficients = [0.0; SH_4D_COEFF_COUNT];
-        for coefficient in coefficients.iter_mut() {
-            *coefficient = rng.gen_range(-1.0..1.0);
-        }
-
-        let origin = Gaussian4d {
-            isotropic_rotations: [
-                1.0,
-                0.0,
-                0.0,
-                0.0,
-                1.0,
-                0.0,
-                0.0,
-                0.0,
-            ].into(),
-            position_visibility: [
-                0.0,
-                0.0,
-                0.0,
-                1.0,
-            ].into(),
-            scale_opacity: [
-                0.5,
-                0.5,
-                0.5,
-                0.5,
-            ].into(),
-            spherindrical_harmonic: coefficients.into(),
-            timestamp_timescale: [
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-            ].into(),
-        };
-        let mut gaussians: Vec<Gaussian4d> = Vec::new();
-
-        for &x in [-0.5, 0.5].iter() {
-            for &y in [-0.5, 0.5].iter() {
-                for &z in [-0.5, 0.5].iter() {
-                    let mut g = origin;
-                    g.position_visibility = [x, y, z, 0.5].into();
-                    gaussians.push(g);
-
-                    gaussians.last_mut().unwrap().spherindrical_harmonic.coefficients.shuffle(&mut rng);
-                }
-            }
-        }
-
-        gaussians.push(gaussians[0]);
-
-        PlanarGaussian4d::from_interleaved(gaussians)
+        random_gaussians_4d(512)
     }
 }

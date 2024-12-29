@@ -20,6 +20,7 @@ impl Plugin for MaterialPlugin {
         app.add_plugins((
             depth::DepthMaterialPlugin,
             spherical_harmonics::SphericalHarmonicCoefficientsPlugin,
+            spherindrical_harmonics::SpherindricalHarmonicCoefficientsPlugin,
         ));
     }
 }

@@ -111,7 +111,7 @@ impl Distribution<Gaussian4d> for rand::distributions::Standard {
             ].into(),
             spherindrical_harmonic: coefficients.into(),
             timestamp_timescale: [
-                rng.gen_range(-1.0..1.0),
+                rng.gen_range(0.0..1.0),
                 rng.gen_range(-1.0..1.0),
                 0.0,
                 0.0,

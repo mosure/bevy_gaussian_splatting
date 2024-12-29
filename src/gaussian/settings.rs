@@ -58,9 +58,9 @@ pub enum GaussianMode {
 )]
 pub enum PlaybackMode {
     #[default]
-    Forward,
-    Reverse,
-    Still,
+    Loop,
+    Once,
+    Sin,
 }
 
 
@@ -119,6 +119,68 @@ impl Default for CloudSettings {
             time_scale: 1.0,
             time_start: 0.0,
             time_stop: 1.0,
+        }
+    }
+}
+
+
+#[derive(Default)]
+pub struct SettingsPlugin;
+impl Plugin for SettingsPlugin {
+    fn build(&self, app: &mut App) {
+        app.register_type::<CloudSettings>();
+
+        app.add_systems(
+            Update,
+            (
+                playback_update,
+            )
+        );
+    }
+}
+
+
+fn playback_update(
+    time: Res<Time>,
+    mut query: Query<(&mut CloudSettings,)>,
+) {
+    for (mut settings,) in query.iter_mut() {
+        if settings.time_scale == 0.0 {
+            continue;
+        }
+
+        // bail condition
+        match settings.playback_mode {
+            PlaybackMode::Loop => {}
+            PlaybackMode::Once => {
+                if settings.time >= settings.time_stop {
+                    continue;
+                }
+            }
+            PlaybackMode::Sin => {}
+        }
+
+        // forward condition
+        match settings.playback_mode {
+            PlaybackMode::Loop | PlaybackMode::Once => {
+                settings.time += time.delta_secs() * settings.time_scale;
+            }
+            PlaybackMode::Sin => {
+                let theta = settings.time_scale * time.elapsed_secs();
+                let y = (theta * 2.0 * std::f32::consts::PI).sin();
+                settings.time = settings.time_start + (settings.time_stop - settings.time_start) * (y + 1.0) / 2.0;
+            }
+        }
+
+        // reset condition
+        match settings.playback_mode {
+            PlaybackMode::Loop => {
+                if settings.time > settings.time_stop {
+                    settings.time = settings.time_start;
+                }
+            }
+            PlaybackMode::Once => {}
+            PlaybackMode::Sin => {}
         }
     }
 }

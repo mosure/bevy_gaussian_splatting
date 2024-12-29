@@ -115,10 +115,10 @@ impl TestCloud for PlanarGaussian3d {
                 1.0,
             ].into(),
             scale_opacity: [
-                0.5,
-                0.5,
-                0.5,
-                0.5,
+                0.125,
+                0.125,
+                0.125,
+                0.125,
             ].into(),
             spherical_harmonic: SphericalHarmonicCoefficients {
                 coefficients: {

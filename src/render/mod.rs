@@ -54,10 +54,7 @@ use bevy_interleave::prelude::*;
 use crate::{
     camera::GaussianCamera,
     gaussian::settings::{
-        DrawMode,
-        RasterizeMode,
-        CloudSettings,
-        GaussianMode,
+        CloudSettings, DrawMode, GaussianMode, RasterizeMode
     },
     material::{
         spherical_harmonics::{
@@ -66,15 +63,11 @@ use crate::{
             SH_DEGREE,
             SH_VEC4_PLANES,
         },
-        spherindrical_harmonics::SH_4D_DEGREE_TIME,
+        spherindrical_harmonics::{SH_4D_COEFF_COUNT, SH_4D_DEGREE_TIME},
     },
     morph::MorphPlugin,
     sort::{
-        GpuSortedEntry,
-        SortPlugin,
-        SortEntry,
-        SortedEntriesHandle,
-        SortTrigger,
+        GpuSortedEntry, SortEntry, SortPlugin, SortTrigger, SortedEntriesHandle
     },
 };
 
@@ -114,7 +107,7 @@ impl<R: PlanarStorage> Default for RenderPipelinePlugin<R> {
 
 impl<R: PlanarStorage> Plugin for RenderPipelinePlugin<R> {
     fn build(&self, app: &mut App) {
-        info!("building render pipeline plugin");
+        debug!("building render pipeline plugin");
 
         app.add_plugins(MorphPlugin::<R>::default());
 
@@ -135,7 +128,7 @@ impl<R: PlanarStorage> Plugin for RenderPipelinePlugin<R> {
 
         // TODO: refactor common resources into a common plugin
         if app.is_plugin_added::<SortPlugin>() {
-            info!("sort plugin already added");
+            debug!("sort plugin already added");
             return;
         }
 
@@ -273,17 +266,17 @@ fn queue_gaussians<R: PlanarStorage>(
     >,
     gaussian_splatting_bundles: Query<GpuCloudBundleQuery<R>>,
 ) {
-    info!("queue_gaussians");
+    debug!("queue_gaussians");
 
     let warmup = views.iter().any(|(_, _, camera, _, _)| camera.warmup);
     if warmup {
-        info!("skipping gaussian cloud render during warmup");
+        debug!("skipping gaussian cloud render during warmup");
         return;
     }
 
     // TODO: condition this system based on CloudBindGroup attachment
     if gaussian_cloud_uniform.buffer().is_none() {
-        info!("uniform buffer not initialized");
+        debug!("uniform buffer not initialized");
         return;
     };
 
@@ -296,9 +289,9 @@ fn queue_gaussians<R: PlanarStorage>(
         visible_entities,
         msaa,
     ) in &mut views {
-        info!("queue gaussians view");
+        debug!("queue gaussians view");
         let Some(transparent_phase) = transparent_render_phases.get_mut(&view_entity) else {
-            info!("transparent phase not found");
+            debug!("transparent phase not found");
             continue;
         };
 
@@ -309,14 +302,14 @@ fn queue_gaussians<R: PlanarStorage>(
             settings,
             _,
         ) in &gaussian_splatting_bundles {
-            info!("queue gaussians clouds");
+            debug!("queue gaussians clouds");
             if gaussian_clouds.get(cloud_handle.handle()).is_none() {
-                info!("gaussian cloud asset not found");
+                debug!("gaussian cloud asset not found");
                 return;
             }
 
             if sorted_entries.get(sorted_entries_handle).is_none() {
-                info!("sorted entries asset not found");
+                debug!("sorted entries asset not found");
                 return;
             }
 
@@ -338,12 +331,12 @@ fn queue_gaussians<R: PlanarStorage>(
             // // TODO: distance to gaussian cloud centroid
             // let rangefinder = view.rangefinder3d();
 
-            info!("visible entities...");
+            debug!("visible entities...");
             for (
                 render_entity,
                 visible_entity,
             ) in visible_entities.iter::<With<R::PlanarTypeHandle>>() {
-                info!("queueing gaussian cloud entity: {:?}", render_entity);
+                debug!("queueing gaussian cloud entity: {:?}", render_entity);
 
                 transparent_phase.add(Transparent3d {
                     entity: (*render_entity, *visible_entity),
@@ -447,7 +440,7 @@ impl<R: PlanarStorage> FromWorld for CloudPipeline<R> {
         #[cfg(feature = "buffer_texture")]
         let sorted_layout = texture::get_sorted_bind_group_layout(render_device);
 
-        info!("created cloud pipeline");
+        debug!("created cloud pipeline");
 
         Self {
             gaussian_cloud_layout,
@@ -524,6 +517,7 @@ pub fn shader_defs(
     let defines = ShaderDefines::default();
     let mut shader_defs = vec![
         ShaderDefVal::UInt("SH_COEFF_COUNT".into(), SH_COEFF_COUNT as u32),
+        ShaderDefVal::UInt("SH_4D_COEFF_COUNT".into(), SH_4D_COEFF_COUNT as u32),
         ShaderDefVal::UInt("SH_DEGREE".into(), SH_DEGREE as u32),
         ShaderDefVal::UInt("SH_DEGREE_TIME".into(), SH_4D_DEGREE_TIME as u32),
         ShaderDefVal::UInt("HALF_SH_COEFF_COUNT".into(), HALF_SH_COEFF_COUNT as u32),
@@ -600,6 +594,13 @@ pub fn shader_defs(
         GaussianMode::Gaussian4d => shader_defs.push("GAUSSIAN_4D".into()),
     }
 
+    match key.gaussian_mode {
+        GaussianMode::Gaussian2d | GaussianMode::Gaussian3d => {
+            shader_defs.push("GAUSSIAN_3D_STRUCTURE".into());
+        },
+        _ => {},
+    }
+
     match key.rasterize_mode {
         RasterizeMode::Color => shader_defs.push("RASTERIZE_COLOR".into()),
         RasterizeMode::Depth => shader_defs.push("RASTERIZE_DEPTH".into()),
@@ -639,7 +640,7 @@ impl<R: PlanarStorage> SpecializedRenderPipeline for CloudPipeline<R> {
             TextureFormat::Rgba8UnormSrgb
         };
 
-        info!("specializing cloud pipeline");
+        debug!("specializing cloud pipeline");
 
         RenderPipelineDescriptor {
             label: Some("gaussian cloud render pipeline".into()),
@@ -719,7 +720,6 @@ pub struct CloudUniform {
     pub time: f32,
     pub time_start: f32,
     pub time_stop: f32,
-    pub _pad: f32,
 }
 
 #[allow(clippy::type_complexity)]
@@ -750,22 +750,22 @@ pub fn extract_gaussians<R: PlanarStorage>(
         settings,
         transform,
     ) in gaussians_query.iter() {
-        info!("extracting gaussian cloud entity: {:?}", entity);
+        debug!("extracting gaussian cloud entity: {:?}", entity);
 
         if !visibility.get() {
-            info!("gaussian cloud not visible");
+            debug!("gaussian cloud not visible");
             continue;
         }
 
         if let Some(load_state) = asset_server.get_load_state(cloud_handle.handle()) {
             if load_state.is_loading() {
-                info!("gaussian cloud asset loading");
+                debug!("gaussian cloud asset loading");
                 continue;
             }
         }
 
         if gaussian_cloud_res.get(cloud_handle.handle()).is_none() {
-            info!("gaussian cloud asset not found");
+            debug!("gaussian cloud asset not found");
             continue;
         }
 
@@ -780,7 +780,6 @@ pub fn extract_gaussians<R: PlanarStorage>(
             time: settings.time,
             time_start: settings.time_start,
             time_stop: settings.time_stop,
-            _pad: 0.0,
         };
 
         commands_list.push((
@@ -853,25 +852,25 @@ fn queue_gaussian_bind_group<R: PlanarStorage>(
         // TODO: add asset loading indicator (and maybe streamed loading)
         if let Some(load_state) = asset_server.get_load_state(cloud_handle.handle()) {
             if load_state.is_loading() {
-                info!("queue gaussian bind group: cloud asset loading");
+                debug!("queue gaussian bind group: cloud asset loading");
                 continue;
             }
         }
 
         if gaussian_cloud_res.get(cloud_handle.handle()).is_none() {
-            info!("queue gaussian bind group: cloud asset not found");
+            debug!("queue gaussian bind group: cloud asset not found");
             continue;
         }
 
         if let Some(load_state) = asset_server.get_load_state(&sorted_entries_handle.0) {
             if load_state.is_loading() {
-                info!("queue gaussian bind group: sorted entries asset loading");
+                debug!("queue gaussian bind group: sorted entries asset loading");
                 continue;
             }
         }
 
         if sorted_entries_res.get(&sorted_entries_handle.0).is_none() {
-            info!("queue gaussian bind group: sorted entries asset not found");
+            debug!("queue gaussian bind group: sorted entries asset not found");
             continue;
         }
 
@@ -909,7 +908,7 @@ fn queue_gaussian_bind_group<R: PlanarStorage>(
             ],
         );
 
-        info!("inserting sorted bind group");
+        debug!("inserting sorted bind group");
 
         commands.entity(entity).insert(SortBindGroup {
             sorted_bind_group,
@@ -968,7 +967,7 @@ pub fn queue_gaussian_view_bind_groups<R: PlanarStorage>(
                 &entries,
             );
 
-            info!("inserting gaussian view bind group");
+            debug!("inserting gaussian view bind group");
 
             commands.entity(entity).insert(GaussianViewBindGroup {
                 value: view_bind_group,
@@ -1006,7 +1005,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianViewBindGroup
             &[view_uniform.offset],
         );
 
-        info!("set gaussian view bind group");
+        debug!("set gaussian view bind group");
 
         RenderCommandResult::Success
     }
@@ -1033,14 +1032,14 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianUniformBindGr
         let mut set_bind_group = |indices: &[u32]| pass.set_bind_group(I, bind_group, indices);
 
         if gaussian_cloud_index.is_none() {
-            info!("skipping gaussian uniform bind group\n");
+            debug!("skipping gaussian uniform bind group\n");
             return RenderCommandResult::Skip;
         }
 
         let gaussian_cloud_index = gaussian_cloud_index.unwrap().index();
         set_bind_group(&[gaussian_cloud_index]);
 
-        info!("set gaussian uniform bind group");
+        debug!("set gaussian uniform bind group");
 
         RenderCommandResult::Success
     }
@@ -1079,7 +1078,7 @@ impl<P: PhaseItem, R: PlanarStorage> RenderCommand<P> for DrawGaussianInstanced<
         gaussian_clouds: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
-        info!("render call");
+        debug!("render call");
 
         let (
             handle,
@@ -1089,10 +1088,10 @@ impl<P: PhaseItem, R: PlanarStorage> RenderCommand<P> for DrawGaussianInstanced<
 
         let gpu_gaussian_cloud = match gaussian_clouds.into_inner().get(handle.handle()) {
             Some(gpu_gaussian_cloud) => gpu_gaussian_cloud,
-            None => { info!("gpu cloud not found"); return RenderCommandResult::Skip },
+            None => { debug!("gpu cloud not found"); return RenderCommandResult::Skip },
         };
 
-        info!("drawing indirect");
+        debug!("drawing indirect");
 
         pass.set_bind_group(
             2,

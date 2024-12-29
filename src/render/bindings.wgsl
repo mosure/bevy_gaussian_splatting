@@ -21,7 +21,7 @@ struct GaussianUniforms {
 @group(1) @binding(0) var<uniform> gaussian_uniforms: GaussianUniforms;
 
 
-// #if defined(GAUSSIAN_2D) || defined(GAUSSIAN_3D)
+#ifdef GAUSSIAN_3D_STRUCTURE
     #ifdef PACKED_F32
         struct Gaussian {
             @location(0) rotation: vec4<f32>,
@@ -103,9 +103,21 @@ struct GaussianUniforms {
 
         @group(2) @binding(2) var rotation_scale_opacity: texture_2d<f32>;
     #endif
-// #else ifdef GAUSSIAN_4D
-    // TODO: rebind gaussian 4d
-// #endif
+#else ifdef GAUSSIAN_4D
+    #ifdef PLANAR_F32
+        #ifdef READ_WRITE_POINTS
+            @group(2) @binding(0) var<storage, read_write> position_visibility: array<vec4<f32>>;
+        #else
+            @group(2) @binding(0) var<storage, read> position_visibility: array<vec4<f32>>;
+        #endif
+
+        @group(2) @binding(1) var<storage, read> spherindrical_harmonics: array<array<f32, #{SH_4D_COEFF_COUNT}>>;
+
+        @group(2) @binding(2) var<storage, read> isotropic_rotations: array<array<f32, 8>>;
+        @group(2) @binding(3) var<storage, read> scale_opacity: array<vec4<f32>>;
+        @group(2) @binding(4) var<storage, read> timestamp_timescale: array<vec4<f32>>;
+    #endif
+#endif
 
 
 struct DrawIndirect {

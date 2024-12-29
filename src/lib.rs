@@ -54,23 +54,22 @@ impl Plugin for GaussianSplattingPlugin {
         app.init_asset_loader::<Gaussian3dLoader>();
         // TODO: Gaussian4dLoader asset loader
 
-        app.register_type::<CloudSettings>();
-
         app.add_plugins((
             camera::GaussianCameraPlugin,
+            gaussian::settings::SettingsPlugin,
             gaussian::cloud::CloudPlugin::<Gaussian3d>::default(),
-            // gaussian::cloud::CloudPlugin::<Gaussian4d>::default(),
+            gaussian::cloud::CloudPlugin::<Gaussian4d>::default(),
         ));
 
         // TODO: add half types
         app.add_plugins((
             PlanarStoragePlugin::<Gaussian3d>::default(),
-            // PlanarStoragePlugin::<Gaussian4d>::default(),
+            PlanarStoragePlugin::<Gaussian4d>::default(),
         ));
 
         app.add_plugins((
             render::RenderPipelinePlugin::<Gaussian3d>::default(),
-            // render::RenderPipelinePlugin::<Gaussian4d>::default(),
+            render::RenderPipelinePlugin::<Gaussian4d>::default(),
         ));
 
         app.add_plugins((

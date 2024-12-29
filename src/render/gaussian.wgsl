@@ -24,11 +24,17 @@
 #else ifdef GAUSSIAN_3D
     #import bevy_gaussian_splatting::gaussian_3d::{
         compute_cov2d_3dgs,
+    }
+    #import bevy_gaussian_splatting::helpers::{
         get_bounding_box_clip,
     }
 #else ifdef GAUSSIAN_4D
     #import bevy_gaussian_splatting::gaussian_4d::{
-        compute_cov2d_4dgs,
+        conditional_cov3d,
+    }
+    #import bevy_gaussian_splatting::helpers::{
+        cov2d,
+        get_bounding_box_clip,
     }
 #endif
 
@@ -120,15 +126,18 @@
         @builtin(position) position: vec4<f32>,
         @location(0) color: vec4<f32>,
         @location(1) uv: vec2<f32>,
-    #ifdef GAUSSIAN_3D
-        @location(2) conic: vec3<f32>,
-        @location(3) major_minor: vec2<f32>,
-    #else ifdef GAUSSIAN_2D
+    #ifdef GAUSSIAN_2D
         @location(2) local_to_pixel_u: vec3<f32>,
         @location(3) local_to_pixel_v: vec3<f32>,
         @location(4) local_to_pixel_w: vec3<f32>,
         @location(5) mean_2d: vec2<f32>,
         @location(6) radius: vec2<f32>,
+    #else #ifdef GAUSSIAN_3D
+        @location(2) conic: vec3<f32>,
+        @location(3) major_minor: vec2<f32>,
+    #else #ifdef GAUSSIAN_4D
+        @location(2) conic: vec3<f32>,
+        @location(3) major_minor: vec2<f32>,
     #endif
     };
 #else
@@ -136,15 +145,18 @@
         @builtin(position) position: vec4<f32>,
         @location(0) @interpolate(flat) color: vec4<f32>,
         @location(1) @interpolate(linear) uv: vec2<f32>,
-    #ifdef GAUSSIAN_3D
-        @location(2) @interpolate(flat) conic: vec3<f32>,
-        @location(3) @interpolate(linear) major_minor: vec2<f32>,
-    #else ifdef GAUSSIAN_2D
+    #ifdef GAUSSIAN_2D
         @location(2) @interpolate(flat) local_to_pixel_u: vec3<f32>,
         @location(3) @interpolate(flat) local_to_pixel_v: vec3<f32>,
         @location(4) @interpolate(flat) local_to_pixel_w: vec3<f32>,
         @location(5) @interpolate(flat) mean_2d: vec2<f32>,
         @location(6) @interpolate(flat) radius: vec2<f32>,
+    #else ifdef GAUSSIAN_3D
+        @location(2) @interpolate(flat) conic: vec3<f32>,
+        @location(3) @interpolate(linear) major_minor: vec2<f32>,
+    #else ifdef GAUSSIAN_4D
+        @location(2) @interpolate(flat) conic: vec3<f32>,
+        @location(3) @interpolate(linear) major_minor: vec2<f32>,
     #endif
     };
 #endif
@@ -166,9 +178,12 @@ fn vs_points(
 
     let position = vec4<f32>(get_position(splat_index), 1.0);
 
-    let transformed_position = (gaussian_uniforms.transform * position).xyz;
-    let projected_position = world_to_clip(transformed_position);
+    var transformed_position = (gaussian_uniforms.transform * position).xyz;
 
+#ifdef GAUSSIAN_4D
+// TODO: perform discard check after transforming by delta_mean
+#else
+    let projected_position = world_to_clip(transformed_position);
     discard_quad |= !in_frustum(projected_position.xyz);
 
 #ifdef DRAW_SELECTED
@@ -180,6 +195,7 @@ fn vs_points(
         output.position = vec4<f32>(0.0, 0.0, 0.0, 0.0);
         return output;
     }
+#endif
 
     var quad_vertices = array<vec2<f32>, 4>(
         vec2<f32>(-1.0, -1.0),
@@ -190,6 +206,84 @@ fn vs_points(
 
     let quad_index = vertex_index % 4u;
     let quad_offset = quad_vertices[quad_index];
+
+
+    var opacity = get_opacity(splat_index);
+
+#ifdef OPACITY_ADAPTIVE_RADIUS
+    let cutoff = sqrt(max(9.0 + 2.0 * log(opacity), 0.000001));
+#else
+    let cutoff = 3.0;
+#endif
+
+
+#ifdef GAUSSIAN_2D
+    let surfel = compute_cov2d_surfel(
+        transformed_position,
+        splat_index,
+        cutoff,
+    );
+
+    output.local_to_pixel_u = surfel.local_to_pixel.x;
+    output.local_to_pixel_v = surfel.local_to_pixel.y;
+    output.local_to_pixel_w = surfel.local_to_pixel.z;
+    output.mean_2d = surfel.mean_2d;
+
+    let bb = get_bounding_box_cov2d(
+        surfel.extent,
+        quad_offset,
+        cutoff,
+    );
+    output.radius = bb.zw;
+#else
+    #ifdef GAUSSIAN_3D
+        let gaussian_cov2d = compute_cov2d_3dgs(
+            transformed_position,
+            splat_index,
+        );
+    #else ifdef GAUSSIAN_4D
+        let gaussian_4d = conditional_cov3d(
+            transformed_position,
+            splat_index,
+        );
+
+        if !gaussian_4d.mask {
+            output.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+            output.position = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+            return output;
+        }
+
+        opacity = opacity * gaussian_4d.opacity_modifier;
+
+        let position_t = vec4<f32>(position.xyz + gaussian_4d.delta_mean, 1.0);
+        transformed_position = (gaussian_uniforms.transform * position_t).xyz;
+        let projected_position = world_to_clip(transformed_position);
+
+        let gaussian_cov2d = cov2d(
+            transformed_position,
+            gaussian_4d.cov3d,
+        );
+    #endif
+
+    let bb = get_bounding_box_clip(
+        gaussian_cov2d,
+        quad_offset,
+        cutoff,
+    );
+
+    #ifdef USE_AABB
+        let det = gaussian_cov2d.x * gaussian_cov2d.z - gaussian_cov2d.y * gaussian_cov2d.y;
+        let det_inv = 1.0 / det;
+        let conic = vec3<f32>(
+            gaussian_cov2d.z * det_inv,
+            -gaussian_cov2d.y * det_inv,
+            gaussian_cov2d.x * det_inv
+        );
+        output.conic = conic;
+        output.major_minor = bb.zw;
+    #endif
+#endif
+
 
     var rgb = vec3<f32>(0.0);
 
@@ -213,6 +307,7 @@ fn vs_points(
         max_distance,
     );
 #else ifdef RASTERIZE_NORMAL
+    // TODO: support rotation decomposition for 4d gaussians
     let R = get_rotation_matrix(get_rotation(splat_index));
     let S = get_scale_matrix(get_scale(splat_index));
     let T = mat3x3<f32>(
@@ -234,17 +329,16 @@ fn vs_points(
     );
 #else
     // TODO: verify color benefit for ray_direction computed at quad verticies instead of gaussian center (same as current complexity)
+    // TODO: why doesn't Transform rotation change SH color?
     let ray_direction = normalize(transformed_position - view.world_position);
-    rgb = get_color(splat_index, ray_direction);
+
+    #ifdef GAUSSIAN_3D_STRUCTURE
+        rgb = get_color(splat_index, ray_direction);
+    #else ifdef GAUSSIAN_4D
+        rgb = get_color(splat_index, gaussian_4d.dir_t, ray_direction);
+    #endif
 #endif
 
-    let opacity = get_opacity(splat_index);
-
-#ifdef OPACITY_ADAPTIVE_RADIUS
-    let cutoff = sqrt(max(9.0 + 2.0 * log(opacity), 0.000001));
-#else
-    let cutoff = 3.0;
-#endif
 
     output.color = vec4<f32>(
         rgb,
@@ -257,55 +351,6 @@ fn vs_points(
     }
 #endif
 
-#ifdef GAUSSIAN_2D
-    let surfel = compute_cov2d_surfel(
-        transformed_position,
-        splat_index,
-        cutoff,
-    );
-
-    output.local_to_pixel_u = surfel.local_to_pixel.x;
-    output.local_to_pixel_v = surfel.local_to_pixel.y;
-    output.local_to_pixel_w = surfel.local_to_pixel.z;
-    output.mean_2d = surfel.mean_2d;
-
-    let bb = get_bounding_box_cov2d(
-        surfel.extent,
-        quad_offset,
-        cutoff,
-    );
-    output.radius = bb.zw;
-#else
-    #ifdef GAUSSIAN_3D
-        let cov2d = compute_cov2d_3dgs(
-            transformed_position,
-            splat_index,
-        );
-    #else ifdef GAUSSIAN_4D
-        let cov2d = compute_cov2d_4dgs(
-            transformed_position,
-            splat_index,
-        );
-    #endif
-
-    let bb = get_bounding_box_clip(
-        cov2d,
-        quad_offset,
-        cutoff,
-    );
-
-    #ifdef USE_AABB
-        let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
-        let det_inv = 1.0 / det;
-        let conic = vec3<f32>(
-            cov2d.z * det_inv,
-            -cov2d.y * det_inv,
-            cov2d.x * det_inv
-        );
-        output.conic = conic;
-        output.major_minor = bb.zw;
-    #endif
-#endif
 
     output.uv = quad_offset;
     output.position = vec4<f32>(
@@ -338,6 +383,10 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
         mean_2d,
     );
 #else ifdef GAUSSIAN_3D
+    let d = -input.major_minor;
+    let conic = input.conic;
+    let power = -0.5 * (conic.x * d.x * d.x + conic.z * d.y * d.y) + conic.y * d.x * d.y;
+#else ifdef GAUSSIAN_4D
     let d = -input.major_minor;
     let conic = input.conic;
     let power = -0.5 * (conic.x * d.x * d.x + conic.z * d.y * d.y) + conic.y * d.x * d.y;
