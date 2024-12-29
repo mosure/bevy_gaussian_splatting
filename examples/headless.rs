@@ -12,6 +12,7 @@ use bevy::{
 use bevy_args::BevyArgsPlugin;
 
 use bevy_gaussian_splatting::{
+    CloudSettings,
     GaussianCamera,
     PlanarGaussian3d,
     PlanarGaussian3dHandle,
@@ -396,6 +397,7 @@ fn setup_gaussian_cloud(
 
     commands.spawn((
         PlanarGaussian3dHandle(cloud),
+        CloudSettings::default(),
         Name::new("gaussian_cloud"),
     ));
 

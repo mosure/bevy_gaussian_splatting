@@ -42,10 +42,10 @@ use crate::{
 )]
 #[repr(C)]
 pub struct Gaussian3d {
-    pub rotation: Rotation,
     pub position_visibility: PositionVisibility,
-    pub scale_opacity: ScaleOpacity,
     pub spherical_harmonic: SphericalHarmonicCoefficients,
+    pub rotation: Rotation,
+    pub scale_opacity: ScaleOpacity,
 }
 
 // GaussianMode::Gaussian2d /w Gaussian3d structure
@@ -69,9 +69,9 @@ pub type Gaussian2d = Gaussian3d;
 )]
 #[repr(C)]
 pub struct Gaussian4d {
-    pub isomorphic_rotations: IsotropicRotations,
     pub position_visibility: PositionVisibility,
-    pub scale_opacity: ScaleOpacity,
     pub spherindrical_harmonic: SpherindricalHarmonicCoefficients,
     pub timestamp_timescale: TimestampTimescale,
+    pub isomorphic_rotations: IsotropicRotations,
+    pub scale_opacity: ScaleOpacity,
 }

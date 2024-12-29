@@ -612,7 +612,7 @@ impl Node for RadixSortNode {
                         pass.set_bind_group(
                             1,
                             gaussian_uniforms.base_bind_group.as_ref().unwrap(),
-                            &[0], // TODO: fix transforms - dynamic offset using DynamicUniformIndex
+                            &[0],
                         );
                         pass.set_bind_group(
                             2,
@@ -660,7 +660,7 @@ impl Node for RadixSortNode {
                         pass.set_bind_group(
                             1,
                             gaussian_uniforms.base_bind_group.as_ref().unwrap(),
-                            &[0], // TODO: fix transforms - dynamic offset using DynamicUniformIndex
+                            &[0],
                         );
                         pass.set_bind_group(
                             2,

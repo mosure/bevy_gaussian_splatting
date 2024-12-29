@@ -22,7 +22,7 @@
 }
 
 
-#if defined(GAUSSIAN_2D) || defined(GAUSSIAN_3D)
+#ifdef GAUSSIAN_3D // or GAUSSIAN_2D
     #ifdef PLANAR_F16
         fn get_color(
             index: u32,

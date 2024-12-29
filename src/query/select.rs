@@ -47,7 +47,7 @@ impl Plugin for SelectPlugin {
         app.add_event::<SaveSelectionEvent>();
 
         app.add_plugins(CommonCloudSelectPlugin::<Gaussian3d>::default());
-        app.add_plugins(CommonCloudSelectPlugin::<Gaussian4d>::default());
+        // app.add_plugins(CommonCloudSelectPlugin::<Gaussian4d>::default());
     }
 }
 
