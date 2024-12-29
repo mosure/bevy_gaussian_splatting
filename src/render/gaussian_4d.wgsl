@@ -85,8 +85,7 @@ fn conditional_cov3d(
     let cov_t = Sigma[3][3];
     let marginal_t = exp(-0.5 * dt * dt / cov_t);
 
-    // let mask = marginal_t > 0.05;
-    let mask = true;
+    let mask = marginal_t > 0.05;
     if !mask {
         return DecomposedGaussian4d(
             array<f32, 6>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),

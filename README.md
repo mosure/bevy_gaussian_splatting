@@ -28,7 +28,8 @@ bevy gaussian splatting render pipeline plugin. view the [live demo](https://mos
 - [X] multi-format scenes
 - [X] 2dgs
 - [X] 3dgs
-- [ ] 4dgs
+- [x] 4dgs
+- [ ] 4dgs temporal anti-aliasing (resolves pulsed laser trail effect)
 - [ ] temporal gaussian hierarchy
 - [ ] gcloud, spherical harmonic coefficients Huffman encoding
 - [ ] [spz](https://github.com/nianticlabs/spz) format io

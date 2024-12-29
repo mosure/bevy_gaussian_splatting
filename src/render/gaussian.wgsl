@@ -180,14 +180,14 @@ fn vs_points(
 
     var transformed_position = (gaussian_uniforms.transform * position).xyz;
 
-#ifdef GAUSSIAN_4D
-// TODO: perform discard check after transforming by delta_mean
-#else
-    let projected_position = world_to_clip(transformed_position);
-    discard_quad |= !in_frustum(projected_position.xyz);
-
 #ifdef DRAW_SELECTED
     discard_quad |= get_visibility(splat_index) < 0.5;
+#endif
+
+#ifdef GAUSSIAN_4D
+#else
+    let origin_projected_position = world_to_clip(transformed_position);
+    discard_quad |= !in_frustum(origin_projected_position.xyz);
 #endif
 
     if (discard_quad) {
@@ -195,7 +195,6 @@ fn vs_points(
         output.position = vec4<f32>(0.0, 0.0, 0.0, 0.0);
         return output;
     }
-#endif
 
     var quad_vertices = array<vec2<f32>, 4>(
         vec2<f32>(-1.0, -1.0),
@@ -253,11 +252,17 @@ fn vs_points(
             return output;
         }
 
-        opacity = opacity * gaussian_4d.opacity_modifier;
-
         let position_t = vec4<f32>(position.xyz + gaussian_4d.delta_mean, 1.0);
         transformed_position = (gaussian_uniforms.transform * position_t).xyz;
         let projected_position = world_to_clip(transformed_position);
+
+        if !in_frustum(projected_position.xyz) {
+            output.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+            output.position = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+            return output;
+        }
+
+        opacity = opacity * gaussian_4d.opacity_modifier;
 
         let gaussian_cov2d = cov2d(
             transformed_position,

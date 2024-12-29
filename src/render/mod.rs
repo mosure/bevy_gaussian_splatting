@@ -567,19 +567,19 @@ pub fn shader_defs(
 
     shader_defs.push("F32".into());
 
-    #[cfg(all(feature = "packed"))]
+    #[cfg(feature = "packed")]
     shader_defs.push("PACKED_F32".into());
 
     // #[cfg(all(feature = "f16", feature = "buffer_storage"))]
     // shader_defs.push("PLANAR_F16".into());
 
-    #[cfg(all(feature = "buffer_storage"))]
+    #[cfg(feature = "buffer_storage")]
     shader_defs.push("PLANAR_F32".into());
 
     // #[cfg(all(feature = "f16", feature = "buffer_texture"))]
     // shader_defs.push("PLANAR_TEXTURE_F16".into());
 
-    #[cfg(all(feature = "buffer_texture"))]
+    #[cfg(feature = "buffer_texture")]
     shader_defs.push("PLANAR_TEXTURE_F32".into());
 
     #[cfg(feature = "precompute_covariance_3d")]
@@ -1112,7 +1112,7 @@ impl<P: PhaseItem, R: PlanarStorage> RenderCommand<P> for DrawGaussianInstanced<
         pass.draw(0..4, 0..gpu_gaussian_cloud.count as u32);
 
         #[cfg(not(feature = "webgl2"))]
-        pass.draw_indirect(&gpu_gaussian_cloud.draw_indirect_buffer(), 0);
+        pass.draw_indirect(gpu_gaussian_cloud.draw_indirect_buffer(), 0);
 
         RenderCommandResult::Success
     }

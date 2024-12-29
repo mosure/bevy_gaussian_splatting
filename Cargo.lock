@@ -1425,7 +1425,9 @@ dependencies = [
 
 [[package]]
 name = "bevy_interleave"
-version = "0.6.0"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3856aba0712d9c39b50e50cdda663e0ec5d4a859952fb1e0a9afb704989492d0"
 dependencies = [
  "bevy 0.15.0",
  "bevy_interleave_interface",
@@ -1440,14 +1442,18 @@ dependencies = [
 
 [[package]]
 name = "bevy_interleave_interface"
-version = "0.6.0"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af56940118d5310ce0997660fd8a16ac2dc5a12c14787fbd7d5523a8cebf6aaf"
 dependencies = [
  "bevy 0.15.0",
 ]
 
 [[package]]
 name = "bevy_interleave_macros"
-version = "0.6.0"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fbcf89341f2d25d6f39594461309b94c95868186d184e1dfc946944a3fb616e5"
 dependencies = [
  "bevy 0.15.0",
  "bevy_interleave_interface",

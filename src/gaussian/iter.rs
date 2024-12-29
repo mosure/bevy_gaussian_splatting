@@ -56,7 +56,7 @@ impl<'a> ParallelIterator for PositionParIter<'a> {
 }
 
 #[cfg(feature = "sort_rayon")]
-impl<'a> IndexedParallelIterator for PositionParIter<'a> {
+impl IndexedParallelIterator for PositionParIter<'_> {
     fn len(&self) -> usize {
         self.slice_par_iter.len()
     }
