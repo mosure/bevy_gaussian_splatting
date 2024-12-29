@@ -719,6 +719,7 @@ pub struct CloudUniform {
     pub time: f32,
     pub time_start: f32,
     pub time_stop: f32,
+    pub _pad: f32,
 }
 
 #[allow(clippy::type_complexity)]
@@ -779,6 +780,7 @@ pub fn extract_gaussians<R: PlanarStorage>(
             time: settings.time,
             time_start: settings.time_start,
             time_stop: settings.time_stop,
+            _pad: 0.0,
         };
 
         commands_list.push((
