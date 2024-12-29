@@ -30,7 +30,7 @@ use crate::{
 //     Deserialize,
 // )]
 // pub struct HalfCloud4d {
-//     pub isomorphic_rotations: Vec<IsotropicRotations>,
+//     pub isotropic_rotations: Vec<IsotropicRotations>,
 //     pub position_visibility: Vec<PositionVisibility>,
 //     pub scale_opacity: Vec<ScaleOpacity>,
 //     pub spherindrical_harmonic: Vec<SpherindricalHarmonicCoefficients>,
@@ -54,7 +54,7 @@ use crate::{
 //     }
 
 //     fn subset(&self, indicies: &[usize]) -> Self {
-//         let mut isomorphic_rotations = Vec::with_capacity(indicies.len());
+//         let mut isotropic_rotations = Vec::with_capacity(indicies.len());
 //         let mut position_visibility = Vec::with_capacity(indicies.len());
 //         let mut scale_opacity = Vec::with_capacity(indicies.len());
 //         let mut spherindrical_harmonic = Vec::with_capacity(indicies.len());
@@ -69,7 +69,7 @@ use crate::{
 //         }
 
 //         Self {
-//             isomorphic_rotations,
+//             isotropic_rotations,
 //             position_visibility,
 //             spherindrical_harmonic,
 //             scale_opacity,
@@ -83,7 +83,7 @@ use crate::{
 //         let mut rng = rand::thread_rng();
 
 //         let origin = Gaussian {
-//             isomorphic_rotations: [
+//             isotropic_rotations: [
 //                 1.0,
 //                 0.0,
 //                 0.0,
@@ -139,14 +139,14 @@ use crate::{
 
 // impl HalfCloud4d {
 //     fn from_packed(gaussians: Vec<Gaussian4d>) -> Self {
-//         let mut isomorphic_rotations = Vec::with_capacity(gaussians.len());
+//         let mut isotropic_rotations = Vec::with_capacity(gaussians.len());
 //         let mut position_visibility = Vec::with_capacity(gaussians.len());
 //         let mut scale_opacity = Vec::with_capacity(gaussians.len());
 //         let mut spherindrical_harmonic = Vec::with_capacity(gaussians.len());
 //         let mut timestamp_timescale = Vec::with_capacity(gaussians.len());
 
 //         for gaussian in gaussians {
-//             isomorphic_rotations.push(gaussian.isomorphic_rotations);
+//             isotropic_rotations.push(gaussian.isotropic_rotations);
 //             position_visibility.push(gaussian.position_visibility);
 //             scale_opacity.push(gaussian.scale_opacity);
 //             spherindrical_harmonic.push(gaussian.spherindrical_harmonic);
@@ -154,7 +154,7 @@ use crate::{
 //         }
 
 //         Self {
-//             isomorphic_rotations,
+//             isotropic_rotations,
 //             position_visibility,
 //             scale_opacity,
 //             spherindrical_harmonic,
@@ -215,7 +215,7 @@ impl TestCloud for PlanarGaussian4d {
         }
 
         let origin = Gaussian4d {
-            isomorphic_rotations: [
+            isotropic_rotations: [
                 1.0,
                 0.0,
                 0.0,

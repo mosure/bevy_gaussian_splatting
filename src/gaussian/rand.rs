@@ -87,7 +87,7 @@ impl Distribution<Gaussian4d> for rand::distributions::Standard {
         }
 
         Gaussian4d {
-            isomorphic_rotations: [
+            isotropic_rotations: [
                 rng.gen_range(-1.0..1.0),
                 rng.gen_range(-1.0..1.0),
                 rng.gen_range(-1.0..1.0),

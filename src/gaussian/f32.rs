@@ -134,8 +134,8 @@ pub struct IsotropicRotations {
 
 impl IsotropicRotations {
     pub fn from_gaussian(gaussian: &Gaussian4d) -> Self {
-        let rotation = gaussian.isomorphic_rotations.rotation;
-        let rotation_r = gaussian.isomorphic_rotations.rotation_r;
+        let rotation = gaussian.isotropic_rotations.rotation;
+        let rotation_r = gaussian.isotropic_rotations.rotation_r;
 
         Self {
             rotation,
