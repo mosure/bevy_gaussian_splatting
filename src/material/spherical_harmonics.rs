@@ -48,6 +48,7 @@ const fn num_sh_coefficients(degree: usize) -> usize {
 }
 
 
+// TODO: let SH_DEGREE be a const generic parameter to SphericalHarmonicCoefficients
 #[cfg(feature = "sh0")]
 pub const SH_DEGREE: usize = 0;
 
