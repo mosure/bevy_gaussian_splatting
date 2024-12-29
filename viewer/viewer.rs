@@ -33,6 +33,7 @@ use bevy_gaussian_splatting::{
     PlanarGaussian3dHandle,
     PlanarGaussian4dHandle,
     gaussian::interface::TestCloud,
+    gaussian::settings::PlaybackMode,
     random_gaussians_3d,
     random_gaussians_4d,
     utils::{
@@ -108,6 +109,7 @@ fn setup_gaussian_cloud(
                 PlanarGaussian4dHandle(cloud),
                 CloudSettings {
                     gaussian_mode: args.gaussian_mode,
+                    playback_mode: PlaybackMode::Sin,
                     ..default()
                 },
                 Name::new("gaussian_cloud_4d"),

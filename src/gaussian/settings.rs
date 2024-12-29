@@ -61,6 +61,7 @@ pub enum PlaybackMode {
     Loop,
     Once,
     Sin,
+    Still,
 }
 
 
@@ -158,6 +159,9 @@ fn playback_update(
                 }
             }
             PlaybackMode::Sin => {}
+            PlaybackMode::Still => {
+                continue;
+            }
         }
 
         // forward condition
@@ -170,6 +174,7 @@ fn playback_update(
                 let y = (theta * 2.0 * std::f32::consts::PI).sin();
                 settings.time = settings.time_start + (settings.time_stop - settings.time_start) * (y + 1.0) / 2.0;
             }
+            PlaybackMode::Still => {}
         }
 
         // reset condition
@@ -181,6 +186,7 @@ fn playback_update(
             }
             PlaybackMode::Once => {}
             PlaybackMode::Sin => {}
+            PlaybackMode::Still => {}
         }
     }
 }

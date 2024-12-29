@@ -186,8 +186,8 @@ fn vs_points(
 
 #ifdef GAUSSIAN_4D
 #else
-    let origin_projected_position = world_to_clip(transformed_position);
-    discard_quad |= !in_frustum(origin_projected_position.xyz);
+    let projected_position = world_to_clip(transformed_position);
+    discard_quad |= !in_frustum(projected_position.xyz);
 #endif
 
     if (discard_quad) {
