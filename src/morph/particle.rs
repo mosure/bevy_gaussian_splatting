@@ -82,7 +82,11 @@ use serde::{
 use crate::{
     camera::GaussianCamera,
     render::{
-        self, shader_defs, CloudPipeline, CloudPipelineKey, GaussianUniformBindGroups, GaussianViewBindGroup
+        shader_defs,
+        CloudPipeline,
+        CloudPipelineKey,
+        GaussianUniformBindGroups,
+        GaussianViewBindGroup,
     },
 };
 

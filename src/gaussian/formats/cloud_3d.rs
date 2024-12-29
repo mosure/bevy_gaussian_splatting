@@ -122,19 +122,19 @@ impl TestCloud for PlanarGaussian3d {
             ].into(),
             spherical_harmonic: SphericalHarmonicCoefficients {
                 coefficients: {
-                    #[cfg(feature = "f16")]
-                    {
-                        let mut coefficients = [0_u32; HALF_SH_COEFF_COUNT];
+                    // #[cfg(feature = "f16")]
+                    // {
+                    //     let mut coefficients = [0_u32; HALF_SH_COEFF_COUNT];
 
-                        for coefficient in coefficients.iter_mut() {
-                            let upper = rng.gen_range(-1.0..1.0);
-                            let lower = rng.gen_range(-1.0..1.0);
+                    //     for coefficient in coefficients.iter_mut() {
+                    //         let upper = rng.gen_range(-1.0..1.0);
+                    //         let lower = rng.gen_range(-1.0..1.0);
 
-                            *coefficient = pack_f32s_to_u32(upper, lower);
-                        }
+                    //         *coefficient = pack_f32s_to_u32(upper, lower);
+                    //     }
 
-                        coefficients
-                    }
+                    //     coefficients
+                    // }
 
                     {
                         let mut coefficients = [0.0; SH_COEFF_COUNT];

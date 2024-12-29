@@ -141,7 +141,7 @@ webgpu = ["bevy/webgpu"]
 [dependencies]
 bevy_args = "1.7"
 bevy-inspector-egui = { version = "0.28", optional = true }
-bevy_interleave = { version = "0.5.1", path = "../bevy_interleave" }
+bevy_interleave = { version = "0.6.0" }
 # bevy_panorbit_camera = { git = "https://github.com/mosure/bevy_panorbit_camera.git", optional = true, features = ["bevy_egui"] }
 bevy_panorbit_camera = { version = "0.21", optional = true, features = ["bevy_egui"] }
 bevy_transform_gizmo = { version = "0.12", optional = true }
