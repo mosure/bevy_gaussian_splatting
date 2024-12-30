@@ -6,10 +6,7 @@ use crate::{
             CommonCloud,
             TestCloud,
         },
-        iter::{
-            PositionIter,
-            PositionParIter,
-        },
+        iter::PositionIter,
         packed::{Gaussian4d, PlanarGaussian4d},
     },
     random_gaussians_4d,
@@ -182,8 +179,8 @@ impl CommonCloud for PlanarGaussian4d {
     }
 
     #[cfg(feature = "sort_rayon")]
-    fn position_par_iter(&self) -> PositionParIter<'_> {
-        PositionParIter::new(&self.position_visibility)
+    fn position_par_iter(&self) -> crate::gaussian::iter::PositionParIter<'_> {
+        crate::gaussian::iter::PositionParIter::new(&self.position_visibility)
     }
 }
 

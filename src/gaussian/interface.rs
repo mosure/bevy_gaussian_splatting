@@ -7,10 +7,7 @@ use bevy_interleave::prelude::Planar;
 #[cfg(feature = "sort_rayon")]
 use rayon::prelude::*;
 
-use crate::gaussian::iter::{
-    PositionIter,
-    PositionParIter,
-};
+use crate::gaussian::iter::PositionIter;
 
 
 pub trait CommonCloud
@@ -77,7 +74,7 @@ where
     fn position_iter(&self) -> PositionIter<'_>;
 
     #[cfg(feature = "sort_rayon")]
-    fn position_par_iter(&self) -> PositionParIter<'_>;
+    fn position_par_iter(&self) -> crate::gaussian::iter::PositionParIter<'_>;
 }
 
 pub trait TestCloud {

@@ -18,10 +18,7 @@ use crate::{
             CommonCloud,
             TestCloud,
         },
-        iter::{
-            PositionIter,
-            PositionParIter,
-        },
+        iter::PositionIter,
         packed::{Gaussian3d, PlanarGaussian3d},
         settings::CloudSettings,
     },
@@ -79,8 +76,8 @@ impl CommonCloud for PlanarGaussian3d {
     }
 
     #[cfg(feature = "sort_rayon")]
-    fn position_par_iter(&self) -> PositionParIter<'_> {
-        PositionParIter::new(&self.position_visibility)
+    fn position_par_iter(&self) -> crate::gaussian::iter::PositionParIter<'_> {
+        crate::gaussian::iter::PositionParIter::new(&self.position_visibility)
     }
 }
 
