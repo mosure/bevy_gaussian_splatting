@@ -75,3 +75,13 @@ pub struct Gaussian4d {
     pub scale_opacity: ScaleOpacity,
     pub timestamp_timescale: TimestampTimescale,
 }
+
+
+// // TODO: GaussianSpacetime, determine temporal position/rotation structure
+// pub struct GaussianSpacetime {
+//     pub position_visibility: PositionVisibility,
+//     pub color_mlp: ColorMlp,
+//     pub isotropic_rotations: IsotropicRotations,
+//     pub scale_opacity: ScaleOpacity,
+//     pub timestamp_timescale: TimestampTimescale,
+// }

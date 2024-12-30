@@ -29,6 +29,7 @@ bevy gaussian splatting render pipeline plugin. view the [live demo](https://mos
 - [X] 2dgs
 - [X] 3dgs
 - [x] 4dgs
+- [ ] implicit mlp node (isotropic rotation, color)
 - [ ] 4dgs temporal anti-aliasing (resolves pulsed laser trail effect)
 - [ ] temporal gaussian hierarchy
 - [ ] gcloud, spherical harmonic coefficients Huffman encoding
