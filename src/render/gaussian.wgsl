@@ -244,6 +244,7 @@ fn vs_points(
         let gaussian_4d = conditional_cov3d(
             transformed_position,
             splat_index,
+            gaussian_uniforms.time,
         );
 
         if !gaussian_4d.mask {
@@ -332,7 +333,37 @@ fn vs_points(
         0.5 * (t.y + 1.0),
         0.5 * (t.z + 1.0)
     );
-#else
+#else ifdef RASTERIZE_FLOW
+    // TODO: optical flow rendering
+    rgb = vec3<f32>(1.0);
+#else ifdef RASTERIZE_VELOCITY
+    let time_delta = 1e-3;
+    let future_gaussian_4d = conditional_cov3d(
+        transformed_position,
+        splat_index,
+        gaussian_uniforms.time + time_delta,
+    );
+    let position_delta = future_gaussian_4d.delta_mean - gaussian_4d.delta_mean;
+    let velocity = position_delta / time_delta;
+    let velocity_magnitude = length(velocity);
+    let velocity_normalized = normalize(velocity);
+
+    let min_magnitude = 1.0;
+    let max_magnitude = 2.0;
+
+    let scaled_mag = clamp(
+        (velocity_magnitude - min_magnitude) / (max_magnitude - min_magnitude),
+        0.0,
+        1.0
+    );
+
+    if scaled_mag < 1e-2 {
+        opacity = 0.0;
+    }
+
+    let base_color = 0.5 * (velocity_normalized + vec3<f32>(1.0, 1.0, 1.0));
+    rgb = base_color * scaled_mag;
+#else ifdef RASTERIZE_COLOR
     // TODO: verify color benefit for ray_direction computed at quad verticies instead of gaussian center (same as current complexity)
     // TODO: why doesn't Transform rotation change SH color?
     let ray_direction = normalize(transformed_position - view.world_position);

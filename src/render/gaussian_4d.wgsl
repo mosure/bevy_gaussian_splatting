@@ -39,19 +39,20 @@ fn outer_product(
 fn conditional_cov3d(
     position: vec3<f32>,
     index: u32,
+    time: f32,
 ) -> DecomposedGaussian4d {
     let isotropic_rotations = get_isotropic_rotations(index);
     let rotation = normalize(isotropic_rotations[0]);
     let rotation_r = normalize(isotropic_rotations[1]);
     let scale = get_scale(index);
 
-    let dt = gaussian_uniforms.time - get_timestamp(index);
+    let dt = time - get_timestamp(index);
 
     let S = mat4x4<f32>(
         gaussian_uniforms.global_scale * scale.x, 0.0, 0.0, 0.0,
         0.0, gaussian_uniforms.global_scale * scale.y, 0.0, 0.0,
         0.0, 0.0, gaussian_uniforms.global_scale * scale.z, 0.0,
-        0.0, 0.0, 0.0, gaussian_uniforms.global_scale * get_time_scale(index),
+        0.0, 0.0, 0.0, get_time_scale(index),
     );
 
     let a = rotation.x;

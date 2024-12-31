@@ -604,7 +604,9 @@ pub fn shader_defs(
     match key.rasterize_mode {
         RasterizeMode::Color => shader_defs.push("RASTERIZE_COLOR".into()),
         RasterizeMode::Depth => shader_defs.push("RASTERIZE_DEPTH".into()),
+        RasterizeMode::Flow => shader_defs.push("RASTERIZE_FLOW".into()),
         RasterizeMode::Normal => shader_defs.push("RASTERIZE_NORMAL".into()),
+        RasterizeMode::Velocity => shader_defs.push("RASTERIZE_VELOCITY".into()),
     }
 
     match key.draw_mode {

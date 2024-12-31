@@ -55,6 +55,9 @@ pub enum GaussianMode {
     Hash,
     PartialEq,
     Reflect,
+    Serialize,
+    Deserialize,
+    ValueEnum,
 )]
 pub enum PlaybackMode {
     #[default]
@@ -74,12 +77,17 @@ pub enum PlaybackMode {
     Hash,
     PartialEq,
     Reflect,
+    Serialize,
+    Deserialize,
+    ValueEnum,
 )]
 pub enum RasterizeMode {
     #[default]
     Color,
     Depth,
+    Flow,
     Normal,
+    Velocity,
 }
 
 
