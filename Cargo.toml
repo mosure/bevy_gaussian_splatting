@@ -32,6 +32,7 @@ exclude = [
 default-run = "viewer"
 
 
+# TODO: add a feature flag for each gaussian format
 # TODO: resolve one-hot feature flags through runtime configuration
 [features]
 default = [
