@@ -13,7 +13,7 @@ use bevy::asset::{
 
 use crate::{
     io::codec::CloudCodec,
-    gaussian::packed::PlanarGaussian3d,
+    gaussian::formats::planar_3d::PlanarGaussian3d,
 };
 
 

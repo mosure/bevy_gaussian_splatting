@@ -9,9 +9,9 @@ use serde::{
 
 use crate::{
     io::codec::CloudCodec,
-    gaussian::packed::{
-        PlanarGaussian3d,
-        PlanarGaussian4d,
+    gaussian::formats::{
+        planar_3d::PlanarGaussian3d,
+        planar_4d::PlanarGaussian4d,
     },
 };
 

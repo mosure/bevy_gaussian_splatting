@@ -1,16 +1,75 @@
+use std::marker::Copy;
+
+use bevy::prelude::*;
 use bevy_interleave::prelude::*;
+use bytemuck::{
+    Pod,
+    Zeroable,
+};
+use rand::{
+    prelude::Distribution,
+    Rng,
+};
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 use crate::{
     gaussian::{
+        f32::{
+            IsotropicRotations,
+            PositionVisibility,
+            ScaleOpacity,
+            TimestampTimescale,
+        },
         interface::{
             CommonCloud,
             TestCloud,
         },
         iter::PositionIter,
-        packed::{Gaussian4d, PlanarGaussian4d},
     },
-    random_gaussians_4d,
+    material::spherindrical_harmonics::{
+        SH_4D_COEFF_COUNT,
+        SpherindricalHarmonicCoefficients,
+    },
 };
+
+
+
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    Copy,
+    PartialEq,
+    Planar,
+    ReflectInterleaved,
+    StorageBindings,
+    Reflect,
+    Pod,
+    Zeroable,
+    Serialize,
+    Deserialize,
+)]
+#[repr(C)]
+pub struct Gaussian4d {
+    pub position_visibility: PositionVisibility,
+    pub spherindrical_harmonic: SpherindricalHarmonicCoefficients,
+    pub isotropic_rotations: IsotropicRotations,
+    pub scale_opacity: ScaleOpacity,
+    pub timestamp_timescale: TimestampTimescale,
+}
+
+// // TODO: GaussianSpacetime, determine temporal position/rotation structure
+// pub struct GaussianSpacetime {
+//     pub position_visibility: PositionVisibility,
+//     pub color_mlp: ColorMlp,
+//     pub isotropic_rotations: IsotropicRotations,
+//     pub scale_opacity: ScaleOpacity,
+//     pub timestamp_timescale: TimestampTimescale,
+// }
+
 
 // TODO: quantize 4d representation
 // #[derive(
@@ -197,8 +256,62 @@ impl From<Vec<Gaussian4d>> for PlanarGaussian4d {
 }
 
 
+impl Distribution<Gaussian4d> for rand::distributions::Standard {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Gaussian4d {
+        let mut coefficients = [0.0; SH_4D_COEFF_COUNT];
+        for coefficient in coefficients.iter_mut() {
+            *coefficient = rng.gen_range(-1.0..1.0);
+        }
+
+        Gaussian4d {
+            isotropic_rotations: [
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+            ].into(),
+            position_visibility: [
+                rng.gen_range(-20.0..20.0),
+                rng.gen_range(-20.0..20.0),
+                rng.gen_range(-20.0..20.0),
+                1.0,
+            ].into(),
+            scale_opacity: [
+                rng.gen_range(0.0..1.0),
+                rng.gen_range(0.0..1.0),
+                rng.gen_range(0.0..1.0),
+                rng.gen_range(0.0..0.8),
+            ].into(),
+            spherindrical_harmonic: coefficients.into(),
+            timestamp_timescale: [
+                rng.gen_range(0.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                0.0,
+                0.0,
+            ].into(),
+        }
+    }
+}
+
+pub fn random_gaussians_4d(n: usize) -> PlanarGaussian4d {
+    let mut rng = rand::thread_rng();
+    let mut gaussians: Vec<Gaussian4d> = Vec::with_capacity(n);
+
+    for _ in 0..n {
+        gaussians.push(rng.gen());
+    }
+
+    PlanarGaussian4d::from_interleaved(gaussians)
+}
+
+
 impl TestCloud for PlanarGaussian4d {
     fn test_model() -> Self {
         random_gaussians_4d(512)
     }
 }
+

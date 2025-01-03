@@ -7,8 +7,6 @@ pub mod f32;
 pub mod formats;
 pub mod interface;
 pub mod iter;
-pub mod packed;
-pub mod rand;
 pub mod settings;
 
 

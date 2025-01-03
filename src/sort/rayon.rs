@@ -10,8 +10,11 @@ use crate::{
     camera::GaussianCamera,
     CloudSettings,
     gaussian::{
+        formats::{
+            planar_3d::Gaussian3d,
+            planar_4d::Gaussian4d,
+        },
         interface::CommonCloud,
-        packed::Gaussian3d,
     },
     sort::{
         SortConfig,
@@ -29,6 +32,7 @@ pub struct RayonSortPlugin;
 impl Plugin for RayonSortPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, rayon_sort::<Gaussian3d>);
+        app.add_systems(Update, rayon_sort::<Gaussian4d>);
     }
 }
 

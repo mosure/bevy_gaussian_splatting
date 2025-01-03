@@ -21,9 +21,9 @@ use crate::gaussian::{
         Rotation,
         ScaleOpacity,
     },
-    packed::{
-        Gaussian3d,
-        Gaussian4d,
+    formats::{
+        planar_3d::Gaussian3d,
+        planar_4d::Gaussian4d,
     },
 };
 

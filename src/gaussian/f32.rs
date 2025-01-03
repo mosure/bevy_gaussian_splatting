@@ -15,7 +15,10 @@ use serde::{
 
 use crate::gaussian::{
     covariance::compute_covariance_3d,
-    packed::{Gaussian3d, Gaussian4d},
+    formats::{
+        planar_3d::Gaussian3d,
+        planar_4d::Gaussian4d,
+    },
 };
 
 

@@ -10,7 +10,10 @@ use ply_rs::{
 };
 
 use crate::{
-    gaussian::packed::{Gaussian3d, PlanarGaussian3d},
+    gaussian::formats::planar_3d::{
+        Gaussian3d,
+        PlanarGaussian3d,
+    },
     material::spherical_harmonics::{
         SH_CHANNELS,
         SH_COEFF_COUNT,

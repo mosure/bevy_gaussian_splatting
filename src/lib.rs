@@ -7,16 +7,20 @@ use bevy_interleave::prelude::*;
 pub use camera::GaussianCamera;
 
 pub use gaussian::{
-    packed::{
-        Gaussian3d,
-        Gaussian4d,
-        PlanarGaussian3d,
-        PlanarGaussian4d,
-        PlanarGaussian3dHandle,
-        PlanarGaussian4dHandle,
+    formats::{
+        planar_3d::{
+            Gaussian3d,
+            PlanarGaussian3d,
+            PlanarGaussian3dHandle,
+            random_gaussians_3d,
+        },
+        planar_4d::{
+            Gaussian4d,
+            PlanarGaussian4d,
+            PlanarGaussian4dHandle,
+            random_gaussians_4d,
+        },
     },
-    rand::random_gaussians_3d,
-    rand::random_gaussians_4d,
     settings::{
         RasterizeMode,
         CloudSettings,

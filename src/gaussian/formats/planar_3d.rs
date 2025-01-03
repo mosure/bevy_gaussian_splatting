@@ -1,9 +1,20 @@
+use std::marker::Copy;
 use rand::{
+    prelude::Distribution,
     seq::SliceRandom,
     Rng,
 };
 
+use bevy::prelude::*;
 use bevy_interleave::prelude::*;
+use bytemuck::{
+    Pod,
+    Zeroable,
+};
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 #[allow(unused_imports)]
 use crate::{
@@ -19,7 +30,6 @@ use crate::{
             TestCloud,
         },
         iter::PositionIter,
-        packed::{Gaussian3d, PlanarGaussian3d},
         settings::CloudSettings,
     },
     material::spherical_harmonics::{
@@ -28,6 +38,35 @@ use crate::{
         SphericalHarmonicCoefficients,
     },
 };
+
+
+
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    Copy,
+    PartialEq,
+    Planar,
+    ReflectInterleaved,
+    StorageBindings,
+    Reflect,
+    Pod,
+    Zeroable,
+    Serialize,
+    Deserialize,
+)]
+#[repr(C)]
+pub struct Gaussian3d {
+    pub position_visibility: PositionVisibility,
+    pub spherical_harmonic: SphericalHarmonicCoefficients,
+    pub rotation: Rotation,
+    pub scale_opacity: ScaleOpacity,
+}
+
+pub type Gaussian2d = Gaussian3d;  // GaussianMode::Gaussian2d /w Gaussian3d structure
+
+
 
 // #[allow(unused_imports)]
 // #[cfg(feature = "f16")]
@@ -91,6 +130,66 @@ impl From<Vec<Gaussian3d>> for PlanarGaussian3d {
     fn from(packed: Vec<Gaussian3d>) -> Self {
         Self::from_interleaved(packed)
     }
+}
+
+
+impl Distribution<Gaussian3d> for rand::distributions::Standard {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Gaussian3d {
+        Gaussian3d {
+            rotation: [
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+            ].into(),
+            position_visibility: [
+                rng.gen_range(-20.0..20.0),
+                rng.gen_range(-20.0..20.0),
+                rng.gen_range(-20.0..20.0),
+                1.0,
+            ].into(),
+            scale_opacity: [
+                rng.gen_range(0.0..1.0),
+                rng.gen_range(0.0..1.0),
+                rng.gen_range(0.0..1.0),
+                rng.gen_range(0.0..0.8),
+            ].into(),
+            spherical_harmonic: SphericalHarmonicCoefficients {
+                coefficients: {
+                    // #[cfg(feature = "f16")]
+                    // {
+                    //     let mut coefficients: [u32; HALF_SH_COEFF_COUNT] = [0; HALF_SH_COEFF_COUNT];
+                    //     for coefficient in coefficients.iter_mut() {
+                    //         let upper = rng.gen_range(-1.0..1.0);
+                    //         let lower = rng.gen_range(-1.0..1.0);
+
+                    //         *coefficient = pack_f32s_to_u32(upper, lower);
+                    //     }
+                    //     coefficients
+                    // }
+
+                    {
+                        let mut coefficients = [0.0; SH_COEFF_COUNT];
+                        for coefficient in coefficients.iter_mut() {
+                            *coefficient = rng.gen_range(-1.0..1.0);
+                        }
+                        coefficients
+                    }
+                },
+            },
+        }
+    }
+}
+
+pub fn random_gaussians_3d(n: usize) -> PlanarGaussian3d {
+    let mut rng = rand::thread_rng();
+    let mut gaussians: Vec<Gaussian3d> = Vec::with_capacity(n);
+
+    for _ in 0..n {
+        gaussians.push(rng.gen());
+    }
+
+    PlanarGaussian3d::from_interleaved(gaussians)
 }
 
 
