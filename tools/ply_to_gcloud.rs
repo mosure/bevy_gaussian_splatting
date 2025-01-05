@@ -5,7 +5,7 @@ use byte_unit::{
 
 use bevy_gaussian_splatting::io::{
     codec::CloudCodec,
-    ply::parse_ply,
+    ply::parse_ply_3d,
 };
 
 #[cfg(feature = "query_sparse")]
@@ -39,7 +39,8 @@ fn main() {
     let file = std::fs::File::open(&filename).expect("failed to open file");
     let mut reader = std::io::BufReader::new(file);
 
-    let mut cloud = parse_ply(&mut reader).expect("failed to parse ply file");
+    // TODO: support 4d gaussian -> .gc4d
+    let mut cloud = parse_ply_3d(&mut reader).expect("failed to parse ply file");
 
     // TODO: prioritize mesh selection over export filter
     // println!("initial cloud size: {}", cloud.len());

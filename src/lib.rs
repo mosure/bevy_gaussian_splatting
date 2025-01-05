@@ -30,7 +30,10 @@ pub use gaussian::{
 
 pub use material::spherical_harmonics::SphericalHarmonicCoefficients;
 
-use io::loader::Gaussian3dLoader;
+use io::loader::{
+    Gaussian3dLoader,
+    Gaussian4dLoader,
+};
 
 pub mod camera;
 pub mod gaussian;
@@ -56,7 +59,7 @@ impl Plugin for GaussianSplattingPlugin {
         app.register_type::<SphericalHarmonicCoefficients>();
 
         app.init_asset_loader::<Gaussian3dLoader>();
-        // TODO: Gaussian4dLoader asset loader
+        app.init_asset_loader::<Gaussian4dLoader>();
 
         app.add_plugins((
             camera::GaussianCameraPlugin,

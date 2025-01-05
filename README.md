@@ -29,8 +29,8 @@ bevy gaussian splatting render pipeline plugin. view the [live demo](https://mos
 - [X] 2dgs
 - [X] 3dgs
 - [x] 4dgs
+- [ ] 4dgs motion blur
 - [ ] implicit mlp node (isotropic rotation, color)
-- [ ] 4dgs temporal anti-aliasing (resolves pulsed laser trail effect)
 - [ ] temporal gaussian hierarchy
 - [ ] gcloud, spherical harmonic coefficients Huffman encoding
 - [ ] [spz](https://github.com/nianticlabs/spz) format io
@@ -45,11 +45,16 @@ bevy gaussian splatting render pipeline plugin. view the [live demo](https://mos
 - [ ] bevy_openxr support
 - [ ] bevy 3D camera to gaussian cloud pipeline
 
+
 ## usage
 
 ```rust
 use bevy::prelude::*;
-use bevy_gaussian_splatting::GaussianSplattingPlugin;
+use bevy_gaussian_splatting::{
+    CloudSettings,
+    GaussianSplattingPlugin,
+    PlanarGaussian3dHandle,
+};
 
 fn main() {
     App::build()
@@ -73,11 +78,13 @@ fn setup_gaussian_cloud(
 }
 ```
 
+
 ## tools
 
 - [ply to gcloud converter](tools/README.md#ply-to-gcloud-converter)
 - [gaussian cloud training pipeline](https://github.com/mosure/burn_gaussian_splatting)
 - aabb vs. obb gaussian comparison via `cargo run --bin compare_aabb_obb`
+
 
 ### creating gaussian clouds
 
@@ -93,6 +100,7 @@ the following tools are compatible with `bevy_gaussian_splatting`:
 
 - [X] 4d gaussian clouds:
     - [4d-gaussian-splatting](https://fudan-zvg.github.io/4d-gaussian-splatting/)
+        - [4dgs ply-export](https://gist.github.com/mosure/d9d4d271e05a106157ce39db62ec4f84)
     - [easy-volcap](https://github.com/zju3dv/EasyVolcap)
 
 
@@ -114,6 +122,7 @@ licensed under either of
  * MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
 
 at your option.
+
 
 ## contribution
 
