@@ -293,6 +293,7 @@ fn vs_points(
 
     var rgb = vec3<f32>(0.0);
 
+// TODO: RASTERIZE_ACCELERATION
 #ifdef RASTERIZE_DEPTH
     // TODO: unbiased depth rendering, see: https://zju3dv.github.io/pgsr/
     let first_position = vec4<f32>(get_position(get_entry(1u).value), 1.0);
@@ -348,6 +349,7 @@ fn vs_points(
     let velocity_magnitude = length(velocity);
     let velocity_normalized = normalize(velocity);
 
+    // TODO: magnitude normalization
     let min_magnitude = 1.0;
     let max_magnitude = 2.0;
 

@@ -79,9 +79,25 @@ fn conditional_cov3d(
         -s, -r, q, p,
     );
 
+    // let M_l = mat4x4<f32>(
+    //     a, b, c, d,
+    //     -b, a, d, -c,
+    //     -c, -d, a, b,
+    //     -d, c, -b, a,
+    // );
+
+    // let M_r = mat4x4<f32>(
+    //     p, -q, -r, -s,
+    //     q, p, s, -r,
+    //     r, -s, p, q,
+    //     s, r, -q, p,
+    // );
+
     let R = M_r * M_l;
+    // let R = M_l * M_r;
     let M = S * R;
-    let Sigma = transpose(M) * M;
+    let Sigma = M * transpose(M);
+    // let Sigma = transpose(M) * M;
 
     let cov_t = Sigma[3][3];
     let marginal_t = exp(-0.5 * dt * dt / cov_t);
@@ -113,7 +129,7 @@ fn conditional_cov3d(
     );
     let cov3d_condition = cov11 - cov_op_t;
 
-    let delta_mean = cov12 / cov_t * dt;
+    let delta_mean = (cov12 / cov_t) * dt;
 
     return DecomposedGaussian4d(
         array<f32, 6>(

@@ -178,9 +178,7 @@ impl PropertyAccess for Gaussian4d {
             ("sx", Property::Float(v)) => self.scale_opacity.scale[0] = v,
             ("sy", Property::Float(v)) => self.scale_opacity.scale[1] = v,
             ("sz", Property::Float(v)) => self.scale_opacity.scale[2] = v,
-            ("opacity", Property::Float(v)) => {
-                self.scale_opacity.opacity = 1.0 / (1.0 + (-v).exp());
-            }
+            ("opacity", Property::Float(v)) => self.scale_opacity.opacity = v,
 
             ("rot_x", Property::Float(v)) => self.isotropic_rotations.rotation[0] = v,
             ("rot_y", Property::Float(v)) => self.isotropic_rotations.rotation[1] = v,
