@@ -42,8 +42,8 @@ fn conditional_cov3d(
     time: f32,
 ) -> DecomposedGaussian4d {
     let isotropic_rotations = get_isotropic_rotations(index);
-    let rotation = normalize(isotropic_rotations[0]);
-    let rotation_r = normalize(isotropic_rotations[1]);
+    let rotation = isotropic_rotations[0];
+    let rotation_r = isotropic_rotations[1];
     let scale = get_scale(index);
 
     let dt = time - get_timestamp(index);
@@ -55,49 +55,33 @@ fn conditional_cov3d(
         0.0, 0.0, 0.0, get_time_scale(index),
     );
 
-    let a = rotation.x;
-    let b = rotation.y;
-    let c = rotation.z;
-    let d = rotation.w;
+    let w = rotation.x;
+    let x = rotation.y;
+    let y = rotation.z;
+    let z = rotation.w;
 
-    let p = rotation_r.x;
-    let q = rotation_r.y;
-    let r = rotation_r.z;
-    let s = rotation_r.w;
+    let wr = rotation_r.x;
+    let xr = rotation_r.y;
+    let yr = rotation_r.z;
+    let zr = rotation_r.w;
 
     let M_l = mat4x4<f32>(
-        a, -b, -c, -d,
-        b, a, -d, c,
-        c, d, a, -b,
-        d, -c, b, a,
+        w,  -z,  y,  x,
+        z,   w, -x,  y,
+       -y,   x,  w,  z,
+       -x,  -y, -z,  w,
     );
 
     let M_r = mat4x4<f32>(
-        p, q, r, s,
-        -q, p, -s, r,
-        -r, s, p, -q,
-        -s, -r, q, p,
+        wr,  -zr,  yr,   xr,
+        zr,   wr, -xr,   yr,
+       -yr,   xr,  wr,   zr,
+       -xr,  -yr, -zr,   wr,
     );
 
-    // let M_l = mat4x4<f32>(
-    //     a, b, c, d,
-    //     -b, a, d, -c,
-    //     -c, -d, a, b,
-    //     -d, c, -b, a,
-    // );
-
-    // let M_r = mat4x4<f32>(
-    //     p, -q, -r, -s,
-    //     q, p, s, -r,
-    //     r, -s, p, q,
-    //     s, r, -q, p,
-    // );
-
     let R = M_r * M_l;
-    // let R = M_l * M_r;
-    let M = S * R;
-    let Sigma = M * transpose(M);
-    // let Sigma = transpose(M) * M;
+    let M = R * S;
+    let Sigma = transpose(M) * M;
 
     let cov_t = Sigma[3][3];
     let marginal_t = exp(-0.5 * dt * dt / cov_t);
