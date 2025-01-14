@@ -119,6 +119,7 @@ pub fn parse_ply_3d(
     }
 
     for gaussian in &mut cloud {
+        // TODO: add automatic scaling normalization detection (e.g. don't normalize twice)
         // let mean_scale = (gaussian.scale_opacity.scale[0] + gaussian.scale_opacity.scale[1] + gaussian.scale_opacity.scale[2]) / 3.0;
         // for i in 0..3 {
         //     gaussian.scale_opacity.scale[i] = gaussian.scale_opacity.scale[i]
