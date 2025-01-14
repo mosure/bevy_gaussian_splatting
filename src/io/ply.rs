@@ -120,13 +120,13 @@ pub fn parse_ply_3d(
 
     for gaussian in &mut cloud {
         // TODO: add automatic scaling normalization detection (e.g. don't normalize twice)
-        // let mean_scale = (gaussian.scale_opacity.scale[0] + gaussian.scale_opacity.scale[1] + gaussian.scale_opacity.scale[2]) / 3.0;
-        // for i in 0..3 {
-        //     gaussian.scale_opacity.scale[i] = gaussian.scale_opacity.scale[i]
-        //         .max(mean_scale - MAX_SIZE_VARIANCE)
-        //         .min(mean_scale + MAX_SIZE_VARIANCE)
-        //         .exp();
-        // }
+        let mean_scale = (gaussian.scale_opacity.scale[0] + gaussian.scale_opacity.scale[1] + gaussian.scale_opacity.scale[2]) / 3.0;
+        for i in 0..3 {
+            gaussian.scale_opacity.scale[i] = gaussian.scale_opacity.scale[i]
+                .max(mean_scale - MAX_SIZE_VARIANCE)
+                .min(mean_scale + MAX_SIZE_VARIANCE)
+                .exp();
+        }
 
         let norm = (0..4).map(|i| gaussian.rotation.rotation[i].powf(2.0)).sum::<f32>().sqrt();
         for i in 0..4 {

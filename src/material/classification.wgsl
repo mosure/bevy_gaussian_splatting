@@ -16,7 +16,7 @@ fn class_to_rgb(
     }
 
     let class_idx = visualization - 2.0;
-    let hue = class_idx / f32(gaussian_uniforms.num_classes);
+    let hue = (class_idx / f32(gaussian_uniforms.num_classes)) * 6.283185307;
 
     return mix(
         sh_color,
