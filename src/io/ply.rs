@@ -45,6 +45,7 @@ impl PropertyAccess for Gaussian3d {
             ("x", Property::Float(v))           => self.position_visibility.position[0] = v,
             ("y", Property::Float(v))           => self.position_visibility.position[1] = v,
             ("z", Property::Float(v))           => self.position_visibility.position[2] = v,
+            ("visibility", Property::Float(v))  => self.position_visibility.visibility = v,
             ("f_dc_0", Property::Float(v))      => self.spherical_harmonic.set(0, v),
             ("f_dc_1", Property::Float(v))      => self.spherical_harmonic.set(1, v),
             ("f_dc_2", Property::Float(v))      => self.spherical_harmonic.set(2, v),
@@ -118,15 +119,13 @@ pub fn parse_ply_3d(
     }
 
     for gaussian in &mut cloud {
-        gaussian.position_visibility.visibility = 1.0;
-
-        let mean_scale = (gaussian.scale_opacity.scale[0] + gaussian.scale_opacity.scale[1] + gaussian.scale_opacity.scale[2]) / 3.0;
-        for i in 0..3 {
-            gaussian.scale_opacity.scale[i] = gaussian.scale_opacity.scale[i]
-                .max(mean_scale - MAX_SIZE_VARIANCE)
-                .min(mean_scale + MAX_SIZE_VARIANCE)
-                .exp();
-        }
+        // let mean_scale = (gaussian.scale_opacity.scale[0] + gaussian.scale_opacity.scale[1] + gaussian.scale_opacity.scale[2]) / 3.0;
+        // for i in 0..3 {
+        //     gaussian.scale_opacity.scale[i] = gaussian.scale_opacity.scale[i]
+        //         .max(mean_scale - MAX_SIZE_VARIANCE)
+        //         .min(mean_scale + MAX_SIZE_VARIANCE)
+        //         .exp();
+        // }
 
         let norm = (0..4).map(|i| gaussian.rotation.rotation[i].powf(2.0)).sum::<f32>().sqrt();
         for i in 0..4 {
@@ -154,6 +153,7 @@ impl PropertyAccess for Gaussian4d {
             ("x", Property::Float(v)) => self.position_visibility.position[0] = v,
             ("y", Property::Float(v)) => self.position_visibility.position[1] = v,
             ("z", Property::Float(v)) => self.position_visibility.position[2] = v,
+            ("visibility", Property::Float(v))  => self.position_visibility.visibility = v,
 
             ("t", Property::Float(v)) => self.timestamp_timescale.timestamp = v,
             ("st", Property::Float(v)) => self.timestamp_timescale.timescale = v,
@@ -228,8 +228,6 @@ pub fn parse_ply_4d(
     }
 
     for g in &mut cloud {
-        g.position_visibility.visibility = 1.0;
-
         let norm = g
             .isotropic_rotations
             .rotation

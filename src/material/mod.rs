@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+pub mod classification;
 pub mod depth;
 pub mod spherical_harmonics;
 pub mod spherindrical_harmonics;
@@ -18,6 +19,7 @@ impl Plugin for MaterialPlugin {
         app.add_plugins(noise::NoiseMaterialPlugin);
 
         app.add_plugins((
+            classification::ClassificationMaterialPlugin,
             depth::DepthMaterialPlugin,
             spherical_harmonics::SphericalHarmonicCoefficientsPlugin,
             spherindrical_harmonics::SpherindricalHarmonicCoefficientsPlugin,

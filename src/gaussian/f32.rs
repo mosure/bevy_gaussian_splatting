@@ -61,7 +61,6 @@ impl From<[f32; 4]> for PositionTimestamp {
 #[derive(
     Clone,
     Debug,
-    Default,
     Copy,
     PartialEq,
     Reflect,
@@ -75,6 +74,15 @@ impl From<[f32; 4]> for PositionTimestamp {
 pub struct PositionVisibility {
     pub position: Position,
     pub visibility: f32,
+}
+
+impl Default for PositionVisibility {
+    fn default() -> Self {
+        Self {
+            position: Position::default(),
+            visibility: 1.0,
+        }
+    }
 }
 
 impl From<[f32; 4]> for PositionVisibility {

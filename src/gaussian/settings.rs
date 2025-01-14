@@ -82,6 +82,7 @@ pub enum PlaybackMode {
     ValueEnum,
 )]
 pub enum RasterizeMode {
+    Classification,
     #[default]
     Color,
     Depth,
@@ -105,6 +106,7 @@ pub struct CloudSettings {
     pub gaussian_mode: GaussianMode,
     pub playback_mode: PlaybackMode,
     pub rasterize_mode: RasterizeMode,
+    pub num_classes: usize,
     pub time: f32,
     pub time_scale: f32,
     pub time_start: f32,
@@ -123,6 +125,7 @@ impl Default for CloudSettings {
             draw_mode: DrawMode::default(),
             gaussian_mode: GaussianMode::default(),
             rasterize_mode: RasterizeMode::default(),
+            num_classes: 1,
             playback_mode: PlaybackMode::default(),
             time: 0.0,
             time_scale: 1.0,

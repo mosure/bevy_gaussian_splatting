@@ -610,6 +610,7 @@ pub fn shader_defs(
     }
 
     match key.rasterize_mode {
+        RasterizeMode::Classification => shader_defs.push("RASTERIZE_CLASSIFICATION".into()),
         RasterizeMode::Color => shader_defs.push("RASTERIZE_COLOR".into()),
         RasterizeMode::Depth => shader_defs.push("RASTERIZE_DEPTH".into()),
         RasterizeMode::Flow => shader_defs.push("RASTERIZE_FLOW".into()),
@@ -730,6 +731,7 @@ pub struct CloudUniform {
     pub time: f32,
     pub time_start: f32,
     pub time_stop: f32,
+    pub num_classes: u32,
 }
 
 #[allow(clippy::type_complexity)]
@@ -790,6 +792,7 @@ pub fn extract_gaussians<R: PlanarStorage>(
             time: settings.time,
             time_start: settings.time_start,
             time_stop: settings.time_stop,
+            num_classes: settings.num_classes as u32,
         };
 
         commands_list.push((

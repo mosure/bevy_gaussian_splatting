@@ -3,9 +3,8 @@
     gaussian_uniforms,
     Entry,
 }
-#import bevy_gaussian_splatting::depth::{
-    depth_to_rgb,
-}
+#import bevy_gaussian_splatting::classification::class_to_rgb
+#import bevy_gaussian_splatting::depth::depth_to_rgb
 #import bevy_gaussian_splatting::helpers::{
     get_rotation_matrix,
     get_scale_matrix,
@@ -294,7 +293,20 @@ fn vs_points(
     var rgb = vec3<f32>(0.0);
 
 // TODO: RASTERIZE_ACCELERATION
-#ifdef RASTERIZE_DEPTH
+#ifdef RASTERIZE_CLASSIFICATION
+    let ray_direction = normalize(transformed_position - view.world_position);
+
+    #ifdef GAUSSIAN_3D_STRUCTURE
+        rgb = get_color(splat_index, ray_direction);
+    #else ifdef GAUSSIAN_4D
+        rgb = get_color(splat_index, gaussian_4d.dir_t, ray_direction);
+    #endif
+
+    rgb = class_to_rgb(
+        get_visibility(splat_index),
+        rgb,
+    );
+#else ifdef RASTERIZE_DEPTH
     // TODO: unbiased depth rendering, see: https://zju3dv.github.io/pgsr/
     let first_position = vec4<f32>(get_position(get_entry(1u).value), 1.0);
     let last_position = vec4<f32>(get_position(get_entry(gaussian_uniforms.count - 1u).value), 1.0);

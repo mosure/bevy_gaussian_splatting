@@ -16,7 +16,7 @@ struct GaussianUniforms {
     time: f32,
     time_start: f32,
     time_stop: f32,
-    _pad: f32,
+    num_classes: u32,
 };
 @group(1) @binding(0) var<uniform> gaussian_uniforms: GaussianUniforms;
 
