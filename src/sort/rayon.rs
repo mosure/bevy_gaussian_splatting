@@ -9,13 +9,7 @@ use rayon::prelude::*;
 use crate::{
     camera::GaussianCamera,
     CloudSettings,
-    gaussian::{
-        formats::{
-            planar_3d::Gaussian3d,
-            planar_4d::Gaussian4d,
-        },
-        interface::CommonCloud,
-    },
+    gaussian::interface::CommonCloud,
     sort::{
         SortConfig,
         SortMode,
@@ -27,12 +21,16 @@ use crate::{
 
 
 #[derive(Default)]
-pub struct RayonSortPlugin;
+pub struct RayonSortPlugin<R: PlanarStorage> {
+    _phantom: std::marker::PhantomData<R>,
+}
 
-impl Plugin for RayonSortPlugin {
+impl<R: PlanarStorage> Plugin for RayonSortPlugin<R>
+where
+    R::PlanarType: CommonCloud,
+{
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, rayon_sort::<Gaussian3d>);
-        app.add_systems(Update, rayon_sort::<Gaussian4d>);
+        app.add_systems(Update, rayon_sort::<R>);
     }
 }
 

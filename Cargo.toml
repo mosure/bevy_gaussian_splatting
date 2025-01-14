@@ -55,7 +55,8 @@ default = [
   # TODO: bevy_interleave storage bind group read_only per plane attribute support
   # "morph_particles",
 
-  # "sort_radix",  # TODO: fix macos radix sort
+  "sort_bitonic",
+  "sort_radix",  # TODO: fix macos radix sort
   "sort_rayon",
   "sort_std",
 
@@ -95,6 +96,7 @@ query_raycast = []
 query_select = []
 query_sparse = ["kd-tree", "query_select"]
 
+sort_bitonic = []
 sort_radix = []
 sort_rayon = ["rayon"]
 sort_std = []

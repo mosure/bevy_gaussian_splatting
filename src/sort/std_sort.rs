@@ -8,13 +8,7 @@ use bevy_interleave::prelude::*;
 use crate::{
     camera::GaussianCamera,
     CloudSettings,
-    gaussian::{
-        formats::{
-            planar_3d::Gaussian3d,
-            planar_4d::Gaussian4d,
-        },
-        interface::CommonCloud,
-    },
+    gaussian::interface::CommonCloud,
     sort::{
         SortConfig,
         SortMode,
@@ -26,12 +20,16 @@ use crate::{
 
 
 #[derive(Default)]
-pub struct StdSortPlugin;
+pub struct StdSortPlugin<R: PlanarStorage> {
+    _phantom: std::marker::PhantomData<R>,
+}
 
-impl Plugin for StdSortPlugin {
+impl<R: PlanarStorage> Plugin for StdSortPlugin<R>
+where
+    R::PlanarType: CommonCloud,
+{
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, std_sort::<Gaussian3d>);
-        app.add_systems(Update, std_sort::<Gaussian4d>);
+        app.add_systems(Update, std_sort::<R>);
     }
 }
 

@@ -66,17 +66,17 @@ fn conditional_cov3d(
     let zr = rotation_r.w;
 
     let M_l = mat4x4<f32>(
-        w,  -z,  y,  x,
-        z,   w, -x,  y,
-       -y,   x,  w,  z,
-       -x,  -y, -z,  w,
+        w, -x, -y, -z,
+        x,  w, -z,  y,
+        y,  z,  w, -x,
+        z, -y,  x,  w,
     );
 
     let M_r = mat4x4<f32>(
-        wr,  -zr,  yr,   xr,
-        zr,   wr, -xr,   yr,
-       -yr,   xr,  wr,   zr,
-       -xr,  -yr, -zr,   wr,
+        wr, -xr, -yr, -zr,
+        xr,  wr,  zr, -yr,
+        yr, -zr,  wr,  xr,
+        zr,  yr, -xr,  wr,
     );
 
     let R = M_r * M_l;

@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use bevy::{
     prelude::*,
     ecs::system::{
@@ -34,15 +36,12 @@ use static_assertions::assert_cfg;
 use crate::{
     camera::GaussianCamera,
     CloudSettings,
-    gaussian::{
-        formats::{
-            planar_3d::Gaussian3d,
-            planar_4d::Gaussian4d,
-        },
-        interface::CommonCloud,
-    },
+    gaussian::interface::CommonCloud,
 };
 
+
+#[cfg(feature = "sort_bitonic")]
+pub mod bitonic;
 
 #[cfg(feature = "sort_radix")]
 pub mod radix;
@@ -51,7 +50,7 @@ pub mod radix;
 pub mod rayon;
 
 #[cfg(feature = "sort_std")]
-pub mod std; // rename to std_sort.rs to avoid name conflict with std crate
+pub mod std_sort; // rename to std_sort.rs to avoid name conflict with std crate
 
 
 assert_cfg!(
@@ -123,18 +122,39 @@ impl Default for SortConfig {
 
 
 #[derive(Default)]
-pub struct SortPlugin;
+pub struct SortPluginFlag;
+impl Plugin for SortPluginFlag {
+    fn build(&self, _app: &mut App) { }
+}
 
-impl Plugin for SortPlugin {
+
+// TODO: make this generic /w shared components
+#[derive(Default)]
+pub struct SortPlugin<R: PlanarStorage> {
+    phantom: PhantomData<R>,
+}
+
+impl<R: PlanarStorage> Plugin for SortPlugin<R>
+where
+    R::PlanarType: CommonCloud,
+{
     fn build(&self, app: &mut App) {
         #[cfg(feature = "sort_radix")]
-        app.add_plugins(radix::RadixSortPlugin);
+        app.add_plugins(radix::RadixSortPlugin::<R>::default());
 
         #[cfg(feature = "sort_rayon")]
-        app.add_plugins(rayon::RayonSortPlugin);
+        app.add_plugins(rayon::RayonSortPlugin::<R>::default());
 
         #[cfg(feature = "sort_std")]
-        app.add_plugins(std::StdSortPlugin);
+        app.add_plugins(std_sort::StdSortPlugin::<R>::default());
+
+        app.add_systems(Update, auto_insert_sorted_entries::<R>);
+
+        if app.is_plugin_added::<SortPluginFlag>() {
+            debug!("sort plugin flag already added");
+            return;
+        }
+        app.add_plugins(SortPluginFlag);
 
         app.register_type::<SortConfig>();
         app.init_resource::<SortConfig>();
@@ -152,8 +172,6 @@ impl Plugin for SortPlugin {
         app.add_systems(
             Update,
             (
-                auto_insert_sorted_entries::<Gaussian3d>,
-                auto_insert_sorted_entries::<Gaussian4d>,
                 update_sort_trigger,
                 update_sorted_entries_sizes,
             )

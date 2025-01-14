@@ -53,8 +53,11 @@ use bevy_interleave::prelude::*;
 
 use crate::{
     camera::GaussianCamera,
-    gaussian::settings::{
-        CloudSettings, DrawMode, GaussianMode, RasterizeMode
+    gaussian::{
+        interface::CommonCloud,
+        settings::{
+            CloudSettings, DrawMode, GaussianMode, RasterizeMode
+        },
     },
     material::{
         spherical_harmonics::{
@@ -93,6 +96,8 @@ const TEXTURE_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(26345735);
 const TRANSFORM_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(734523534);
 
 
+// TODO: consider refactor to bind via bevy's mesh (dynamic vertex planes) + shared batching/instancing/preprocessing
+//       utilize RawBufferVec<T> for gaussian data?
 pub struct RenderPipelinePlugin<R: PlanarStorage> {
     _phantom: std::marker::PhantomData<R>,
 }
@@ -105,11 +110,15 @@ impl<R: PlanarStorage> Default for RenderPipelinePlugin<R> {
     }
 }
 
-impl<R: PlanarStorage> Plugin for RenderPipelinePlugin<R> {
+impl<R: PlanarStorage> Plugin for RenderPipelinePlugin<R>
+where
+    R::PlanarType: CommonCloud,
+{
     fn build(&self, app: &mut App) {
         debug!("building render pipeline plugin");
 
         app.add_plugins(MorphPlugin::<R>::default());
+        app.add_plugins(SortPlugin::<R>::default());
 
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
@@ -127,8 +136,8 @@ impl<R: PlanarStorage> Plugin for RenderPipelinePlugin<R> {
         }
 
         // TODO: refactor common resources into a common plugin
-        if app.is_plugin_added::<SortPlugin>() {
-            debug!("sort plugin already added");
+        if app.is_plugin_added::<UniformComponentPlugin::<CloudUniform>>() {
+            debug!("render plugin already added");
             return;
         }
 
@@ -203,7 +212,6 @@ impl<R: PlanarStorage> Plugin for RenderPipelinePlugin<R> {
         );
 
         app.add_plugins(UniformComponentPlugin::<CloudUniform>::default());
-        app.add_plugins(SortPlugin);
 
         #[cfg(feature = "buffer_texture")]
         app.add_plugins(texture::BufferTexturePlugin);

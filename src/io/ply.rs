@@ -33,7 +33,7 @@ use crate::{
 };
 
 
-pub const MAX_SIZE_VARIANCE: f32 = 5.0;
+pub const MAX_SIZE_VARIANCE: f32 = 4.0;
 
 impl PropertyAccess for Gaussian3d {
     fn new() -> Self {
