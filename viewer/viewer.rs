@@ -66,19 +66,18 @@ fn setup_gaussian_cloud(
     mut commands: Commands,
     args: Res<GaussianSplattingViewer>,
     asset_server: Res<AssetServer>,
-    gaussian_splatting_viewer: Res<GaussianSplattingViewer>,
     mut gaussian_3d_assets: ResMut<Assets<PlanarGaussian3d>>,
     mut gaussian_4d_assets: ResMut<Assets<PlanarGaussian4d>>,
 ) {
     match args.gaussian_mode {
         GaussianMode::Gaussian2d | GaussianMode::Gaussian3d => {
             let cloud: Handle<PlanarGaussian3d>;
-            if gaussian_splatting_viewer.gaussian_count > 0 {
-                log(&format!("generating {} gaussians", gaussian_splatting_viewer.gaussian_count));
-                cloud = gaussian_3d_assets.add(random_gaussians_3d(gaussian_splatting_viewer.gaussian_count));
-            } else if !gaussian_splatting_viewer.input_file.is_empty() {
-                log(&format!("loading {}", gaussian_splatting_viewer.input_file));
-                cloud = asset_server.load(&gaussian_splatting_viewer.input_file);
+            if args.gaussian_count > 0 {
+                log(&format!("generating {} gaussians", args.gaussian_count));
+                cloud = gaussian_3d_assets.add(random_gaussians_3d(args.gaussian_count));
+            } else if !args.input_file.is_empty() {
+                log(&format!("loading {}", args.input_file));
+                cloud = asset_server.load(&args.input_file);
             } else {
                 cloud = gaussian_3d_assets.add(PlanarGaussian3d::test_model());
             }
@@ -96,12 +95,12 @@ fn setup_gaussian_cloud(
         }
         GaussianMode::Gaussian4d => {
             let cloud: Handle<PlanarGaussian4d>;
-            if gaussian_splatting_viewer.gaussian_count > 0 {
-                log(&format!("generating {} gaussians", gaussian_splatting_viewer.gaussian_count));
-                cloud = gaussian_4d_assets.add(random_gaussians_4d(gaussian_splatting_viewer.gaussian_count));
-            } else if !gaussian_splatting_viewer.input_file.is_empty() {
-                log(&format!("loading {}", gaussian_splatting_viewer.input_file));
-                cloud = asset_server.load(&gaussian_splatting_viewer.input_file);
+            if args.gaussian_count > 0 {
+                log(&format!("generating {} gaussians", args.gaussian_count));
+                cloud = gaussian_4d_assets.add(random_gaussians_4d(args.gaussian_count));
+            } else if !args.input_file.is_empty() {
+                log(&format!("loading {}", args.input_file));
+                cloud = asset_server.load(&args.input_file);
             } else {
                 cloud = gaussian_4d_assets.add(PlanarGaussian4d::test_model());
             }
