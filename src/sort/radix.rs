@@ -661,7 +661,7 @@ impl<R: PlanarStorage> Node for RadixSortNode<R> {
                         pass.set_pipeline(radix_sort_a);
 
                         let workgroup_entries_a = ShaderDefines::default().workgroup_entries_a;
-                        pass.dispatch_workgroups((cloud.len() as u32 + workgroup_entries_a - 1) / workgroup_entries_a, 1, 1);
+                        pass.dispatch_workgroups((cloud.len() as u32).div_ceil(workgroup_entries_a), 1, 1);
 
 
                         let radix_sort_b = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[1]).unwrap();
@@ -707,7 +707,7 @@ impl<R: PlanarStorage> Node for RadixSortNode<R> {
                         );
 
                         let workgroup_entries_c = ShaderDefines::default().workgroup_entries_c;
-                        pass.dispatch_workgroups(1, (cloud.len() as u32 + workgroup_entries_c - 1) / workgroup_entries_c, 1);
+                        pass.dispatch_workgroups(1, (cloud.len() as u32).div_ceil(workgroup_entries_c), 1);
                     }
                 }
             }

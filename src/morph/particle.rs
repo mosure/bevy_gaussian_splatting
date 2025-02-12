@@ -527,22 +527,22 @@ impl Distribution<ParticleBehavior> for rand::distributions::Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> ParticleBehavior {
         ParticleBehavior {
             acceleration: [
-                rng.gen_range(-0.01..0.01),
-                rng.gen_range(-0.01..0.01),
-                rng.gen_range(-0.01..0.01),
-                rng.gen_range(-0.01..0.01),
+                rng.random_range(-0.01..0.01),
+                rng.random_range(-0.01..0.01),
+                rng.random_range(-0.01..0.01),
+                rng.random_range(-0.01..0.01),
             ],
             jerk: [
-                rng.gen_range(-0.0001..0.0001),
-                rng.gen_range(-0.0001..0.0001),
-                rng.gen_range(-0.0001..0.0001),
-                rng.gen_range(-0.0001..0.0001),
+                rng.random_range(-0.0001..0.0001),
+                rng.random_range(-0.0001..0.0001),
+                rng.random_range(-0.0001..0.0001),
+                rng.random_range(-0.0001..0.0001),
             ],
             velocity: [
-                rng.gen_range(-1.0..1.0),
-                rng.gen_range(-1.0..1.0),
-                rng.gen_range(-1.0..1.0),
-                rng.gen_range(-1.0..1.0),
+                rng.random_range(-1.0..1.0),
+                rng.random_range(-1.0..1.0),
+                rng.random_range(-1.0..1.0),
+                rng.random_range(-1.0..1.0),
             ],
             ..Default::default()
         }
@@ -550,10 +550,10 @@ impl Distribution<ParticleBehavior> for rand::distributions::Standard {
 }
 
 pub fn random_particle_behaviors(n: usize) -> ParticleBehaviors {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut behaviors = Vec::with_capacity(n);
     for i in 0..n {
-        let mut behavior: ParticleBehavior = rng.gen();
+        let mut behavior: ParticleBehavior = rng.random();
         behavior.indicies[0] = i as u32;
         behaviors.push(behavior);
     }

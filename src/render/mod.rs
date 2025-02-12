@@ -22,6 +22,7 @@ use bevy::{
             GlobalsBuffer,
             GlobalsUniform,
         },
+        primitives::Aabb,
         render_asset::RenderAssets,
         render_phase::{
             AddRenderCommand,
@@ -229,18 +230,22 @@ where
 
 #[derive(Bundle)]
 pub struct GpuCloudBundle<R: PlanarStorage> {
+    pub aabb: Aabb,
     pub settings: CloudSettings,
     pub settings_uniform: CloudUniform,
     pub sorted_entries: SortedEntriesHandle,
     pub cloud_handle: R::PlanarTypeHandle,
+    pub transform: GlobalTransform,
 }
 
 #[cfg(feature = "buffer_storage")]
 type GpuCloudBundleQuery<R: PlanarStorage> = (
     Entity,
     &'static R::PlanarTypeHandle,
+    &'static Aabb,
     &'static SortedEntriesHandle,
     &'static CloudSettings,
+    &'static GlobalTransform,
     (),
 );
 
@@ -248,8 +253,10 @@ type GpuCloudBundleQuery<R: PlanarStorage> = (
 type GpuCloudBundleQuery<R: PlanarTexture> = (
     Entity,
     &'static R::PlanarTypeHandle,
+    &'static Aabb,
     &'static SortedEntriesHandle,
     &'static CloudSettings,
+    &'static GlobalTransform,
     &'static texture::GpuTextureBuffers,
 );
 
@@ -303,13 +310,21 @@ fn queue_gaussians<R: PlanarStorage>(
             continue;
         };
 
+        debug!("visible entities...");
         for (
-            _entity,
-            cloud_handle,
-            sorted_entries_handle,
-            settings,
-            _,
-        ) in &gaussian_splatting_bundles {
+            render_entity,
+            visible_entity,
+        ) in visible_entities.iter::<With<R::PlanarTypeHandle>>() {
+            let (
+                _entity,
+                cloud_handle,
+                aabb,
+                sorted_entries_handle,
+                settings,
+                transform,
+                _,
+            ) = gaussian_splatting_bundles.get(*render_entity).unwrap();
+
             debug!("queue gaussians clouds");
             if gaussian_clouds.get(cloud_handle.handle()).is_none() {
                 debug!("gaussian cloud asset not found");
@@ -336,27 +351,23 @@ fn queue_gaussians<R: PlanarStorage>(
 
             let pipeline = pipelines.specialize(&pipeline_cache, &custom_pipeline, key);
 
-            // // TODO: distance to gaussian cloud centroid
-            // let rangefinder = view.rangefinder3d();
+            let rangefinder = view.rangefinder3d();
+            let center = *transform
+                * GlobalTransform::from(
+                    Transform::from_translation(aabb.center.into())
+                        .with_scale((aabb.half_extents * 2.).into()),
+                );
+            let distance = rangefinder
+                .distance_translation(&center.translation());
 
-            debug!("visible entities...");
-            for (
-                render_entity,
-                visible_entity,
-            ) in visible_entities.iter::<With<R::PlanarTypeHandle>>() {
-                debug!("queueing gaussian cloud entity: {:?}", render_entity);
-
-                transparent_phase.add(Transparent3d {
-                    entity: (*render_entity, *visible_entity),
-                    draw_function: draw_custom,
-                    distance: 0.0,
-                    // distance: rangefinder
-                    //     .distance_translation(&mesh_instance.transforms.transform.translation),
-                    pipeline,
-                    batch_range: 0..1,
-                    extra_index: PhaseItemExtraIndex::NONE,
-                });
-            }
+            transparent_phase.add(Transparent3d {
+                entity: (*render_entity, *visible_entity),
+                draw_function: draw_custom,
+                distance,
+                pipeline,
+                batch_range: 0..1,
+                extra_index: PhaseItemExtraIndex::NONE,
+            });
         }
     }
 }
@@ -745,6 +756,7 @@ pub fn extract_gaussians<R: PlanarStorage>(
             RenderEntity,
             &ViewVisibility,
             &R::PlanarTypeHandle,
+            &Aabb,
             &SortedEntriesHandle,
             &CloudSettings,
             &GlobalTransform,
@@ -758,6 +770,7 @@ pub fn extract_gaussians<R: PlanarStorage>(
         entity,
         visibility,
         cloud_handle,
+        aabb,
         sorted_entries,
         settings,
         transform,
@@ -798,10 +811,12 @@ pub fn extract_gaussians<R: PlanarStorage>(
         commands_list.push((
             entity,
             GpuCloudBundle::<R> {
+                aabb: *aabb,
                 settings: settings.clone(),
                 settings_uniform,
                 sorted_entries: sorted_entries.clone(),
                 cloud_handle: cloud_handle.clone(),
+                transform: *transform,
             },
         ));
     }
@@ -834,33 +849,26 @@ fn queue_gaussian_bind_group<R: PlanarStorage>(
     #[cfg(feature = "buffer_texture")]
     gpu_images: Res<RenderAssets<bevy::render::texture::GpuImage>>,
 ) {
-    let Some(model) = gaussian_uniforms.buffer() else {
+    let Some(resource) = gaussian_uniforms.binding() else {
         return;
     };
 
-    // TODO: overloaded system, move to resource setup system
     groups.base_bind_group = Some(render_device.create_bind_group(
         "gaussian_uniform_bind_group",
         &gaussian_cloud_pipeline.gaussian_uniform_layout,
-        &[
-            BindGroupEntry {
-                binding: 0,
-                resource: BindingResource::Buffer(BufferBinding {
-                    buffer: model,
-                    offset: 0,
-                    size: CloudUniform::min_size().into(),
-                }),
-            },
-        ],
+        &[BindGroupEntry {
+            binding: 0,
+            resource,
+        }],
     ));
 
     for query in gaussian_clouds.iter() {
         let entity = query.0;
         let cloud_handle = query.1;
-        let sorted_entries_handle = query.2;
+        let sorted_entries_handle = query.3;
 
         #[cfg(feature = "buffer_texture")]
-        let texture_buffers = query.4;
+        let texture_buffers = query.6;
 
         // TODO: add asset loading indicator (and maybe streamed loading)
         if let Some(load_state) = asset_server.get_load_state(cloud_handle.handle()) {

@@ -133,26 +133,26 @@ impl From<Vec<Gaussian3d>> for PlanarGaussian3d {
 }
 
 
-impl Distribution<Gaussian3d> for rand::distributions::Standard {
+impl Distribution<Gaussian3d> for rand::distr::StandardUniform {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Gaussian3d {
         Gaussian3d {
             rotation: [
-                rng.gen_range(-1.0..1.0),
-                rng.gen_range(-1.0..1.0),
-                rng.gen_range(-1.0..1.0),
-                rng.gen_range(-1.0..1.0),
+                rng.random_range(-1.0..1.0),
+                rng.random_range(-1.0..1.0),
+                rng.random_range(-1.0..1.0),
+                rng.random_range(-1.0..1.0),
             ].into(),
             position_visibility: [
-                rng.gen_range(-20.0..20.0),
-                rng.gen_range(-20.0..20.0),
-                rng.gen_range(-20.0..20.0),
+                rng.random_range(-20.0..20.0),
+                rng.random_range(-20.0..20.0),
+                rng.random_range(-20.0..20.0),
                 1.0,
             ].into(),
             scale_opacity: [
-                rng.gen_range(0.0..1.0),
-                rng.gen_range(0.0..1.0),
-                rng.gen_range(0.0..1.0),
-                rng.gen_range(0.0..0.8),
+                rng.random_range(0.0..1.0),
+                rng.random_range(0.0..1.0),
+                rng.random_range(0.0..1.0),
+                rng.random_range(0.0..0.8),
             ].into(),
             spherical_harmonic: SphericalHarmonicCoefficients {
                 coefficients: {
@@ -160,8 +160,8 @@ impl Distribution<Gaussian3d> for rand::distributions::Standard {
                     // {
                     //     let mut coefficients: [u32; HALF_SH_COEFF_COUNT] = [0; HALF_SH_COEFF_COUNT];
                     //     for coefficient in coefficients.iter_mut() {
-                    //         let upper = rng.gen_range(-1.0..1.0);
-                    //         let lower = rng.gen_range(-1.0..1.0);
+                    //         let upper = rng.random_range(-1.0..1.0);
+                    //         let lower = rng.random_range(-1.0..1.0);
 
                     //         *coefficient = pack_f32s_to_u32(upper, lower);
                     //     }
@@ -171,7 +171,7 @@ impl Distribution<Gaussian3d> for rand::distributions::Standard {
                     {
                         let mut coefficients = [0.0; SH_COEFF_COUNT];
                         for coefficient in coefficients.iter_mut() {
-                            *coefficient = rng.gen_range(-1.0..1.0);
+                            *coefficient = rng.random_range(-1.0..1.0);
                         }
                         coefficients
                     }
@@ -182,11 +182,11 @@ impl Distribution<Gaussian3d> for rand::distributions::Standard {
 }
 
 pub fn random_gaussians_3d(n: usize) -> PlanarGaussian3d {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut gaussians: Vec<Gaussian3d> = Vec::with_capacity(n);
 
     for _ in 0..n {
-        gaussians.push(rng.gen());
+        gaussians.push(rng.random());
     }
 
     PlanarGaussian3d::from_interleaved(gaussians)
@@ -195,7 +195,7 @@ pub fn random_gaussians_3d(n: usize) -> PlanarGaussian3d {
 
 impl TestCloud for PlanarGaussian3d {
     fn test_model() -> Self {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         let origin = Gaussian3d {
             rotation: [
@@ -223,8 +223,8 @@ impl TestCloud for PlanarGaussian3d {
                     //     let mut coefficients = [0_u32; HALF_SH_COEFF_COUNT];
 
                     //     for coefficient in coefficients.iter_mut() {
-                    //         let upper = rng.gen_range(-1.0..1.0);
-                    //         let lower = rng.gen_range(-1.0..1.0);
+                    //         let upper = rng.random_range(-1.0..1.0);
+                    //         let lower = rng.random_range(-1.0..1.0);
 
                     //         *coefficient = pack_f32s_to_u32(upper, lower);
                     //     }
@@ -236,7 +236,7 @@ impl TestCloud for PlanarGaussian3d {
                         let mut coefficients = [0.0; SH_COEFF_COUNT];
 
                         for coefficient in coefficients.iter_mut() {
-                            *coefficient = rng.gen_range(-1.0..1.0);
+                            *coefficient = rng.random_range(-1.0..1.0);
                         }
 
                         coefficients

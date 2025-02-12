@@ -136,7 +136,7 @@ pub fn parse_ply_3d(
 
     // pad with empty gaussians to multiple of 32
     let pad = 32 - (cloud.len() % 32);
-    cloud.extend(std::iter::repeat(Gaussian3d::default()).take(pad));
+    cloud.extend(std::iter::repeat_n(Gaussian3d::default(), pad));
 
     Ok(PlanarGaussian3d::from_interleaved(cloud))
 }
@@ -258,7 +258,7 @@ pub fn parse_ply_4d(
 
     // pad to multiple of 32
     let pad = 32 - (cloud.len() % 32);
-    cloud.extend(std::iter::repeat(Gaussian4d::default()).take(pad));
+    cloud.extend(std::iter::repeat_n(Gaussian4d::default(), pad));
 
     Ok(PlanarGaussian4d::from_interleaved(cloud))
 }
