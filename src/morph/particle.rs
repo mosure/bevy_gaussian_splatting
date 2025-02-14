@@ -550,7 +550,7 @@ impl Distribution<ParticleBehavior> for rand::distributions::Standard {
 }
 
 pub fn random_particle_behaviors(n: usize) -> ParticleBehaviors {
-    let mut rng = rand::rng();
+    let mut rng = rand::thread_rng();
     let mut behaviors = Vec::with_capacity(n);
     for i in 0..n {
         let mut behavior: ParticleBehavior = rng.random();

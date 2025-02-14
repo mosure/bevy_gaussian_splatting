@@ -161,7 +161,7 @@ pub struct Gaussian4d {
 //                     let mut coefficients = [0.0; SH_4D_COEFF_COUNT];
 
 //                     for coefficient in coefficients.iter_mut() {
-//                         *coefficient = rng.random_range(-1.0..1.0);
+//                         *coefficient = rng.gen_range(-1.0..1.0);
 //                     }
 
 //                     coefficients
@@ -256,40 +256,40 @@ impl From<Vec<Gaussian4d>> for PlanarGaussian4d {
 }
 
 
-impl Distribution<Gaussian4d> for rand::distr::StandardUniform {
+impl Distribution<Gaussian4d> for rand::distributions::Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Gaussian4d {
         let mut coefficients = [0.0; SH_4D_COEFF_COUNT];
         for coefficient in coefficients.iter_mut() {
-            *coefficient = rng.random_range(-1.0..1.0);
+            *coefficient = rng.gen_range(-1.0..1.0);
         }
 
         Gaussian4d {
             isotropic_rotations: [
-                rng.random_range(-1.0..1.0),
-                rng.random_range(-1.0..1.0),
-                rng.random_range(-1.0..1.0),
-                rng.random_range(-1.0..1.0),
-                rng.random_range(-1.0..1.0),
-                rng.random_range(-1.0..1.0),
-                rng.random_range(-1.0..1.0),
-                rng.random_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
             ].into(),
             position_visibility: [
-                rng.random_range(-20.0..20.0),
-                rng.random_range(-20.0..20.0),
-                rng.random_range(-20.0..20.0),
+                rng.gen_range(-20.0..20.0),
+                rng.gen_range(-20.0..20.0),
+                rng.gen_range(-20.0..20.0),
                 1.0,
             ].into(),
             scale_opacity: [
-                rng.random_range(0.0..1.0),
-                rng.random_range(0.0..1.0),
-                rng.random_range(0.0..1.0),
-                rng.random_range(0.0..0.8),
+                rng.gen_range(0.0..1.0),
+                rng.gen_range(0.0..1.0),
+                rng.gen_range(0.0..1.0),
+                rng.gen_range(0.0..0.8),
             ].into(),
             spherindrical_harmonic: coefficients.into(),
             timestamp_timescale: [
-                rng.random_range(0.0..1.0),
-                rng.random_range(-1.0..1.0),
+                rng.gen_range(0.0..1.0),
+                rng.gen_range(-1.0..1.0),
                 0.0,
                 0.0,
             ].into(),
@@ -298,11 +298,11 @@ impl Distribution<Gaussian4d> for rand::distr::StandardUniform {
 }
 
 pub fn random_gaussians_4d(n: usize) -> PlanarGaussian4d {
-    let mut rng = rand::rng();
+    let mut rng = rand::thread_rng();
     let mut gaussians: Vec<Gaussian4d> = Vec::with_capacity(n);
 
     for _ in 0..n {
-        gaussians.push(rng.random());
+        gaussians.push(rng.gen());
     }
 
     PlanarGaussian4d::from_interleaved(gaussians)
