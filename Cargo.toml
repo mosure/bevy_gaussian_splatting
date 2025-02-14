@@ -133,6 +133,7 @@ web = [
   "planar",
   "sort_std",
   "viewer",
+  "web_asset",
   "webgpu",
 ]
 web_asset = ["bevy_web_asset"]
@@ -147,7 +148,7 @@ bevy_args = "1.7"
 bevy-inspector-egui = { version = "0.28", optional = true }
 bevy_interleave = { version = "0.6.1" }
 # bevy_panorbit_camera = { git = "https://github.com/mosure/bevy_panorbit_camera.git", optional = true, features = ["bevy_egui"] }
-bevy_panorbit_camera = { version = "0.21", optional = true, features = ["bevy_egui"] }
+bevy_panorbit_camera = { version = "0.22", optional = true, features = ["bevy_egui"] }
 bevy_transform_gizmo = { version = "0.12", optional = true }
 bevy_web_asset = { git = "https://github.com/mosure/bevy_web_asset.git", rev = "3a89a7b748d05d8d7c2547976b10522e24386eb0", version = "0.10", optional = true }
 bincode2 = { version = "2.0", optional = true }
