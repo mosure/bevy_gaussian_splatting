@@ -1,7 +1,7 @@
 [package]
 name = "bevy_gaussian_splatting"
 description = "bevy gaussian splatting render pipeline plugin"
-version = "4.0.2"
+version = "4.1.0"
 edition = "2021"
 authors = ["mosure <mitchell@mosure.me>"]
 license = "MIT OR Apache-2.0"
@@ -136,7 +136,10 @@ web = [
   "web_asset",
   "webgpu",
 ]
-web_asset = ["bevy_web_asset"]
+web_asset = [
+  "base64",
+  "bevy_web_asset",
+]
 
 # note: webgl2/buffer_texture are deprecated
 webgl2 = ["bevy/webgl2"]
@@ -144,11 +147,12 @@ webgpu = ["bevy/webgpu"]
 
 
 [dependencies]
-bevy_args = "1.7"
+base64 = { version = "0.22", optional = true }
+bevy_args = "1.7.1"
 bevy-inspector-egui = { version = "0.28", optional = true }
 bevy_interleave = { version = "0.6.1" }
 # bevy_panorbit_camera = { git = "https://github.com/mosure/bevy_panorbit_camera.git", optional = true, features = ["bevy_egui"] }
-bevy_panorbit_camera = { version = "0.22", optional = true, features = ["bevy_egui"] }
+bevy_panorbit_camera = { version = "0.21", optional = true, features = ["bevy_egui"] }
 bevy_transform_gizmo = { version = "0.12", optional = true }
 bevy_web_asset = { version = "0.10", optional = true }
 bincode2 = { version = "2.0", optional = true }

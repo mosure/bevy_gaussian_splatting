@@ -45,7 +45,7 @@ pub struct GaussianSplattingViewer {
     #[arg(long, default_value = "1")]
     pub msaa_samples: u8,
 
-    #[arg(long, default_value = "", help = "input file path (or url if web_asset feature is enabled)")]
+    #[arg(long, default_value = "", help = "input file path (or url/base64_url if web_asset feature is enabled)")]
     pub input_file: String,
 
     #[arg(long, default_value = "0")]

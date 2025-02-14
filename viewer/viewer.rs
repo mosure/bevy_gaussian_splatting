@@ -24,6 +24,8 @@ use bevy_panorbit_camera::{
 };
 
 #[cfg(feature = "web_asset")]
+use base64::{engine::general_purpose::URL_SAFE, Engine as _};
+#[cfg(feature = "web_asset")]
 use bevy_web_asset::WebAssetPlugin;
 
 use bevy_gaussian_splatting::{
@@ -65,6 +67,27 @@ use bevy_gaussian_splatting::query::select::{
 use bevy_gaussian_splatting::query::sparse::SparseSelect;
 
 
+fn parse_input_file(
+    input_file: &str,
+) -> String {
+    #[cfg(feature = "web_asset")]
+    let input_uri = match URL_SAFE.decode(input_file.as_bytes()) {
+        Ok(data) => {
+            String::from_utf8(data).unwrap()
+        },
+        Err(e) => {
+            warn!("failed to decode base64 input: {:?}", e);
+            input_file.to_string()
+        }
+    };
+
+    #[cfg(not(feature = "web_asset"))]
+    let input_uri = input_file.to_string();
+
+    input_uri
+}
+
+
 fn setup_gaussian_cloud(
     mut commands: Commands,
     args: Res<GaussianSplattingViewer>,
@@ -79,8 +102,9 @@ fn setup_gaussian_cloud(
                 log(&format!("generating {} gaussians", args.gaussian_count));
                 cloud = gaussian_3d_assets.add(random_gaussians_3d(args.gaussian_count));
             } else if !args.input_file.is_empty() {
-                log(&format!("loading {}", args.input_file));
-                cloud = asset_server.load(&args.input_file);
+                let input_uri = parse_input_file(&args.input_file);
+                log(&format!("loading {}", input_uri));
+                cloud = asset_server.load(&input_uri);
             } else {
                 cloud = gaussian_3d_assets.add(PlanarGaussian3d::test_model());
             }
@@ -102,8 +126,9 @@ fn setup_gaussian_cloud(
                 log(&format!("generating {} gaussians", args.gaussian_count));
                 cloud = gaussian_4d_assets.add(random_gaussians_4d(args.gaussian_count));
             } else if !args.input_file.is_empty() {
-                log(&format!("loading {}", args.input_file));
-                cloud = asset_server.load(&args.input_file);
+                let input_uri = parse_input_file(&args.input_file);
+                log(&format!("loading {}", input_uri));
+                cloud = asset_server.load(&input_uri);
             } else {
                 cloud = gaussian_4d_assets.add(PlanarGaussian4d::test_model());
             }
@@ -253,7 +278,6 @@ fn viewer_app() {
         ..default()
     });
 
-    #[cfg(feature = "web_asset")]
     app.add_plugins(WebAssetPlugin);
 
     // setup for gaussian viewer app
