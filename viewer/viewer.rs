@@ -23,6 +23,9 @@ use bevy_panorbit_camera::{
     PanOrbitCameraPlugin,
 };
 
+#[cfg(feature = "web_asset")]
+use bevy_web_asset::WebAssetPlugin;
+
 use bevy_gaussian_splatting::{
     CloudSettings,
     GaussianCamera,
@@ -250,10 +253,17 @@ fn viewer_app() {
         ..default()
     });
 
+    #[cfg(feature = "web_asset")]
+    app.add_plugins(WebAssetPlugin);
+
     // setup for gaussian viewer app
     app.insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)));
     app.add_plugins(
         DefaultPlugins
+        .set(AssetPlugin {
+            meta_check: bevy::asset::AssetMetaCheck::Never,
+            ..default()
+        })
         .set(ImagePlugin::default_nearest())
         .set(WindowPlugin {
             primary_window,
