@@ -29,3 +29,4 @@
 - [sturdy-dollop](https://github.com/mosure/sturdy-dollop)
 - [sugar](https://github.com/Anttwo/SuGaR)
 - [taichi_3d_gaussian_splatting](https://github.com/wanmeihuali/taichi_3d_gaussian_splatting)
+- [temporal-gaussian-hierarchy](https://zju3dv.github.io/longvolcap/)

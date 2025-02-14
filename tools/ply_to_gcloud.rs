@@ -3,12 +3,9 @@ use byte_unit::{
     UnitType,
 };
 
-use bevy_gaussian_splatting::{
-    GaussianCloud,
-    io::{
-        ply::parse_ply,
-        writer::write_gaussian_cloud_to_file,
-    },
+use bevy_gaussian_splatting::io::{
+    codec::CloudCodec,
+    ply::parse_ply_3d,
 };
 
 #[cfg(feature = "query_sparse")]
@@ -42,9 +39,8 @@ fn main() {
     let file = std::fs::File::open(&filename).expect("failed to open file");
     let mut reader = std::io::BufReader::new(file);
 
-    let mut cloud = GaussianCloud::from_gaussians(
-        parse_ply(&mut reader).expect("failed to parse ply file"),
-    );
+    // TODO: support 4d gaussian -> .gc4d
+    let mut cloud = parse_ply_3d(&mut reader).expect("failed to parse ply file");
 
     // TODO: prioritize mesh selection over export filter
     // println!("initial cloud size: {}", cloud.len());
@@ -71,7 +67,7 @@ fn main() {
     let base_filename = filename.split('.').next().expect("no extension").to_string();
     let gcloud_filename = base_filename + ".gcloud";
 
-    write_gaussian_cloud_to_file(&cloud, &gcloud_filename);
+    cloud.write_to_file(&gcloud_filename);
 
     let post_encode_bytes = Byte::from_u64(std::fs::metadata(&gcloud_filename).expect("failed to get metadata").len());
     println!("output file size: {}", post_encode_bytes.get_appropriate_unit(UnitType::Decimal));

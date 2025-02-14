@@ -1,9 +1,14 @@
 use bevy::prelude::*;
+use bevy_interleave::prelude::*;
 
 use crate::{
-    GaussianCloud,
-    GaussianCloudHandle,
-    io::writer::write_gaussian_cloud_to_file,
+    gaussian::{
+        interface::CommonCloud,
+        formats::{
+            planar_3d::Gaussian3d,
+            planar_4d::Gaussian4d,
+        },
+    }, io::codec::CloudCodec,
 };
 
 
@@ -44,24 +49,47 @@ impl Plugin for SelectPlugin {
         app.add_event::<InvertSelectionEvent>();
         app.add_event::<SaveSelectionEvent>();
 
+        app.add_plugins(CommonCloudSelectPlugin::<Gaussian3d>::default());
+        app.add_plugins(CommonCloudSelectPlugin::<Gaussian4d>::default());
+    }
+}
+
+
+#[derive(Default)]
+pub struct CommonCloudSelectPlugin<R: PlanarStorage>
+where
+    R::PlanarType: CommonCloud,
+{
+    _phantom: std::marker::PhantomData<R>,
+}
+
+impl<R: PlanarStorage> Plugin for CommonCloudSelectPlugin<R>
+where
+    R::PlanarType: CloudCodec,
+    R::PlanarType: CommonCloud,
+{
+    fn build(&self, app: &mut App) {
         app.add_systems(Update, (
-            apply_selection,
-            invert_selection,
-            save_selection,
+            apply_selection::<R>,
+            invert_selection::<R>,
+            save_selection::<R>,
         ));
     }
 }
 
 
-fn apply_selection(
+fn apply_selection<R: PlanarStorage>(
     asset_server: Res<AssetServer>,
-    mut gaussian_clouds_res: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_clouds_res: ResMut<Assets<R::PlanarType>>,
     mut selections: Query<(
         Entity,
-        &GaussianCloudHandle,
+        &R::PlanarTypeHandle,
         &mut Select,
     )>,
-) {
+)
+where
+    R::PlanarType: CommonCloud,
+{
     for (
         _entity,
         cloud_handle,
@@ -71,13 +99,15 @@ fn apply_selection(
             continue;
         }
 
-        if let Some(load_state) = asset_server.get_load_state(&cloud_handle.0) {
+        if let Some(load_state) = asset_server.get_load_state(cloud_handle.handle()) {
             if load_state.is_loading() {
                 continue;
             }
         }
 
-        let cloud = gaussian_clouds_res.get_mut(cloud_handle).unwrap();
+        let cloud = gaussian_clouds_res
+            .get_mut(cloud_handle.handle())
+            .unwrap();
 
         (0..cloud.len())
             .for_each(|index| {
@@ -98,15 +128,18 @@ fn apply_selection(
 #[derive(Event, Debug, Reflect)]
 pub struct InvertSelectionEvent;
 
-fn invert_selection(
+fn invert_selection<R: PlanarStorage>(
     mut events: EventReader<InvertSelectionEvent>,
-    mut gaussian_clouds_res: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_clouds_res: ResMut<Assets<R::PlanarType>>,
     mut selections: Query<(
         Entity,
-        &GaussianCloudHandle,
+        &R::PlanarTypeHandle,
         &mut Select,
     )>,
-) {
+)
+where
+    R::PlanarType: CommonCloud,
+{
     if events.is_empty() {
         return;
     }
@@ -121,7 +154,7 @@ fn invert_selection(
             continue;
         }
 
-        let cloud = gaussian_clouds_res.get_mut(cloud_handle).unwrap();
+        let cloud = gaussian_clouds_res.get_mut(cloud_handle.handle()).unwrap();
 
         let mut new_indicies = Vec::with_capacity(cloud.len() - select.indicies.len());
 
@@ -147,15 +180,19 @@ fn invert_selection(
 #[derive(Event, Debug, Reflect)]
 pub struct SaveSelectionEvent;
 
-pub fn save_selection(
+pub fn save_selection<R: PlanarStorage>(
     mut events: EventReader<SaveSelectionEvent>,
-    mut gaussian_clouds_res: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_clouds_res: ResMut<Assets<R::PlanarType>>,
     mut selections: Query<(
         Entity,
-        &GaussianCloudHandle,
+        &R::PlanarTypeHandle,
         &Select,
     )>,
-) {
+)
+where
+    R::PlanarType: CloudCodec,
+    R::PlanarType: CommonCloud,
+{
     if events.is_empty() {
         return;
     }
@@ -166,10 +203,10 @@ pub fn save_selection(
         cloud_handle,
         select,
     ) in selections.iter_mut() {
-        let cloud = gaussian_clouds_res.get_mut(cloud_handle).unwrap();
+        let cloud = gaussian_clouds_res.get_mut(cloud_handle.handle()).unwrap();
 
         let selected = cloud.subset(select.indicies.as_slice());
 
-        write_gaussian_cloud_to_file(&selected, "live_output.gcloud");
+        selected.write_to_file("live_output.gcloud");
     }
 }

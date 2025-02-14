@@ -13,10 +13,11 @@ use bevy::{
 };
 
 use bevy_gaussian_splatting::{
+    CloudSettings,
     GaussianCamera,
-    GaussianCloud,
-    GaussianCloudHandle,
-    random_gaussians,
+    PlanarGaussian3d,
+    PlanarGaussian3dHandle,
+    random_gaussians_3d,
 };
 
 use _harness::{
@@ -42,12 +43,13 @@ fn main() {
 
 fn setup(
     mut commands: Commands,
-    mut gaussian_assets: ResMut<Assets<GaussianCloud>>,
+    mut gaussian_assets: ResMut<Assets<PlanarGaussian3d>>,
 ) {
-    let cloud = gaussian_assets.add(random_gaussians(10000));
+    let cloud = gaussian_assets.add(random_gaussians_3d(10000));
 
     commands.spawn((
-        GaussianCloudHandle(cloud),
+        PlanarGaussian3dHandle(cloud),
+        CloudSettings::default(),
         Name::new("gaussian_cloud"),
     ));
 
@@ -105,11 +107,11 @@ fn save_captures(captures: Arc<Mutex<Vec<Image>>>) {
 }
 
 fn capture_ready(
-    // gaussian_cloud_assets: Res<Assets<GaussianCloud>>,
+    // gaussian_cloud_assets: Res<Assets<PlanarGaussian3d>>,
     // asset_server: Res<AssetServer>,
     // gaussian_clouds: Query<
     //     Entity,
-    //     &GaussianCloudHandle,
+    //     &PlanarGaussian3dHandle,
     // >,
     main_window: Query<Entity, With<PrimaryWindow>>,
     mut screenshot_manager: ResMut<ScreenshotManager>,

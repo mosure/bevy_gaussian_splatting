@@ -61,22 +61,33 @@ fn radix_sort_a(
     let thread_index = gl_GlobalInvocationID.x * #{RADIX_DIGIT_PLACES}u + gl_GlobalInvocationID.y;
     let start_entry_index = thread_index * #{ENTRIES_PER_INVOCATION_A}u;
     let end_entry_index = start_entry_index + #{ENTRIES_PER_INVOCATION_A}u;
-    for(var entry_index = start_entry_index; entry_index < end_entry_index; entry_index += 1u) {
-        if(entry_index >= gaussian_uniforms.count) {
+
+    for (var entry_index = start_entry_index; entry_index < end_entry_index; entry_index += 1u) {
+        if (entry_index >= gaussian_uniforms.count) {
             continue;
         }
-        var key: u32 = 0xFFFFFFFFu; // Stream compaction for frustum culling
+
+        var key: u32 = 0xFFFFFFFFu;
         let position = vec4<f32>(get_position(entry_index), 1.0);
         let transformed_position = (gaussian_uniforms.transform * position).xyz;
         let clip_space_pos = world_to_clip(transformed_position);
-        if(in_frustum(clip_space_pos.xyz)) {
+
+        let distance = distance(transformed_position, view.world_position);
+        let distance_wide = 0x0FFFFFFF - u32(distance * 1.0e4);
+
+        // TODO: use 4d transformed position, from gaussian node
+
+        if (in_frustum(clip_space_pos.xyz)) {
             // key = bitcast<u32>(1.0 - clip_space_pos.z);
-            key = u32(clip_space_pos.z * 0xFFFF.0) << 16u;
-            key |= u32((clip_space_pos.x * 0.5 + 0.5) * 0xFF.0) << 8u;
-            key |= u32((clip_space_pos.y * 0.5 + 0.5) * 0xFF.0);
+            // key = u32(clip_space_pos.z * 0xFFFF.0) << 16u;
+            // key |= u32((clip_space_pos.x * 0.5 + 0.5) * 0xFF.0) << 8u;
+            // key |= u32((clip_space_pos.y * 0.5 + 0.5) * 0xFF.0);
+            key = distance_wide;
         }
+
         output_entries[entry_index].key = key;
         output_entries[entry_index].value = entry_index;
+
         for(var shift = 0u; shift < #{RADIX_DIGIT_PLACES}u; shift += 1u) {
             let digit = (key >> (shift * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
             atomicAdd(&sorting_shared_a.digit_histogram[shift][digit], 1u);

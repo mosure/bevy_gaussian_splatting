@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use bevy::{
     prelude::*,
     ecs::system::{
@@ -24,6 +26,7 @@ use bevy::{
         Instant,
     },
 };
+use bevy_interleave::prelude::*;
 use bytemuck::{
     Pod,
     Zeroable,
@@ -32,11 +35,13 @@ use static_assertions::assert_cfg;
 
 use crate::{
     camera::GaussianCamera,
-    GaussianCloud,
-    GaussianCloudHandle,
-    GaussianCloudSettings,
+    CloudSettings,
+    gaussian::interface::CommonCloud,
 };
 
+
+#[cfg(feature = "sort_bitonic")]
+pub mod bitonic;
 
 #[cfg(feature = "sort_radix")]
 pub mod radix;
@@ -45,7 +50,7 @@ pub mod radix;
 pub mod rayon;
 
 #[cfg(feature = "sort_std")]
-pub mod std; // rename to std_sort.rs to avoid name conflict with std crate
+pub mod std_sort; // rename to std_sort.rs to avoid name conflict with std crate
 
 
 assert_cfg!(
@@ -117,18 +122,39 @@ impl Default for SortConfig {
 
 
 #[derive(Default)]
-pub struct SortPlugin;
+pub struct SortPluginFlag;
+impl Plugin for SortPluginFlag {
+    fn build(&self, _app: &mut App) { }
+}
 
-impl Plugin for SortPlugin {
+
+// TODO: make this generic /w shared components
+#[derive(Default)]
+pub struct SortPlugin<R: PlanarStorage> {
+    phantom: PhantomData<R>,
+}
+
+impl<R: PlanarStorage> Plugin for SortPlugin<R>
+where
+    R::PlanarType: CommonCloud,
+{
     fn build(&self, app: &mut App) {
         #[cfg(feature = "sort_radix")]
-        app.add_plugins(radix::RadixSortPlugin);
+        app.add_plugins(radix::RadixSortPlugin::<R>::default());
 
         #[cfg(feature = "sort_rayon")]
-        app.add_plugins(rayon::RayonSortPlugin);
+        app.add_plugins(rayon::RayonSortPlugin::<R>::default());
 
         #[cfg(feature = "sort_std")]
-        app.add_plugins(std::StdSortPlugin);
+        app.add_plugins(std_sort::StdSortPlugin::<R>::default());
+
+        app.add_systems(Update, auto_insert_sorted_entries::<R>);
+
+        if app.is_plugin_added::<SortPluginFlag>() {
+            debug!("sort plugin flag already added");
+            return;
+        }
+        app.add_plugins(SortPluginFlag);
 
         app.register_type::<SortConfig>();
         app.init_resource::<SortConfig>();
@@ -146,7 +172,6 @@ impl Plugin for SortPlugin {
         app.add_systems(
             Update,
             (
-                auto_insert_sorted_entries,
                 update_sort_trigger,
                 update_sorted_entries_sizes,
             )
@@ -249,16 +274,16 @@ fn update_textures_on_change(
 
 
 #[allow(clippy::type_complexity)]
-fn auto_insert_sorted_entries(
+fn auto_insert_sorted_entries<R: PlanarStorage>(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    gaussian_clouds_res: Res<Assets<GaussianCloud>>,
+    gaussian_clouds_res: Res<Assets<R::PlanarType>>,
     mut sorted_entries_res: ResMut<Assets<SortedEntries>>,
     gaussian_clouds: Query<
         (
             Entity,
-            &GaussianCloudHandle,
-            &GaussianCloudSettings,
+            &R::PlanarTypeHandle,
+            &CloudSettings,
         ),
         Without<SortedEntriesHandle>
     >,
@@ -271,10 +296,14 @@ fn auto_insert_sorted_entries(
     >,
     #[cfg(feature = "buffer_texture")]
     mut images: ResMut<Assets<Image>>,
-) {
+)
+where
+    R::PlanarType: CommonCloud,
+{
     let camera_count = gaussian_cameras.iter().len();
 
     if camera_count == 0 {
+        debug!("no gaussian cameras found");
         return;
     }
 
@@ -288,14 +317,16 @@ fn auto_insert_sorted_entries(
         //     continue;
         // }
 
-        if let Some(load_state) = asset_server.get_load_state(&gaussian_cloud_handle.0) {
+        if let Some(load_state) = asset_server.get_load_state(gaussian_cloud_handle.handle()) {
             if load_state.is_loading() {
+                debug!("cloud asset is still loading");
                 continue;
             }
         }
 
-        let cloud = gaussian_clouds_res.get(gaussian_cloud_handle);
+        let cloud = gaussian_clouds_res.get(gaussian_cloud_handle.handle());
         if cloud.is_none() {
+            debug!("cloud asset is not loaded");
             continue;
         }
         let cloud = cloud.unwrap();

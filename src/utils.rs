@@ -5,7 +5,11 @@ use bevy_args::{
     Serialize,
 };
 
-use crate::gaussian::settings::GaussianMode;
+use crate::gaussian::settings::{
+    GaussianMode,
+    PlaybackMode,
+    RasterizeMode,
+};
 
 
 #[derive(
@@ -50,6 +54,12 @@ pub struct GaussianSplattingViewer {
     #[arg(long, value_enum, default_value_t = GaussianMode::Gaussian3d)]
     pub gaussian_mode: GaussianMode,
 
+    #[arg(long, value_enum, default_value_t = PlaybackMode::Sin)]
+    pub playback_mode: PlaybackMode,
+
+    #[arg(long, value_enum, default_value_t = RasterizeMode::Color)]
+    pub rasterization_mode: RasterizeMode,
+
     #[arg(long, default_value = "0")]
     pub particle_count: usize,
 }
@@ -68,6 +78,8 @@ impl Default for GaussianSplattingViewer {
             input_file: "".to_string(),
             gaussian_count: 0,
             gaussian_mode: GaussianMode::Gaussian3d,
+            playback_mode: PlaybackMode::Sin,
+            rasterization_mode: RasterizeMode::Color,
             particle_count: 0,
         }
     }

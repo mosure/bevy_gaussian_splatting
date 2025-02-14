@@ -13,89 +13,110 @@ struct GaussianUniforms {
     global_scale: f32,
     count: u32,
     count_root_ceil: u32,
+    time: f32,
+    time_start: f32,
+    time_stop: f32,
+    num_classes: u32,
 };
 @group(1) @binding(0) var<uniform> gaussian_uniforms: GaussianUniforms;
 
 
-#ifdef PACKED_F32
-struct Gaussian {
-    @location(0) rotation: vec4<f32>,
-    @location(1) position_visibility: vec4<f32>,
-    @location(2) scale_opacity: vec4<f32>,
-    sh: array<f32, #{SH_COEFF_COUNT}>,
-};
+#ifdef GAUSSIAN_3D_STRUCTURE
+    #ifdef PACKED_F32
+        struct Gaussian {
+            @location(0) rotation: vec4<f32>,
+            @location(1) position_visibility: vec4<f32>,
+            @location(2) scale_opacity: vec4<f32>,
+            sh: array<f32, #{SH_COEFF_COUNT}>,
+        };
 
-#ifdef READ_WRITE_POINTS
-@group(2) @binding(0) var<storage, read_write> points: array<Gaussian>;
-#else
-@group(2) @binding(0) var<storage, read> points: array<Gaussian>;
-#endif
-#endif
-
-
-#ifdef PLANAR_F32
-#ifdef READ_WRITE_POINTS
-@group(2) @binding(0) var<storage, read_write> position_visibility: array<vec4<f32>>;
-#else
-@group(2) @binding(0) var<storage, read> position_visibility: array<vec4<f32>>;
-#endif
-
-@group(2) @binding(1) var<storage, read> spherical_harmonics: array<array<f32, #{SH_COEFF_COUNT}>>;
-
-#ifdef PRECOMPUTE_COVARIANCE_3D
-@group(2) @binding(2) var<storage, read> covariance_3d_opacity: array<array<f32, 8>>;
-#else
-@group(2) @binding(2) var<storage, read> rotation: array<vec4<f32>>;
-@group(2) @binding(3) var<storage, read> scale_opacity: array<vec4<f32>>;
-#endif
-#endif
+        #ifdef READ_WRITE_POINTS
+            @group(2) @binding(0) var<storage, read_write> points: array<Gaussian>;
+        #else
+            @group(2) @binding(0) var<storage, read> points: array<Gaussian>;
+        #endif
+    #endif
 
 
-#ifdef PLANAR_F16
-#ifdef READ_WRITE_POINTS
-@group(2) @binding(0) var<storage, read_write> position_visibility: array<vec4<f32>>;
-#else
-@group(2) @binding(0) var<storage, read> position_visibility: array<vec4<f32>>;
-#endif
-@group(2) @binding(1) var<storage, read> spherical_harmonics: array<array<u32, #{HALF_SH_COEFF_COUNT}>>;
+    #ifdef PLANAR_F32
+        #ifdef READ_WRITE_POINTS
+            @group(2) @binding(0) var<storage, read_write> position_visibility: array<vec4<f32>>;
+        #else
+            @group(2) @binding(0) var<storage, read> position_visibility: array<vec4<f32>>;
+        #endif
 
-#ifdef PRECOMPUTE_COVARIANCE_3D
-@group(2) @binding(2) var<storage, read> covariance_3d_opacity: array<vec4<u32>>;
-#else
-@group(2) @binding(2) var<storage, read> rotation_scale_opacity: array<vec4<u32>>;
-#endif
-#endif
+        @group(2) @binding(1) var<storage, read> spherical_harmonics: array<array<f32, #{SH_COEFF_COUNT}>>;
 
-
-#ifdef PLANAR_TEXTURE_F16
-@group(2) @binding(0) var position_visibility: texture_2d<f32>;
-
-#if SH_VEC4_PLANES == 1
-@group(2) @binding(1) var spherical_harmonics: texture_2d<u32>;
-#else
-@group(2) @binding(1) var spherical_harmonics: texture_2d_array<u32>;
-#endif
-
-#ifdef PRECOMPUTE_COVARIANCE_3D
-@group(2) @binding(2) var covariance_3d_opacity: texture_2d<u32>;
-#else
-@group(2) @binding(2) var rotation_scale_opacity: texture_2d<u32>;
-#endif
-#endif
+        #ifdef PRECOMPUTE_COVARIANCE_3D
+            @group(2) @binding(2) var<storage, read> covariance_3d_opacity: array<array<f32, 8>>;
+        #else
+            @group(2) @binding(2) var<storage, read> rotation: array<vec4<f32>>;
+            @group(2) @binding(3) var<storage, read> scale_opacity: array<vec4<f32>>;
+        #endif
+    #endif
 
 
-#ifdef PLANAR_TEXTURE_F32
-@group(2) @binding(0) var position_visibility: texture_2d<f32>;
+    #ifdef PLANAR_F16
+        #ifdef READ_WRITE_POINTS
+            @group(2) @binding(0) var<storage, read_write> position_visibility: array<vec4<f32>>;
+        #else
+            @group(2) @binding(0) var<storage, read> position_visibility: array<vec4<f32>>;
+        #endif
 
-#if SH_VEC4_PLANES == 1
-@group(2) @binding(1) var spherical_harmonics: texture_2d<f32>;
-#else
-@group(2) @binding(1) var spherical_harmonics: texture_2d_array<f32>;
-#endif
+        @group(2) @binding(1) var<storage, read> spherical_harmonics: array<array<u32, #{HALF_SH_COEFF_COUNT}>>;
 
-// TODO: support f32_cov3d_opacity texture
+        #ifdef PRECOMPUTE_COVARIANCE_3D
+            @group(2) @binding(2) var<storage, read> covariance_3d_opacity: array<vec4<u32>>;
+        #else
+            @group(2) @binding(2) var<storage, read> rotation_scale_opacity: array<vec4<u32>>;
+        #endif
+    #endif
 
-@group(2) @binding(2) var rotation_scale_opacity: texture_2d<f32>;
+
+    #ifdef PLANAR_TEXTURE_F16
+        @group(2) @binding(0) var position_visibility: texture_2d<f32>;
+
+        #if SH_VEC4_PLANES == 1
+            @group(2) @binding(1) var spherical_harmonics: texture_2d<u32>;
+        #else
+            @group(2) @binding(1) var spherical_harmonics: texture_2d_array<u32>;
+        #endif
+
+        #ifdef PRECOMPUTE_COVARIANCE_3D
+            @group(2) @binding(2) var covariance_3d_opacity: texture_2d<u32>;
+        #else
+            @group(2) @binding(2) var rotation_scale_opacity: texture_2d<u32>;
+        #endif
+    #endif
+
+
+    #ifdef PLANAR_TEXTURE_F32
+        @group(2) @binding(0) var position_visibility: texture_2d<f32>;
+
+        #if SH_VEC4_PLANES == 1
+            @group(2) @binding(1) var spherical_harmonics: texture_2d<f32>;
+        #else
+            @group(2) @binding(1) var spherical_harmonics: texture_2d_array<f32>;
+        #endif
+
+        // TODO: support f32_cov3d_opacity texture
+
+        @group(2) @binding(2) var rotation_scale_opacity: texture_2d<f32>;
+    #endif
+#else ifdef GAUSSIAN_4D
+    #ifdef PLANAR_F32
+        #ifdef READ_WRITE_POINTS
+            @group(2) @binding(0) var<storage, read_write> position_visibility: array<vec4<f32>>;
+        #else
+            @group(2) @binding(0) var<storage, read> position_visibility: array<vec4<f32>>;
+        #endif
+
+        @group(2) @binding(1) var<storage, read> spherindrical_harmonics: array<array<f32, #{SH_4D_COEFF_COUNT}>>;
+
+        @group(2) @binding(2) var<storage, read> isotropic_rotations: array<array<f32, 8>>;
+        @group(2) @binding(3) var<storage, read> scale_opacity: array<vec4<f32>>;
+        @group(2) @binding(4) var<storage, read> timestamp_timescale: array<vec4<f32>>;
+    #endif
 #endif
 
 

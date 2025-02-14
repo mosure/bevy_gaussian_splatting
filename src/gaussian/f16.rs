@@ -21,7 +21,10 @@ use crate::gaussian::{
         Rotation,
         ScaleOpacity,
     },
-    packed::Gaussian,
+    formats::{
+        planar_3d::Gaussian3d,
+        planar_4d::Gaussian4d,
+    },
 };
 
 
@@ -47,7 +50,7 @@ pub struct RotationScaleOpacityPacked128 {
 }
 
 impl RotationScaleOpacityPacked128 {
-    pub fn from_gaussian(gaussian: &Gaussian) -> Self {
+    pub fn from_gaussian(gaussian: &Gaussian3d) -> Self {
         Self {
             rotation: [
                 pack_f32s_to_u32(gaussian.rotation.rotation[0], gaussian.rotation.rotation[1]),
@@ -150,7 +153,7 @@ pub struct Covariance3dOpacityPacked128 {
 }
 
 impl Covariance3dOpacityPacked128 {
-    pub fn from_gaussian(gaussian: &Gaussian) -> Self {
+    pub fn from_gaussian(gaussian: &Gaussian3d) -> Self {
         let cov3d: Covariance3dOpacity = gaussian.into();
         let cov3d = cov3d.cov3d;
 
@@ -195,6 +198,82 @@ impl From<[u32; 4]> for Covariance3dOpacityPacked128 {
         }
     }
 }
+
+
+
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    Copy,
+    PartialEq,
+    Reflect,
+    ShaderType,
+    Pod,
+    Zeroable,
+    Serialize,
+    Deserialize,
+)]
+#[repr(C)]
+pub struct IsotropicRotations {
+    pub rotation: [u32; 2],
+    pub rotation_r: [u32; 2],
+}
+
+impl IsotropicRotations {
+    pub fn from_gaussian(gaussian: &Gaussian4d) -> Self {
+        let rotation = gaussian.isotropic_rotations.rotation;
+        let rotation_r = gaussian.isotropic_rotations.rotation_r;
+
+        Self {
+            rotation: [
+                pack_f32s_to_u32(rotation[0], rotation[1]),
+                pack_f32s_to_u32(rotation[2], rotation[3]),
+            ],
+            rotation_r: [
+                pack_f32s_to_u32(rotation_r[0], rotation_r[1]),
+                pack_f32s_to_u32(rotation_r[2], rotation_r[3]),
+            ],
+        }
+    }
+
+    pub fn rotations(&self) -> [Rotation; 2] {
+        let (u0, l0) = unpack_u32_to_f32s(self.rotation[0]);
+        let (u1, l1) = unpack_u32_to_f32s(self.rotation[1]);
+
+        let (u0_r, l0_r) = unpack_u32_to_f32s(self.rotation_r[0]);
+        let (u1_r, l1_r) = unpack_u32_to_f32s(self.rotation_r[1]);
+
+        [
+            Rotation {
+                rotation: [
+                    u0,
+                    l0,
+                    u1,
+                    l1,
+                ],
+            },
+            Rotation {
+                rotation: [
+                    u0_r,
+                    l0_r,
+                    u1_r,
+                    l1_r,
+                ],
+            },
+        ]
+    }
+}
+
+impl From<[u32; 4]> for IsotropicRotations {
+    fn from(rotations: [u32; 4]) -> Self {
+        Self {
+            rotation: [rotations[0], rotations[1]],
+            rotation_r: [rotations[2], rotations[3]],
+        }
+    }
+}
+
 
 
 pub fn pack_f32s_to_u32(upper: f32, lower: f32) -> u32 {

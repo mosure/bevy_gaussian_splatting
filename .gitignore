@@ -7,8 +7,10 @@ out/
 
 *.py
 
-*.ply
+*.gc4d
 *.gcloud
+*.ply
+*.ply4d
 
 .DS_Store
 

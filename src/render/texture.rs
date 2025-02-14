@@ -16,8 +16,8 @@ use static_assertions::assert_cfg;
 use crate::{
     gaussian::{
         cloud::{
-            GaussianCloud,
-            GaussianCloudHandle,
+            Cloud,
+            PlanarGaussian3dHandle,
         },
         f32::{
             PositionVisibility,
@@ -31,8 +31,8 @@ use crate::{
         SphericalHarmonicCoefficients,
     },
     render::{
-        GaussianCloudPipeline,
-        GpuGaussianCloud,
+        CloudPipeline,
+        GpuCloud,
     },
 };
 
@@ -45,25 +45,20 @@ assert_cfg!(
     "texture rendering is only supported with the `planar` feature enabled",
 );
 
-assert_cfg!(
-    not(feature = "f32"),
-    "f32 texture support is not implemented yet",
-);
 
+// TODO: migrate to auto-generated GPU buffers using bevy_interleave
+// #[cfg(feature = "f16")]
+// #[derive(Component, Clone, Debug, Reflect)]
+// pub struct TextureBuffers {
+//     position_visibility: Handle<Image>,
+//     spherical_harmonics: Handle<Image>,
 
-#[cfg(feature = "f16")]
-#[derive(Component, Clone, Debug, Reflect)]
-pub struct TextureBuffers {
-    position_visibility: Handle<Image>,
-    spherical_harmonics: Handle<Image>,
+//     #[cfg(feature = "precompute_covariance_3d")]
+//     covariance_3d_opacity: Handle<Image>,
+//     #[cfg(not(feature = "precompute_covariance_3d"))]
+//     rotation_scale_opacity: Handle<Image>,
+// }
 
-    #[cfg(feature = "precompute_covariance_3d")]
-    covariance_3d_opacity: Handle<Image>,
-    #[cfg(not(feature = "precompute_covariance_3d"))]
-    rotation_scale_opacity: Handle<Image>,
-}
-
-#[cfg(feature = "f32")]
 #[derive(Component, Clone, Debug, Reflect)]
 pub struct TextureBuffers {
     position_visibility: Handle<Image>,
@@ -115,8 +110,8 @@ pub struct GpuTextureBuffers {
 
 pub fn queue_gpu_texture_buffers(
     mut commands: Commands,
-    // gaussian_cloud_pipeline: Res<GaussianCloudPipeline>,
-    pipeline: ResMut<GaussianCloudPipeline>,
+    // gaussian_cloud_pipeline: Res<CloudPipeline>,
+    pipeline: ResMut<CloudPipeline>,
     render_device: ResMut<RenderDevice>,
     gpu_images: Res<RenderAssets<GpuImage>>,
     clouds: Query<(
@@ -127,41 +122,40 @@ pub fn queue_gpu_texture_buffers(
     // TODO: verify gpu_images are loaded
 
     for (entity, texture_buffers,) in clouds.iter() {
-        #[cfg(feature = "f16")]
-        let bind_group = render_device.create_bind_group(
-            Some("texture_gaussian_cloud_bind_group"),
-            &pipeline.gaussian_cloud_layout,
-            &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::TextureView(
-                        &gpu_images.get(&texture_buffers.position_visibility).unwrap().texture_view
-                    ),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::TextureView(
-                        &gpu_images.get(&texture_buffers.spherical_harmonics).unwrap().texture_view
-                    ),
-                },
-                #[cfg(feature = "precompute_covariance_3d")]
-                BindGroupEntry {
-                    binding: 2,
-                    resource: BindingResource::TextureView(
-                        &gpu_images.get(&texture_buffers.covariance_3d_opacity).unwrap().texture_view
-                    ),
-                },
-                #[cfg(not(feature = "precompute_covariance_3d"))]
-                BindGroupEntry {
-                    binding: 2,
-                    resource: BindingResource::TextureView(
-                        &gpu_images.get(&texture_buffers.rotation_scale_opacity).unwrap().texture_view
-                    ),
-                },
-            ],
-        );
+        // #[cfg(feature = "f16")]
+        // let bind_group = render_device.create_bind_group(
+        //     Some("texture_gaussian_cloud_bind_group"),
+        //     &pipeline.gaussian_cloud_layout,
+        //     &[
+        //         BindGroupEntry {
+        //             binding: 0,
+        //             resource: BindingResource::TextureView(
+        //                 &gpu_images.get(&texture_buffers.position_visibility).unwrap().texture_view
+        //             ),
+        //         },
+        //         BindGroupEntry {
+        //             binding: 1,
+        //             resource: BindingResource::TextureView(
+        //                 &gpu_images.get(&texture_buffers.spherical_harmonics).unwrap().texture_view
+        //             ),
+        //         },
+        //         #[cfg(feature = "precompute_covariance_3d")]
+        //         BindGroupEntry {
+        //             binding: 2,
+        //             resource: BindingResource::TextureView(
+        //                 &gpu_images.get(&texture_buffers.covariance_3d_opacity).unwrap().texture_view
+        //             ),
+        //         },
+        //         #[cfg(not(feature = "precompute_covariance_3d"))]
+        //         BindGroupEntry {
+        //             binding: 2,
+        //             resource: BindingResource::TextureView(
+        //                 &gpu_images.get(&texture_buffers.rotation_scale_opacity).unwrap().texture_view
+        //             ),
+        //         },
+        //     ],
+        // );
 
-        #[cfg(feature = "f32")]
         let bind_group = render_device.create_bind_group(
             Some("texture_gaussian_cloud_bind_group"),
             &pipeline.gaussian_cloud_layout,
@@ -202,12 +196,12 @@ pub fn queue_gpu_texture_buffers(
 fn queue_textures(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    gaussian_cloud_res: Res<Assets<GaussianCloud>>,
+    gaussian_cloud_res: Res<Assets<Cloud>>,
     mut images: ResMut<Assets<Image>>,
     clouds: Query<
         (
             Entity,
-            &GaussianCloudHandle,
+            &PlanarGaussian3dHandle,
         ),
         Without<TextureBuffers>,
     >,
@@ -242,77 +236,76 @@ fn queue_textures(
 
         let texture_buffers: TextureBuffers;
 
-        #[cfg(feature = "f16")]
-        {
-            let planar_spherical_harmonics: Vec<u32> = (0..SH_VEC4_PLANES)
-                .flat_map(|plane_index| {
-                    cloud.spherical_harmonic.iter()
-                        .flat_map(move |sh| {
-                            let start_index = plane_index * 4;
-                            let end_index = std::cmp::min(start_index + 4, sh.coefficients.len());
+        // #[cfg(feature = "f16")]
+        // {
+        //     let planar_spherical_harmonics: Vec<u32> = (0..SH_VEC4_PLANES)
+        //         .flat_map(|plane_index| {
+        //             cloud.spherical_harmonic.iter()
+        //                 .flat_map(move |sh| {
+        //                     let start_index = plane_index * 4;
+        //                     let end_index = std::cmp::min(start_index + 4, sh.coefficients.len());
 
-                            let mut depthwise = sh.coefficients[start_index..end_index].to_vec();
-                            depthwise.resize(4, 0);
+        //                     let mut depthwise = sh.coefficients[start_index..end_index].to_vec();
+        //                     depthwise.resize(4, 0);
 
-                            depthwise
-                        })
-                })
-                .collect();
+        //                     depthwise
+        //                 })
+        //         })
+        //         .collect();
 
-            let mut spherical_harmonics = Image::new(
-                Extent3d {
-                    width: square,
-                    height: square,
-                    depth_or_array_layers: SH_VEC4_PLANES as u32,
-                },
-                TextureDimension::D2,
-                bytemuck::cast_slice(planar_spherical_harmonics.as_slice()).to_vec(),
-                TextureFormat::Rgba32Uint,
-                RenderAssetUsages::default(),
-            );
-            spherical_harmonics.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
-            let spherical_harmonics = images.add(spherical_harmonics);
+        //     let mut spherical_harmonics = Image::new(
+        //         Extent3d {
+        //             width: square,
+        //             height: square,
+        //             depth_or_array_layers: SH_VEC4_PLANES as u32,
+        //         },
+        //         TextureDimension::D2,
+        //         bytemuck::cast_slice(planar_spherical_harmonics.as_slice()).to_vec(),
+        //         TextureFormat::Rgba32Uint,
+        //         RenderAssetUsages::default(),
+        //     );
+        //     spherical_harmonics.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
+        //     let spherical_harmonics = images.add(spherical_harmonics);
 
-            #[cfg(feature = "precompute_covariance_3d")]
-            {
-                let mut covariance_3d_opacity = Image::new(
-                    extent_1d,
-                    TextureDimension::D2,
-                    bytemuck::cast_slice(cloud.covariance_3d_opacity_packed128.as_slice()).to_vec(),
-                    TextureFormat::Rgba32Uint,
-                    RenderAssetUsages::default(),
-                );
-                covariance_3d_opacity.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
-                let covariance_3d_opacity = images.add(covariance_3d_opacity);
+        //     #[cfg(feature = "precompute_covariance_3d")]
+        //     {
+        //         let mut covariance_3d_opacity = Image::new(
+        //             extent_1d,
+        //             TextureDimension::D2,
+        //             bytemuck::cast_slice(cloud.covariance_3d_opacity_packed128.as_slice()).to_vec(),
+        //             TextureFormat::Rgba32Uint,
+        //             RenderAssetUsages::default(),
+        //         );
+        //         covariance_3d_opacity.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
+        //         let covariance_3d_opacity = images.add(covariance_3d_opacity);
 
-                texture_buffers = TextureBuffers {
-                    position_visibility,
-                    spherical_harmonics,
-                    covariance_3d_opacity,
-                };
-            }
+        //         texture_buffers = TextureBuffers {
+        //             position_visibility,
+        //             spherical_harmonics,
+        //             covariance_3d_opacity,
+        //         };
+        //     }
 
-            #[cfg(not(feature = "precompute_covariance_3d"))]
-            {
-                let mut rotation_scale_opacity = Image::new(
-                    extent_1d,
-                    TextureDimension::D2,
-                    bytemuck::cast_slice(cloud.rotation_scale_opacity_packed128.as_slice()).to_vec(),
-                    TextureFormat::Rgba32Uint,
-                    RenderAssetUsages::default(),
-                );
-                rotation_scale_opacity.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
-                let rotation_scale_opacity = images.add(rotation_scale_opacity);
+        //     #[cfg(not(feature = "precompute_covariance_3d"))]
+        //     {
+        //         let mut rotation_scale_opacity = Image::new(
+        //             extent_1d,
+        //             TextureDimension::D2,
+        //             bytemuck::cast_slice(cloud.rotation_scale_opacity_packed128.as_slice()).to_vec(),
+        //             TextureFormat::Rgba32Uint,
+        //             RenderAssetUsages::default(),
+        //         );
+        //         rotation_scale_opacity.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
+        //         let rotation_scale_opacity = images.add(rotation_scale_opacity);
 
-                texture_buffers = TextureBuffers {
-                    position_visibility,
-                    spherical_harmonics,
-                    rotation_scale_opacity,
-                };
-            }
-        }
+        //         texture_buffers = TextureBuffers {
+        //             position_visibility,
+        //             spherical_harmonics,
+        //             rotation_scale_opacity,
+        //         };
+        //     }
+        // }
 
-        #[cfg(feature = "f32")]
         {
             texture_buffers = TextureBuffers {
                 position_visibility,
@@ -348,58 +341,57 @@ pub fn get_sorted_bind_group_layout(
 }
 
 
-#[cfg(feature = "f16")]
-pub fn get_bind_group_layout(
-    render_device: &RenderDevice,
-    _read_only: bool
-) -> BindGroupLayout {
-    let sh_view_dimension = if SH_VEC4_PLANES == 1 {
-        TextureViewDimension::D2
-    } else {
-        TextureViewDimension::D2Array
-    };
+// #[cfg(feature = "f16")]
+// pub fn get_bind_group_layout(
+//     render_device: &RenderDevice,
+//     _read_only: bool
+// ) -> BindGroupLayout {
+//     let sh_view_dimension = if SH_VEC4_PLANES == 1 {
+//         TextureViewDimension::D2
+//     } else {
+//         TextureViewDimension::D2Array
+//     };
 
-    render_device.create_bind_group_layout(
-        Some("texture_f16_gaussian_cloud_layout"),
-        &[
-            BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::all(),
-                ty: BindingType::Texture {
-                    view_dimension: TextureViewDimension::D2,
-                    sample_type: TextureSampleType::Float {
-                        filterable: false,
-                    },
-                    multisampled: false,
-                },
-                count: None,
-            },
-            BindGroupLayoutEntry {
-                binding: 1,
-                visibility: ShaderStages::all(),
-                ty: BindingType::Texture {
-                    view_dimension: sh_view_dimension,
-                    sample_type: TextureSampleType::Uint,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            BindGroupLayoutEntry {
-                binding: 2,
-                visibility: ShaderStages::all(),
-                ty: BindingType::Texture {
-                    view_dimension: TextureViewDimension::D2,
-                    sample_type: TextureSampleType::Uint,
-                    multisampled: false,
-                },
-                count: None,
-            },
-        ],
-    )
-}
+//     render_device.create_bind_group_layout(
+//         Some("texture_f16_gaussian_cloud_layout"),
+//         &[
+//             BindGroupLayoutEntry {
+//                 binding: 0,
+//                 visibility: ShaderStages::all(),
+//                 ty: BindingType::Texture {
+//                     view_dimension: TextureViewDimension::D2,
+//                     sample_type: TextureSampleType::Float {
+//                         filterable: false,
+//                     },
+//                     multisampled: false,
+//                 },
+//                 count: None,
+//             },
+//             BindGroupLayoutEntry {
+//                 binding: 1,
+//                 visibility: ShaderStages::all(),
+//                 ty: BindingType::Texture {
+//                     view_dimension: sh_view_dimension,
+//                     sample_type: TextureSampleType::Uint,
+//                     multisampled: false,
+//                 },
+//                 count: None,
+//             },
+//             BindGroupLayoutEntry {
+//                 binding: 2,
+//                 visibility: ShaderStages::all(),
+//                 ty: BindingType::Texture {
+//                     view_dimension: TextureViewDimension::D2,
+//                     sample_type: TextureSampleType::Uint,
+//                     multisampled: false,
+//                 },
+//                 count: None,
+//             },
+//         ],
+//     )
+// }
 
 
-#[cfg(feature = "f32")]
 pub fn get_bind_group_layout(
     render_device: &RenderDevice,
     read_only: bool

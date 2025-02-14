@@ -12,16 +12,17 @@ use bevy::asset::{
 };
 
 use crate::{
-    GaussianCloud,
-    io::codec::GaussianCloudCodec,
+    gaussian::formats::planar_3d::PlanarGaussian3d,
+    gaussian::formats::planar_4d::PlanarGaussian4d,
+    io::codec::CloudCodec,
 };
 
 
 #[derive(Default)]
-pub struct GaussianCloudLoader;
+pub struct Gaussian3dLoader;
 
-impl AssetLoader for GaussianCloudLoader {
-    type Asset = GaussianCloud;
+impl AssetLoader for Gaussian3dLoader {
+    type Asset = PlanarGaussian3d;
     type Settings = ();
     type Error = std::io::Error;
 
@@ -41,9 +42,7 @@ impl AssetLoader for GaussianCloudLoader {
                     let cursor = Cursor::new(bytes);
                     let mut f = BufReader::new(cursor);
 
-                    let gaussians = crate::io::ply::parse_ply(&mut f)?;
-
-                    Ok(GaussianCloud::from_gaussians(gaussians))
+                    Ok(crate::io::ply::parse_ply_3d(&mut f)?)
                 }
 
                 #[cfg(not(feature = "io_ply"))]
@@ -52,7 +51,7 @@ impl AssetLoader for GaussianCloudLoader {
                 }
             },
             Some(ext) if ext == "gcloud" => {
-                let cloud = GaussianCloud::decode(bytes.as_slice());
+                let cloud = PlanarGaussian3d::decode(bytes.as_slice());
 
                 Ok(cloud)
             },
@@ -62,5 +61,51 @@ impl AssetLoader for GaussianCloudLoader {
 
     fn extensions(&self) -> &[&str] {
         &["ply", "gcloud"]
+    }
+}
+
+
+
+#[derive(Default)]
+pub struct Gaussian4dLoader;
+
+impl AssetLoader for Gaussian4dLoader {
+    type Asset = PlanarGaussian4d;
+    type Settings = ();
+    type Error = std::io::Error;
+
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _: &Self::Settings,
+        load_context: &mut LoadContext<'_>,
+    ) -> Result<Self::Asset, Self::Error> {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await?;
+
+        match load_context.path().extension() {
+            Some(ext) if ext == "ply4d" => {
+                #[cfg(feature = "io_ply")]
+                {
+                    let cursor = Cursor::new(bytes);
+                    let mut f = BufReader::new(cursor);
+
+                    Ok(crate::io::ply::parse_ply_4d(&mut f)?)
+                }
+
+                #[cfg(not(feature = "io_ply"))]
+                {
+                    Err(std::io::Error::new(ErrorKind::Other, "ply4d support not enabled, enable with io_ply feature"))
+                }
+            },
+            Some(ext) if ext == "gc4d" => {
+                Ok(PlanarGaussian4d::decode(bytes.as_slice()))
+            },
+            _ => Err(std::io::Error::new(ErrorKind::Other, "only .ply4d and .gc4d supported")),
+        }
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &["ply4d", "gc4d"]
     }
 }

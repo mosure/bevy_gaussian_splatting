@@ -1,7 +1,7 @@
 [package]
 name = "bevy_gaussian_splatting"
 description = "bevy gaussian splatting render pipeline plugin"
-version = "3.0.0"
+version = "4.0.1"
 edition = "2021"
 authors = ["mosure <mitchell@mosure.me>"]
 license = "MIT OR Apache-2.0"
@@ -32,6 +32,7 @@ exclude = [
 default-run = "viewer"
 
 
+# TODO: add a feature flag for each gaussian format
 # TODO: resolve one-hot feature flags through runtime configuration
 [features]
 default = [
@@ -44,8 +45,6 @@ default = [
   "buffer_storage",
   # "buffer_texture",
 
-  # "f32",
-  "f16",
   "sh3",
 
   # "precompute_covariance_3d",
@@ -53,14 +52,18 @@ default = [
   "query_select",
   # "query_sparse",
 
-  "morph_particles",
+  # TODO: bevy_interleave storage bind group read_only per plane attribute support
+  # "morph_particles",
 
-  # "sort_radix",  # TODO: fix macos radix sort
+  "sort_bitonic",
+  "sort_radix",  # TODO: fix macos radix sort
   "sort_rayon",
   "sort_std",
 
   "tooling",
   "viewer",
+
+  "web_asset",
 ]
 
 debug_gpu = []
@@ -74,9 +77,6 @@ material_noise = ["noise", "dep:noise"]
 morph_particles = []
 
 noise = []
-
-f32 = []
-f16 = ["half"]
 
 sh0 = []
 sh1 = []
@@ -96,6 +96,7 @@ query_raycast = []
 query_select = []
 query_sparse = ["kd-tree", "query_select"]
 
+sort_bitonic = []
 sort_radix = []
 sort_rayon = ["rayon"]
 sort_std = []
@@ -111,7 +112,6 @@ headless = [
   "io_ply",
   "planar",
   "buffer_storage",
-  "f16",
   "sort_rayon",
   "sort_std",
 ]
@@ -127,15 +127,16 @@ viewer = [
 
 web = [
   "buffer_storage",
-  "f16",
   "sh0",
   "io_flexbuffers",
   "io_ply",
   "planar",
   "sort_std",
   "viewer",
+  "web_asset",
   "webgpu",
 ]
+web_asset = ["bevy_web_asset"]
 
 # note: webgl2/buffer_texture are deprecated
 webgl2 = ["bevy/webgl2"]
@@ -145,16 +146,18 @@ webgpu = ["bevy/webgpu"]
 [dependencies]
 bevy_args = "1.7"
 bevy-inspector-egui = { version = "0.28", optional = true }
+bevy_interleave = { version = "0.6.1" }
 # bevy_panorbit_camera = { git = "https://github.com/mosure/bevy_panorbit_camera.git", optional = true, features = ["bevy_egui"] }
-bevy_panorbit_camera = { version = "0.21", optional = true, features = ["bevy_egui"] }
+bevy_panorbit_camera = { version = "0.22", optional = true, features = ["bevy_egui"] }
 bevy_transform_gizmo = { version = "0.12", optional = true }
+bevy_web_asset = { version = "0.10", optional = true }
 bincode2 = { version = "2.0", optional = true }
 byte-unit = { version = "5.1", optional = true }
-bytemuck = "1.20"
+bytemuck = "1.21"
 clap = { version = "4.5", features = ["derive"] }
 flate2  = { version = "1.0", optional = true }
-flexbuffers = { version = "2.0", optional = true }
-half = { version = "2.3", optional = true, features = ["serde"] }
+flexbuffers = { version = "24.12.23", optional = true }
+half = { version = "2.3", features = ["serde"] }
 image = { version = "0.25.5", default-features = false, features = ["png"] }
 kd-tree = { version = "0.6", optional = true }
 noise = { version = "0.9.0", optional = true }

@@ -1,33 +1,50 @@
+#![allow(incomplete_features)]
+#![feature(lazy_type_alias)]
+
 use bevy::prelude::*;
+use bevy_interleave::prelude::*;
 
 pub use camera::GaussianCamera;
 
 pub use gaussian::{
-    packed::Gaussian,
-    cloud::{
-        GaussianCloud,
-        GaussianCloudHandle,
+    formats::{
+        planar_3d::{
+            Gaussian3d,
+            PlanarGaussian3d,
+            PlanarGaussian3dHandle,
+            random_gaussians_3d,
+        },
+        planar_4d::{
+            Gaussian4d,
+            PlanarGaussian4d,
+            PlanarGaussian4dHandle,
+            random_gaussians_4d,
+        },
     },
-    rand::random_gaussians,
     settings::{
-        GaussianCloudRasterize,
-        GaussianCloudSettings,
+        RasterizeMode,
+        CloudSettings,
         GaussianMode,
     },
 };
 
 pub use material::spherical_harmonics::SphericalHarmonicCoefficients;
 
-use io::loader::GaussianCloudLoader;
+use io::loader::{
+    Gaussian3dLoader,
+    Gaussian4dLoader,
+};
 
 pub mod camera;
 pub mod gaussian;
 pub mod io;
 pub mod material;
+pub mod math;
 pub mod morph;
 pub mod query;
 pub mod render;
 pub mod sort;
+pub mod stream;
 pub mod utils;
 
 #[cfg(feature = "noise")]
@@ -38,21 +55,31 @@ pub struct GaussianSplattingPlugin;
 
 impl Plugin for GaussianSplattingPlugin {
     fn build(&self, app: &mut App) {
-        // TODO: allow hot reloading of GaussianCloud handle through inspector UI
+        // TODO: allow hot reloading of Cloud handle through inspector UI
         app.register_type::<SphericalHarmonicCoefficients>();
-        app.register_type::<GaussianCloud>();
-        app.register_type::<GaussianCloudHandle>();
-        app.init_asset::<GaussianCloud>();
-        app.register_asset_reflect::<GaussianCloud>();
 
-        app.init_asset_loader::<GaussianCloudLoader>();
-
-        app.register_type::<GaussianCloudSettings>();
+        app.init_asset_loader::<Gaussian3dLoader>();
+        app.init_asset_loader::<Gaussian4dLoader>();
 
         app.add_plugins((
             camera::GaussianCameraPlugin,
-            gaussian::cloud::GaussianCloudPlugin,
-            render::RenderPipelinePlugin,
+            gaussian::settings::SettingsPlugin,
+            gaussian::cloud::CloudPlugin::<Gaussian3d>::default(),
+            gaussian::cloud::CloudPlugin::<Gaussian4d>::default(),
+        ));
+
+        // TODO: add half types
+        app.add_plugins((
+            PlanarStoragePlugin::<Gaussian3d>::default(),
+            PlanarStoragePlugin::<Gaussian4d>::default(),
+        ));
+
+        app.add_plugins((
+            render::RenderPipelinePlugin::<Gaussian3d>::default(),
+            render::RenderPipelinePlugin::<Gaussian4d>::default(),
+        ));
+
+        app.add_plugins((
             material::MaterialPlugin,
             query::QueryPlugin,
         ));

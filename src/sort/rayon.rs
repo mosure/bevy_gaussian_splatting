@@ -3,13 +3,13 @@ use bevy::{
     math::Vec3A,
     utils::Instant,
 };
+use bevy_interleave::prelude::*;
 use rayon::prelude::*;
 
 use crate::{
     camera::GaussianCamera,
-    GaussianCloud,
-    GaussianCloudHandle,
-    GaussianCloudSettings,
+    CloudSettings,
+    gaussian::interface::CommonCloud,
     sort::{
         SortConfig,
         SortMode,
@@ -21,22 +21,27 @@ use crate::{
 
 
 #[derive(Default)]
-pub struct RayonSortPlugin;
+pub struct RayonSortPlugin<R: PlanarStorage> {
+    _phantom: std::marker::PhantomData<R>,
+}
 
-impl Plugin for RayonSortPlugin {
+impl<R: PlanarStorage> Plugin for RayonSortPlugin<R>
+where
+    R::PlanarType: CommonCloud,
+{
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, rayon_sort);
+        app.add_systems(Update, rayon_sort::<R>);
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn rayon_sort(
+pub fn rayon_sort<R: PlanarStorage>(
     asset_server: Res<AssetServer>,
-    gaussian_clouds_res: Res<Assets<GaussianCloud>>,
+    gaussian_clouds_res: Res<Assets<R::PlanarType>>,
     gaussian_clouds: Query<(
-        &GaussianCloudHandle,
+        &R::PlanarTypeHandle,
         &SortedEntriesHandle,
-        &GaussianCloudSettings,
+        &CloudSettings,
         &GlobalTransform,
     )>,
     mut sorted_entries_res: ResMut<Assets<SortedEntries>>,
@@ -45,7 +50,10 @@ pub fn rayon_sort(
         With<GaussianCamera>,
     >,
     mut sort_config: ResMut<SortConfig>,
-) {
+)
+where
+    R::PlanarType: CommonCloud,
+{
     // TODO: move sort to render world, use extracted views and update the existing buffer instead of creating new
 
     let sort_start_time = Instant::now();
@@ -69,7 +77,7 @@ pub fn rayon_sort(
             trigger.needs_sort = false;
             performed_sort = true;
 
-            if let Some(load_state) = asset_server.get_load_state(&gaussian_cloud_handle.0) {
+            if let Some(load_state) = asset_server.get_load_state(gaussian_cloud_handle.handle()) {
                 if load_state.is_loading() {
                     continue;
                 }
@@ -81,7 +89,7 @@ pub fn rayon_sort(
                 }
             }
 
-            if let Some(gaussian_cloud) = gaussian_clouds_res.get(gaussian_cloud_handle) {
+            if let Some(gaussian_cloud) = gaussian_clouds_res.get(gaussian_cloud_handle.handle()) {
                 if let Some(sorted_entries) = sorted_entries_res.get_mut(sorted_entries_handle) {
                     let gaussians = gaussian_cloud.len();
                     let mut chunks = sorted_entries.sorted.chunks_mut(gaussians);
