@@ -14,6 +14,14 @@ bevy gaussian splatting render pipeline plugin. view the [live demo](https://mos
 ![Alt text](docs/go.gif)
 
 
+## install cli
+
+```bash
+cargo install bevy_gaussian_splatting
+bevy_gaussian_splatting --input-file {gaussian_splat_ply_file}
+```
+
+
 ## capabilities
 
 - [X] ply to gcloud converter

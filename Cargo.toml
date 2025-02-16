@@ -1,7 +1,7 @@
 [package]
 name = "bevy_gaussian_splatting"
 description = "bevy gaussian splatting render pipeline plugin"
-version = "4.1.0"
+version = "4.1.1"
 edition = "2021"
 authors = ["mosure <mitchell@mosure.me>"]
 license = "MIT OR Apache-2.0"
@@ -29,7 +29,7 @@ exclude = [
   "assets",
   "credits",
 ]
-default-run = "viewer"
+default-run = "bevy_gaussian_splatting"
 
 
 # TODO: add a feature flag for each gaussian format
@@ -103,6 +103,7 @@ sort_std = []
 
 testing = []
 tooling = ["byte-unit"]
+debug_tooling = ["tooling"]
 
 perftest = []
 
@@ -230,7 +231,7 @@ codegen-units = 1
 path = "src/lib.rs"
 
 [[bin]]
-name = "viewer"
+name = "bevy_gaussian_splatting"
 path = "viewer/viewer.rs"
 required-features = ["viewer"]
 
@@ -243,12 +244,13 @@ required-features = ["io_ply", "tooling"]
 [[bin]]
 name = "compare_aabb_obb"
 path = "tools/compare_aabb_obb.rs"
-required-features = ["tooling"]
+required-features = ["debug_tooling"]
 
 [[bin]]
 name = "surfel_plane"
 path = "tools/surfel_plane.rs"
-required-features = ["tooling"]
+required-features = ["debug_tooling"]
+
 
 [[bin]]
 name = "test_gaussian"

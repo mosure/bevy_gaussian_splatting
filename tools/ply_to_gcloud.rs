@@ -30,11 +30,12 @@ fn is_point_in_transformed_sphere(pos: &[f32; 3]) -> bool {
 }
 
 
+// TODO: add better argument parsing
 #[allow(unused_mut)]
 fn main() {
     let filename = std::env::args().nth(1).expect("no filename given");
 
-    println!("converting {}", filename);
+    println!("converting `{}` file to gcloud", filename);
 
     let file = std::fs::File::open(&filename).expect("failed to open file");
     let mut reader = std::io::BufReader::new(file);
