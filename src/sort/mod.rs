@@ -115,7 +115,7 @@ pub struct SortConfig {
 impl Default for SortConfig {
     fn default() -> Self {
         Self {
-            period_ms: 100,
+            period_ms: 1000,
         }
     }
 }
@@ -244,6 +244,7 @@ fn update_sort_trigger(
 
         if camera_movement {
             sort_trigger.needs_sort = true;
+            sort_trigger.last_sort_time = Some(Instant::now());
             sort_trigger.last_camera_position = camera_position;
         }
     }

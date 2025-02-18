@@ -454,16 +454,16 @@ impl<R: PlanarStorage> FromWorld for CloudPipeline<R> {
                 },
                 count: None,
             },
-            BindGroupLayoutEntry {
-                binding: 2,
-                visibility: ShaderStages::all(),
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: true,
-                    min_binding_size: Some(PreviousViewData::min_size()),
-                },
-                count: None,
-            },
+            // BindGroupLayoutEntry {
+            //     binding: 2,
+            //     visibility: ShaderStages::all(),
+            //     ty: BindingType::Buffer {
+            //         ty: BufferBindingType::Uniform,
+            //         has_dynamic_offset: true,
+            //         min_binding_size: Some(PreviousViewData::min_size()),
+            //     },
+            //     count: None,
+            // },
         ];
 
         let view_layout = render_device.create_bind_group_layout(

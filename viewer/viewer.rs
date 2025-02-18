@@ -79,7 +79,7 @@ fn parse_input_file(
             String::from_utf8(data).unwrap()
         },
         Err(e) => {
-            warn!("failed to decode base64 input: {:?}", e);
+            debug!("failed to decode base64 input: {:?}", e);
             input_file.to_string()
         }
     };
