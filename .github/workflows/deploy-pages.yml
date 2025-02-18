@@ -39,7 +39,7 @@ jobs:
         run: cargo build --target wasm32-unknown-unknown --release --no-default-features --features "web"
 
       - name: generate bindings with wasm-bindgen
-        run: wasm-bindgen --out-dir ./www/out/ --target web ./target/wasm32-unknown-unknown/release/viewer.wasm
+        run: wasm-bindgen --out-dir ./www/out/ --target web ./target/wasm32-unknown-unknown/release/bevy_gaussian_splatting.wasm
 
       - name: copy assets
         run: mkdir -p ./www/assets && cp -r ./assets/* ./www/assets/
