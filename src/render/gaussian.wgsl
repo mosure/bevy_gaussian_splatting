@@ -5,6 +5,10 @@
 }
 #import bevy_gaussian_splatting::classification::class_to_rgb
 #import bevy_gaussian_splatting::depth::depth_to_rgb
+#import bevy_gaussian_splatting::optical_flow::{
+    calculate_motion_vector,
+    optical_flow_to_rgb,
+}
 #import bevy_gaussian_splatting::helpers::{
     get_rotation_matrix,
     get_scale_matrix,
@@ -178,6 +182,7 @@ fn vs_points(
     let position = vec4<f32>(get_position(splat_index), 1.0);
 
     var transformed_position = (gaussian_uniforms.transform * position).xyz;
+    var previous_transformed_position = transformed_position;
 
 #ifdef DRAW_SELECTED
     discard_quad |= get_visibility(splat_index) < 0.5;
@@ -254,6 +259,7 @@ fn vs_points(
 
         let position_t = vec4<f32>(position.xyz + gaussian_4d.delta_mean, 1.0);
         transformed_position = (gaussian_uniforms.transform * position_t).xyz;
+        // TODO: set previous_transformed_position based on temporal position delta
         let projected_position = world_to_clip(transformed_position);
 
         if !in_frustum(projected_position.xyz) {
@@ -346,9 +352,13 @@ fn vs_points(
         0.5 * (t.y + 1.0),
         0.5 * (t.z + 1.0)
     );
-#else ifdef RASTERIZE_FLOW
-    // TODO: optical flow rendering
-    rgb = vec3<f32>(1.0);
+#else ifdef RASTERIZE_OPTICAL_FLOW
+    let motion_vector = calculate_motion_vector(
+        transformed_position,
+        previous_transformed_position,
+    );
+
+    rgb = optical_flow_to_rgb(motion_vector);
 #else ifdef RASTERIZE_VELOCITY
     let time_delta = 1e-3;
     let future_gaussian_4d = conditional_cov3d(

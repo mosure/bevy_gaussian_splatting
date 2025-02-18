@@ -1246,7 +1246,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_gaussian_splatting"
-version = "4.1.1"
+version = "4.2.0"
 dependencies = [
  "base64 0.22.1",
  "bevy 0.15.2",
@@ -1317,6 +1317,7 @@ dependencies = [
  "bevy_gizmos_macros 0.15.2",
  "bevy_image",
  "bevy_math 0.15.2",
+ "bevy_pbr 0.15.2",
  "bevy_reflect 0.15.2",
  "bevy_render 0.15.2",
  "bevy_sprite",

@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 pub mod classification;
 pub mod depth;
+pub mod optical_flow;
 pub mod spherical_harmonics;
 pub mod spherindrical_harmonics;
 
@@ -21,6 +22,7 @@ impl Plugin for MaterialPlugin {
         app.add_plugins((
             classification::ClassificationMaterialPlugin,
             depth::DepthMaterialPlugin,
+            optical_flow::OpticalFlowMaterialPlugin,
             spherical_harmonics::SphericalHarmonicCoefficientsPlugin,
             spherindrical_harmonics::SpherindricalHarmonicCoefficientsPlugin,
         ));

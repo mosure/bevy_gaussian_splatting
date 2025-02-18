@@ -261,7 +261,7 @@ impl<R: PlanarStorage> FromWorld for ParticleBehaviorPipeline<R> {
         let particle_behavior_pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("particle_behavior_pipeline".into()),
             layout: vec![
-                gaussian_cloud_pipeline.view_layout.clone(),
+                gaussian_cloud_pipeline.compute_view_layout.clone(),
                 gaussian_cloud_pipeline.gaussian_uniform_layout.clone(),
                 gaussian_cloud_pipeline.gaussian_cloud_layout.clone(),
                 particle_behavior_layout.clone(),

@@ -1,7 +1,7 @@
 [package]
 name = "bevy_gaussian_splatting"
 description = "bevy gaussian splatting render pipeline plugin"
-version = "4.1.1"
+version = "4.2.0"
 edition = "2021"
 authors = ["mosure <mitchell@mosure.me>"]
 license = "MIT OR Apache-2.0"
@@ -186,6 +186,7 @@ default-features = false
 features = [
   "bevy_asset",
   "bevy_core_pipeline",
+  "bevy_pbr",
   "bevy_render",
   "bevy_winit",
   "x11",
