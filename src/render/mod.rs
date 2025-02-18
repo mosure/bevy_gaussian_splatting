@@ -3,7 +3,15 @@ use std::hash::Hash;
 use bevy::{
     prelude::*,
     asset::load_internal_asset,
-    core_pipeline::core_3d::Transparent3d,
+    core_pipeline::{
+        core_3d::Transparent3d,
+        prepass::{
+            MotionVectorPrepass,
+            PreviousViewData,
+            PreviousViewUniforms,
+            PreviousViewUniformOffset,
+        },
+    },
     ecs::{
         query::ROQueryItem,
         system::{
@@ -11,6 +19,7 @@ use bevy::{
             SystemParamItem,
         }
     },
+    pbr::PrepassViewBindGroup,
     render::{
         Extract,
         extract_component::{
@@ -381,6 +390,7 @@ pub struct CloudPipeline<R: PlanarStorage> {
     pub gaussian_cloud_layout: BindGroupLayout,
     pub gaussian_uniform_layout: BindGroupLayout,
     pub view_layout: BindGroupLayout,
+    pub compute_view_layout: BindGroupLayout,
     pub sorted_layout: BindGroupLayout,
     phantom: std::marker::PhantomData<R>,
 }
@@ -389,7 +399,41 @@ impl<R: PlanarStorage> FromWorld for CloudPipeline<R> {
     fn from_world(render_world: &mut World) -> Self {
         let render_device = render_world.resource::<RenderDevice>();
 
+        // TODO: store both ShaderStages::all() and ShaderStages::VERTEX_FRAGMENT pipelines (for previous_view/sort nodes)
         let view_layout_entries = vec![
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::VERTEX_FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: Some(ViewUniform::min_size()),
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::VERTEX_FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: Some(GlobalsUniform::min_size()),
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 2,
+                visibility: ShaderStages::VERTEX_FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: Some(PreviousViewData::min_size()),
+                },
+                count: None,
+            },
+        ];
+
+        let compute_view_layout_entries = vec![
             BindGroupLayoutEntry {
                 binding: 0,
                 visibility: ShaderStages::all(),
@@ -410,11 +454,26 @@ impl<R: PlanarStorage> FromWorld for CloudPipeline<R> {
                 },
                 count: None,
             },
+            BindGroupLayoutEntry {
+                binding: 2,
+                visibility: ShaderStages::all(),
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: Some(PreviousViewData::min_size()),
+                },
+                count: None,
+            },
         ];
 
         let view_layout = render_device.create_bind_group_layout(
             Some("gaussian_view_layout"),
             &view_layout_entries,
+        );
+
+        let compute_view_layout = render_device.create_bind_group_layout(
+            Some("gaussian_compute_view_layout"),
+            &compute_view_layout_entries,
         );
 
         let gaussian_uniform_layout = render_device.create_bind_group_layout(
@@ -465,6 +524,7 @@ impl<R: PlanarStorage> FromWorld for CloudPipeline<R> {
             gaussian_cloud_layout,
             gaussian_uniform_layout,
             view_layout,
+            compute_view_layout,
             shader: GAUSSIAN_SHADER_HANDLE,
             sorted_layout,
             phantom: std::marker::PhantomData,
@@ -624,7 +684,7 @@ pub fn shader_defs(
         RasterizeMode::Classification => shader_defs.push("RASTERIZE_CLASSIFICATION".into()),
         RasterizeMode::Color => shader_defs.push("RASTERIZE_COLOR".into()),
         RasterizeMode::Depth => shader_defs.push("RASTERIZE_DEPTH".into()),
-        RasterizeMode::Flow => shader_defs.push("RASTERIZE_FLOW".into()),
+        RasterizeMode::OpticalFlow => shader_defs.push("RASTERIZE_OPTICAL_FLOW".into()),
         RasterizeMode::Normal => shader_defs.push("RASTERIZE_NORMAL".into()),
         RasterizeMode::Velocity => shader_defs.push("RASTERIZE_VELOCITY".into()),
     }
@@ -726,7 +786,8 @@ impl<R: PlanarStorage> SpecializedRenderPipeline for CloudPipeline<R> {
 
 type DrawGaussians<R: PlanarStorage> = (
     SetItemPipeline,
-    SetGaussianViewBindGroup<0>,
+    // SetViewBindGroup<0>,
+    SetPreviousViewBindGroup<0>,
     SetGaussianUniformBindGroup<1>,
     DrawGaussianInstanced<R>,
 );
@@ -949,10 +1010,12 @@ pub fn queue_gaussian_view_bind_groups<R: PlanarStorage>(
     render_device: Res<RenderDevice>,
     gaussian_cloud_pipeline: Res<CloudPipeline<R>>,
     view_uniforms: Res<ViewUniforms>,
+    previous_view_uniforms: Res<PreviousViewUniforms>,
     views: Query<
         (
             Entity,
             &ExtractedView,
+            Option<&PreviousViewData>,
         ),
         With<GaussianCamera>,
     >,
@@ -960,14 +1023,17 @@ pub fn queue_gaussian_view_bind_groups<R: PlanarStorage>(
 ) {
     if let (
         Some(view_binding),
+        Some(previous_view_binding),
         Some(globals),
     ) = (
         view_uniforms.uniforms.binding(),
+        previous_view_uniforms.uniforms.binding(),
         globals_buffer.buffer.binding(),
     ) {
         for (
             entity,
             _extracted_view,
+            _maybe_previous_view,
         ) in &views {
             let layout = &gaussian_cloud_pipeline.view_layout;
 
@@ -980,6 +1046,10 @@ pub fn queue_gaussian_view_bind_groups<R: PlanarStorage>(
                     binding: 1,
                     resource: globals.clone(),
                 },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: previous_view_binding.clone(),
+                },
             ];
 
             let view_bind_group = render_device.create_bind_group(
@@ -990,15 +1060,17 @@ pub fn queue_gaussian_view_bind_groups<R: PlanarStorage>(
 
             debug!("inserting gaussian view bind group");
 
-            commands.entity(entity).insert(GaussianViewBindGroup {
-                value: view_bind_group,
-            });
+            commands
+                .entity(entity)
+                .insert(GaussianViewBindGroup {
+                    value: view_bind_group,
+                });
         }
     }
 }
 
-pub struct SetGaussianViewBindGroup<const I: usize>;
-impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianViewBindGroup<I> {
+pub struct SetViewBindGroup<const I: usize>;
+impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetViewBindGroup<I> {
     type Param = ();
     type ViewQuery = (
         Read<GaussianViewBindGroup>,
@@ -1008,7 +1080,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianViewBindGroup
 
     #[inline]
     fn render<'w>(
-        _item: &P,
+        _: &P,
         (
             gaussian_view_bind_group,
             view_uniform,
@@ -1026,7 +1098,54 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianViewBindGroup
             &[view_uniform.offset],
         );
 
-        debug!("set gaussian view bind group");
+        debug!("set view bind group");
+
+        RenderCommandResult::Success
+    }
+}
+
+
+pub struct SetPreviousViewBindGroup<const I: usize>;
+impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetPreviousViewBindGroup<I> {
+    type Param = SRes<PrepassViewBindGroup>;
+    type ViewQuery = (
+        Read<ViewUniformOffset>,
+        Has<MotionVectorPrepass>,
+        Option<Read<PreviousViewUniformOffset>>,
+    );
+    type ItemQuery = ();
+
+    #[inline]
+    fn render<'w>(
+        _: &P,
+        (
+            view_uniform_offset,
+            has_motion_vector_prepass,
+            previous_view_uniform_offset,
+        ): ROQueryItem<
+            'w,
+            Self::ViewQuery,
+        >,
+        _entity: Option<()>,
+        prepass_view_bind_group: SystemParamItem<'w, '_, Self::Param>,
+        pass: &mut TrackedRenderPass<'w>,
+    ) -> RenderCommandResult {
+        let prepass_view_bind_group = prepass_view_bind_group.into_inner();
+        match previous_view_uniform_offset {
+            Some(previous_view_uniform_offset) if has_motion_vector_prepass => {
+                pass.set_bind_group(
+                    I,
+                    prepass_view_bind_group.motion_vectors.as_ref().unwrap(),
+                    &[
+                        view_uniform_offset.offset,
+                        previous_view_uniform_offset.offset,
+                    ],
+                );
+            }
+            _ => {}
+        }
+
+        debug!("set previous view bind group");
 
         RenderCommandResult::Success
     }

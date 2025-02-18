@@ -98,7 +98,7 @@ pub fn parse_ply_3d(
     let required_properties = vec![
         "x", "y", "z",
         "f_dc_0", "f_dc_1", "f_dc_2",
-        "scale_0", "scale_1", "scale_2",
+        "scale_0", "scale_1",
         "opacity",
         "rot_0", "rot_1", "rot_2", "rot_3",
     ];

@@ -329,7 +329,7 @@ impl<R: PlanarStorage> FromWorld for RadixSortPipeline<R> {
         );
 
         let sorting_layout = vec![
-            gaussian_cloud_pipeline.view_layout.clone(),
+            gaussian_cloud_pipeline.compute_view_layout.clone(),
             gaussian_cloud_pipeline.gaussian_uniform_layout.clone(),
             gaussian_cloud_pipeline.gaussian_cloud_layout.clone(),
             radix_sort_layout.clone(),

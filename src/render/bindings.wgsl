@@ -1,11 +1,13 @@
 #define_import_path bevy_gaussian_splatting::bindings
 
+#import bevy_pbr::prepass_bindings::PreviousViewUniforms
 #import bevy_render::globals::Globals
 #import bevy_render::view::View
 
 
 @group(0) @binding(0) var<uniform> view: View;
 @group(0) @binding(1) var<uniform> globals: Globals;
+@group(0) @binding(2) var<uniform> previous_view_uniforms: PreviousViewUniforms;
 
 struct GaussianUniforms {
     transform: mat4x4<f32>,

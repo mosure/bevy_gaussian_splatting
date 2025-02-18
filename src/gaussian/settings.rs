@@ -86,7 +86,7 @@ pub enum RasterizeMode {
     #[default]
     Color,
     Depth,
-    Flow,
+    OpticalFlow,
     Normal,
     Velocity,
 }

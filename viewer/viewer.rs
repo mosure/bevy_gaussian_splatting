@@ -6,7 +6,10 @@ use bevy::{
     app::AppExit,
     color::palettes::css::GOLD,
     core::FrameCount,
-    core_pipeline::tonemapping::Tonemapping,
+    core_pipeline::{
+        prepass::MotionVectorPrepass,
+        tonemapping::Tonemapping,
+    },
     diagnostic::{
         DiagnosticsStore,
         FrameTimeDiagnosticsPlugin,
@@ -151,11 +154,12 @@ fn setup_gaussian_cloud(
         Camera3d::default(),
         Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
         Tonemapping::None,
+        MotionVectorPrepass,
         PanOrbitCamera {
             allow_upside_down: true,
-            orbit_smoothness: 0.0,
-            pan_smoothness: 0.0,
-            zoom_smoothness: 0.0,
+            orbit_smoothness: 0.1,
+            pan_smoothness: 0.1,
+            zoom_smoothness: 0.1,
             ..default()
         },
         GaussianCamera::default(),
