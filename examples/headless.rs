@@ -378,9 +378,9 @@ fn setup_gaussian_cloud(
     if args.gaussian_count > 0 {
         println!("generating {} gaussians", args.gaussian_count);
         cloud = gaussian_assets.add(random_gaussians_3d(args.gaussian_count));
-    } else if !args.input_file.is_empty() {
-        println!("loading {}", args.input_file);
-        cloud = asset_server.load(&args.input_file);
+    } else if args.input_cloud.is_some() && !args.input_cloud.as_ref().unwrap().is_empty() {
+        println!("loading {:?}", args.input_cloud);
+        cloud = asset_server.load(&args.input_cloud.as_ref().unwrap().clone());
     } else {
         cloud = gaussian_assets.add(PlanarGaussian3d::test_model());
     }

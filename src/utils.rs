@@ -45,8 +45,11 @@ pub struct GaussianSplattingViewer {
     #[arg(long, default_value = "1")]
     pub msaa_samples: u8,
 
-    #[arg(long, default_value = "", help = "input file path (or url/base64_url if web_asset feature is enabled)")]
-    pub input_file: String,
+    #[arg(long, default_value = None, help = "input file path (or url/base64_url if web_asset feature is enabled)")]
+    pub input_cloud: Option<String>,
+
+    #[arg(long, default_value = None, help = "input file path (or url/base64_url if web_asset feature is enabled)")]
+    pub input_scene: Option<String>,
 
     #[arg(long, default_value = "0")]
     pub gaussian_count: usize,
@@ -75,7 +78,8 @@ impl Default for GaussianSplattingViewer {
             height: 1080.0,
             name: "bevy_gaussian_splatting".to_string(),
             msaa_samples: 1,
-            input_file: "".to_string(),
+            input_cloud: None,
+            input_scene: None,
             gaussian_count: 0,
             gaussian_mode: GaussianMode::Gaussian3d,
             playback_mode: PlaybackMode::Sin,

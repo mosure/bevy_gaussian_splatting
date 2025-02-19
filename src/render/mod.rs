@@ -324,6 +324,10 @@ fn queue_gaussians<R: PlanarStorage>(
             render_entity,
             visible_entity,
         ) in visible_entities.iter::<With<R::PlanarTypeHandle>>() {
+            if gaussian_splatting_bundles.get(*render_entity).is_err() {
+                continue;
+            }
+
             let (
                 _entity,
                 cloud_handle,
@@ -399,7 +403,6 @@ impl<R: PlanarStorage> FromWorld for CloudPipeline<R> {
     fn from_world(render_world: &mut World) -> Self {
         let render_device = render_world.resource::<RenderDevice>();
 
-        // TODO: store both ShaderStages::all() and ShaderStages::VERTEX_FRAGMENT pipelines (for previous_view/sort nodes)
         let view_layout_entries = vec![
             BindGroupLayoutEntry {
                 binding: 0,

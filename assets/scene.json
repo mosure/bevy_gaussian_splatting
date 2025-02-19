@@ -1,0 +1,24 @@
+{
+  "bundles": [
+    {
+      "asset_path": "./trellis.ply",
+      "name": "trellis_0",
+      "settings": {},
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, -1.0, 1.0]
+      }
+    },
+    {
+      "asset_path": "./trellis.ply",
+      "name": "trellis_1",
+      "settings": {},
+      "transform": {
+        "translation": [5.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, -1.0, 1.0]
+      }
+    }
+  ]
+}

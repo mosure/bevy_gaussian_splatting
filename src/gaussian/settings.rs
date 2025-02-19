@@ -17,6 +17,8 @@ use crate::sort::SortMode;
     Hash,
     PartialEq,
     Reflect,
+    Serialize,
+    Deserialize,
 )]
 pub enum DrawMode {
     #[default]
@@ -93,8 +95,16 @@ pub enum RasterizeMode {
 
 
 // TODO: breakdown into components
-#[derive(Component, Reflect, Clone)]
+#[derive(
+    Component,
+    Clone,
+    Debug,
+    Reflect,
+    Serialize,
+    Deserialize,
+)]
 #[reflect(Component)]
+#[serde(default)]
 pub struct CloudSettings {
     pub aabb: bool,
     pub global_opacity: f32,

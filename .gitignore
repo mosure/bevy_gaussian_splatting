@@ -11,6 +11,7 @@ out/
 *.gcloud
 *.ply
 *.ply4d
+*.json
 
 .DS_Store
 
