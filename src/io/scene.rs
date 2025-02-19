@@ -14,7 +14,6 @@ use bevy::{
         io::Reader,
     },
 };
-use itertools::izip;
 use serde::{
     Deserialize,
     Serialize,
@@ -49,6 +48,21 @@ impl Plugin for GaussianScenePlugin {
 
 
 
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    Reflect,
+    Serialize,
+    Deserialize,
+)]
+pub struct CloudBundle {
+    pub asset_path: String,
+    pub name: String,
+    pub settings: CloudSettings,
+    pub transform: Transform,
+}
+
 // TODO: support scene hierarchy with gaussian gltf extension
 #[derive(
     Asset,
@@ -60,10 +74,7 @@ impl Plugin for GaussianScenePlugin {
     Deserialize,
 )]
 pub struct GaussianScene {
-    pub clouds: Vec<String>,
-    pub names: Vec<String>,
-    pub settings: Vec<CloudSettings>,
-    pub transforms: Vec<Transform>,
+    pub bundles: Vec<CloudBundle>,
 }
 
 #[derive(Component, Clone, Debug, Default, Reflect)]
@@ -98,33 +109,17 @@ fn spawn_scene(
         }
 
         let scene = scenes.get(&scene_handle.0).unwrap();
-        let GaussianScene {
-            clouds,
-            names,
-            settings,
-            transforms,
-            ..
-        } = scene.clone();
 
-        let bundles = izip!(
-                clouds.into_iter(),
-                names.into_iter(),
-                settings.into_iter(),
-                transforms.into_iter(),
-            )
-            .map(|(
-                    asset_path,
-                    name,
-                    settings,
-                    transform
-                )|(
+        let bundles = scene.bundles
+            .iter()
+            .map(|bundle|(
                     // TODO: switch between 3d and 4d clouds based on settings
                     PlanarGaussian3dHandle(
-                        asset_server.load::<PlanarGaussian3d>(asset_path)
+                        asset_server.load::<PlanarGaussian3d>(bundle.asset_path.clone())
                     ),
-                    Name::new(name),
-                    settings.clone(),
-                    transform,
+                    Name::new(bundle.name.clone()),
+                    bundle.settings.clone(),
+                    bundle.transform,
                 )
             )
             .collect::<Vec<_>>();
