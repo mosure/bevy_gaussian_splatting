@@ -1,7 +1,7 @@
 [package]
 name = "bevy_gaussian_splatting"
 description = "bevy gaussian splatting render pipeline plugin"
-version = "4.2.0"
+version = "4.3.0"
 edition = "2021"
 authors = ["mosure <mitchell@mosure.me>"]
 license = "MIT OR Apache-2.0"
@@ -164,12 +164,14 @@ flate2  = { version = "1.0", optional = true }
 flexbuffers = { version = "24.12.23", optional = true }
 half = { version = "2.3", features = ["serde"] }
 image = { version = "0.25.5", default-features = false, features = ["png"] }
+itertools = "0.14"
 kd-tree = { version = "0.6", optional = true }
 noise = { version = "0.9.0", optional = true }
 ply-rs = { version = "0.1", optional = true }
 rand = "0.8"
 rayon = { version = "1.8", optional = true }
 serde = "1.0"
+serde_json = "1.0"
 static_assertions = "1.1"
 typenum = "1.17"
 wgpu = "23.0.1"
@@ -189,6 +191,7 @@ features = [
   "bevy_pbr",
   "bevy_render",
   "bevy_winit",
+  "serialize",
   "x11",
 ]
 

@@ -28,12 +28,14 @@ pub use gaussian::{
     },
 };
 
+pub use io::gscene::{
+    GaussianScene,
+    GaussianSceneHandle,
+};
+
 pub use material::spherical_harmonics::SphericalHarmonicCoefficients;
 
-use io::loader::{
-    Gaussian3dLoader,
-    Gaussian4dLoader,
-};
+use io::IoPlugin;
 
 pub mod camera;
 pub mod gaussian;
@@ -58,8 +60,7 @@ impl Plugin for GaussianSplattingPlugin {
         // TODO: allow hot reloading of Cloud handle through inspector UI
         app.register_type::<SphericalHarmonicCoefficients>();
 
-        app.init_asset_loader::<Gaussian3dLoader>();
-        app.init_asset_loader::<Gaussian4dLoader>();
+        app.add_plugins(IoPlugin);
 
         app.add_plugins((
             camera::GaussianCameraPlugin,

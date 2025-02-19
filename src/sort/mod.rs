@@ -31,6 +31,10 @@ use bytemuck::{
     Pod,
     Zeroable,
 };
+use serde::{
+    Deserialize,
+    Serialize,
+};
 use static_assertions::assert_cfg;
 
 use crate::{
@@ -69,6 +73,8 @@ assert_cfg!(
     Clone,
     PartialEq,
     Reflect,
+    Serialize,
+    Deserialize,
 )]
 pub enum SortMode {
     None,

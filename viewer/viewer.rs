@@ -35,6 +35,8 @@ use bevy_gaussian_splatting::{
     CloudSettings,
     GaussianCamera,
     GaussianMode,
+    GaussianScene,
+    GaussianSceneHandle,
     GaussianSplattingPlugin,
     PlanarGaussian3d,
     PlanarGaussian4d,
@@ -98,14 +100,42 @@ fn setup_gaussian_cloud(
     mut gaussian_3d_assets: ResMut<Assets<PlanarGaussian3d>>,
     mut gaussian_4d_assets: ResMut<Assets<PlanarGaussian4d>>,
 ) {
+    debug!("spawning camera...");
+    commands.spawn((
+        Camera3d::default(),
+        Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
+        Tonemapping::None,
+        MotionVectorPrepass,
+        PanOrbitCamera {
+            allow_upside_down: true,
+            orbit_smoothness: 0.1,
+            pan_smoothness: 0.1,
+            zoom_smoothness: 0.1,
+            ..default()
+        },
+        GaussianCamera::default(),
+    ));
+
+    if let Some(input_scene) = &args.input_scene {
+        let input_uri = parse_input_file(input_scene.as_str());
+        log(&format!("loading {}", input_uri));
+
+        let scene: Handle<GaussianScene> = asset_server.load(&input_uri);
+        commands.spawn((
+            GaussianSceneHandle(scene),
+            Name::new("gaussian_scene"),
+        ));
+        return;
+    }
+
     match args.gaussian_mode {
         GaussianMode::Gaussian2d | GaussianMode::Gaussian3d => {
             let cloud: Handle<PlanarGaussian3d>;
             if args.gaussian_count > 0 {
                 log(&format!("generating {} gaussians", args.gaussian_count));
                 cloud = gaussian_3d_assets.add(random_gaussians_3d(args.gaussian_count));
-            } else if !args.input_file.is_empty() {
-                let input_uri = parse_input_file(&args.input_file);
+            } else if let Some(input_cloud) = &args.input_cloud {
+                let input_uri = parse_input_file(input_cloud.as_str());
                 log(&format!("loading {}", input_uri));
                 cloud = asset_server.load(&input_uri);
             } else {
@@ -128,8 +158,8 @@ fn setup_gaussian_cloud(
             if args.gaussian_count > 0 {
                 log(&format!("generating {} gaussians", args.gaussian_count));
                 cloud = gaussian_4d_assets.add(random_gaussians_4d(args.gaussian_count));
-            } else if !args.input_file.is_empty() {
-                let input_uri = parse_input_file(&args.input_file);
+            } else if let Some(input_cloud) = &args.input_cloud {
+                let input_uri = parse_input_file(input_cloud.as_str());
                 log(&format!("loading {}", input_uri));
                 cloud = asset_server.load(&input_uri);
             } else {
@@ -148,22 +178,6 @@ fn setup_gaussian_cloud(
             ));
         }
     }
-
-    debug!("spawning camera...");
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
-        Tonemapping::None,
-        MotionVectorPrepass,
-        PanOrbitCamera {
-            allow_upside_down: true,
-            orbit_smoothness: 0.1,
-            pan_smoothness: 0.1,
-            zoom_smoothness: 0.1,
-            ..default()
-        },
-        GaussianCamera::default(),
-    ));
 }
 
 

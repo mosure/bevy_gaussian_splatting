@@ -991,6 +991,7 @@ dependencies = [
  "bevy_reflect 0.15.2",
  "bevy_tasks 0.15.2",
  "bevy_utils 0.15.2",
+ "serde",
  "uuid",
 ]
 
@@ -1246,7 +1247,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_gaussian_splatting"
-version = "4.2.0"
+version = "4.3.0"
 dependencies = [
  "base64 0.22.1",
  "bevy 0.15.2",
@@ -1267,6 +1268,7 @@ dependencies = [
  "futures-intrusive",
  "half",
  "image",
+ "itertools 0.14.0",
  "kd-tree",
  "noise",
  "ply-rs",
@@ -1274,6 +1276,7 @@ dependencies = [
  "rand 0.8.5",
  "rayon",
  "serde",
+ "serde_json",
  "static_assertions",
  "typenum",
  "wasm-bindgen",
@@ -1428,6 +1431,7 @@ dependencies = [
  "bevy_reflect 0.15.2",
  "bevy_utils 0.15.2",
  "derive_more",
+ "serde",
  "smol_str",
 ]
 
@@ -2129,6 +2133,7 @@ dependencies = [
  "nonmax",
  "radsort",
  "rectangle-pack",
+ "serde",
 ]
 
 [[package]]
@@ -2236,6 +2241,7 @@ dependencies = [
  "bevy_reflect 0.15.2",
  "bevy_utils 0.15.2",
  "crossbeam-channel",
+ "serde",
 ]
 
 [[package]]
@@ -2264,6 +2270,7 @@ dependencies = [
  "bevy_math 0.15.2",
  "bevy_reflect 0.15.2",
  "derive_more",
+ "serde",
 ]
 
 [[package]]
@@ -2306,6 +2313,7 @@ dependencies = [
  "bytemuck",
  "derive_more",
  "nonmax",
+ "serde",
  "smallvec",
  "taffy",
 ]
@@ -2408,6 +2416,7 @@ dependencies = [
  "bevy_reflect 0.15.2",
  "bevy_utils 0.15.2",
  "raw-window-handle",
+ "serde",
  "smol_str",
 ]
 
@@ -2466,6 +2475,7 @@ dependencies = [
  "cfg-if",
  "crossbeam-channel",
  "raw-window-handle",
+ "serde",
  "wasm-bindgen",
  "web-sys",
  "wgpu-types 23.0.0",
@@ -4580,6 +4590,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6416,6 +6435,9 @@ name = "smallvec"
 version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c5e1a9a646d36c3599cd173a41282daf47c44583ad367b8e6837255952e5c67"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "smithay-client-toolkit"
