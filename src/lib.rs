@@ -28,7 +28,7 @@ pub use gaussian::{
     },
 };
 
-pub use io::gscene::{
+pub use io::scene::{
     GaussianScene,
     GaussianSceneHandle,
 };

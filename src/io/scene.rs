@@ -159,16 +159,16 @@ impl AssetLoader for GaussianSceneLoader {
         reader.read_to_end(&mut bytes).await?;
 
         match load_context.path().extension() {
-            Some(ext) if ext == "gscene" => {
+            Some(ext) if ext == "json" => {
                 let scene: GaussianScene = serde_json::from_slice(&bytes)
                     .map_err(|err| std::io::Error::new(ErrorKind::InvalidData, err))?;
                 Ok(scene)
             },
-            _ => Err(std::io::Error::new(ErrorKind::Other, "only .gscene supported")),
+            _ => Err(std::io::Error::new(ErrorKind::Other, "only .json supported")),
         }
     }
 
     fn extensions(&self) -> &[&str] {
-        &["gscene"]
+        &["json"]
     }
 }

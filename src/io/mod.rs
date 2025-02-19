@@ -3,7 +3,7 @@ use bevy::prelude::*;
 pub mod codec;
 pub mod gcloud;
 pub mod loader;
-pub mod gscene;
+pub mod scene;
 
 #[cfg(feature = "io_ply")]
 pub mod ply;
@@ -16,6 +16,6 @@ impl Plugin for IoPlugin {
         app.init_asset_loader::<loader::Gaussian3dLoader>();
         app.init_asset_loader::<loader::Gaussian4dLoader>();
 
-        app.add_plugins(gscene::GaussianScenePlugin);
+        app.add_plugins(scene::GaussianScenePlugin);
     }
 }

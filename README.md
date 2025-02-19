@@ -37,7 +37,7 @@ bevy_gaussian_splatting --input-file {gaussian_splat_ply_file}
 - [X] 2dgs
 - [X] 3dgs
 - [x] 4dgs
-- [x] gscene multi-cloud scene format
+- [x] multi-cloud scene format
 - [ ] gltf gaussian extensions
 - [ ] 4dgs motion blur
 - [ ] implicit mlp node (isotropic rotation, color)
