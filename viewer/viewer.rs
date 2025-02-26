@@ -26,6 +26,8 @@ use bevy_panorbit_camera::{
     PanOrbitCameraPlugin,
 };
 
+#[cfg(feature = "file_asset")]
+use bevy_file_asset::FileAssetPlugin;
 #[cfg(feature = "web_asset")]
 use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 #[cfg(feature = "web_asset")]
@@ -119,7 +121,6 @@ fn setup_gaussian_cloud(
     if let Some(input_scene) = &args.input_scene {
         let input_uri = parse_input_file(input_scene.as_str());
         log(&format!("loading {}", input_uri));
-
         let scene: Handle<GaussianScene> = asset_server.load(&input_uri);
         commands.spawn((
             GaussianSceneHandle(scene),
@@ -296,6 +297,10 @@ fn viewer_app() {
         ..default()
     });
 
+    #[cfg(feature = "file_asset")]
+    app.add_plugins(FileAssetPlugin);
+
+    #[cfg(feature = "web_asset")]
     app.add_plugins(WebAssetPlugin);
 
     // setup for gaussian viewer app
