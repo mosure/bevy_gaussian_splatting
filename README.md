@@ -18,7 +18,7 @@ bevy gaussian splatting render pipeline plugin. view the [live demo](https://mos
 
 ```bash
 cargo install bevy_gaussian_splatting
-bevy_gaussian_splatting --input-file {gaussian_splat_ply_file}
+bevy_gaussian_splatting --input-cloud [file://gaussian.ply | https://mitchell.mosure.me/go_trimmed.ply]
 ```
 
 
