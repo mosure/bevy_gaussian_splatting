@@ -75,6 +75,7 @@ pub struct CloudBundle {
 )]
 pub struct GaussianScene {
     pub bundles: Vec<CloudBundle>,
+    pub root: Option<String>,
 }
 
 #[derive(Component, Clone, Debug, Default, Reflect)]
@@ -112,16 +113,23 @@ fn spawn_scene(
 
         let bundles = scene.bundles
             .iter()
-            .map(|bundle|(
-                    // TODO: switch between 3d and 4d clouds based on settings
+            .map(|bundle|{
+                let root = scene.root.clone().unwrap_or_default();
+
+                // TODO: switch between 3d and 4d clouds based on settings
+                (
                     PlanarGaussian3dHandle(
-                        asset_server.load::<PlanarGaussian3d>(bundle.asset_path.clone())
+                        asset_server.load::<PlanarGaussian3d>(
+                            bundle.asset_path
+                                .clone()
+                                .replace("{root}", &root)
+                        )
                     ),
                     Name::new(bundle.name.clone()),
                     bundle.settings.clone(),
                     bundle.transform,
                 )
-            )
+            })
             .collect::<Vec<_>>();
 
         commands
@@ -155,8 +163,17 @@ impl AssetLoader for GaussianSceneLoader {
 
         match load_context.path().extension() {
             Some(ext) if ext == "json" => {
-                let scene: GaussianScene = serde_json::from_slice(&bytes)
+                let mut scene: GaussianScene = serde_json::from_slice(&bytes)
                     .map_err(|err| std::io::Error::new(ErrorKind::InvalidData, err))?;
+
+                scene.root = load_context
+                    .path()
+                    .parent()
+                    .expect("invalid scene path")
+                    .to_string_lossy()
+                    .to_string()
+                    .into();
+
                 Ok(scene)
             },
             _ => Err(std::io::Error::new(ErrorKind::Other, "only .json supported")),
