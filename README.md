@@ -26,6 +26,8 @@ bevy_gaussian_splatting --input-cloud [file://gaussian.ply | https://mitchell.mo
 
 - [X] ply to gcloud converter
 - [X] gcloud and ply asset loaders
+- [X] bincode, flexbuffers
+- [ ] bitcode, rkyv
 - [X] bevy gaussian cloud render pipeline
 - [X] gaussian cloud particle effects
 - [X] wasm support /w [live demo](https://mosure.github.io/bevy_gaussian_splatting/index.html)

@@ -40,7 +40,10 @@ use crate::{
 };
 
 
-
+#[cfg_attr(
+    feature = "io_rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[derive(
     Clone,
     Debug,

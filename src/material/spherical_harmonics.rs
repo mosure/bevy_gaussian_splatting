@@ -97,6 +97,10 @@ pub const SH_VEC4_PLANES: usize = SH_COEFF_COUNT / 4;
 // }
 
 
+#[cfg_attr(
+    feature = "io_rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[derive(
     Clone,
     Copy,

@@ -28,6 +28,10 @@ use crate::gaussian::{
 };
 
 
+#[cfg_attr(
+    feature = "io_rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[derive(
     Clone,
     Debug,
@@ -132,6 +136,10 @@ impl From<[u32; 4]> for RotationScaleOpacityPacked128 {
 }
 
 
+#[cfg_attr(
+    feature = "io_rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[derive(
     Clone,
     Debug,
@@ -201,6 +209,10 @@ impl From<[u32; 4]> for Covariance3dOpacityPacked128 {
 
 
 
+#[cfg_attr(
+    feature = "io_rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[derive(
     Clone,
     Debug,

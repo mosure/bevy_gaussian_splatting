@@ -87,6 +87,10 @@ impl Plugin for SpherindricalHarmonicCoefficientsPlugin {
 //     pub coefficients: [[u32; POD_ARRAY_SIZE]; POD_PLANE_COUNT],
 // }
 
+#[cfg_attr(
+    feature = "io_rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[derive(
     Clone,
     Copy,

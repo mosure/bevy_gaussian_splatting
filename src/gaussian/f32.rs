@@ -25,6 +25,10 @@ use crate::gaussian::{
 pub type Position = [f32; 3];
 
 
+#[cfg_attr(
+    feature = "io_rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[derive(
     Clone,
     Debug,
@@ -58,6 +62,10 @@ impl From<[f32; 4]> for PositionTimestamp {
 }
 
 
+#[cfg_attr(
+    feature = "io_rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[derive(
     Clone,
     Debug,
@@ -99,6 +107,10 @@ impl From<[f32; 4]> for PositionVisibility {
 }
 
 
+#[cfg_attr(
+    feature = "io_rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[derive(
     Clone,
     Debug,
@@ -124,6 +136,10 @@ impl From<[f32; 4]> for Rotation {
 }
 
 
+#[cfg_attr(
+    feature = "io_rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[derive(
     Clone,
     Debug,
@@ -182,6 +198,10 @@ impl From<[f32; 8]> for IsotropicRotations {
 }
 
 
+#[cfg_attr(
+    feature = "io_rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[derive(
     Clone,
     Debug,
@@ -215,6 +235,10 @@ impl From<[f32; 4]> for ScaleOpacity {
 }
 
 
+#[cfg_attr(
+    feature = "io_rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[derive(
     Clone,
     Debug,
@@ -246,6 +270,10 @@ impl From<[f32; 4]> for TimestampTimescale {
 }
 
 
+#[cfg_attr(
+    feature = "io_rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[derive(
     Clone,
     Debug,
