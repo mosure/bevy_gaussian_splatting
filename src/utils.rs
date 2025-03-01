@@ -30,6 +30,9 @@ pub struct GaussianSplattingViewer {
     #[arg(long, default_value = "true")]
     pub press_s_screenshot: bool,
 
+    #[arg(long, default_value = "false")]
+    pub show_axes: bool,
+
     #[arg(long, default_value = "true")]
     pub show_fps: bool,
 
@@ -73,6 +76,7 @@ impl Default for GaussianSplattingViewer {
             editor: true,
             press_esc_close: true,
             press_s_screenshot: true,
+            show_axes: false,
             show_fps: true,
             width: 1920.0,
             height: 1080.0,

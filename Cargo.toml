@@ -1,7 +1,7 @@
 [package]
 name = "bevy_gaussian_splatting"
 description = "bevy gaussian splatting render pipeline plugin"
-version = "4.4.0"
+version = "4.5.0"
 edition = "2021"
 authors = ["mosure <mitchell@mosure.me>"]
 license = "MIT OR Apache-2.0"
@@ -124,6 +124,7 @@ viewer = [
   "bevy_panorbit_camera",
   # "bevy_transform_gizmo",
   "bevy/multi_threaded",  # bevy screenshot functionality requires bevy/multi_threaded as of 0.12.1
+  "bevy/bevy_gizmos",
   "bevy/bevy_ui",
 ]
 

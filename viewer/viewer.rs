@@ -14,7 +14,10 @@ use bevy::{
         DiagnosticsStore,
         FrameTimeDiagnosticsPlugin,
     },
-    render::view::screenshot::{save_to_disk, Screenshot},
+    render::{
+        primitives::Aabb,
+        view::screenshot::{save_to_disk, Screenshot},
+    },
 };
 use bevy_args::{
     BevyArgsPlugin,
@@ -152,6 +155,7 @@ fn setup_gaussian_cloud(
                     ..default()
                 },
                 Name::new("gaussian_cloud_3d"),
+                ShowAxes,
             ));
         }
         GaussianMode::Gaussian4d => {
@@ -176,6 +180,7 @@ fn setup_gaussian_cloud(
                     ..default()
                 },
                 Name::new("gaussian_cloud_4d"),
+                ShowAxes,
             ));
         }
     }
@@ -332,6 +337,10 @@ fn viewer_app() {
         app.add_systems(Update, press_s_screenshot);
     }
 
+    if config.show_axes {
+        app.add_systems(Update, draw_axes);
+    }
+
     if config.show_fps {
         app.add_plugins(FrameTimeDiagnosticsPlugin);
         app.add_systems(Startup, fps_display_setup);
@@ -375,6 +384,25 @@ pub fn press_s_screenshot(
         commands
             .spawn(Screenshot::primary_window())
             .observe(save_to_disk(output_path));
+    }
+}
+
+#[derive(Component, Debug, Default, Reflect)]
+pub struct ShowAxes;
+
+fn draw_axes(
+    mut gizmos: Gizmos,
+    query: Query<
+        (
+            &Transform,
+            &Aabb
+        ),
+        With<ShowAxes>
+    >,
+) {
+    for (&transform, &aabb) in &query {
+        let length = aabb.half_extents.length();
+        gizmos.axes(transform, length);
     }
 }
 
