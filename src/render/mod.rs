@@ -687,8 +687,9 @@ pub fn shader_defs(
         RasterizeMode::Classification => shader_defs.push("RASTERIZE_CLASSIFICATION".into()),
         RasterizeMode::Color => shader_defs.push("RASTERIZE_COLOR".into()),
         RasterizeMode::Depth => shader_defs.push("RASTERIZE_DEPTH".into()),
-        RasterizeMode::OpticalFlow => shader_defs.push("RASTERIZE_OPTICAL_FLOW".into()),
         RasterizeMode::Normal => shader_defs.push("RASTERIZE_NORMAL".into()),
+        RasterizeMode::OpticalFlow => shader_defs.push("RASTERIZE_OPTICAL_FLOW".into()),
+        RasterizeMode::Position => shader_defs.push("RASTERIZE_POSITION".into()),
         RasterizeMode::Velocity => shader_defs.push("RASTERIZE_VELOCITY".into()),
     }
 
@@ -807,6 +808,8 @@ pub struct CloudUniform {
     pub time_start: f32,
     pub time_stop: f32,
     pub num_classes: u32,
+    pub min: Vec4,
+    pub max: Vec4,
 }
 
 #[allow(clippy::type_complexity)]
@@ -870,6 +873,8 @@ pub fn extract_gaussians<R: PlanarStorage>(
             time_start: settings.time_start,
             time_stop: settings.time_stop,
             num_classes: settings.num_classes as u32,
+            min: aabb.min().extend(1.0),
+            max: aabb.max().extend(1.0),
         };
 
         commands_list.push((

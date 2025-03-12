@@ -19,6 +19,8 @@ struct GaussianUniforms {
     time_start: f32,
     time_stop: f32,
     num_classes: u32,
+    min: vec4<f32>,
+    max: vec4<f32>,
 };
 @group(1) @binding(0) var<uniform> gaussian_uniforms: GaussianUniforms;
 

@@ -359,6 +359,8 @@ fn vs_points(
     );
 
     rgb = optical_flow_to_rgb(motion_vector);
+#else ifdef RASTERIZE_POSITION
+    rgb = (transformed_position - gaussian_uniforms.min.xyz) / (gaussian_uniforms.max.xyz - gaussian_uniforms.min.xyz);
 #else ifdef RASTERIZE_VELOCITY
     let time_delta = 1e-3;
     let future_gaussian_4d = conditional_cov3d(
