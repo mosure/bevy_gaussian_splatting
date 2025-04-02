@@ -47,7 +47,7 @@ impl AssetLoader for Gaussian3dLoader {
 
                 #[cfg(not(feature = "io_ply"))]
                 {
-                    Err(std::io::Error::new(ErrorKind::Other, "ply support not enabled, enable with io_ply feature"))
+                    Err(std::io::Error::other("ply support not enabled, enable with io_ply feature"))
                 }
             },
             Some(ext) if ext == "gcloud" => {
@@ -55,7 +55,7 @@ impl AssetLoader for Gaussian3dLoader {
 
                 Ok(cloud)
             },
-            _ => Err(std::io::Error::new(ErrorKind::Other, "only .ply and .gcloud supported")),
+            _ => Err(std::io::Error::other("only .ply and .gcloud supported")),
         }
     }
 
@@ -95,13 +95,13 @@ impl AssetLoader for Gaussian4dLoader {
 
                 #[cfg(not(feature = "io_ply"))]
                 {
-                    Err(std::io::Error::new(ErrorKind::Other, "ply4d support not enabled, enable with io_ply feature"))
+                    Err(std::io::Error::other("ply4d support not enabled, enable with io_ply feature"))
                 }
             },
             Some(ext) if ext == "gc4d" => {
                 Ok(PlanarGaussian4d::decode(bytes.as_slice()))
             },
-            _ => Err(std::io::Error::new(ErrorKind::Other, "only .ply4d and .gc4d supported")),
+            _ => Err(std::io::Error::other("only .ply4d and .gc4d supported")),
         }
     }
 
