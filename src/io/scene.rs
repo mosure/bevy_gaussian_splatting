@@ -176,7 +176,7 @@ impl AssetLoader for GaussianSceneLoader {
 
                 Ok(scene)
             },
-            _ => Err(std::io::Error::new(ErrorKind::Other, "only .json supported")),
+            _ => Err(std::io::Error::other("only .json supported")),
         }
     }
 
