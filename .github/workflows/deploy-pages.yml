@@ -20,7 +20,7 @@ jobs:
 
     steps:
       - name: checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: setup nightly rust toolchain with caching
         uses: brndnmtthws/rust-action@v1
