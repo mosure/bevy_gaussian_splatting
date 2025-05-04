@@ -380,6 +380,7 @@ fn queue_gaussians<R: PlanarStorage>(
                 pipeline,
                 batch_range: 0..1,
                 extra_index: PhaseItemExtraIndex::NONE,
+                indexed: false,
             });
         }
     }

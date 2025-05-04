@@ -507,6 +507,7 @@ impl RenderAsset for GpuSortedEntry {
 
     fn prepare_asset(
         source: Self::SourceAsset,
+        _: AssetId<Self::SourceAsset>,
         render_device: &mut SystemParamItem<Self::Param>,
     ) -> Result<Self, PrepareAssetError<Self::SourceAsset>> {
         let sorted_entry_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {

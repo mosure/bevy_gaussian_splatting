@@ -203,6 +203,7 @@ impl RenderAsset for GpuParticleBehaviorBuffers {
 
     fn prepare_asset(
         source: Self::SourceAsset,
+        _: AssetId<Self::SourceAsset>,
         render_device: &mut SystemParamItem<Self::Param>,
     ) -> Result<Self, PrepareAssetError<Self::SourceAsset>> {
         let particle_behavior_count = source.0.len() as u32;
