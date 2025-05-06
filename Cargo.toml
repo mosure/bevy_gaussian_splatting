@@ -190,7 +190,7 @@ wasm-bindgen = "0.2"
 
 [dependencies.bevy]
 version = "0.16"
-default-features = false
+default-features = true
 features = [
   "bevy_asset",
   "bevy_core_pipeline",
