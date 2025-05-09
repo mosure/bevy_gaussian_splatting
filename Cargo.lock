@@ -1667,9 +1667,9 @@ dependencies = [
 
 [[package]]
 name = "bevy_interleave"
-version = "0.7.1"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea16cdd07bd40e3bcf807b26e14f61f814382819ef0554bd9dd93b85eb6fab4d"
+checksum = "6bfe1f7e02a4113fd2ee3be2cbc7647234a9e84d5f176d562e74c0b9fc77dcba"
 dependencies = [
  "bevy 0.16.0",
  "bevy_interleave_interface",
@@ -4492,7 +4492,7 @@ dependencies = [
  "vec_map",
  "wasm-bindgen",
  "web-sys",
- "windows 0.52.0",
+ "windows 0.58.0",
 ]
 
 [[package]]
