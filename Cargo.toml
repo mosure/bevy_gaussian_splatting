@@ -1,7 +1,7 @@
 [package]
 name = "bevy_gaussian_splatting"
 description = "bevy gaussian splatting render pipeline plugin"
-version = "4.6.0"
+version = "4.6.1"
 edition = "2024"
 rust-version = "1.85.0"
 authors = ["mosure <mitchell@mosure.me>"]
@@ -155,9 +155,9 @@ webgpu = ["bevy/webgpu"]
 
 [dependencies]
 base64 = { version = "0.22", optional = true }
-bevy_args = "1.8"
+bevy_args = "~1.8"
 bevy-inspector-egui = { version = "0.31", optional = true }
-bevy_interleave = { version = "0.7.1" }
+bevy_interleave = { version = "0.7.2" }
 # bevy_panorbit_camera = { git = "https://github.com/mosure/bevy_panorbit_camera.git", optional = true, features = ["bevy_egui"] }
 bevy_panorbit_camera = { version = "0.26", optional = true, features = ["bevy_egui"] }
 bevy_transform_gizmo = { version = "0.12", optional = true }
