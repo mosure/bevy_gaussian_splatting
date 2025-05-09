@@ -1,10 +1,10 @@
 use bevy::{
     prelude::*,
-    asset::load_internal_asset,
+    asset::{load_internal_asset, weak_handle},
 };
 
 
-const CLASSIFICATION_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(61436234324);
+const CLASSIFICATION_SHADER_HANDLE: Handle<Shader> = weak_handle!("8b453dba-5095-47f2-9c60-ae369fe51579");
 
 
 pub struct ClassificationMaterialPlugin;

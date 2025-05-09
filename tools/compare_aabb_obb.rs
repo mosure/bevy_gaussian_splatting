@@ -7,7 +7,10 @@ use bevy_args::{
     BevyArgsPlugin,
     parse_args,
 };
-use bevy_inspector_egui::quick::WorldInspectorPlugin;
+use bevy_inspector_egui::{
+    bevy_egui::EguiPlugin,
+    quick::WorldInspectorPlugin,
+};
 use bevy_interleave::prelude::Planar;
 use bevy_panorbit_camera::{
     PanOrbitCamera,
@@ -124,6 +127,7 @@ fn compare_aabb_obb_app() {
     app.add_plugins(PanOrbitCameraPlugin);
 
     if config.editor {
+        app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: true });
         app.add_plugins(WorldInspectorPlugin::new());
     }
 
@@ -143,7 +147,7 @@ pub fn esc_close(
     mut exit: EventWriter<AppExit>
 ) {
     if keys.just_pressed(KeyCode::Escape) {
-        exit.send(AppExit::Success);
+        exit.write(AppExit::Success);
     }
 }
 

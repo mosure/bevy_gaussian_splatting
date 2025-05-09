@@ -5,13 +5,13 @@ use bevy::{
     prelude::*,
     app::AppExit,
     color::palettes::css::GOLD,
-    core::FrameCount,
     core_pipeline::{
         prepass::MotionVectorPrepass,
         tonemapping::Tonemapping,
     },
     diagnostic::{
         DiagnosticsStore,
+        FrameCount,
         FrameTimeDiagnosticsPlugin,
     },
     render::{
@@ -23,7 +23,10 @@ use bevy_args::{
     BevyArgsPlugin,
     parse_args,
 };
-use bevy_inspector_egui::quick::WorldInspectorPlugin;
+use bevy_inspector_egui::{
+    bevy_egui::EguiPlugin,
+    quick::WorldInspectorPlugin,
+};
 use bevy_panorbit_camera::{
     PanOrbitCamera,
     PanOrbitCameraPlugin,
@@ -326,6 +329,7 @@ fn viewer_app() {
     app.add_plugins(PanOrbitCameraPlugin);
 
     if config.editor {
+        app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: true });
         app.add_plugins(WorldInspectorPlugin::new());
     }
 
@@ -342,7 +346,7 @@ fn viewer_app() {
     }
 
     if config.show_fps {
-        app.add_plugins(FrameTimeDiagnosticsPlugin);
+        app.add_plugins(FrameTimeDiagnosticsPlugin::default());
         app.add_systems(Startup, fps_display_setup);
         app.add_systems(Update, fps_update_system);
     }
@@ -411,7 +415,7 @@ pub fn press_esc_close(
     mut exit: EventWriter<AppExit>
 ) {
     if keys.just_pressed(KeyCode::Escape) {
-        exit.send(AppExit::Success);
+        exit.write(AppExit::Success);
     }
 }
 
@@ -422,7 +426,7 @@ fn press_i_invert_selection(
 ) {
     if keys.just_pressed(KeyCode::KeyI) {
         log("inverting selection");
-        select_inverse_events.send(InvertSelectionEvent);
+        select_inverse_events.write(InvertSelectionEvent);
     }
 }
 
@@ -433,7 +437,7 @@ fn press_o_save_selection(
 ) {
     if keys.just_pressed(KeyCode::KeyO) {
         log("saving selection");
-        select_inverse_events.send(SaveSelectionEvent);
+        select_inverse_events.write(SaveSelectionEvent);
     }
 }
 

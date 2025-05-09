@@ -4,7 +4,7 @@ use bevy::{
 };
 
 
-const NOISE_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(125722721);
+const NOISE_SHADER_HANDLE: Handle<Shader> = weak_handle!(125722721);
 
 
 #[derive(Default)]

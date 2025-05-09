@@ -6,10 +6,10 @@ use bevy_interleave::prelude::*;
 pub mod particle;
 
 
-pub struct MorphPlugin<R: PlanarStorage> {
+pub struct MorphPlugin<R: PlanarSync> {
     _phantom: std::marker::PhantomData<R>,
 }
-impl<R: PlanarStorage> Default for MorphPlugin<R> {
+impl<R: PlanarSync> Default for MorphPlugin<R> {
     fn default() -> Self {
         Self {
             _phantom: std::marker::PhantomData,
@@ -17,7 +17,7 @@ impl<R: PlanarStorage> Default for MorphPlugin<R> {
     }
 }
 
-impl<R: PlanarStorage> Plugin for MorphPlugin<R> {
+impl<R: PlanarSync> Plugin for MorphPlugin<R> {
     #[allow(unused)]
     fn build(&self, app: &mut App) {
         #[cfg(feature = "morph_particles")]

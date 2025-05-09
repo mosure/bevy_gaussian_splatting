@@ -186,7 +186,7 @@ pub fn random_gaussians_3d(n: usize) -> PlanarGaussian3d {
     let mut gaussians: Vec<Gaussian3d> = Vec::with_capacity(n);
 
     for _ in 0..n {
-        gaussians.push(rng.gen());
+        gaussians.push(rng.r#gen());
     }
 
     PlanarGaussian3d::from_interleaved(gaussians)

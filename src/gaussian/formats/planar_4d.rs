@@ -302,7 +302,7 @@ pub fn random_gaussians_4d(n: usize) -> PlanarGaussian4d {
     let mut gaussians: Vec<Gaussian4d> = Vec::with_capacity(n);
 
     for _ in 0..n {
-        gaussians.push(rng.gen());
+        gaussians.push(rng.r#gen());
     }
 
     PlanarGaussian4d::from_interleaved(gaussians)

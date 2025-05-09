@@ -5,7 +5,6 @@
 use bevy::{
     prelude::*,
     app::ScheduleRunnerPlugin,
-    core::Name,
     core_pipeline::tonemapping::Tonemapping,
     render::renderer::RenderDevice,
 };
@@ -37,10 +36,10 @@ mod frame_capture {
 
         use bevy::render::render_resource::{
             Buffer, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d,
-            ImageCopyBuffer, ImageDataLayout, MapMode,
+            MapMode,
         };
         use pollster::FutureExt;
-        use wgpu::Maintain;
+        use wgpu::{Maintain, TexelCopyBufferInfo, TexelCopyBufferLayout};
 
         use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -68,7 +67,7 @@ mod frame_capture {
                     render_device.poll(Maintain::Wait);
                     rx.receive().await.unwrap().unwrap();
                     if let Some(image) = images.get_mut(&image_copier.dst_image) {
-                        image.data = buffer_slice.get_mapped_range().to_vec();
+                        image.data = buffer_slice.get_mapped_range().to_vec().into();
                     }
 
                     image_copier.buffer.unmap();
@@ -174,21 +173,21 @@ mod frame_capture {
                     let block_size = src_image.texture_format.block_copy_size(None).unwrap();
 
                     let padded_bytes_per_row = RenderDevice::align_copy_bytes_per_row(
-                        (src_image.size.x as usize / block_dimensions.0 as usize)
+                        (src_image.size.width as usize / block_dimensions.0 as usize)
                             * block_size as usize,
                     );
 
                     let texture_extent = Extent3d {
-                        width: src_image.size.x as u32,
-                        height: src_image.size.y as u32,
+                        width: src_image.size.width as u32,
+                        height: src_image.size.height as u32,
                         depth_or_array_layers: 1,
                     };
 
                     encoder.copy_texture_to_buffer(
                         src_image.texture.as_image_copy(),
-                        ImageCopyBuffer {
+                        TexelCopyBufferInfo {
                             buffer: &image_copier.buffer,
-                            layout: ImageDataLayout {
+                            layout: TexelCopyBufferLayout {
                                 offset: 0,
                                 bytes_per_row: Some(
                                     std::num::NonZeroU32::new(padded_bytes_per_row as u32)
@@ -325,7 +324,7 @@ mod frame_capture {
 
             scene_controller.state = SceneState::Render(pre_roll_frames);
             scene_controller.name = scene_name;
-            RenderTarget::Image(render_target_image_handle)
+            RenderTarget::Image(render_target_image_handle.into())
         }
 
         fn update(
@@ -354,7 +353,7 @@ mod frame_capture {
                         };
                     }
                     if scene_controller.single_image {
-                        app_exit_writer.send(AppExit::Success);
+                        app_exit_writer.write(AppExit::Success);
                     }
                 } else {
                     scene_controller.state = SceneState::Render(n - 1);
@@ -448,7 +447,7 @@ fn headless_app() {
     app.add_plugins(frame_capture::scene::CaptureFramePlugin);
 
     app.add_plugins(ScheduleRunnerPlugin::run_loop(
-        std::time::Duration::from_secs_f64(1.0 / 60.0),
+        core::time::Duration::from_secs_f64(1.0 / 60.0),
     ));
 
     // setup for gaussian splatting

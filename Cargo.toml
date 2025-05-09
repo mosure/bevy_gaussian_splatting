@@ -1,7 +1,7 @@
 [package]
 name = "bevy_gaussian_splatting"
 description = "bevy gaussian splatting render pipeline plugin"
-version = "4.6.1"
+version = "5.0.0"
 edition = "2024"
 rust-version = "1.85.0"
 authors = ["mosure <mitchell@mosure.me>"]
@@ -196,7 +196,6 @@ features = [
   "bevy_core_pipeline",
   "bevy_log",
   "bevy_pbr",
-  "bevy_remote",
   "bevy_render",
   "bevy_winit",
   "serialize",
