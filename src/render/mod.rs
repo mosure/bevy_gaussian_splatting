@@ -64,6 +64,7 @@ use bevy_interleave::prelude::*;
 use crate::{
     camera::GaussianCamera,
     gaussian::{
+        cloud::CloudVisibilityClass,
         interface::CommonCloud,
         settings::{
             CloudSettings, DrawMode, GaussianMode, RasterizeMode
@@ -322,8 +323,9 @@ fn queue_gaussians<R: PlanarSync>(
         for (
             render_entity,
             visible_entity,
-        ) in visible_entities.iter::<With<R::PlanarTypeHandle>>() {
+        ) in visible_entities.iter::<CloudVisibilityClass>() {
             if gaussian_splatting_bundles.get(*render_entity).is_err() {
+                debug!("gaussian splatting bundle not found");
                 continue;
             }
 
@@ -387,7 +389,7 @@ fn queue_gaussians<R: PlanarSync>(
 
 
 // TODO: pipeline trait
-// TODO: support extendions /w ComputePipelineDescriptor builder
+// TODO: support extentions /w ComputePipelineDescriptor builder
 #[derive(Resource)]
 pub struct CloudPipeline<R: PlanarSync> {
     shader: Handle<Shader>,
