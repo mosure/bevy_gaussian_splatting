@@ -1,4 +1,7 @@
-use std::hash::Hash;
+use std::{
+    hash::Hash,
+    num::NonZero,
+};
 
 use bevy::{
     prelude::*,
@@ -47,8 +50,10 @@ use bevy::{
         render_resource::*,
         renderer::RenderDevice,
         view::{
+            VISIBILITY_RANGES_STORAGE_BUFFER_COUNT,
             ExtractedView,
             RenderVisibleEntities,
+            RenderVisibilityRanges,
             ViewUniform,
             ViewUniformOffset,
             ViewUniforms,
@@ -401,12 +406,39 @@ pub struct CloudPipeline<R: PlanarSync> {
     phantom: std::marker::PhantomData<R>,
 }
 
+fn buffer_layout(
+    buffer_binding_type: BufferBindingType,
+    has_dynamic_offset: bool,
+    min_binding_size: Option<NonZero<u64>>,
+) -> BindGroupLayoutEntryBuilder {
+    match buffer_binding_type {
+        BufferBindingType::Uniform => binding_types::uniform_buffer_sized(has_dynamic_offset, min_binding_size),
+        BufferBindingType::Storage { read_only } => {
+            if read_only {
+                binding_types::storage_buffer_read_only_sized(has_dynamic_offset, min_binding_size)
+            } else {
+                binding_types::storage_buffer_sized(has_dynamic_offset, min_binding_size)
+            }
+        }
+    }
+}
+
 impl<R: PlanarSync> FromWorld for CloudPipeline<R>
 where
     R::GpuPlanarType: GpuPlanarStorage,
 {
     fn from_world(render_world: &mut World) -> Self {
         let render_device = render_world.resource::<RenderDevice>();
+
+        let visibility_ranges_buffer_binding_type = render_device
+            .get_supported_read_only_binding_type(VISIBILITY_RANGES_STORAGE_BUFFER_COUNT);
+
+        let visibility_ranges_entry = buffer_layout(
+                visibility_ranges_buffer_binding_type,
+                false,
+                Some(Vec4::min_size()),
+            )
+            .build(14, ShaderStages::VERTEX);
 
         let view_layout_entries = vec![
             BindGroupLayoutEntry {
@@ -439,6 +471,7 @@ where
                 },
                 count: None,
             },
+            visibility_ranges_entry,
         ];
 
         let compute_view_layout_entries = vec![
@@ -472,6 +505,7 @@ where
             //     },
             //     count: None,
             // },
+            visibility_ranges_entry,
         ];
 
         let view_layout = render_device.create_bind_group_layout(
@@ -1018,6 +1052,7 @@ pub struct GaussianViewBindGroup {
 
 // TODO: move to gaussian camera module
 // TODO: remove cloud pipeline dependency by separating view layout
+#[allow(clippy::too_many_arguments)]
 pub fn queue_gaussian_view_bind_groups<R: PlanarSync>(
     mut commands: Commands,
     render_device: Res<RenderDevice>,
@@ -1032,16 +1067,19 @@ pub fn queue_gaussian_view_bind_groups<R: PlanarSync>(
         ),
         With<GaussianCamera>,
     >,
+    visibility_ranges: Res<RenderVisibilityRanges>,
     globals_buffer: Res<GlobalsBuffer>,
 ) {
     if let (
         Some(view_binding),
         Some(previous_view_binding),
         Some(globals),
+        Some(visibility_ranges_buffer)
     ) = (
         view_uniforms.uniforms.binding(),
         previous_view_uniforms.uniforms.binding(),
         globals_buffer.buffer.binding(),
+        visibility_ranges.buffer().buffer()
     ) {
         for (
             entity,
@@ -1062,6 +1100,10 @@ pub fn queue_gaussian_view_bind_groups<R: PlanarSync>(
                 BindGroupEntry {
                     binding: 2,
                     resource: previous_view_binding.clone(),
+                },
+                BindGroupEntry {
+                    binding: 14,
+                    resource: visibility_ranges_buffer.as_entire_binding(),
                 },
             ];
 

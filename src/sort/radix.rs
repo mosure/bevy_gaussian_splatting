@@ -204,7 +204,7 @@ impl GpuRadixBuffers {
         let sorting_pass_buffers = (0..4)
             .map(|idx| {
                 render_device.create_buffer_with_data(&BufferInitDescriptor {
-                    label: format!("sorting pass buffer {}", idx).as_str().into(),
+                    label: format!("sorting pass buffer {idx}").as_str().into(),
                     contents: &[idx as u8, 0, 0, 0],
                     usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
                 })
@@ -477,7 +477,7 @@ where
         let radix_sort_bind_groups: [BindGroup; 4] = (0..4)
             .map(|idx| {
                 render_device.create_bind_group(
-                    format!("radix_sort_bind_group {}", idx).as_str(),
+                    format!("radix_sort_bind_group {idx}").as_str(),
                     &radix_pipeline.radix_sort_layout,
                     &[
                         BindGroupEntry {

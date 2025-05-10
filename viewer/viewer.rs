@@ -126,7 +126,7 @@ fn setup_gaussian_cloud(
 
     if let Some(input_scene) = &args.input_scene {
         let input_uri = parse_input_file(input_scene.as_str());
-        log(&format!("loading {}", input_uri));
+        log(&format!("loading {input_uri}"));
         let scene: Handle<GaussianScene> = asset_server.load(&input_uri);
         commands.spawn((
             GaussianSceneHandle(scene),
@@ -143,7 +143,7 @@ fn setup_gaussian_cloud(
                 cloud = gaussian_3d_assets.add(random_gaussians_3d(args.gaussian_count));
             } else if let Some(input_cloud) = &args.input_cloud {
                 let input_uri = parse_input_file(input_cloud.as_str());
-                log(&format!("loading {}", input_uri));
+                log(&format!("loading {input_uri}"));
                 cloud = asset_server.load(&input_uri);
             } else {
                 cloud = gaussian_3d_assets.add(PlanarGaussian3d::test_model());
@@ -168,7 +168,7 @@ fn setup_gaussian_cloud(
                 cloud = gaussian_4d_assets.add(random_gaussians_4d(args.gaussian_count));
             } else if let Some(input_cloud) = &args.input_cloud {
                 let input_uri = parse_input_file(input_cloud.as_str());
-                log(&format!("loading {}", input_uri));
+                log(&format!("loading {input_uri}"));
                 cloud = asset_server.load(&input_uri);
             } else {
                 cloud = gaussian_4d_assets.add(PlanarGaussian4d::test_model());
@@ -270,7 +270,7 @@ fn setup_sparse_select(
 
 fn viewer_app() {
     let config = parse_args::<GaussianSplattingViewer>();
-    log(&format!("{:?}", config));
+    log(&format!("{config:?}"));
 
     let mut app = App::new();
 

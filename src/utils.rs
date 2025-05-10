@@ -112,6 +112,6 @@ pub fn log(_msg: &str) {
     #[cfg(debug_assertions)]
     #[cfg(not(target_arch = "wasm32"))]
     {
-        println!("{}", _msg);
+        println!("{_msg}");
     }
 }
