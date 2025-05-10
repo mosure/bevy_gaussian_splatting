@@ -61,11 +61,11 @@ default = [
   "sort_rayon",
   "sort_std",
 
-  # "tooling",
+  "tooling",
   "viewer",
 
-  # "file_asset",
-  # "web_asset",
+  "file_asset",
+  "web_asset",
 ]
 
 debug_gpu = []
