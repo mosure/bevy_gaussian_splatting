@@ -26,9 +26,7 @@ impl CloudCodec for PlanarGaussian3d {
 
     fn decode(data: &[u8]) -> Self {
         let reader = Reader::get_root(data).expect("failed to read flexbuffer");
-        let cloud = Self::deserialize(reader).expect("deserialization failed");
-
-        cloud
+        Self::deserialize(reader).expect("deserialization failed")
     }
 }
 
@@ -43,8 +41,6 @@ impl CloudCodec for PlanarGaussian4d {
 
     fn decode(data: &[u8]) -> Self {
         let reader = Reader::get_root(data).expect("failed to read flexbuffer");
-        let cloud = Self::deserialize(reader).expect("deserialization failed");
-
-        cloud
+        Self::deserialize(reader).expect("deserialization failed")
     }
 }

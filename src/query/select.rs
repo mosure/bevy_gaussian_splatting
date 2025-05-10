@@ -56,14 +56,14 @@ impl Plugin for SelectPlugin {
 
 
 #[derive(Default)]
-pub struct CommonCloudSelectPlugin<R: PlanarStorage>
+pub struct CommonCloudSelectPlugin<R: PlanarSync>
 where
     R::PlanarType: CommonCloud,
 {
     _phantom: std::marker::PhantomData<R>,
 }
 
-impl<R: PlanarStorage> Plugin for CommonCloudSelectPlugin<R>
+impl<R: PlanarSync> Plugin for CommonCloudSelectPlugin<R>
 where
     R::PlanarType: CloudCodec,
     R::PlanarType: CommonCloud,
@@ -78,7 +78,7 @@ where
 }
 
 
-fn apply_selection<R: PlanarStorage>(
+fn apply_selection<R: PlanarSync>(
     asset_server: Res<AssetServer>,
     mut gaussian_clouds_res: ResMut<Assets<R::PlanarType>>,
     mut selections: Query<(
@@ -128,7 +128,7 @@ where
 #[derive(Event, Debug, Reflect)]
 pub struct InvertSelectionEvent;
 
-fn invert_selection<R: PlanarStorage>(
+fn invert_selection<R: PlanarSync>(
     mut events: EventReader<InvertSelectionEvent>,
     mut gaussian_clouds_res: ResMut<Assets<R::PlanarType>>,
     mut selections: Query<(
@@ -180,7 +180,7 @@ where
 #[derive(Event, Debug, Reflect)]
 pub struct SaveSelectionEvent;
 
-pub fn save_selection<R: PlanarStorage>(
+pub fn save_selection<R: PlanarSync>(
     mut events: EventReader<SaveSelectionEvent>,
     mut gaussian_clouds_res: ResMut<Assets<R::PlanarType>>,
     mut selections: Query<(

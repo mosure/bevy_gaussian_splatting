@@ -9,7 +9,10 @@ use bevy_args::{
     BevyArgsPlugin,
     parse_args,
 };
-use bevy_inspector_egui::quick::WorldInspectorPlugin;
+use bevy_inspector_egui::{
+    bevy_egui::EguiPlugin,
+    quick::WorldInspectorPlugin,
+};
 use bevy_panorbit_camera::{
     PanOrbitCamera,
     PanOrbitCameraPlugin,
@@ -57,6 +60,7 @@ fn multi_camera_app() {
     app.add_plugins(PanOrbitCameraPlugin);
 
     if config.editor {
+        app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: true });
         app.add_plugins(WorldInspectorPlugin::new());
     }
 
@@ -221,7 +225,7 @@ fn press_s_to_spawn_camera(
     windows: Query<&Window>,
 ) {
     if keys.just_pressed(KeyCode::KeyS) {
-        let window = windows.single();
+        let window = windows.single().unwrap();
         let size = window.physical_size() / UVec2::new(2, 1);
         let pos = UVec2::new(1, 0);
 
@@ -282,7 +286,7 @@ fn esc_close(
     mut exit: EventWriter<AppExit>
 ) {
     if keys.just_pressed(KeyCode::Escape) {
-        exit.send(AppExit::Success);
+        exit.write(AppExit::Success);
     }
 }
 

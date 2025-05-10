@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bevy::{
     prelude::*,
-    asset::load_internal_asset,
+    asset::{load_internal_asset, weak_handle},
     core_pipeline::core_3d::graph::{
         Core3d,
         Node3d,
@@ -83,19 +83,22 @@ assert_cfg!(
 );
 
 
-const RADIX_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(6234673214);
-const TEMPORAL_SORT_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(1634543224);
+const RADIX_SHADER_HANDLE: Handle<Shader> = weak_handle!("dedb3ddf-f254-4361-8762-e221774de1ed");
+const TEMPORAL_SORT_SHADER_HANDLE: Handle<Shader> = weak_handle!("11986b71-25d8-410b-adfa-6afb107ae4de");
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
 pub struct RadixSortLabel;
 
 
 #[derive(Default)]
-pub struct RadixSortPlugin<R: PlanarStorage> {
+pub struct RadixSortPlugin<R: PlanarSync> {
     phantom: std::marker::PhantomData<R>,
 }
 
-impl<R: PlanarStorage> Plugin for RadixSortPlugin<R> {
+impl<R: PlanarSync> Plugin for RadixSortPlugin<R>
+where
+    R::GpuPlanarType: GpuPlanarStorage,
+{
     fn build(&self, app: &mut App) {
         // TODO: run once
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
@@ -142,7 +145,7 @@ impl<R: PlanarStorage> Plugin for RadixSortPlugin<R> {
                 .add_render_graph_edge(
                     Core3d,
                     RadixSortLabel,
-                    Node3d::Prepass,
+                    Node3d::LatePrepass,
                 );
         }
     }
@@ -156,7 +159,7 @@ impl<R: PlanarStorage> Plugin for RadixSortPlugin<R> {
 }
 
 #[derive(Resource)]
-pub struct RadixSortBuffers<R: PlanarStorage> {
+pub struct RadixSortBuffers<R: PlanarSync> {
     // TODO: use a more ECS-friendly approach
     pub asset_map: HashMap<
         AssetId<R::PlanarType>,
@@ -164,7 +167,7 @@ pub struct RadixSortBuffers<R: PlanarStorage> {
     >,
 }
 
-impl<R: PlanarStorage> Default for RadixSortBuffers<R> {
+impl<R: PlanarSync> Default for RadixSortBuffers<R> {
     fn default() -> Self {
         RadixSortBuffers {
             asset_map: HashMap::new(),
@@ -201,7 +204,7 @@ impl GpuRadixBuffers {
         let sorting_pass_buffers = (0..4)
             .map(|idx| {
                 render_device.create_buffer_with_data(&BufferInitDescriptor {
-                    label: format!("sorting pass buffer {}", idx).as_str().into(),
+                    label: format!("sorting pass buffer {idx}").as_str().into(),
                     contents: &[idx as u8, 0, 0, 0],
                     usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
                 })
@@ -227,7 +230,7 @@ impl GpuRadixBuffers {
 }
 
 
-fn update_sort_buffers<R: PlanarStorage>(
+fn update_sort_buffers<R: PlanarSync>(
     gpu_gaussian_clouds: Res<RenderAssets<R::GpuPlanarType>>,
     mut sort_buffers: ResMut<RadixSortBuffers<R>>,
     render_device: Res<RenderDevice>,
@@ -245,13 +248,13 @@ fn update_sort_buffers<R: PlanarStorage>(
 
 
 #[derive(Resource)]
-pub struct RadixSortPipeline<R: PlanarStorage> {
+pub struct RadixSortPipeline<R: PlanarSync> {
     pub radix_sort_layout: BindGroupLayout,
     pub radix_sort_pipelines: [CachedComputePipelineId; 3],
     phantom: std::marker::PhantomData<R>,
 }
 
-impl<R: PlanarStorage> FromWorld for RadixSortPipeline<R> {
+impl<R: PlanarSync> FromWorld for RadixSortPipeline<R> {
     fn from_world(render_world: &mut World) -> Self {
         let render_device = render_world.resource::<RenderDevice>();
         let gaussian_cloud_pipeline = render_world.resource::<CloudPipeline<R>>();
@@ -387,7 +390,7 @@ pub struct RadixBindGroup {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn queue_radix_bind_group<R: PlanarStorage>(
+pub fn queue_radix_bind_group<R: PlanarSync>(
     mut commands: Commands,
     radix_pipeline: Res<RadixSortPipeline<R>>,
     render_device: Res<RenderDevice>,
@@ -401,7 +404,10 @@ pub fn queue_radix_bind_group<R: PlanarStorage>(
         &CloudSettings,
     )>,
     sort_buffers: Res<RadixSortBuffers<R>>,
-) {
+)
+where
+    R::GpuPlanarType: GpuPlanarStorage,
+{
     for (
         entity,
         cloud_handle,
@@ -471,7 +477,7 @@ pub fn queue_radix_bind_group<R: PlanarStorage>(
         let radix_sort_bind_groups: [BindGroup; 4] = (0..4)
             .map(|idx| {
                 render_device.create_bind_group(
-                    format!("radix_sort_bind_group {}", idx).as_str(),
+                    format!("radix_sort_bind_group {idx}").as_str(),
                     &radix_pipeline.radix_sort_layout,
                     &[
                         BindGroupEntry {
@@ -523,7 +529,7 @@ pub fn queue_radix_bind_group<R: PlanarStorage>(
 }
 
 
-pub struct RadixSortNode<R: PlanarStorage> {
+pub struct RadixSortNode<R: PlanarSync> {
     gaussian_clouds: QueryState<(
         &'static R::PlanarTypeHandle,
         &'static PlanarStorageBindGroup<R>,
@@ -537,7 +543,7 @@ pub struct RadixSortNode<R: PlanarStorage> {
     )>,
 }
 
-impl<R: PlanarStorage> FromWorld for RadixSortNode<R> {
+impl<R: PlanarSync> FromWorld for RadixSortNode<R> {
     fn from_world(world: &mut World) -> Self {
         Self {
             gaussian_clouds: world.query(),
@@ -547,7 +553,10 @@ impl<R: PlanarStorage> FromWorld for RadixSortNode<R> {
     }
 }
 
-impl<R: PlanarStorage> Node for RadixSortNode<R> {
+impl<R: PlanarSync> Node for RadixSortNode<R>
+where
+    R::GpuPlanarType: GpuPlanarStorage,
+{
     fn update(&mut self, world: &mut World) {
         let pipeline = world.resource::<RadixSortPipeline<R>>();
         let pipeline_cache = world.resource::<PipelineCache>();

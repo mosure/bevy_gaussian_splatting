@@ -9,6 +9,8 @@
 @group(0) @binding(1) var<uniform> globals: Globals;
 @group(0) @binding(2) var<uniform> previous_view_uniforms: PreviousViewUniforms;
 
+@group(0) @binding(14) var<storage> visibility_ranges: array<vec4<f32>>;
+
 struct GaussianUniforms {
     transform: mat4x4<f32>,
     global_opacity: f32,

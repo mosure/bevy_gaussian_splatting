@@ -1,7 +1,7 @@
 use bevy::{
     prelude::*,
     math::Vec3A,
-    utils::Instant,
+    platform::time::Instant,
 };
 use bevy_interleave::prelude::*;
 use rayon::prelude::*;
@@ -21,11 +21,11 @@ use crate::{
 
 
 #[derive(Default)]
-pub struct RayonSortPlugin<R: PlanarStorage> {
+pub struct RayonSortPlugin<R: PlanarSync> {
     _phantom: std::marker::PhantomData<R>,
 }
 
-impl<R: PlanarStorage> Plugin for RayonSortPlugin<R>
+impl<R: PlanarSync> Plugin for RayonSortPlugin<R>
 where
     R::PlanarType: CommonCloud,
 {
@@ -35,7 +35,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn rayon_sort<R: PlanarStorage>(
+pub fn rayon_sort<R: PlanarSync>(
     asset_server: Res<AssetServer>,
     gaussian_clouds_res: Res<Assets<R::PlanarType>>,
     gaussian_clouds: Query<(

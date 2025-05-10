@@ -35,7 +35,7 @@ fn is_point_in_transformed_sphere(pos: &[f32; 3]) -> bool {
 fn main() {
     let filename = std::env::args().nth(1).expect("no filename given");
 
-    println!("converting `{}` file to gcloud", filename);
+    println!("converting `{filename}` file to gcloud");
 
     let file = std::fs::File::open(&filename).expect("failed to open file");
     let mut reader = std::io::BufReader::new(file);
@@ -62,7 +62,7 @@ fn main() {
         cloud = sparse_selection.indicies.iter()
             .map(|idx| cloud.gaussian(*idx))
             .collect();
-        println!("sparsity filtered cloud size: {}", cloud.len());
+        println!("sparsity filtered cloud size: {cloud.len()}");
     }
 
     let base_filename = filename.split('.').next().expect("no extension").to_string();

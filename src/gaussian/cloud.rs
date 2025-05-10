@@ -1,11 +1,18 @@
 use bevy::{
     prelude::*,
+    ecs::{
+        component::HookContext,
+        world::DeferredWorld,
+    },
     render::{
         primitives::Aabb,
-        view::visibility::{
-            check_visibility,
-            NoFrustumCulling,
-            VisibilitySystems,
+        view::{
+            visibility::{
+                add_visibility_class,
+                NoFrustumCulling,
+                VisibilitySystems,
+            },
+            VisibilityClass,
         },
     },
 };
@@ -15,21 +22,31 @@ use crate::gaussian::interface::CommonCloud;
 
 
 #[derive(Default)]
-pub struct CloudPlugin<R: PlanarStorage> {
+pub struct CloudPlugin<R: PlanarSync> {
     _phantom: std::marker::PhantomData<R>,
 }
 
-impl<R: PlanarStorage + Reflect + TypePath> Plugin for CloudPlugin<R>
+pub struct CloudVisibilityClass;
+
+fn add_planar_class(world: DeferredWorld, ctx: HookContext) {
+    add_visibility_class::<CloudVisibilityClass>(world, ctx);
+}
+
+impl<R: PlanarSync + Reflect + TypePath> Plugin for CloudPlugin<R>
 where
     R::PlanarType: CommonCloud,
     R::PlanarTypeHandle: FromReflect + bevy::reflect::Typed,
 {
     fn build(&self, app: &mut App) {
+        app.register_required_components::<R::PlanarTypeHandle, VisibilityClass>();
+        app.world_mut()
+            .register_component_hooks::<R::PlanarTypeHandle>()
+            .on_add(add_planar_class);
+
         app.add_systems(
             PostUpdate,
             (
                 calculate_bounds::<R>.in_set(VisibilitySystems::CalculateBounds),
-                check_visibility::<With<R::PlanarTypeHandle>>.in_set(VisibilitySystems::CheckVisibility),
             )
         );
     }
@@ -38,7 +55,7 @@ where
 
 // TODO: handle aabb updates (e.g. gaussian particle movements)
 #[allow(clippy::type_complexity)]
-pub fn calculate_bounds<R: PlanarStorage>(
+pub fn calculate_bounds<R: PlanarSync>(
     mut commands: Commands,
     gaussian_clouds: Res<Assets<R::PlanarType>>,
     without_aabb: Query<

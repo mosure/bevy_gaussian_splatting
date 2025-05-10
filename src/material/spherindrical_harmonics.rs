@@ -2,7 +2,7 @@ use std::marker::Copy;
 
 use bevy::{
     prelude::*,
-    asset::load_internal_asset,
+    asset::{load_internal_asset, weak_handle},
     render::render_resource::ShaderType,
 };
 use bytemuck::{
@@ -52,7 +52,7 @@ static_assertions::const_assert_eq!(WASTE, 0);
 pub const SH_4D_VEC4_PLANES: usize = SH_4D_COEFF_COUNT / 4;
 
 
-const SPHERINDRICAL_HARMONICS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(512346253);
+const SPHERINDRICAL_HARMONICS_SHADER_HANDLE: Handle<Shader> = weak_handle!("0b379c3c-daa3-48c5-bf4b-0262b9941a0a");
 
 pub struct SpherindricalHarmonicCoefficientsPlugin;
 impl Plugin for SpherindricalHarmonicCoefficientsPlugin {

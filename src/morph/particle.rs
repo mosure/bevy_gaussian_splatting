@@ -91,16 +91,16 @@ use crate::{
 };
 
 
-const PARTICLE_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(234553453455);
+const PARTICLE_SHADER_HANDLE: Handle<Shader> = weak_handle!(234553453455);
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
 pub struct MorphLabel;
 
 
-pub struct ParticleBehaviorPlugin<R: PlanarStorage> {
+pub struct ParticleBehaviorPlugin<R: PlanarSync> {
     phantom: std::marker::PhantomData<R>,
 }
-impl<R: PlanarStorage> Default for ParticleBehaviorPlugin<R> {
+impl<R: PlanarSync> Default for ParticleBehaviorPlugin<R> {
     fn default() -> Self {
         Self {
             phantom: std::marker::PhantomData,
@@ -108,7 +108,7 @@ impl<R: PlanarStorage> Default for ParticleBehaviorPlugin<R> {
     }
 }
 
-impl<R: PlanarStorage> Plugin for ParticleBehaviorPlugin<R> {
+impl<R: PlanarSync> Plugin for ParticleBehaviorPlugin<R> {
     fn build(&self, app: &mut App) {
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
@@ -203,6 +203,7 @@ impl RenderAsset for GpuParticleBehaviorBuffers {
 
     fn prepare_asset(
         source: Self::SourceAsset,
+        _: AssetId<Self::SourceAsset>,
         render_device: &mut SystemParamItem<Self::Param>,
     ) -> Result<Self, PrepareAssetError<Self::SourceAsset>> {
         let particle_behavior_count = source.0.len() as u32;
@@ -228,13 +229,13 @@ impl RenderAsset for GpuParticleBehaviorBuffers {
 
 
 #[derive(Resource)]
-pub struct ParticleBehaviorPipeline<R: PlanarStorage> {
+pub struct ParticleBehaviorPipeline<R: PlanarSync> {
     pub particle_behavior_layout: BindGroupLayout,
     pub particle_behavior_pipeline: CachedComputePipelineId,
     phantom: std::marker::PhantomData<R>,
 }
 
-impl<R: PlanarStorage> FromWorld for ParticleBehaviorPipeline<R> {
+impl<R: PlanarSync> FromWorld for ParticleBehaviorPipeline<R> {
     fn from_world(render_world: &mut World) -> Self {
         let render_device = render_world.resource::<RenderDevice>();
         let gaussian_cloud_pipeline = render_world.resource::<CloudPipeline<R>>();
@@ -288,7 +289,7 @@ pub struct ParticleBehaviorBindGroup {
     pub particle_behavior_bindgroup: BindGroup,
 }
 
-pub fn queue_particle_behavior_bind_group<R: PlanarStorage>(
+pub fn queue_particle_behavior_bind_group<R: PlanarSync>(
     mut commands: Commands,
     particle_behavior_pipeline: Res<ParticleBehaviorPipeline<R>>,
     render_device: Res<RenderDevice>,
@@ -335,7 +336,7 @@ pub fn queue_particle_behavior_bind_group<R: PlanarStorage>(
 
 
 
-pub struct ParticleBehaviorNode<R: PlanarStorage> {
+pub struct ParticleBehaviorNode<R: PlanarSync> {
     gaussian_clouds: QueryState<(
         &'static PlanarStorageBindGroup<R>,
         &'static ParticleBehaviorsHandle,
@@ -351,7 +352,7 @@ pub struct ParticleBehaviorNode<R: PlanarStorage> {
 }
 
 
-impl<R: PlanarStorage> FromWorld for ParticleBehaviorNode<R> {
+impl<R: PlanarSync> FromWorld for ParticleBehaviorNode<R> {
     fn from_world(world: &mut World) -> Self {
         Self {
             gaussian_clouds: world.query(),
@@ -362,7 +363,7 @@ impl<R: PlanarStorage> FromWorld for ParticleBehaviorNode<R> {
     }
 }
 
-impl<R: PlanarStorage> Node for ParticleBehaviorNode<R> {
+impl<R: PlanarSync> Node for ParticleBehaviorNode<R> {
     fn update(&mut self, world: &mut World) {
         let pipeline = world.resource::<ParticleBehaviorPipeline<R>>();
         let pipeline_cache = world.resource::<PipelineCache>();

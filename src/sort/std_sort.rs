@@ -1,7 +1,7 @@
 use bevy::{
     prelude::*,
     math::Vec3A,
-    utils::Instant,
+    platform::time::Instant,
 };
 use bevy_interleave::prelude::*;
 
@@ -20,11 +20,11 @@ use crate::{
 
 
 #[derive(Default)]
-pub struct StdSortPlugin<R: PlanarStorage> {
+pub struct StdSortPlugin<R: PlanarSync> {
     _phantom: std::marker::PhantomData<R>,
 }
 
-impl<R: PlanarStorage> Plugin for StdSortPlugin<R>
+impl<R: PlanarSync> Plugin for StdSortPlugin<R>
 where
     R::PlanarType: CommonCloud,
 {
@@ -35,7 +35,7 @@ where
 
 // TODO: async CPU sort to prevent frame drops on large clouds
 #[allow(clippy::too_many_arguments)]
-pub fn std_sort<R: PlanarStorage>(
+pub fn std_sort<R: PlanarSync>(
     asset_server: Res<AssetServer>,
     gaussian_clouds_res: Res<Assets<R::PlanarType>>,
     gaussian_clouds: Query<(

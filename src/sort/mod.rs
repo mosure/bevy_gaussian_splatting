@@ -1,3 +1,4 @@
+use core::time::Duration;
 use std::marker::PhantomData;
 
 use bevy::{
@@ -7,6 +8,7 @@ use bevy::{
         SystemParamItem,
     },
     math::Vec3A,
+    platform::time::Instant,
     render::{
         extract_component::{
             ExtractComponent,
@@ -20,10 +22,6 @@ use bevy::{
             PrepareAssetError,
         },
         renderer::RenderDevice,
-    },
-    utils::{
-        Duration,
-        Instant,
     },
 };
 use bevy_interleave::prelude::*;
@@ -136,13 +134,14 @@ impl Plugin for SortPluginFlag {
 
 // TODO: make this generic /w shared components
 #[derive(Default)]
-pub struct SortPlugin<R: PlanarStorage> {
+pub struct SortPlugin<R: PlanarSync> {
     phantom: PhantomData<R>,
 }
 
-impl<R: PlanarStorage> Plugin for SortPlugin<R>
+impl<R: PlanarSync> Plugin for SortPlugin<R>
 where
     R::PlanarType: CommonCloud,
+    R::GpuPlanarType: GpuPlanarStorage,
 {
     fn build(&self, app: &mut App) {
         #[cfg(feature = "sort_radix")]
@@ -281,7 +280,7 @@ fn update_textures_on_change(
 
 
 #[allow(clippy::type_complexity)]
-fn auto_insert_sorted_entries<R: PlanarStorage>(
+fn auto_insert_sorted_entries<R: PlanarSync>(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     gaussian_clouds_res: Res<Assets<R::PlanarType>>,
@@ -507,6 +506,7 @@ impl RenderAsset for GpuSortedEntry {
 
     fn prepare_asset(
         source: Self::SourceAsset,
+        _: AssetId<Self::SourceAsset>,
         render_device: &mut SystemParamItem<Self::Param>,
     ) -> Result<Self, PrepareAssetError<Self::SourceAsset>> {
         let sorted_entry_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {

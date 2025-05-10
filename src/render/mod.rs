@@ -1,8 +1,11 @@
-use std::hash::Hash;
+use std::{
+    hash::Hash,
+    num::NonZero,
+};
 
 use bevy::{
     prelude::*,
-    asset::load_internal_asset,
+    asset::{load_internal_asset, weak_handle},
     core_pipeline::{
         core_3d::Transparent3d,
         prepass::{
@@ -47,8 +50,10 @@ use bevy::{
         render_resource::*,
         renderer::RenderDevice,
         view::{
+            VISIBILITY_RANGES_STORAGE_BUFFER_COUNT,
             ExtractedView,
             RenderVisibleEntities,
+            RenderVisibilityRanges,
             ViewUniform,
             ViewUniformOffset,
             ViewUniforms,
@@ -64,6 +69,7 @@ use bevy_interleave::prelude::*;
 use crate::{
     camera::GaussianCamera,
     gaussian::{
+        cloud::CloudVisibilityClass,
         interface::CommonCloud,
         settings::{
             CloudSettings, DrawMode, GaussianMode, RasterizeMode
@@ -94,25 +100,25 @@ mod planar;
 mod texture;
 
 
-const BINDINGS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(675257236);
-const GAUSSIAN_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(68294581);
-const GAUSSIAN_2D_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(123166726);
-const GAUSSIAN_3D_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(1236134564);
-const GAUSSIAN_4D_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(513623421);
-const HELPERS_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(134646367);
-const PACKED_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(123623514);
-const PLANAR_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(72345231);
-const TEXTURE_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(26345735);
-const TRANSFORM_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(734523534);
+const BINDINGS_SHADER_HANDLE: Handle<Shader> = weak_handle!("cfd9a3d9-a0cb-40c8-ab0b-073110a02474");
+const GAUSSIAN_SHADER_HANDLE: Handle<Shader> = weak_handle!("9a18d83b-137d-4f44-9628-e2defc4b62b0");
+const GAUSSIAN_2D_SHADER_HANDLE: Handle<Shader> = weak_handle!("713fb941-b4f5-408e-bbde-32fb7dc447ce");
+const GAUSSIAN_3D_SHADER_HANDLE: Handle<Shader> = weak_handle!("b7eb322b-983b-4ce0-a5a2-3c0d6cb06d65");
+const GAUSSIAN_4D_SHADER_HANDLE: Handle<Shader> = weak_handle!("26234995-0932-4dfa-ab8d-53df1e779dd4");
+const HELPERS_SHADER_HANDLE: Handle<Shader> = weak_handle!("9ca57ab0-07de-4a43-94f8-547c38e292cb");
+const PACKED_SHADER_HANDLE: Handle<Shader> = weak_handle!("5bb62086-7004-4575-9972-274dc8acccf1");
+const PLANAR_SHADER_HANDLE: Handle<Shader> = weak_handle!("d6a3f978-f795-4786-8475-26366f28d852");
+const TEXTURE_SHADER_HANDLE: Handle<Shader> = weak_handle!("500e2ebf-51a8-402e-9c88-e0d5152c3486");
+const TRANSFORM_SHADER_HANDLE: Handle<Shader> = weak_handle!("648516b2-87cc-4937-ae1c-d986952e9fa7");
 
 
 // TODO: consider refactor to bind via bevy's mesh (dynamic vertex planes) + shared batching/instancing/preprocessing
 //       utilize RawBufferVec<T> for gaussian data?
-pub struct RenderPipelinePlugin<R: PlanarStorage> {
+pub struct RenderPipelinePlugin<R: PlanarSync> {
     _phantom: std::marker::PhantomData<R>,
 }
 
-impl<R: PlanarStorage> Default for RenderPipelinePlugin<R> {
+impl<R: PlanarSync> Default for RenderPipelinePlugin<R> {
     fn default() -> Self {
         Self {
             _phantom: std::marker::PhantomData,
@@ -120,9 +126,10 @@ impl<R: PlanarStorage> Default for RenderPipelinePlugin<R> {
     }
 }
 
-impl<R: PlanarStorage> Plugin for RenderPipelinePlugin<R>
+impl<R: PlanarSync> Plugin for RenderPipelinePlugin<R>
 where
     R::PlanarType: CommonCloud,
+    R::GpuPlanarType: GpuPlanarStorage,
 {
     fn build(&self, app: &mut App) {
         debug!("building render pipeline plugin");
@@ -238,7 +245,7 @@ where
 
 
 #[derive(Bundle)]
-pub struct GpuCloudBundle<R: PlanarStorage> {
+pub struct GpuCloudBundle<R: PlanarSync> {
     pub aabb: Aabb,
     pub settings: CloudSettings,
     pub settings_uniform: CloudUniform,
@@ -248,7 +255,7 @@ pub struct GpuCloudBundle<R: PlanarStorage> {
 }
 
 #[cfg(feature = "buffer_storage")]
-type GpuCloudBundleQuery<R: PlanarStorage> = (
+type GpuCloudBundleQuery<R: PlanarSync> = (
     Entity,
     &'static R::PlanarTypeHandle,
     &'static Aabb,
@@ -270,7 +277,7 @@ type GpuCloudBundleQuery<R: PlanarTexture> = (
 );
 
 #[allow(clippy::too_many_arguments)]
-fn queue_gaussians<R: PlanarStorage>(
+fn queue_gaussians<R: PlanarSync>(
     gaussian_cloud_uniform: Res<ComponentUniforms<CloudUniform>>,
     transparent_3d_draw_functions: Res<DrawFunctions<Transparent3d>>,
     custom_pipeline: Res<CloudPipeline<R>>,
@@ -281,7 +288,6 @@ fn queue_gaussians<R: PlanarStorage>(
     mut transparent_render_phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
     mut views: Query<
         (
-            Entity,
             &ExtractedView,
             &GaussianCamera,
             &RenderVisibleEntities,
@@ -292,7 +298,7 @@ fn queue_gaussians<R: PlanarStorage>(
 ) {
     debug!("queue_gaussians");
 
-    let warmup = views.iter().any(|(_, _, camera, _, _)| camera.warmup);
+    let warmup = views.iter().any(|(_, camera, _, _)| camera.warmup);
     if warmup {
         debug!("skipping gaussian cloud render during warmup");
         return;
@@ -307,14 +313,13 @@ fn queue_gaussians<R: PlanarStorage>(
     let draw_custom = transparent_3d_draw_functions.read().id::<DrawGaussians<R>>();
 
     for (
-        view_entity,
         view,
         _,
         visible_entities,
         msaa,
     ) in &mut views {
         debug!("queue gaussians view");
-        let Some(transparent_phase) = transparent_render_phases.get_mut(&view_entity) else {
+        let Some(transparent_phase) = transparent_render_phases.get_mut(&view.retained_view_entity) else {
             debug!("transparent phase not found");
             continue;
         };
@@ -323,8 +328,9 @@ fn queue_gaussians<R: PlanarStorage>(
         for (
             render_entity,
             visible_entity,
-        ) in visible_entities.iter::<With<R::PlanarTypeHandle>>() {
+        ) in visible_entities.iter::<CloudVisibilityClass>() {
             if gaussian_splatting_bundles.get(*render_entity).is_err() {
+                debug!("gaussian splatting bundle not found");
                 continue;
             }
 
@@ -379,7 +385,8 @@ fn queue_gaussians<R: PlanarStorage>(
                 distance,
                 pipeline,
                 batch_range: 0..1,
-                extra_index: PhaseItemExtraIndex::NONE,
+                extra_index: PhaseItemExtraIndex::None,
+                indexed: false,
             });
         }
     }
@@ -387,9 +394,9 @@ fn queue_gaussians<R: PlanarStorage>(
 
 
 // TODO: pipeline trait
-// TODO: support extendions /w ComputePipelineDescriptor builder
+// TODO: support extentions /w ComputePipelineDescriptor builder
 #[derive(Resource)]
-pub struct CloudPipeline<R: PlanarStorage> {
+pub struct CloudPipeline<R: PlanarSync> {
     shader: Handle<Shader>,
     pub gaussian_cloud_layout: BindGroupLayout,
     pub gaussian_uniform_layout: BindGroupLayout,
@@ -399,9 +406,39 @@ pub struct CloudPipeline<R: PlanarStorage> {
     phantom: std::marker::PhantomData<R>,
 }
 
-impl<R: PlanarStorage> FromWorld for CloudPipeline<R> {
+fn buffer_layout(
+    buffer_binding_type: BufferBindingType,
+    has_dynamic_offset: bool,
+    min_binding_size: Option<NonZero<u64>>,
+) -> BindGroupLayoutEntryBuilder {
+    match buffer_binding_type {
+        BufferBindingType::Uniform => binding_types::uniform_buffer_sized(has_dynamic_offset, min_binding_size),
+        BufferBindingType::Storage { read_only } => {
+            if read_only {
+                binding_types::storage_buffer_read_only_sized(has_dynamic_offset, min_binding_size)
+            } else {
+                binding_types::storage_buffer_sized(has_dynamic_offset, min_binding_size)
+            }
+        }
+    }
+}
+
+impl<R: PlanarSync> FromWorld for CloudPipeline<R>
+where
+    R::GpuPlanarType: GpuPlanarStorage,
+{
     fn from_world(render_world: &mut World) -> Self {
         let render_device = render_world.resource::<RenderDevice>();
+
+        let visibility_ranges_buffer_binding_type = render_device
+            .get_supported_read_only_binding_type(VISIBILITY_RANGES_STORAGE_BUFFER_COUNT);
+
+        let visibility_ranges_entry = buffer_layout(
+                visibility_ranges_buffer_binding_type,
+                false,
+                Some(Vec4::min_size()),
+            )
+            .build(14, ShaderStages::VERTEX);
 
         let view_layout_entries = vec![
             BindGroupLayoutEntry {
@@ -434,6 +471,7 @@ impl<R: PlanarStorage> FromWorld for CloudPipeline<R> {
                 },
                 count: None,
             },
+            visibility_ranges_entry,
         ];
 
         let compute_view_layout_entries = vec![
@@ -467,6 +505,7 @@ impl<R: PlanarStorage> FromWorld for CloudPipeline<R> {
             //     },
             //     count: None,
             // },
+            visibility_ranges_entry,
         ];
 
         let view_layout = render_device.create_bind_group_layout(
@@ -714,7 +753,7 @@ pub struct CloudPipelineKey {
     pub hdr: bool,
 }
 
-impl<R: PlanarStorage> SpecializedRenderPipeline for CloudPipeline<R> {
+impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
     type Key = CloudPipelineKey;
 
     fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
@@ -788,7 +827,7 @@ impl<R: PlanarStorage> SpecializedRenderPipeline for CloudPipeline<R> {
     }
 }
 
-type DrawGaussians<R: PlanarStorage> = (
+type DrawGaussians<R: PlanarSync> = (
     SetItemPipeline,
     // SetViewBindGroup<0>,
     SetPreviousViewBindGroup<0>,
@@ -813,7 +852,7 @@ pub struct CloudUniform {
 }
 
 #[allow(clippy::type_complexity)]
-pub fn extract_gaussians<R: PlanarStorage>(
+pub fn extract_gaussians<R: PlanarSync>(
     mut commands: Commands,
     mut prev_commands_len: Local<usize>,
     asset_server: Res<AssetServer>,
@@ -890,7 +929,7 @@ pub fn extract_gaussians<R: PlanarStorage>(
         ));
     }
     *prev_commands_len = commands_list.len();
-    commands.insert_or_spawn_batch(commands_list);
+    commands.insert_batch(commands_list);
 }
 
 
@@ -905,7 +944,7 @@ pub struct SortBindGroup {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn queue_gaussian_bind_group<R: PlanarStorage>(
+fn queue_gaussian_bind_group<R: PlanarSync>(
     mut commands: Commands,
     mut groups: ResMut<GaussianUniformBindGroups>,
     gaussian_cloud_pipeline: Res<CloudPipeline<R>>,
@@ -1013,7 +1052,8 @@ pub struct GaussianViewBindGroup {
 
 // TODO: move to gaussian camera module
 // TODO: remove cloud pipeline dependency by separating view layout
-pub fn queue_gaussian_view_bind_groups<R: PlanarStorage>(
+#[allow(clippy::too_many_arguments)]
+pub fn queue_gaussian_view_bind_groups<R: PlanarSync>(
     mut commands: Commands,
     render_device: Res<RenderDevice>,
     gaussian_cloud_pipeline: Res<CloudPipeline<R>>,
@@ -1027,16 +1067,19 @@ pub fn queue_gaussian_view_bind_groups<R: PlanarStorage>(
         ),
         With<GaussianCamera>,
     >,
+    visibility_ranges: Res<RenderVisibilityRanges>,
     globals_buffer: Res<GlobalsBuffer>,
 ) {
     if let (
         Some(view_binding),
         Some(previous_view_binding),
         Some(globals),
+        Some(visibility_ranges_buffer)
     ) = (
         view_uniforms.uniforms.binding(),
         previous_view_uniforms.uniforms.binding(),
         globals_buffer.buffer.binding(),
+        visibility_ranges.buffer().buffer()
     ) {
         for (
             entity,
@@ -1057,6 +1100,10 @@ pub fn queue_gaussian_view_bind_groups<R: PlanarStorage>(
                 BindGroupEntry {
                     binding: 2,
                     resource: previous_view_binding.clone(),
+                },
+                BindGroupEntry {
+                    binding: 14,
+                    resource: visibility_ranges_buffer.as_entire_binding(),
                 },
             ];
 
@@ -1193,11 +1240,11 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianUniformBindGr
     }
 }
 
-pub struct DrawGaussianInstanced<R: PlanarStorage> {
+pub struct DrawGaussianInstanced<R: PlanarSync> {
     phantom: std::marker::PhantomData<R>,
 }
 
-impl<R: PlanarStorage> Default for DrawGaussianInstanced<R> {
+impl<R: PlanarSync> Default for DrawGaussianInstanced<R> {
     fn default() -> Self {
         Self {
             phantom: std::marker::PhantomData,
@@ -1205,7 +1252,10 @@ impl<R: PlanarStorage> Default for DrawGaussianInstanced<R> {
     }
 }
 
-impl<P: PhaseItem, R: PlanarStorage> RenderCommand<P> for DrawGaussianInstanced<R> {
+impl<P: PhaseItem, R: PlanarSync> RenderCommand<P> for DrawGaussianInstanced<R>
+where
+    R::GpuPlanarType: GpuPlanarStorage,
+{
     type Param = SRes<RenderAssets<R::GpuPlanarType>>;
     type ViewQuery = Read<SortTrigger>;
     type ItemQuery = (

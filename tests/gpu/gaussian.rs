@@ -145,7 +145,7 @@ fn capture_ready(
         test_stability(buffer);
         // TODO: add correctness test (use CPU gaussian pipeline to compare results)
 
-        exit.send(AppExit);
+        exit.write(AppExit);
         return;
     }
 

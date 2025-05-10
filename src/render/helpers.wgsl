@@ -19,8 +19,8 @@ fn cov2d(
     var t = view.view_from_world * vec4<f32>(position, 1.0);
 
     let focal = vec2<f32>(
-        view.clip_from_view.x.x * view.viewport.z,
-        view.clip_from_view.y.y * view.viewport.w,
+        view.clip_from_view[0].x * view.viewport.z,
+        view.clip_from_view[1].y * view.viewport.w,
     );
 
     let s = 1.0 / (t.z * t.z);
@@ -32,9 +32,9 @@ fn cov2d(
 
     let W = transpose(
         mat3x3<f32>(
-            view.view_from_world.x.xyz,
-            view.view_from_world.y.xyz,
-            view.view_from_world.z.xyz,
+            view.view_from_world[0].xyz,
+            view.view_from_world[1].xyz,
+            view.view_from_world[2].xyz,
         )
     );
 
@@ -125,8 +125,8 @@ fn get_bounding_box_clip(
 
 fn intrinsic_matrix() -> mat3x4<f32> {
     let focal = vec2<f32>(
-        view.clip_from_view.x.x * view.viewport.z / 2.0,
-        view.clip_from_view.y.y * view.viewport.w / 2.0,
+        view.clip_from_view[0].x * view.viewport.z / 2.0,
+        view.clip_from_view[1].y * view.viewport.w / 2.0,
     );
 
     let Ks = mat3x4<f32>(
