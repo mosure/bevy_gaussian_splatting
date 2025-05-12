@@ -1165,7 +1165,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetPreviousViewBindGroup
     type Param = SRes<PrepassViewBindGroup>;
     type ViewQuery = (
         Read<ViewUniformOffset>,
-        Has<MotionVectorPrepass>,
+        Option<Has<MotionVectorPrepass>>,
         Option<Read<PreviousViewUniformOffset>>,
     );
     type ItemQuery = ();
@@ -1187,7 +1187,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetPreviousViewBindGroup
     ) -> RenderCommandResult {
         let prepass_view_bind_group = prepass_view_bind_group.into_inner();
         match previous_view_uniform_offset {
-            Some(previous_view_uniform_offset) if has_motion_vector_prepass => {
+            Some(previous_view_uniform_offset) if has_motion_vector_prepass.unwrap_or_default() => {
                 pass.set_bind_group(
                     I,
                     prepass_view_bind_group.motion_vectors.as_ref().unwrap(),
@@ -1197,7 +1197,14 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetPreviousViewBindGroup
                     ],
                 );
             }
-            _ => {}
+            _ => pass.set_bind_group(
+                I,
+                prepass_view_bind_group.motion_vectors.as_ref().unwrap(),
+                &[
+                    view_uniform_offset.offset,
+                    0,
+                ],
+            )
         }
 
         debug!("set previous view bind group");
