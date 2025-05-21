@@ -317,6 +317,7 @@ fn viewer_app() {
         DefaultPlugins
         .set(AssetPlugin {
             meta_check: bevy::asset::AssetMetaCheck::Never,
+            unapproved_path_mode: bevy::asset::UnapprovedPathMode::Allow,
             ..default()
         })
         .set(ImagePlugin::default_nearest())
