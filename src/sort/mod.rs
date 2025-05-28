@@ -217,7 +217,7 @@ fn update_sort_trigger(
         ),
     >,
     mut existing_sort_triggers: Query<(
-        &Transform,
+        &GlobalTransform,
         &Camera,
         &mut SortTrigger,
     )>,
