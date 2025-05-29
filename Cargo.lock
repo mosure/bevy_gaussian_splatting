@@ -1332,7 +1332,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_gaussian_splatting"
-version = "5.0.3"
+version = "5.0.4"
 dependencies = [
  "base64 0.22.1",
  "bevy 0.16.0",
