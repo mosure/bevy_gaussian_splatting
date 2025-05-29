@@ -217,7 +217,7 @@ fn update_sort_trigger(
         ),
     >,
     mut existing_sort_triggers: Query<(
-        &Transform,
+        &GlobalTransform,
         &Camera,
         &mut SortTrigger,
     )>,
@@ -244,7 +244,7 @@ fn update_sort_trigger(
             continue;
         }
 
-        let camera_position = camera_transform.compute_affine().translation;
+        let camera_position = camera_transform.affine().translation;
         let camera_movement = sort_trigger.last_camera_position != camera_position;
 
         if camera_movement {
