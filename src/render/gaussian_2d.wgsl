@@ -100,8 +100,8 @@ fn compute_cov2d_surfel(
     let L = T_r * transpose(R) * S;
 
     let world_from_local = mat3x4<f32>(
-        vec4<f32>(L.x, 0.0),
-        vec4<f32>(L.y, 0.0),
+        vec4<f32>(L[0], 0.0),
+        vec4<f32>(L[1], 0.0),
         vec4<f32>(gaussian_position, 1.0),
     );
 
@@ -142,8 +142,8 @@ fn surfel_fragment_power(
 ) -> f32 {
     let deltas = mean_2d - pixel_coord;
 
-    let hu = pixel_coord.x * local_to_pixel.z - local_to_pixel.x;
-    let hv = pixel_coord.y * local_to_pixel.z - local_to_pixel.y;
+    let hu = pixel_coord.x * local_to_pixel[2] - local_to_pixel[0];
+    let hv = pixel_coord.y * local_to_pixel[2] - local_to_pixel[1];
 
     let p = cross(hu, hv);
 

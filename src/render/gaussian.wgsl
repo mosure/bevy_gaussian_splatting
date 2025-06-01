@@ -227,9 +227,9 @@ fn vs_points(
         cutoff,
     );
 
-    output.local_to_pixel_u = surfel.local_to_pixel.x;
-    output.local_to_pixel_v = surfel.local_to_pixel.y;
-    output.local_to_pixel_w = surfel.local_to_pixel.z;
+    output.local_to_pixel_u = surfel.local_to_pixel[0];
+    output.local_to_pixel_v = surfel.local_to_pixel[1];
+    output.local_to_pixel_w = surfel.local_to_pixel[2];
     output.mean_2d = surfel.mean_2d;
 
     let bb = get_bounding_box_cov2d(
@@ -342,7 +342,7 @@ fn vs_points(
     );
     let L = T * S * R;
 
-    let local_normal = vec4<f32>(L.z, 0.0);
+    let local_normal = vec4<f32>(L[2], 0.0);
     let world_normal = view.view_from_world * local_normal;
 
     let t = normalize(world_normal);

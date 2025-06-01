@@ -107,9 +107,9 @@ fn conditional_cov3d(
     let cov12 = vec3<f32>(Sigma[0][3], Sigma[1][3], Sigma[2][3]);
     let cov_op = outer_product(cov12, cov12);
     let cov_op_t = mat3x3<f32>(
-        cov_op.x.x / cov_t, cov_op.x.y / cov_t, cov_op.x.z / cov_t,
-        cov_op.y.x / cov_t, cov_op.y.y / cov_t, cov_op.y.z / cov_t,
-        cov_op.z.x / cov_t, cov_op.z.y / cov_t, cov_op.z.z / cov_t,
+        cov_op[0].x / cov_t, cov_op[0].y / cov_t, cov_op[0].z / cov_t,
+        cov_op[1].x / cov_t, cov_op[1].y / cov_t, cov_op[1].z / cov_t,
+        cov_op[2].x / cov_t, cov_op[2].y / cov_t, cov_op[2].z / cov_t,
     );
     let cov3d_condition = cov11 - cov_op_t;
 
