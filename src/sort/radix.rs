@@ -3,9 +3,12 @@ use std::collections::HashMap;
 use bevy::{
     prelude::*,
     asset::{load_internal_asset, weak_handle},
-    core_pipeline::core_3d::graph::{
-        Core3d,
-        Node3d,
+    core_pipeline::{
+        core_3d::graph::{
+            Core3d,
+            Node3d,
+        },
+        prepass::PreviousViewUniformOffset,
     },
     render::{
         render_asset::RenderAssets,
@@ -540,6 +543,7 @@ pub struct RadixSortNode<R: PlanarSync> {
         &'static GaussianCamera,
         &'static GaussianViewBindGroup,
         &'static ViewUniformOffset,
+        &'static PreviousViewUniformOffset,
     )>,
 }
 
@@ -603,6 +607,7 @@ where
             _camera,
             view_bind_group,
             view_uniform_offset,
+            previous_view_uniform_offset,
         ) in self.view_bind_group.iter_manual(world) {
             for (
                 cloud_handle,
@@ -648,7 +653,10 @@ where
                         pass.set_bind_group(
                             0,
                             &view_bind_group.value,
-                            &[view_uniform_offset.offset],
+                            &[
+                                view_uniform_offset.offset,
+                                previous_view_uniform_offset.offset,
+                            ],
                         );
                         pass.set_bind_group(
                             1,
@@ -662,7 +670,7 @@ where
                         );
                         pass.set_bind_group(
                             3,
-                            &radix_bind_group.radix_sort_bind_groups[1],
+                            &radix_bind_group.radix_sort_bind_groups[0],
                             &[],
                         );
 

@@ -40,6 +40,7 @@ bevy_gaussian_splatting --input-cloud [file://gaussian.ply | https://mitchell.mo
 - [x] multi-cloud scene format
 - [ ] gltf gaussian extensions
 - [ ] 4dgs motion blur
+- [ ] [deformable radial kernel](https://github.com/VAST-AI-Research/Deformable-Radial-Kernel-Splatting)
 - [ ] implicit mlp node (isotropic rotation, color)
 - [ ] temporal gaussian hierarchy
 - [ ] gcloud, spherical harmonic coefficients Huffman encoding

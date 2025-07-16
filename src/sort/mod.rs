@@ -373,15 +373,16 @@ fn update_sorted_entries_sizes(
             continue;
         }
 
-        let sorted_entries = sorted_entries_res.get(handle).unwrap();
-        if sorted_entries.camera_count != camera_count {
-            let new_entry = SortedEntries::new(
-                camera_count,
-                sorted_entries.entry_count,
-                #[cfg(feature = "buffer_texture")]
-                images,
-            );
-            sorted_entries_res.insert(handle, new_entry);
+        if let Some(sorted_entries) = sorted_entries_res.get(handle) {
+            if sorted_entries.camera_count != camera_count {
+                let new_entry = SortedEntries::new(
+                    camera_count,
+                    sorted_entries.entry_count,
+                    #[cfg(feature = "buffer_texture")]
+                    images,
+                );
+                sorted_entries_res.insert(handle, new_entry);
+            }
         }
     }
 }

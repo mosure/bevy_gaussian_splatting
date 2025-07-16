@@ -2,7 +2,7 @@
 #![feature(lazy_type_alias)]
 
 use bevy::prelude::*;
-use bevy_interleave::prelude::*;
+pub use bevy_interleave::prelude::*;
 
 pub use camera::GaussianCamera;
 
