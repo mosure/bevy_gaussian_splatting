@@ -20,6 +20,7 @@ use bevy_gaussian_splatting::{
     PlanarGaussian3d,
     PlanarGaussian3dHandle,
 };
+use bevy::ui::Val::*;
 
 const GLB_PATH: &str = "scenes/monkey.glb";
 
@@ -27,19 +28,24 @@ const GLB_PATH: &str = "scenes/monkey.glb";
 const DEFAULT_OPACITY: f32 = 0.8;
 const DEFAULT_SCALE: f32 = 0.01; // Small vertices
 const EDGE_SCALE: f32 = 0.005;   // Thin edges
-const FACE_SCALE: f32 = 0.002;   // Very flat faces
+const FACE_SCALE: f32 = 0.02;   // Very flat faces
 
 // Entry
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(GaussianSplattingPlugin)
-        .add_systems(Startup, (spawn_camera_and_light, load_monkey))
-        .add_systems(Update, (try_convert_loaded_mesh, camera_controls))
+        .init_resource::<CloudVisibility>()
+        .add_systems(Startup, (spawn_camera_and_light, setup_ui, load_monkey))
+        .add_systems(Update, (try_convert_loaded_mesh, camera_controls, visibility_controls, update_info_text))
         .run();
 }
 
 fn spawn_camera_and_light(mut commands: Commands) {
+    // UI camera for the overlay text
+    commands.spawn(Camera2d);
+    
+    // 3D camera for Gaussian rendering
     commands.spawn((
         GaussianCamera {
             warmup: true,
@@ -53,8 +59,59 @@ fn spawn_camera_and_light(mut commands: Commands) {
     ));
 }
 
+fn setup_ui(mut commands: Commands) {
+    // Simple text without background
+    commands.spawn((
+        Text::new("Loading..."),
+        TextFont {
+            font_size: 24.0,
+            ..default()
+        },
+        TextColor(Color::srgb(1.0, 1.0, 1.0)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Px(10.0),
+            left: Px(10.0),
+            ..default()
+        },
+        InfoText,
+    ));
+}
+
 #[derive(Resource, Default)]
 struct PendingScene(Handle<Scene>);
+
+#[derive(Resource)]
+struct CloudVisibility {
+    vertices: bool,
+    edges: bool, 
+    faces: bool,
+}
+
+impl Default for CloudVisibility {
+    fn default() -> Self {
+        Self {
+            vertices: true,
+            edges: false,
+            faces: false,
+        }
+    }
+}
+
+#[derive(Component)]
+struct VerticesCloud;
+
+#[derive(Component)]
+struct EdgesCloud;
+
+#[derive(Component)]
+struct FacesCloud;
+
+#[derive(Component)]
+struct OriginalMesh;
+
+#[derive(Component)]
+struct InfoText;
 
 fn load_monkey(mut commands: Commands, assets: Res<AssetServer>) {
     let scene: Handle<Scene> = assets.load(GLB_PATH.to_string() + "#Scene0");
@@ -94,9 +151,9 @@ fn try_convert_loaded_mesh(
 
     commands.remove_resource::<PendingScene>();
 
-    // Hide original mesh entities now that we know the Gaussians work
+    // Hide original mesh entities initially
     for entity in mesh_entities {
-        commands.entity(entity).insert(Visibility::Hidden);
+        commands.entity(entity).insert((Visibility::Hidden, OriginalMesh));
     }
 
     let mut all_vertices: Vec<Gaussian3d> = Vec::new();
@@ -124,10 +181,9 @@ fn try_convert_loaded_mesh(
 
     info!("Total gaussians: {} vertices, {} edges, {} faces", all_vertices.len(), all_edges.len(), all_faces.len());
 
-    // Spawn three separate clouds positioned side by side
-    let spacing = 3.0;
+    // Spawn three clouds stacked at the same position
     
-    // Vertices cloud (left)
+    // Vertices cloud
     if !all_vertices.is_empty() {
         let vertices_cloud = PlanarGaussian3d::from(all_vertices);
         let vertices_handle = planar_gaussians.add(vertices_cloud);
@@ -137,12 +193,14 @@ fn try_convert_loaded_mesh(
                 aabb: true,
                 ..default()
             },
-            Transform::from_xyz(-spacing, 0.0, 0.0),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+            VerticesCloud,
+            Visibility::Visible,
         )).id();
         info!("Spawned vertices cloud entity {:?}", vertices_entity);
     }
 
-    // Edges cloud (center)
+    // Edges cloud
     if !all_edges.is_empty() {
         let edges_cloud = PlanarGaussian3d::from(all_edges);
         let edges_handle = planar_gaussians.add(edges_cloud);
@@ -153,11 +211,13 @@ fn try_convert_loaded_mesh(
                 ..default()
             },
             Transform::from_xyz(0.0, 0.0, 0.0),
+            EdgesCloud,
+            Visibility::Hidden,
         )).id();
         info!("Spawned edges cloud entity {:?}", edges_entity);
     }
 
-    // Faces cloud (right)
+    // Faces cloud
     if !all_faces.is_empty() {
         let faces_cloud = PlanarGaussian3d::from(all_faces);
         let faces_handle = planar_gaussians.add(faces_cloud);
@@ -167,7 +227,9 @@ fn try_convert_loaded_mesh(
                 aabb: true,
                 ..default()
             },
-            Transform::from_xyz(spacing, 0.0, 0.0),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+            FacesCloud,
+            Visibility::Hidden,
         )).id();
         info!("Spawned faces cloud entity {:?}", faces_entity);
     }
@@ -231,23 +293,28 @@ fn convert_mesh_to_gaussians_separated(mesh: &Mesh, transform: Transform) -> (Ve
             let edge2 = p2 - p0;
             let face_normal = edge1.cross(edge2).normalize_or_zero();
 
-            // Create a rotation that aligns the Z-axis with the face normal
-            // This makes the XY plane of the splat lie in the triangle plane
-            let rot = Quat::from_rotation_arc(Vec3::Z, face_normal);
+            // Create rotation to align the splat with the triangle plane
+            // For Gaussian splats, the default orientation is flat in XY plane (thin in Z)
+            // We want to rotate so the splat lies in the triangle plane
+            let rot = if face_normal.length() > 0.001 {
+                // We want to rotate from the default orientation (normal = +Z) to face_normal
+                Quat::from_rotation_arc(Vec3::Z, face_normal)
+            } else {
+                Quat::IDENTITY
+            };
 
-            // Scale: make it flat in Z direction, and sized to cover the triangle area
-            // Shrink by 25% total (15% + 10% additional) for better visual separation
+            // Scale: moderate size to cover triangle area, thin in normal direction
             let edge1_len = edge1.length();
             let edge2_len = edge2.length();
-            let scale_factor = 0.55; // 25% smaller total
-            let scale = Vec3::new(edge1_len * 0.5 * scale_factor, edge2_len * 0.5 * scale_factor, FACE_SCALE);
+            let avg_edge_len = (edge1_len + edge2_len) * 0.5;
+            let scale = Vec3::new(avg_edge_len * 0.4, avg_edge_len * 0.4, FACE_SCALE);
 
             faces.push(gaussian_from_transform(
                 transform.transform_point(centroid),
                 rot,
                 scale,
                 face_normal,
-                DEFAULT_OPACITY,
+                0.95, // Increased opacity for better visibility
             ));
         }
 
@@ -440,9 +507,10 @@ fn camera_controls(
     input: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
 ) {
-    if let Ok(mut camera_transform) = camera_query.get_single_mut() {
+    if let Ok(mut camera_transform) = camera_query.single_mut() {
         let rotation_speed = 1.5; // radians per second
-        let distance = camera_transform.translation.length();
+        let zoom_speed = 5.0; // units per second
+        let mut distance = camera_transform.translation.length();
         
         // Current spherical coordinates (relative to origin)
         let current_pos = camera_transform.translation;
@@ -450,21 +518,30 @@ fn camera_controls(
         let mut elevation = (current_pos.y / distance).asin(); // angle up from XZ plane
         
         // Adjust angles based on input
-        if input.pressed(KeyCode::ArrowLeft) {
+        if input.pressed(KeyCode::KeyD) {
             azimuth += rotation_speed * time.delta_secs();
         }
-        if input.pressed(KeyCode::ArrowRight) {
+        if input.pressed(KeyCode::KeyA) {
             azimuth -= rotation_speed * time.delta_secs();
         }
-        if input.pressed(KeyCode::ArrowUp) {
+        if input.pressed(KeyCode::KeyW) {
             elevation += rotation_speed * time.delta_secs();
         }
-        if input.pressed(KeyCode::ArrowDown) {
+        if input.pressed(KeyCode::KeyS) {
             elevation -= rotation_speed * time.delta_secs();
         }
         
-        // Clamp elevation to avoid flipping
+        // Zoom controls
+        if input.pressed(KeyCode::KeyE) || input.pressed(KeyCode::NumpadAdd) {
+            distance -= zoom_speed * time.delta_secs();
+        }
+        if input.pressed(KeyCode::KeyQ) || input.pressed(KeyCode::NumpadSubtract) {
+            distance += zoom_speed * time.delta_secs();
+        }
+        
+        // Clamp elevation to avoid flipping and distance to reasonable bounds
         elevation = elevation.clamp(-std::f32::consts::FRAC_PI_2 + 0.1, std::f32::consts::FRAC_PI_2 - 0.1);
+        distance = distance.clamp(1.0, 50.0);
         
         // Convert back to cartesian coordinates
         let new_pos = Vec3::new(
@@ -476,5 +553,75 @@ fn camera_controls(
         // Update camera position and make it look at origin
         camera_transform.translation = new_pos;
         camera_transform.look_at(Vec3::ZERO, Vec3::Y);
+    }
+}
+
+// Visibility controls: toggle cloud types with keys 1, 2, 3
+fn visibility_controls(
+    mut cloud_visibility: ResMut<CloudVisibility>,
+    mut vertices_query: Query<&mut Visibility, (With<VerticesCloud>, Without<EdgesCloud>, Without<FacesCloud>, Without<OriginalMesh>)>,
+    mut edges_query: Query<&mut Visibility, (With<EdgesCloud>, Without<VerticesCloud>, Without<FacesCloud>, Without<OriginalMesh>)>,
+    mut faces_query: Query<&mut Visibility, (With<FacesCloud>, Without<VerticesCloud>, Without<EdgesCloud>, Without<OriginalMesh>)>,
+    mut original_query: Query<&mut Visibility, (With<OriginalMesh>, Without<VerticesCloud>, Without<EdgesCloud>, Without<FacesCloud>)>,
+    input: Res<ButtonInput<KeyCode>>,
+) {
+    let mut changed = false;
+    
+    if input.just_pressed(KeyCode::Digit1) {
+        cloud_visibility.vertices = !cloud_visibility.vertices;
+        changed = true;
+    }
+    if input.just_pressed(KeyCode::Digit2) {
+        cloud_visibility.edges = !cloud_visibility.edges;
+        changed = true;
+    }
+    if input.just_pressed(KeyCode::Digit3) {
+        cloud_visibility.faces = !cloud_visibility.faces;
+        changed = true;
+    }
+    
+    if changed {
+        // Update cloud visibilities
+        if let Ok(mut vis) = vertices_query.single_mut() {
+            *vis = if cloud_visibility.vertices { Visibility::Visible } else { Visibility::Hidden };
+        }
+        if let Ok(mut vis) = edges_query.single_mut() {
+            *vis = if cloud_visibility.edges { Visibility::Visible } else { Visibility::Hidden };
+        }
+        if let Ok(mut vis) = faces_query.single_mut() {
+            *vis = if cloud_visibility.faces { Visibility::Visible } else { Visibility::Hidden };
+        }
+        
+        // Show original mesh if no clouds are visible
+        let show_original = !cloud_visibility.vertices && !cloud_visibility.edges && !cloud_visibility.faces;
+        for mut vis in original_query.iter_mut() {
+            *vis = if show_original { Visibility::Visible } else { Visibility::Hidden };
+        }
+        
+        info!("Visibility - Vertices: {}, Edges: {}, Faces: {}, Original: {}", 
+              cloud_visibility.vertices, cloud_visibility.edges, cloud_visibility.faces, show_original);
+    }
+}
+
+// Update the info text with current controls and visibility state
+fn update_info_text(
+    mut text_query: Query<&mut Text, With<InfoText>>,
+    cloud_visibility: Res<CloudVisibility>,
+) {
+    if let Ok(mut text) = text_query.single_mut() {
+        // Simple approach: use basic text with visual indicators
+        let v_indicator = if cloud_visibility.vertices { "[ON]" } else { "[OFF]" };
+        let e_indicator = if cloud_visibility.edges { "[ON]" } else { "[OFF]" };
+        let f_indicator = if cloud_visibility.faces { "[ON]" } else { "[OFF]" };
+        
+        **text = format!(
+            "Controls:\n\
+            WASD: Rotate camera\n\
+            QE: Zoom in/out\n\
+            1: Toggle vertices {}\n\
+            2: Toggle edges {}\n\
+            3: Toggle faces {}"
+            , v_indicator, e_indicator, f_indicator
+        );
     }
 }
