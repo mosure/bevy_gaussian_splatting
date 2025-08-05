@@ -291,7 +291,7 @@ path = "examples/multi_camera.rs"
 [[example]]
 name = "mesh_to_cloud"
 path = "examples/mesh_to_cloud.rs"
-required-features = ["viewer", "io_ply", "planar", "buffer_storage", "bevy/bevy_ui", "bevy/bevy_scene"]
+required-features = ["viewer", "io_ply", "planar", "buffer_storage", "bevy/bevy_ui", "bevy/bevy_scene", "bevy/default_font"]
 
 
 [[bench]]
