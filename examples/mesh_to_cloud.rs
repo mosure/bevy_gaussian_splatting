@@ -35,7 +35,7 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugins(GaussianSplattingPlugin)
         .add_systems(Startup, (spawn_camera_and_light, load_monkey))
-        .add_systems(Update, try_convert_loaded_mesh)
+        .add_systems(Update, (try_convert_loaded_mesh, camera_controls))
         .run();
 }
 
@@ -45,7 +45,7 @@ fn spawn_camera_and_light(mut commands: Commands) {
             warmup: true,
         },
         Camera3d::default(),
-        Transform::from_translation(Vec3::new(0.0, 5.0, 2.0)).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_translation(Vec3::new(0.0, 1.0, 8.0)).looking_at(Vec3::ZERO, Vec3::Y),
     ));
     commands.spawn((
         DirectionalLight::default(),
@@ -239,7 +239,7 @@ fn convert_mesh_to_gaussians_separated(mesh: &Mesh, transform: Transform) -> (Ve
             // Shrink by 25% total (15% + 10% additional) for better visual separation
             let edge1_len = edge1.length();
             let edge2_len = edge2.length();
-            let scale_factor = 0.65; // 25% smaller total
+            let scale_factor = 0.55; // 25% smaller total
             let scale = Vec3::new(edge1_len * 0.5 * scale_factor, edge2_len * 0.5 * scale_factor, FACE_SCALE);
 
             faces.push(gaussian_from_transform(
@@ -284,7 +284,7 @@ fn convert_mesh_to_gaussians_separated(mesh: &Mesh, transform: Transform) -> (Ve
                     
                     // Scale: long along edge (X), thin in other directions
                     // Reduce edge length by 5x for better proportions
-                    let scale = Vec3::new(edge_length * 0.2, EDGE_SCALE, EDGE_SCALE);
+                    let scale = Vec3::new(edge_length * 0.14, EDGE_SCALE, EDGE_SCALE);
 
                     edges.push(gaussian_from_transform(
                         transform.transform_point(mid),
@@ -392,7 +392,7 @@ fn normal_to_rgb(n: Vec3) -> [f32; 3] {
     let base = (normalized * 0.5) + Vec3::splat(0.5);
     
     // Apply stronger contrast enhancement: make colors much more saturated
-    let contrast_factor = 2.2; // Increased from 1.5 to 2.2
+    let contrast_factor = 100.0; // Increased from 2.2 to 3.0 for maximum contrast
     let enhanced = ((base - Vec3::splat(0.5)) * contrast_factor) + Vec3::splat(0.5);
     
     // Clamp to valid range
@@ -432,4 +432,49 @@ fn gaussian_from_transform(
     }
 
     g
+}
+
+// Camera controls: orbit around origin with arrow keys
+fn camera_controls(
+    mut camera_query: Query<&mut Transform, With<GaussianCamera>>,
+    input: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+) {
+    if let Ok(mut camera_transform) = camera_query.get_single_mut() {
+        let rotation_speed = 1.5; // radians per second
+        let distance = camera_transform.translation.length();
+        
+        // Current spherical coordinates (relative to origin)
+        let current_pos = camera_transform.translation;
+        let mut azimuth = current_pos.z.atan2(current_pos.x); // angle around Y axis
+        let mut elevation = (current_pos.y / distance).asin(); // angle up from XZ plane
+        
+        // Adjust angles based on input
+        if input.pressed(KeyCode::ArrowLeft) {
+            azimuth += rotation_speed * time.delta_secs();
+        }
+        if input.pressed(KeyCode::ArrowRight) {
+            azimuth -= rotation_speed * time.delta_secs();
+        }
+        if input.pressed(KeyCode::ArrowUp) {
+            elevation += rotation_speed * time.delta_secs();
+        }
+        if input.pressed(KeyCode::ArrowDown) {
+            elevation -= rotation_speed * time.delta_secs();
+        }
+        
+        // Clamp elevation to avoid flipping
+        elevation = elevation.clamp(-std::f32::consts::FRAC_PI_2 + 0.1, std::f32::consts::FRAC_PI_2 - 0.1);
+        
+        // Convert back to cartesian coordinates
+        let new_pos = Vec3::new(
+            distance * elevation.cos() * azimuth.cos(),
+            distance * elevation.sin(),
+            distance * elevation.cos() * azimuth.sin(),
+        );
+        
+        // Update camera position and make it look at origin
+        camera_transform.translation = new_pos;
+        camera_transform.look_at(Vec3::ZERO, Vec3::Y);
+    }
 }
