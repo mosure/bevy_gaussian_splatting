@@ -1,0 +1,20 @@
+[package]
+name = "mesh_to_cloud_example"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = { version = "0.16", features = [
+    "bevy_asset",
+    "bevy_core_pipeline", 
+    "bevy_log",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_scene",
+    "bevy_ui",
+    "bevy_winit",
+    "serialize",
+    "std",
+    "x11",
+] }
+bevy_gaussian_splatting = { path = "../..", features = ["viewer", "io_ply", "planar", "buffer_storage"] }
