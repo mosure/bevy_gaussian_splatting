@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 use bevy::prelude::*;
+use bevy::math::Mat3;
 use bevy::render::mesh::{
     Indices,
     PrimitiveTopology,
@@ -27,8 +28,8 @@ const GLB_PATH: &str = "scenes/monkey.glb";
 // Tunables for splat appearance
 const DEFAULT_OPACITY: f32 = 0.8;
 const DEFAULT_SCALE: f32 = 0.01; // Small vertices
-const EDGE_SCALE: f32 = 0.005;   // Thin edges
-const FACE_SCALE: f32 = 0.02;   // Very flat faces
+const EDGE_SCALE: f32 = 0.025;   // Thin edges (X/Y for edges)
+const FACE_SCALE: f32 = 0.02;    // Very flat faces (Z for faces)
 
 // Entry
 fn main() {
@@ -235,141 +236,157 @@ fn try_convert_loaded_mesh(
     }
 }
 
-// Convert a Mesh into separate Gaussian3d collections for vertices, edges, and faces
-fn convert_mesh_to_gaussians_separated(mesh: &Mesh, transform: Transform) -> (Vec<Gaussian3d>, Vec<Gaussian3d>, Vec<Gaussian3d>) {
-    info!("Starting mesh conversion...");
+fn convert_mesh_to_gaussians_separated(
+    mesh: &Mesh,
+    transform: Transform,
+) -> (Vec<Gaussian3d>, Vec<Gaussian3d>, Vec<Gaussian3d>) {
     let topology = mesh.primitive_topology();
-    info!("Mesh topology: {:?}", topology);
-    
-    let positions = match read_positions(mesh) {
-        Some(v) => {
-            info!("Found {} vertex positions", v.len());
-            v
-        },
-        None => {
-            warn!("mesh_to_cloud: mesh missing positions");
-            return (Vec::new(), Vec::new(), Vec::new());
-        }
-    };
-    let normals_opt = read_normals(mesh);
-    info!("Normals available: {}", normals_opt.is_some());
 
-    // Build index buffer as u32
+    // ─────────── vertex positions & normals ───────────
+    let positions = match read_positions(mesh) {
+        Some(p) => p,
+        None    => return (Vec::new(), Vec::new(), Vec::new()),
+    };
     let indices_u32: Option<Vec<u32>> = match mesh.indices() {
         Some(Indices::U32(ix)) => Some(ix.clone()),
         Some(Indices::U16(ix)) => Some(ix.iter().map(|&x| x as u32).collect()),
-        None => None,
+        None                   => None,
     };
+    let vertex_normals = read_normals(mesh)
+        .unwrap_or_else(|| compute_vertex_normals(topology, &positions, indices_u32.as_ref()));
 
-    // Vertex normals: either from attribute or computed from faces
-    let vertex_normals = normals_opt.unwrap_or_else(|| compute_vertex_normals(topology, &positions, indices_u32.as_ref()));
+    // Precompute world positions for de-duplication and placement
+    let world_positions: Vec<Vec3> = positions.iter().map(|p| transform.transform_point(*p)).collect();
 
-    let mut vertices: Vec<Gaussian3d> = Vec::new();
-    let mut edges: Vec<Gaussian3d> = Vec::new();
-    let mut faces: Vec<Gaussian3d> = Vec::new();
+    // ─────────── output storages ───────────
+    let mut verts  = Vec::new();
+    let mut edges  = Vec::new();
+    let mut faces  = Vec::new();
 
-    // 1) Vertices - small isotropic splats
-    for (vpos, vnorm) in positions.iter().zip(vertex_normals.iter()) {
-        let pos = transform.transform_point(*vpos);
-        let rot = Quat::IDENTITY; // No special rotation needed for isotropic vertex splats
-        let scale = Vec3::splat(DEFAULT_SCALE);
-        vertices.push(gaussian_from_transform(pos, rot, scale, *vnorm, DEFAULT_OPACITY));
+    // ─────────── 1) vertices (isotropic) ───────────
+    for (p_world, n_local) in world_positions.iter().zip(vertex_normals.iter()) {
+        verts.push(gaussian_from_transform(
+            *p_world,                                  // world centre
+            Quat::IDENTITY,                            // isotropic
+            Vec3::splat(DEFAULT_SCALE),
+            (transform.rotation * *n_local).normalize(), // world normal
+            DEFAULT_OPACITY,
+        ));
     }
 
-    // For edges and faces we need indices and triangles
-    if let Some(indices) = indices_u32 {
-        // 2) Faces - flat splats oriented in the triangle plane
-        let tri_iter = triangles_from(topology, &indices);
-        let tris: Vec<[u32; 3]> = tri_iter.collect();
-        for tri in &tris {
-            let p0 = positions[tri[0] as usize];
-            let p1 = positions[tri[1] as usize];
-            let p2 = positions[tri[2] as usize];
+    // Stop here if the mesh has no indices
+    let indices = if let Some(ix) = indices_u32 { ix } else { return (verts, edges, faces) };
+    let tris: Vec<[u32; 3]> = triangles_from(topology, &indices).collect();
 
-            let centroid = (p0 + p1 + p2) / 3.0;
+    // ─────────── 2) faces (Z = normal = thin axis) ───────────
+    for tri in &tris {
+        // local-space corners
+        let (p0, p1, p2) = (positions[tri[0] as usize], positions[tri[1] as usize], positions[tri[2] as usize]);
+        let edge1 = p1 - p0;
+        let edge2 = p2 - p0;
 
-            // Calculate face normal and create local coordinate system
-            let edge1 = p1 - p0;
-            let edge2 = p2 - p0;
-            let face_normal = edge1.cross(edge2).normalize_or_zero();
+        let normal_l_raw = edge1.cross(edge2);
+        if normal_l_raw.length_squared() < 1e-8 { continue; }
 
-            // Create rotation to align the splat with the triangle plane
-            // For Gaussian splats, the default orientation is flat in XY plane (thin in Z)
-            // We want to rotate so the splat lies in the triangle plane
-            let rot = if face_normal.length() > 0.001 {
-                // We want to rotate from the default orientation (normal = +Z) to face_normal
-                Quat::from_rotation_arc(Vec3::Z, face_normal)
-            } else {
-                Quat::IDENTITY
-            };
+        // Build an ONB with Z along the face normal (so scale.z controls thinness)
+        let z_axis_l = normal_l_raw.normalize(); // thin axis = Z
+        // Choose X within the plane; start from edge1 projected to plane
+        let mut x_axis_l = edge1 - edge1.dot(z_axis_l) * z_axis_l;
+        if x_axis_l.length_squared() < 1e-12 {
+            // edge1 is nearly parallel to normal? use edge2
+            x_axis_l = edge2 - edge2.dot(z_axis_l) * z_axis_l;
+        }
+        let x_axis_l = x_axis_l.normalize();
+        let y_axis_l = z_axis_l.cross(x_axis_l).normalize(); // X×Y=Z ⇒ Y = Z×X
 
-            // Scale: moderate size to cover triangle area, thin in normal direction
-            let edge1_len = edge1.length();
-            let edge2_len = edge2.length();
-            let avg_edge_len = (edge1_len + edge2_len) * 0.5;
-            let scale = Vec3::new(avg_edge_len * 0.4, avg_edge_len * 0.4, FACE_SCALE);
+        let rot_local = Quat::from_mat3(&Mat3::from_cols(x_axis_l, y_axis_l, z_axis_l));
+        let rot_world   = transform.rotation * rot_local;
+        let normal_world = (transform.rotation * z_axis_l).normalize();
 
-            faces.push(gaussian_from_transform(
-                transform.transform_point(centroid),
-                rot,
+        // Scale: coverage in-plane on X/Y, very thin along Z
+        let edge1_len = edge1.length();
+        let edge2_len = edge2.length();
+        let avg_len   = 0.5 * (edge1_len + edge2_len);
+        let scale     = Vec3::new(avg_len * 0.3, avg_len * 0.3, FACE_SCALE);
+
+        let centroid_world = (world_positions[tri[0] as usize]
+                            + world_positions[tri[1] as usize]
+                            + world_positions[tri[2] as usize]) / 3.0;
+
+        faces.push(gaussian_from_transform(
+            centroid_world,
+            rot_world,
+            scale,
+            normal_world,
+            1.0,
+        ));
+    }
+
+    // ─────────── 3) edges (Z = edge direction = long axis), geometric de-dup ───────────
+
+    // Quantize world positions so indices split at seams still map to the same geometric vertex
+    fn qkey(p: Vec3, eps: f32) -> (i32, i32, i32) {
+        let inv = 1.0 / eps;
+        (
+            (p.x * inv).round() as i32,
+            (p.y * inv).round() as i32,
+            (p.z * inv).round() as i32,
+        )
+    }
+    let eps = 1e-5;
+    let canon: Vec<(i32,i32,i32)> = world_positions.iter().map(|&p| qkey(p, eps)).collect();
+    let mut seen_geo = HashSet::<((i32,i32,i32),(i32,i32,i32))>::new();
+
+    for tri in &tris {
+        for &(a, b) in &[(tri[0],tri[1]), (tri[1],tri[2]), (tri[2],tri[0])] {
+            // geometric edge key (not raw index), insensitive to seam splits
+            let key_a = canon[a as usize];
+            let key_b = canon[b as usize];
+            let edge_key = if key_a <= key_b { (key_a, key_b) } else { (key_b, key_a) };
+            if !seen_geo.insert(edge_key) { continue; }
+
+            // Build edge frame from local geometry, then promote to world
+            let pa_l = positions[a as usize];
+            let pb_l = positions[b as usize];
+            let edge_vec_l = pb_l - pa_l;
+            let len_l = edge_vec_l.length();
+            if len_l < 1e-4 { continue; }
+
+            let z_axis_l = edge_vec_l / len_l; // long axis = Z
+
+            // Use average vertex normal to stabilize twist; project to plane ⟂ Z
+            let n_avg_l  = (vertex_normals[a as usize] + vertex_normals[b as usize]).normalize_or_zero();
+            let mut x_axis_l = n_avg_l - n_avg_l.dot(z_axis_l) * z_axis_l;
+            if x_axis_l.length_squared() < 1e-8 {
+                // fallback to a world axis most orthogonal to Z
+                let candidate = if z_axis_l.dot(Vec3::X).abs() < 0.9 { Vec3::X }
+                                else if z_axis_l.dot(Vec3::Y).abs() < 0.9 { Vec3::Y }
+                                else { Vec3::Z };
+                x_axis_l = candidate - candidate.dot(z_axis_l) * z_axis_l;
+            }
+            let x_axis_l = x_axis_l.normalize();
+            let y_axis_l = z_axis_l.cross(x_axis_l).normalize(); // X×Y=Z ⇒ Y = Z×X
+
+            let rot_local = Quat::from_mat3(&Mat3::from_cols(x_axis_l, y_axis_l, z_axis_l));
+            let rot_world = transform.rotation * rot_local;
+            let normal_w  = (transform.rotation * n_avg_l).normalize();
+
+            // Long along Z, thin on X/Y
+            let scale = Vec3::new(EDGE_SCALE, EDGE_SCALE, len_l * 0.08);
+
+            let mid_world = (world_positions[a as usize] + world_positions[b as usize]) * 0.5;
+
+            edges.push(gaussian_from_transform(
+                mid_world,
+                rot_world,
                 scale,
-                face_normal,
-                0.95, // Increased opacity for better visibility
+                normal_w,
+                DEFAULT_OPACITY,
             ));
         }
-
-        // 3) Edges - elongated splats along edge direction
-        let mut set: HashSet<(u32, u32)> = HashSet::new();
-        for tri in &tris {
-            let e = [
-                (tri[0], tri[1]),
-                (tri[1], tri[2]),
-                (tri[2], tri[0]),
-            ];
-            for (a, b) in e {
-                let (lo, hi) = if a < b { (a, b) } else { (b, a) };
-                if set.insert((lo, hi)) {
-                    let pa = positions[lo as usize];
-                    let pb = positions[hi as usize];
-                    let mid = (pa + pb) * 0.5;
-                    let na = vertex_normals[lo as usize];
-                    let nb = vertex_normals[hi as usize];
-                    let avg_normal = (na + nb).normalize_or_zero();
-
-                    let edge_vec = pb - pa;
-                    let edge_length = edge_vec.length();
-                    let edge_dir = edge_vec.normalize_or_zero();
-
-                    // Create rotation that aligns the splat's long axis with edge direction
-                    // Since Gaussian splats are longest in their X direction by default,
-                    // we want to align X with the edge direction
-                    let rot = if edge_dir.length() > 0.001 {
-                        Quat::from_rotation_arc(Vec3::X, edge_dir)
-                    } else {
-                        Quat::IDENTITY
-                    };
-                    
-                    // Scale: long along edge (X), thin in other directions
-                    // Reduce edge length by 5x for better proportions
-                    let scale = Vec3::new(edge_length * 0.14, EDGE_SCALE, EDGE_SCALE);
-
-                    edges.push(gaussian_from_transform(
-                        transform.transform_point(mid),
-                        rot,
-                        scale,
-                        avg_normal,
-                        DEFAULT_OPACITY,
-                    ));
-                }
-            }
-        }
-    } else {
-        // No indices; treat as point cloud of vertices only
-        debug!("mesh_to_cloud: mesh had no indices; produced only vertex splats");
     }
 
-    info!("Conversion complete: {} vertices, {} edges, {} faces", vertices.len(), edges.len(), faces.len());
-    (vertices, edges, faces)
+    (verts, edges, faces)
 }
 
 fn triangles_from(topology: PrimitiveTopology, indices: &[u32]) -> impl Iterator<Item = [u32; 3]> + '_ {
@@ -459,7 +476,7 @@ fn normal_to_rgb(n: Vec3) -> [f32; 3] {
     let base = (normalized * 0.5) + Vec3::splat(0.5);
     
     // Apply stronger contrast enhancement: make colors much more saturated
-    let contrast_factor = 100.0; // Increased from 2.2 to 3.0 for maximum contrast
+    let contrast_factor = 100.0;
     let enhanced = ((base - Vec3::splat(0.5)) * contrast_factor) + Vec3::splat(0.5);
     
     // Clamp to valid range
@@ -482,7 +499,9 @@ fn gaussian_from_transform(
     g.position_visibility.visibility = 1.0;
 
     // rotation - use the rotation as provided (each caller handles orientation appropriately)
-    g.rotation.rotation = rot.to_array();
+    let a = rot.to_array();                 // [x, y, z, w]
+    g.rotation.rotation = [a[3], a[0], a[1], a[2]]; // -> [w, x, y, z]
+
 
     // scale and opacity
     g.scale_opacity.scale = scale.to_array();
