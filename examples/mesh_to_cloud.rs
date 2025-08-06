@@ -44,6 +44,7 @@ use bevy_gaussian_splatting::{
     PlanarGaussian3d,
     PlanarGaussian3dHandle,
 };
+use bevy::ui::Val::Px;
 
 /// Path to the mesh asset to convert
 const MESH_PATH: &str = "scenes/monkey.glb";
@@ -185,7 +186,7 @@ fn convert_loaded_mesh(
     meshes: Res<Assets<Mesh>>,
     mut planar_gaussians: ResMut<Assets<PlanarGaussian3d>>,
 ) {
-    let Some(pending) = pending else { return };
+    let Some(_pending) = pending else { return };
 
     // Collect all mesh entities and their data
     let mut mesh_data: Vec<(Handle<Mesh>, Transform)> = Vec::new();
