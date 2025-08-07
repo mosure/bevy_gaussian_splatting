@@ -294,12 +294,12 @@ required-features = [
   "viewer",
   "io_ply",
   "planar",
-  "sh0"
+  "sh0",
   "buffer_storage",
   "bevy/bevy_ui",
   "bevy/bevy_scene",
   "bevy/default_font",
-  "bevy/bevy_gltf",
+  "bevy/bevy_gltf"
 ]
 
 [[bench]]
