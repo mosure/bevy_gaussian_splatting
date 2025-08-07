@@ -326,12 +326,14 @@ fn gaussian_from_transform(
     g.scale_opacity.scale = scale.to_array();
     g.scale_opacity.opacity = opacity;
 
-    // Color via SH DC coefficients (first 3 channels as RGB)
+    // Color via SH DC coefficients
+    // With sh0 feature: sh = (rgb - 0.5) / 0.2821
     let rgb = normal_to_rgb(norm);
-    g.spherical_harmonic.set(0, rgb[0]);
-    g.spherical_harmonic.set(1, rgb[1]);
-    g.spherical_harmonic.set(2, rgb[2]);
-    // zero the rest for determinism
+    g.spherical_harmonic.set(0, (rgb[0] - 0.5) / 0.2821);
+    g.spherical_harmonic.set(1, (rgb[1] - 0.5) / 0.2821);
+    g.spherical_harmonic.set(2, (rgb[2] - 0.5) / 0.2821);
+    
+    // zero the rest for determinism (though with sh0, there should only be 3 coefficients total)
     for i in 3..bevy_gaussian_splatting::material::spherical_harmonics::SH_COEFF_COUNT {
         g.spherical_harmonic.set(i, 0.0);
     }
