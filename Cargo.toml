@@ -194,7 +194,6 @@ default-features = false
 features = [
   "bevy_asset",
   "bevy_core_pipeline",
-  "bevy_gltf",
   "bevy_log",
   "bevy_pbr",
   "bevy_render",
@@ -291,7 +290,16 @@ path = "examples/multi_camera.rs"
 [[example]]
 name = "mesh_to_cloud"
 path = "examples/mesh_to_cloud.rs"
-required-features = ["viewer", "io_ply", "planar", "buffer_storage", "bevy/bevy_ui", "bevy/bevy_scene", "bevy/default_font"]
+required-features = [
+  "viewer",
+  "io_ply",
+  "planar",
+  "buffer_storage",
+  "bevy/bevy_ui",
+  "bevy/bevy_scene",
+  "bevy/default_font",
+  "bevy/bevy_gltf"
+]
 
 
 [[bench]]
