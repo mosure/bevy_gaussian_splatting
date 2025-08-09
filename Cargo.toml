@@ -288,8 +288,8 @@ name = "multi_camera"
 path = "examples/multi_camera.rs"
 
 [[example]]
-name = "mesh_to_cloud"
-path = "examples/mesh_to_cloud.rs"
+name = "mesh_to_cloud_cpu"
+path = "examples/mesh_to_cloud_cpu.rs"
 required-features = [
   "viewer",
   "io_ply",
