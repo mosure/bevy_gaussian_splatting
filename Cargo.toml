@@ -294,7 +294,6 @@ required-features = [
   "viewer",
   "io_ply",
   "planar",
-  "sh0",
   "buffer_storage",
   "bevy/bevy_ui",
   "bevy/bevy_scene",
