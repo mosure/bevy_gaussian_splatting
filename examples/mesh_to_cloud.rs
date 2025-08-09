@@ -72,6 +72,7 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugins(GaussianSplattingPlugin)
         .init_resource::<CloudVisibility>()
+        .init_resource::<ConversionMetrics>()
         .add_systems(Startup, (setup_scene, setup_ui, load_mesh))
         .add_systems(Update, (
             convert_loaded_mesh,
@@ -88,6 +89,16 @@ struct CloudVisibility {
     vertices: bool,
     edges: bool,
     faces: bool,
+}
+
+/// Resource tracking conversion performance metrics
+#[derive(Resource, Default)]
+struct ConversionMetrics {
+    conversion_time_ms: f32,
+    total_gaussians: usize,
+    vertex_count: usize,
+    edge_count: usize,
+    face_count: usize,
 }
 
 impl Default for CloudVisibility {
@@ -185,6 +196,7 @@ fn convert_loaded_mesh(
     mesh_query: Query<(Entity, &Mesh3d, &GlobalTransform)>,
     meshes: Res<Assets<Mesh>>,
     mut planar_gaussians: ResMut<Assets<PlanarGaussian3d>>,
+    mut metrics: ResMut<ConversionMetrics>,
 ) {
     let Some(_pending) = pending else { return };
 
@@ -205,6 +217,9 @@ fn convert_loaded_mesh(
 
     info!("Converting {} mesh(es) to Gaussian splat clouds", mesh_data.len());
     commands.remove_resource::<PendingMeshScene>();
+
+    // Start timing the conversion process
+    let start_time = std::time::Instant::now();
 
     // Hide original mesh entities during splat visualization
     for entity in mesh_entities {
@@ -241,8 +256,20 @@ fn convert_loaded_mesh(
         return;
     }
 
-    info!("Total: {} vertex, {} edge, {} face splats", 
-          all_vertices.len(), all_edges.len(), all_faces.len());
+    // Calculate conversion time
+    let conversion_time = start_time.elapsed();
+    let conversion_time_ms = conversion_time.as_secs_f32() * 1000.0;
+    let total_gaussians = all_vertices.len() + all_edges.len() + all_faces.len();
+
+    // Update metrics for UI display
+    metrics.conversion_time_ms = conversion_time_ms;
+    metrics.total_gaussians = total_gaussians;
+    metrics.vertex_count = all_vertices.len();
+    metrics.edge_count = all_edges.len();
+    metrics.face_count = all_faces.len();
+
+    info!("Converted {} vertices, {} edges, {} faces → {} gaussians in {:.2} ms", 
+          all_vertices.len(), all_edges.len(), all_faces.len(), total_gaussians, conversion_time_ms);
 
     // Create separate splat clouds for each primitive type
     spawn_splat_clouds(&mut commands, &mut planar_gaussians, 
@@ -807,12 +834,27 @@ fn visibility_controls(
 fn update_info_text(
     mut text_query: Query<&mut Text, With<InfoText>>,
     cloud_visibility: Res<CloudVisibility>,
+    metrics: Res<ConversionMetrics>,
 ) {
     let Ok(mut text) = text_query.single_mut() else { return };
     
     let vertex_indicator = if cloud_visibility.vertices { "[ON]" } else { "[OFF]" };
     let edge_indicator = if cloud_visibility.edges { "[ON]" } else { "[OFF]" };
     let face_indicator = if cloud_visibility.faces { "[ON]" } else { "[OFF]" };
+    
+    // Display conversion metrics if available
+    let metrics_text = if metrics.total_gaussians > 0 {
+        format!(
+            "\n\
+            Conversion Metrics:\n\
+            • Total Gaussians: {}\n\
+            • Conversion time: {:.1} ms",
+            metrics.total_gaussians,
+            metrics.conversion_time_ms
+        )
+    } else {
+        String::new()
+    };
     
     **text = format!(
         "Mesh to Gaussian Splats Demo\n\
@@ -824,7 +866,7 @@ fn update_info_text(
         Splat Visibility:\n\
         • 1: Vertices {}\n\
         • 2: Edges {}\n\
-        • 3: Faces {}",
-        vertex_indicator, edge_indicator, face_indicator
+        • 3: Faces {}{}",
+        vertex_indicator, edge_indicator, face_indicator, metrics_text
     );
 }
