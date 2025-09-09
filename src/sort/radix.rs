@@ -63,7 +63,6 @@ use crate::{
         CloudPipeline,
         CloudPipelineKey,
         GaussianUniformBindGroups,
-        GaussianViewBindGroup,
         ShaderDefines,
         shader_defs,
     },
@@ -75,7 +74,6 @@ use crate::{
         SortPluginFlag,
     },
 };
-
 
 assert_cfg!(
     not(all(
@@ -253,7 +251,7 @@ fn update_sort_buffers<R: PlanarSync>(
 #[derive(Resource)]
 pub struct RadixSortPipeline<R: PlanarSync> {
     pub radix_sort_layout: BindGroupLayout,
-    pub radix_sort_pipelines: [CachedComputePipelineId; 3],
+    pub radix_sort_pipelines: [CachedComputePipelineId; 4],
     phantom: std::marker::PhantomData<R>,
 }
 
@@ -343,6 +341,16 @@ impl<R: PlanarSync> FromWorld for RadixSortPipeline<R> {
         let shader_defs = shader_defs(CloudPipelineKey::default());
 
         let pipeline_cache = render_world.resource::<PipelineCache>();
+        let radix_reset = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+            label: Some("radix_sort_reset".into()),
+            layout: sorting_layout.clone(),
+            push_constant_ranges: vec![],
+            shader: RADIX_SHADER_HANDLE,
+            shader_defs: shader_defs.clone(),
+            entry_point: "radix_reset".into(),
+            zero_initialize_workgroup_memory: true,
+        });
+
         let radix_sort_a = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("radix_sort_a".into()),
             layout: sorting_layout.clone(),
@@ -375,11 +383,7 @@ impl<R: PlanarSync> FromWorld for RadixSortPipeline<R> {
 
         RadixSortPipeline {
             radix_sort_layout,
-            radix_sort_pipelines: [
-                radix_sort_a,
-                radix_sort_b,
-                radix_sort_c,
-            ],
+            radix_sort_pipelines: [radix_reset, radix_sort_a, radix_sort_b, radix_sort_c],
             phantom: std::marker::PhantomData,
         }
     }
@@ -389,7 +393,9 @@ impl<R: PlanarSync> FromWorld for RadixSortPipeline<R> {
 
 #[derive(Component)]
 pub struct RadixBindGroup {
-    pub radix_sort_bind_groups: [BindGroup; 4],
+    // For each digit pass idx in 0..RADIX_DIGIT_PLACES, we create 2 bind groups (parity 0/1):
+    // index = pass_idx * 2 + parity (parity 0: input=sorted_entries, output=entry_buffer_b; parity 1: input=entry_buffer_b, output=sorted_entries)
+    pub radix_sort_bind_groups: [BindGroup; 8],
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -477,53 +483,57 @@ where
             }),
         };
 
-        let radix_sort_bind_groups: [BindGroup; 4] = (0..4)
-            .map(|idx| {
-                render_device.create_bind_group(
-                    format!("radix_sort_bind_group {idx}").as_str(),
-                    &radix_pipeline.radix_sort_layout,
-                    &[
-                        BindGroupEntry {
-                            binding: 0,
-                            resource: BindingResource::Buffer(BufferBinding {
-                                buffer: &sorting_assets.sorting_pass_buffers[idx],
-                                offset: 0,
-                                size: BufferSize::new(std::mem::size_of::<u32>() as u64),
-                            }),
-                        },
-                        sorting_global_entry.clone(),
-                        sorting_status_counters_entry.clone(),
-                        draw_indirect_entry.clone(),
-                        BindGroupEntry {
-                            binding: 4,
-                            resource: BindingResource::Buffer(BufferBinding {
-                                buffer: if idx % 2 == 0 {
-                                    &sorted_entries.sorted_entry_buffer
-                                } else {
-                                    &sorting_assets.entry_buffer_b
-                                },
-                                offset: 0,
-                                size: BufferSize::new((cloud.len() * std::mem::size_of::<SortEntry>()) as u64),
-                            }),
-                        },
-                        BindGroupEntry {
-                            binding: 5,
-                            resource: BindingResource::Buffer(BufferBinding {
-                                buffer: if idx % 2 == 0 {
-                                    &sorting_assets.entry_buffer_b
-                                } else {
-                                    &sorted_entries.sorted_entry_buffer
-                                },
-                                offset: 0,
-                                size: BufferSize::new((cloud.len() * std::mem::size_of::<SortEntry>()) as u64),
-                            }),
-                        },
-                    ],
-                )
-            })
-            .collect::<Vec<BindGroup>>()
-            .try_into()
-            .unwrap();
+        let radix_sort_bind_groups: [BindGroup; 8] = {
+            let mut groups: Vec<BindGroup> = Vec::with_capacity(8);
+            for pass_idx in 0..4 {
+                for parity in 0..=1 {
+                    let (input_buf, output_buf) = if parity == 0 {
+                        (&sorted_entries.sorted_entry_buffer, &sorting_assets.entry_buffer_b)
+                    } else {
+                        (&sorting_assets.entry_buffer_b, &sorted_entries.sorted_entry_buffer)
+                    };
+
+                    let group = render_device.create_bind_group(
+                        format!("radix_sort_bind_group pass={} parity={}", pass_idx, parity).as_str(),
+                        &radix_pipeline.radix_sort_layout,
+                        &[
+                            // sorting_pass_index (u32) == pass_idx regardless of parity
+                            BindGroupEntry {
+                                binding: 0,
+                                resource: BindingResource::Buffer(BufferBinding {
+                                    buffer: &sorting_assets.sorting_pass_buffers[pass_idx],
+                                    offset: 0,
+                                    size: BufferSize::new(std::mem::size_of::<u32>() as u64),
+                                }),
+                            },
+                            sorting_global_entry.clone(),
+                            sorting_status_counters_entry.clone(),
+                            draw_indirect_entry.clone(),
+                            // input_entries
+                            BindGroupEntry {
+                                binding: 4,
+                                resource: BindingResource::Buffer(BufferBinding {
+                                    buffer: input_buf,
+                                    offset: 0,
+                                    size: BufferSize::new((cloud.len() * std::mem::size_of::<SortEntry>()) as u64),
+                                }),
+                            },
+                            // output_entries
+                            BindGroupEntry {
+                                binding: 5,
+                                resource: BindingResource::Buffer(BufferBinding {
+                                    buffer: output_buf,
+                                    offset: 0,
+                                    size: BufferSize::new((cloud.len() * std::mem::size_of::<SortEntry>()) as u64),
+                                }),
+                            },
+                        ],
+                    );
+                    groups.push(group);
+                }
+            }
+            groups.try_into().unwrap()
+        };
 
         commands.entity(entity).insert(RadixBindGroup {
             radix_sort_bind_groups,
@@ -541,7 +551,7 @@ pub struct RadixSortNode<R: PlanarSync> {
     initialized: bool,
     view_bind_group: QueryState<(
         &'static GaussianCamera,
-        &'static GaussianViewBindGroup,
+    &'static crate::render::GaussianComputeViewBindGroup,
         &'static ViewUniformOffset,
         &'static PreviousViewUniformOffset,
     )>,
@@ -650,6 +660,22 @@ where
                     {
                         let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
 
+                        // Reset per-frame counters/histograms
+                        let radix_reset = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[0]).unwrap();
+                        pass.set_pipeline(radix_reset);
+                        pass.set_bind_group(
+                            0,
+                            &view_bind_group.value,
+                            &[
+                                view_uniform_offset.offset,
+                                previous_view_uniform_offset.offset,
+                            ],
+                        );
+                        pass.set_bind_group(1, gaussian_uniforms.base_bind_group.as_ref().unwrap(), &[0]);
+                        pass.set_bind_group(2, &cloud_bind_group.bind_group, &[]);
+                        pass.set_bind_group(3, &radix_bind_group.radix_sort_bind_groups[0], &[]);
+                        pass.dispatch_workgroups(1, 1, 1);
+
                         pass.set_bind_group(
                             0,
                             &view_bind_group.value,
@@ -674,14 +700,14 @@ where
                             &[],
                         );
 
-                        let radix_sort_a = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[0]).unwrap();
+                        let radix_sort_a = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[1]).unwrap();
                         pass.set_pipeline(radix_sort_a);
 
                         let workgroup_entries_a = ShaderDefines::default().workgroup_entries_a;
                         pass.dispatch_workgroups((cloud.len() as u32).div_ceil(workgroup_entries_a), 1, 1);
 
 
-                        let radix_sort_b = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[1]).unwrap();
+                        let radix_sort_b = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[2]).unwrap();
                         pass.set_pipeline(radix_sort_b);
 
                         pass.dispatch_workgroups(1, radix_digit_places, 1);
@@ -699,29 +725,29 @@ where
 
                         let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
 
-                        let radix_sort_c = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[2]).unwrap();
+                        let radix_sort_c = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[3]).unwrap();
                         pass.set_pipeline(radix_sort_c);
 
+                        // Set common bind groups for view/uniforms and cloud storage
                         pass.set_bind_group(
                             0,
                             &view_bind_group.value,
-                            &[view_uniform_offset.offset],
+                            &[
+                                view_uniform_offset.offset,
+                                previous_view_uniform_offset.offset,
+                            ],
                         );
                         pass.set_bind_group(
                             1,
                             gaussian_uniforms.base_bind_group.as_ref().unwrap(),
                             &[0],
                         );
-                        pass.set_bind_group(
-                            2,
-                            &cloud_bind_group.bind_group,
-                            &[]
-                        );
-                        pass.set_bind_group(
-                            3,
-                            &radix_bind_group.radix_sort_bind_groups[pass_idx as usize],
-                            &[],
-                        );
+                        pass.set_bind_group(2, &cloud_bind_group.bind_group, &[]);
+
+                        // For pass C, choose bind group based on digit place and parity
+                        let parity = ((pass_idx + 1) % 2) as usize;
+                        let bg_index = (pass_idx as usize) * 2 + parity;
+                        pass.set_bind_group(3, &radix_bind_group.radix_sort_bind_groups[bg_index], &[]);
 
                         let workgroup_entries_c = ShaderDefines::default().workgroup_entries_c;
                         pass.dispatch_workgroups(1, (cloud.len() as u32).div_ceil(workgroup_entries_c), 1);

@@ -147,6 +147,7 @@ where
                     (
                         queue_gaussian_bind_group::<R>.in_set(RenderSet::PrepareBindGroups),
                         queue_gaussian_view_bind_groups::<R>.in_set(RenderSet::PrepareBindGroups),
+                        queue_gaussian_compute_view_bind_groups::<R>.in_set(RenderSet::PrepareBindGroups),
                         queue_gaussians::<R>.in_set(RenderSet::Queue),
                     ),
                 );
@@ -1050,6 +1051,11 @@ pub struct GaussianViewBindGroup {
     pub value: BindGroup,
 }
 
+#[derive(Component)]
+pub struct GaussianComputeViewBindGroup {
+    pub value: BindGroup,
+}
+
 // TODO: move to gaussian camera module
 // TODO: remove cloud pipeline dependency by separating view layout
 #[allow(clippy::too_many_arguments)]
@@ -1120,6 +1126,74 @@ pub fn queue_gaussian_view_bind_groups<R: PlanarSync>(
                 .insert(GaussianViewBindGroup {
                     value: view_bind_group,
                 });
+        }
+    }
+}
+
+// Prepare the compute view bind group using the compute_view_layout (for compute pipelines)
+pub fn queue_gaussian_compute_view_bind_groups<R: PlanarSync>(
+    mut commands: Commands,
+    render_device: Res<RenderDevice>,
+    gaussian_cloud_pipeline: Res<CloudPipeline<R>>,
+    view_uniforms: Res<ViewUniforms>,
+    previous_view_uniforms: Res<PreviousViewUniforms>,
+    views: Query<
+        (
+            Entity,
+            &ExtractedView,
+            Option<&PreviousViewData>,
+        ),
+        With<GaussianCamera>,
+    >,
+    visibility_ranges: Res<RenderVisibilityRanges>,
+    globals_buffer: Res<GlobalsBuffer>,
+)
+where
+    R: PlanarSync,
+    R::GpuPlanarType: GpuPlanarStorage,
+{
+    if let (
+        Some(view_binding),
+        Some(previous_view_binding),
+        Some(globals),
+        Some(visibility_ranges_buffer),
+    ) = (
+        view_uniforms.uniforms.binding(),
+        previous_view_uniforms.uniforms.binding(),
+        globals_buffer.buffer.binding(),
+        visibility_ranges.buffer().buffer(),
+    ) {
+        for (entity, _extracted_view, _maybe_previous_view) in &views {
+            let layout = &gaussian_cloud_pipeline.compute_view_layout;
+
+            let entries = vec![
+                BindGroupEntry {
+                    binding: 0,
+                    resource: view_binding.clone(),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: globals.clone(),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: previous_view_binding.clone(),
+                },
+                BindGroupEntry {
+                    binding: 14,
+                    resource: visibility_ranges_buffer.as_entire_binding(),
+                },
+            ];
+
+            let view_bind_group = render_device.create_bind_group(
+                "gaussian_compute_view_bind_group",
+                layout,
+                &entries,
+            );
+
+            commands
+                .entity(entity)
+                .insert(GaussianComputeViewBindGroup { value: view_bind_group });
         }
     }
 }

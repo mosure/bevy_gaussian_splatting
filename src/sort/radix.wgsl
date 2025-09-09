@@ -55,6 +55,11 @@ fn radix_sort_a(
     @builtin(local_invocation_id) gl_LocalInvocationID: vec3<u32>,
     @builtin(global_invocation_id) gl_GlobalInvocationID: vec3<u32>,
 ) {
+    if (gl_LocalInvocationID.x == 0u && gl_LocalInvocationID.y == 0u && gl_GlobalInvocationID.x == 0u) {
+        // Initialize draw counts early so the draw call doesn't get zeroed if later passes stall
+        draw_indirect.vertex_count = 4u;
+        atomicStore(&draw_indirect.instance_count, gaussian_uniforms.count);
+    }
     sorting_shared_a.digit_histogram[gl_LocalInvocationID.y][gl_LocalInvocationID.x] = 0u;
     workgroupBarrier();
 
@@ -118,10 +123,29 @@ struct SortingSharedC {
 }
 var<workgroup> sorting_shared_c: SortingSharedC;
 
+// Reset pass to clear per-frame counters and histograms
+@compute @workgroup_size(#{RADIX_BASE}, #{RADIX_DIGIT_PLACES})
+fn radix_reset(
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+){
+    let b = local_id.x;
+    let p = local_id.y;
+
+    atomicStore(&sorting.digit_histogram[p][b], 0u);
+    atomicStore(&status_counters[p][b], 0u);
+
+    if (global_id.x == 0u && global_id.y == 0u) {
+        atomicStore(&sorting.assignment_counter, 0u);
+        draw_indirect.instance_count = 0u;
+    }
+}
+
 const NUM_BANKS: u32 = 16u;
 const LOG_NUM_BANKS: u32 = 4u;
 fn conflict_free_offset(n: u32) -> u32 {
-    return 0u;//n >> NUM_BANKS + n >> (2u * LOG_NUM_BANKS);
+    // Simple bank-conflict padding to reduce contention
+    return n >> LOG_NUM_BANKS;
 }
 
 fn exclusive_scan(local_invocation_index: u32, value: u32) -> u32 {
@@ -185,7 +209,7 @@ fn radix_sort_c(
     // TODO: Specialize end shader
     if(gl_LocalInvocationID.x == 0u && assignment * #{WORKGROUP_ENTRIES_C}u + #{WORKGROUP_ENTRIES_C}u >= gaussian_uniforms.count) {
         // Last workgroup resets the assignment number for the next pass
-        sorting.assignment_counter = 0u;
+        atomicStore(&sorting.assignment_counter, 0u);
     }
 
     // Load keys from global memory into registers and rank them
@@ -224,9 +248,11 @@ fn radix_sort_c(
         }
     }
     atomicStore(&status_counters[assignment][gl_LocalInvocationID.x], 0x80000000u | (global_digit_count + local_digit_count));
-    if(sorting_pass_index == #{RADIX_DIGIT_PLACES}u - 1u && gl_LocalInvocationID.x == #{WORKGROUP_INVOCATIONS_C}u - 2u && global_entry_offset + #{WORKGROUP_ENTRIES_C}u >= gaussian_uniforms.count) {
+    // On the final digit pass, set indirect draw counts once (robust gate)
+    if (sorting_pass_index == #{RADIX_DIGIT_PLACES}u - 1u && gl_LocalInvocationID.x == 0u) {
         draw_indirect.vertex_count = 4u;
-        draw_indirect.instance_count = global_digit_count + local_digit_count;
+        // Use the total gaussian count to avoid edge-dependent undercounting
+        atomicStore(&draw_indirect.instance_count, gaussian_uniforms.count);
     }
 
     // Scatter keys inside shared memory
@@ -262,6 +288,6 @@ fn radix_sort_c(
     for(var entry_index = 0u; entry_index < #{ENTRIES_PER_INVOCATION_C}u; entry_index += 1u) {
         let value = sorting_shared_c.entries[#{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x];
         let digit = keys[entry_index];
-        output_entries[sorting_shared_c.scan[digit + conflict_free_offset(digit)] + #{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x][1] = value;
+    output_entries[sorting_shared_c.scan[digit + conflict_free_offset(digit)] + #{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x].value = value;
     }
 }
