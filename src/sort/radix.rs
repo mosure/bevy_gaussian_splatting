@@ -183,6 +183,7 @@ pub struct GpuRadixBuffers {
     pub sorting_pass_buffers: [Buffer; 4],
     pub entry_buffer_b: Buffer,
 }
+
 impl GpuRadixBuffers {
     pub fn new(
         count: usize,
@@ -745,7 +746,8 @@ where
                         pass.set_bind_group(2, &cloud_bind_group.bind_group, &[]);
 
                         // For pass C, choose bind group based on digit place and parity
-                        let parity = ((pass_idx + 1) % 2) as usize;
+                        // THIS IS THE FIX:
+                        let parity = (pass_idx % 2) as usize;
                         let bg_index = (pass_idx as usize) * 2 + parity;
                         pass.set_bind_group(3, &radix_bind_group.radix_sort_bind_groups[bg_index], &[]);
 
