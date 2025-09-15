@@ -1,3 +1,4 @@
+#![allow(dead_code)] // ShaderType derives emit unused check helpers
 use std::{
     hash::Hash,
     num::NonZero,
@@ -614,7 +615,7 @@ impl Default for ShaderDefines {
         let workgroup_entries_a = workgroup_invocations_a * entries_per_invocation_a;
         let workgroup_entries_c = workgroup_invocations_c * entries_per_invocation_c;
         let sorting_buffer_size = radix_base * radix_digit_places *
-            std::mem::size_of::<u32>() as u32 + 5 * std::mem::size_of::<u32>() as u32;
+            std::mem::size_of::<u32>() as u32 + (5 + radix_base) * std::mem::size_of::<u32>() as u32;
 
         Self {
             radix_bits_per_digit,
@@ -837,6 +838,7 @@ type DrawGaussians<R: PlanarSync> = (
 );
 
 
+#[allow(dead_code)]
 #[derive(Component, ShaderType, Clone, Copy)]
 pub struct CloudUniform {
     pub transform: Mat4,
@@ -1131,6 +1133,7 @@ pub fn queue_gaussian_view_bind_groups<R: PlanarSync>(
 }
 
 // Prepare the compute view bind group using the compute_view_layout (for compute pipelines)
+#[allow(clippy::too_many_arguments)]
 pub fn queue_gaussian_compute_view_bind_groups<R: PlanarSync>(
     mut commands: Commands,
     render_device: Res<RenderDevice>,
@@ -1149,7 +1152,6 @@ pub fn queue_gaussian_compute_view_bind_groups<R: PlanarSync>(
     globals_buffer: Res<GlobalsBuffer>,
 )
 where
-    R: PlanarSync,
     R::GpuPlanarType: GpuPlanarStorage,
 {
     if let (
@@ -1396,3 +1398,4 @@ where
         RenderCommandResult::Success
     }
 }
+

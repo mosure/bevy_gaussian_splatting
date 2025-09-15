@@ -35,6 +35,7 @@
 struct SortingGlobal {
     digit_histogram: array<array<atomic<u32>, #{RADIX_BASE}>, #{RADIX_DIGIT_PLACES}>,
     assignment_counter: atomic<u32>,
+    digit_tile_head: array<atomic<u32>, #{RADIX_BASE}>,
 }
 
 @group(3) @binding(0) var<uniform> sorting_pass_index: u32;
@@ -61,6 +62,9 @@ fn radix_reset(
     let b = local_id.x;
     let p = local_id.y;
     atomicStore(&sorting.digit_histogram[p][b], 0u);
+    if (p == 0u) {
+        atomicStore(&sorting.digit_tile_head[b], 0u);
+    }
     if (global_id.x == 0u && global_id.y == 0u) {
         atomicStore(&sorting.assignment_counter, 0u);
         draw_indirect.instance_count = 0u;
@@ -123,7 +127,7 @@ var<workgroup> sorted_tile_entries: array<Entry, #{WORKGROUP_ENTRIES_C}>;
 var<workgroup> local_digit_counts: array<u32, #{RADIX_BASE}>;
 var<workgroup> local_digit_offsets: array<u32, #{RADIX_BASE}>;
 var<workgroup> digit_global_base_ws: array<u32, #{RADIX_BASE}>;
-var<workgroup> total_valid_in_tile_ws: u32;
+var<workgroup> tile_entry_count_ws: u32;
 const INVALID_KEY: u32 = 0xFFFFFFFFu;
 
 
@@ -140,31 +144,37 @@ fn radix_sort_c(
     let threads = #{WORKGROUP_INVOCATIONS_C}u;
     let global_entry_offset = workgroup_id.y * tile_size;
 
+    // Clear per-digit base cache so stale values are never reused across tiles.
+    if (tid < #{RADIX_BASE}u) {
+        digit_global_base_ws[tid] = 0u;
+    }
+    workgroupBarrier();
+
     // --- Step 1: Parallel load ---
     for (var i = tid; i < tile_size; i += threads) {
         let idx = global_entry_offset + i;
         if (idx < gaussian_uniforms.count) {
             tile_input_entries[i] = input_entries[idx];
         } else {
-            tile_input_entries[i].key = INVALID_KEY;
+            tile_input_entries[i] = Entry(INVALID_KEY, INVALID_KEY);
         }
     }
     workgroupBarrier();
 
     // --- Step 2: Serial, stable sort within the tile by a single thread ---
-    // This is the key change that guarantees stability by eliminating all race conditions.
     if (tid == 0u) {
         for (var i = 0u; i < #{RADIX_BASE}u; i+=1u) { local_digit_counts[i] = 0u; }
 
-        var valid_count = 0u;
+        var entries_in_tile = 0u;
         for (var i = 0u; i < tile_size; i+=1u) {
-            if (tile_input_entries[i].key != INVALID_KEY) {
-                let digit = (tile_input_entries[i].key >> (sorting_pass_index * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
-                local_digit_counts[digit] += 1u;
-                valid_count += 1u;
-            }
+            let entry = tile_input_entries[i];
+            if (entry.value == INVALID_KEY) { continue; } // value sentinel marks padding
+
+            let digit = (entry.key >> (sorting_pass_index * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
+            local_digit_counts[digit] += 1u;
+            entries_in_tile += 1u;
         }
-        total_valid_in_tile_ws = valid_count;
+        tile_entry_count_ws = entries_in_tile;
 
         var sum = 0u;
         for (var i = 0u; i < #{RADIX_BASE}u; i+=1u) {
@@ -173,24 +183,33 @@ fn radix_sort_c(
         }
 
         for (var i = 0u; i < tile_size; i+=1u) {
-            if (tile_input_entries[i].key != INVALID_KEY) {
-                let entry = tile_input_entries[i];
-                let digit = (entry.key >> (sorting_pass_index * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
-                let dest_idx = local_digit_offsets[digit];
-                local_digit_offsets[digit] = dest_idx + 1u;
-                sorted_tile_entries[dest_idx] = entry;
-            }
+            let entry = tile_input_entries[i];
+            if (entry.value == INVALID_KEY) { continue; } // value sentinel marks padding
+
+            let digit = (entry.key >> (sorting_pass_index * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
+            let dest_idx = local_digit_offsets[digit];
+            local_digit_offsets[digit] = dest_idx + 1u;
+            sorted_tile_entries[dest_idx] = entry;
         }
     }
     workgroupBarrier();
 
-    // --- Step 3: Atomically determine the global base address for this tile ---
-    // This replaces the fragile spin-lock with a single, robust atomic operation per digit.
+    // --- Step 3: Determine deterministic global base for each digit ---
     if (tid < #{RADIX_BASE}u) {
         let count = local_digit_counts[tid];
-        if (count > 0u) {
-            digit_global_base_ws[tid] = atomicAdd(&sorting.digit_histogram[sorting_pass_index][tid], count);
+        let tile_count = max((gaussian_uniforms.count + tile_size - 1u) / tile_size, 1u);
+        let expected = sorting_pass_index * tile_count + workgroup_id.y;
+
+        loop {
+            let head = atomicLoad(&sorting.digit_tile_head[tid]);
+            if (head == expected) {
+                let exchange = atomicCompareExchangeWeak(&sorting.digit_tile_head[tid], expected, expected + 1u);
+                if (exchange.exchanged) { break; }
+            }
         }
+
+        let base = atomicAdd(&sorting.digit_histogram[sorting_pass_index][tid], count);
+        digit_global_base_ws[tid] = base;
     }
     workgroupBarrier();
 
@@ -205,10 +224,10 @@ fn radix_sort_c(
     workgroupBarrier();
 
     for (var i = tid; i < tile_size; i += threads) {
-        if (i < total_valid_in_tile_ws) {
+        if (i < tile_entry_count_ws) {
             let entry = sorted_tile_entries[i];
             let digit = (entry.key >> (sorting_pass_index * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
-            
+
             let bin_start_offset = local_digit_offsets[digit];
             let rank_in_bin = i - bin_start_offset;
             let global_base = digit_global_base_ws[digit];

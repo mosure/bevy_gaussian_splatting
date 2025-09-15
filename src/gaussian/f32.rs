@@ -1,3 +1,4 @@
+#![allow(dead_code)] // ShaderType derives emit unused check helpers
 use std::marker::Copy;
 
 use bevy::{
@@ -25,6 +26,7 @@ use crate::gaussian::{
 pub type Position = [f32; 3];
 
 
+#[allow(dead_code)]
 #[derive(
     Clone,
     Debug,
@@ -58,6 +60,7 @@ impl From<[f32; 4]> for PositionTimestamp {
 }
 
 
+#[allow(dead_code)]
 #[derive(
     Clone,
     Debug,
@@ -99,6 +102,7 @@ impl From<[f32; 4]> for PositionVisibility {
 }
 
 
+#[allow(dead_code)]
 #[derive(
     Clone,
     Debug,
@@ -124,6 +128,7 @@ impl From<[f32; 4]> for Rotation {
 }
 
 
+#[allow(dead_code)]
 #[derive(
     Clone,
     Debug,
@@ -182,6 +187,7 @@ impl From<[f32; 8]> for IsotropicRotations {
 }
 
 
+#[allow(dead_code)]
 #[derive(
     Clone,
     Debug,
@@ -215,6 +221,7 @@ impl From<[f32; 4]> for ScaleOpacity {
 }
 
 
+#[allow(dead_code)]
 #[derive(
     Clone,
     Debug,
@@ -246,6 +253,7 @@ impl From<[f32; 4]> for TimestampTimescale {
 }
 
 
+#[allow(dead_code)]
 #[derive(
     Clone,
     Debug,
@@ -280,3 +288,4 @@ impl From<&Gaussian3d> for Covariance3dOpacity {
         }
     }
 }
+

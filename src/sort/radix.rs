@@ -495,7 +495,7 @@ where
                     };
 
                     let group = render_device.create_bind_group(
-                        format!("radix_sort_bind_group pass={} parity={}", pass_idx, parity).as_str(),
+                        format!("radix_sort_bind_group pass={pass_idx} parity={parity}").as_str(),
                         &radix_pipeline.radix_sort_layout,
                         &[
                             // sorting_pass_index (u32) == pass_idx regardless of parity
