@@ -1,3 +1,4 @@
+#![allow(dead_code)] // ShaderType derives emit unused check helpers
 use std::marker::Copy;
 
 use half::f16;
@@ -28,6 +29,7 @@ use crate::gaussian::{
 };
 
 
+#[allow(dead_code)]
 #[derive(
     Clone,
     Debug,
@@ -132,6 +134,7 @@ impl From<[u32; 4]> for RotationScaleOpacityPacked128 {
 }
 
 
+#[allow(dead_code)]
 #[derive(
     Clone,
     Debug,
@@ -201,6 +204,7 @@ impl From<[u32; 4]> for Covariance3dOpacityPacked128 {
 
 
 
+#[allow(dead_code)]
 #[derive(
     Clone,
     Debug,
@@ -299,3 +303,4 @@ pub fn unpack_u32_to_f32s(value: u32) -> (f32, f32) {
     let (upper, lower) = unpack_u32_to_f16s(value);
     (upper.to_f32(), lower.to_f32())
 }
+

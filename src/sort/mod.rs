@@ -1,3 +1,4 @@
+#![allow(dead_code)] // ShaderType derives emit unused check helpers
 use core::time::Duration;
 use std::marker::PhantomData;
 
@@ -418,6 +419,7 @@ impl From<&SortedEntriesHandle> for AssetId<SortedEntries> {
 }
 
 
+#[allow(dead_code)]
 #[derive(
     Clone,
     Copy,
@@ -543,3 +545,4 @@ pub struct GpuSortedEntry {
     #[cfg(feature = "buffer_texture")]
     pub texture: Handle<Image>,
 }
+

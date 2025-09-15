@@ -1,3 +1,4 @@
+#![allow(dead_code)] // ShaderType derives emit unused check helpers
 use std::marker::Copy;
 
 use bevy::{
@@ -97,6 +98,7 @@ pub const SH_VEC4_PLANES: usize = SH_COEFF_COUNT / 4;
 // }
 
 
+#[allow(dead_code)]
 #[derive(
     Clone,
     Copy,
@@ -240,3 +242,4 @@ where
 
     d.deserialize_tuple(SH_COEFF_COUNT, CoefficientsVisitor)
 }
+

@@ -1,3 +1,4 @@
+#![allow(dead_code)] // ShaderType derives emit unused check helpers
 use std::marker::Copy;
 
 use bevy::{
@@ -87,6 +88,7 @@ impl Plugin for SpherindricalHarmonicCoefficientsPlugin {
 //     pub coefficients: [[u32; POD_ARRAY_SIZE]; POD_PLANE_COUNT],
 // }
 
+#[allow(dead_code)]
 #[derive(
     Clone,
     Copy,
@@ -252,3 +254,4 @@ where
 
     d.deserialize_tuple(SH_4D_COEFF_COUNT, CoefficientsVisitor)
 }
+
