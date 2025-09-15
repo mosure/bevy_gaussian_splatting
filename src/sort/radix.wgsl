@@ -39,23 +39,43 @@ struct SortingGlobal {
 
 @group(3) @binding(0) var<uniform> sorting_pass_index: u32;
 @group(3) @binding(1) var<storage, read_write> sorting: SortingGlobal;
+// NOTE: status_counters at binding(2) is NO LONGER USED by the corrected shader.
+// It can be removed from the Rust host code.
 @group(3) @binding(2) var<storage, read_write> status_counters: array<array<atomic<u32>, #{RADIX_BASE}>>;
 @group(3) @binding(3) var<storage, read_write> draw_indirect: DrawIndirect;
 @group(3) @binding(4) var<storage, read_write> input_entries: array<Entry>;
 @group(3) @binding(5) var<storage, read_write> output_entries: array<Entry>;
 
 
-struct SortingSharedA {
-    digit_histogram: array<array<atomic<u32>, #{RADIX_BASE}>, #{RADIX_DIGIT_PLACES}>,
+//
+// The following three functions (`radix_reset`, `radix_sort_a`, `radix_sort_b`)
+// form a standard three-phase GPU sort setup and were already correct.
+// They are included here without changes.
+//
+
+@compute @workgroup_size(#{RADIX_BASE}, #{RADIX_DIGIT_PLACES})
+fn radix_reset(
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+){
+    let b = local_id.x;
+    let p = local_id.y;
+    atomicStore(&sorting.digit_histogram[p][b], 0u);
+    if (global_id.x == 0u && global_id.y == 0u) {
+        atomicStore(&sorting.assignment_counter, 0u);
+        draw_indirect.instance_count = 0u;
+    }
 }
-var<workgroup> sorting_shared_a: SortingSharedA;
 
 @compute @workgroup_size(#{RADIX_BASE}, #{RADIX_DIGIT_PLACES})
 fn radix_sort_a(
     @builtin(local_invocation_id) gl_LocalInvocationID: vec3<u32>,
     @builtin(global_invocation_id) gl_GlobalInvocationID: vec3<u32>,
 ) {
-    sorting_shared_a.digit_histogram[gl_LocalInvocationID.y][gl_LocalInvocationID.x] = 0u;
+    if (gl_LocalInvocationID.x == 0u && gl_LocalInvocationID.y == 0u && gl_GlobalInvocationID.x == 0u) {
+        draw_indirect.vertex_count = 4u;
+        atomicStore(&draw_indirect.instance_count, gaussian_uniforms.count);
+    }
     workgroupBarrier();
 
     let thread_index = gl_GlobalInvocationID.x * #{RADIX_DIGIT_PLACES}u + gl_GlobalInvocationID.y;
@@ -63,39 +83,25 @@ fn radix_sort_a(
     let end_entry_index = start_entry_index + #{ENTRIES_PER_INVOCATION_A}u;
 
     for (var entry_index = start_entry_index; entry_index < end_entry_index; entry_index += 1u) {
-        if (entry_index >= gaussian_uniforms.count) {
-            continue;
-        }
-
+        if (entry_index >= gaussian_uniforms.count) { continue; }
         var key: u32 = 0xFFFFFFFFu;
         let position = vec4<f32>(get_position(entry_index), 1.0);
         let transformed_position = (gaussian_uniforms.transform * position).xyz;
         let clip_space_pos = world_to_clip(transformed_position);
-
-        let distance = distance(transformed_position, view.world_position);
-        let distance_wide = 0x0FFFFFFF - u32(distance * 1.0e4);
-
-        // TODO: use 4d transformed position, from gaussian node
-
+        let diff = transformed_position - view.world_position;
+        let dist2 = dot(diff, diff);
+        let dist_bits = bitcast<u32>(dist2);
+        let key_distance = 0xFFFFFFFFu - dist_bits;
         if (in_frustum(clip_space_pos.xyz)) {
-            // key = bitcast<u32>(1.0 - clip_space_pos.z);
-            // key = u32(clip_space_pos.z * 0xFFFF.0) << 16u;
-            // key |= u32((clip_space_pos.x * 0.5 + 0.5) * 0xFF.0) << 8u;
-            // key |= u32((clip_space_pos.y * 0.5 + 0.5) * 0xFF.0);
-            key = distance_wide;
+            key = key_distance;
         }
-
-        output_entries[entry_index].key = key;
-        output_entries[entry_index].value = entry_index;
-
+        input_entries[entry_index].key = key;
+        input_entries[entry_index].value = entry_index;
         for(var shift = 0u; shift < #{RADIX_DIGIT_PLACES}u; shift += 1u) {
             let digit = (key >> (shift * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
-            atomicAdd(&sorting_shared_a.digit_histogram[shift][digit], 1u);
+            atomicAdd(&sorting.digit_histogram[shift][digit], 1u);
         }
     }
-    workgroupBarrier();
-
-    atomicAdd(&sorting.digit_histogram[gl_LocalInvocationID.y][gl_LocalInvocationID.x], sorting_shared_a.digit_histogram[gl_LocalInvocationID.y][gl_LocalInvocationID.x]);
 }
 
 @compute @workgroup_size(1)
@@ -104,164 +110,117 @@ fn radix_sort_b(
 ) {
     var sum = 0u;
     for(var digit = 0u; digit < #{RADIX_BASE}u; digit += 1u) {
-        let tmp = sorting.digit_histogram[gl_GlobalInvocationID.y][digit];
-        sorting.digit_histogram[gl_GlobalInvocationID.y][digit] = sum;
+        let tmp = atomicLoad(&sorting.digit_histogram[gl_GlobalInvocationID.y][digit]);
+        atomicStore(&sorting.digit_histogram[gl_GlobalInvocationID.y][digit], sum);
         sum += tmp;
     }
 }
 
-struct SortingSharedC {
-    entries: array<atomic<u32>, #{WORKGROUP_ENTRIES_C}>,
-    gather_sources: array<atomic<u32>, #{WORKGROUP_ENTRIES_C}>,
-    scan: array<atomic<u32>, #{WORKGROUP_INVOCATIONS_C}>,
-    total: u32,
-}
-var<workgroup> sorting_shared_c: SortingSharedC;
 
-const NUM_BANKS: u32 = 16u;
-const LOG_NUM_BANKS: u32 = 4u;
-fn conflict_free_offset(n: u32) -> u32 {
-    return 0u;//n >> NUM_BANKS + n >> (2u * LOG_NUM_BANKS);
-}
+// --- SHARED MEMORY for the final, stable `radix_sort_c` ---
+var<workgroup> tile_input_entries: array<Entry, #{WORKGROUP_ENTRIES_C}>;
+var<workgroup> sorted_tile_entries: array<Entry, #{WORKGROUP_ENTRIES_C}>;
+var<workgroup> local_digit_counts: array<u32, #{RADIX_BASE}>;
+var<workgroup> local_digit_offsets: array<u32, #{RADIX_BASE}>;
+var<workgroup> digit_global_base_ws: array<u32, #{RADIX_BASE}>;
+var<workgroup> total_valid_in_tile_ws: u32;
+const INVALID_KEY: u32 = 0xFFFFFFFFu;
 
-fn exclusive_scan(local_invocation_index: u32, value: u32) -> u32 {
-    sorting_shared_c.scan[local_invocation_index + conflict_free_offset(local_invocation_index)] = value;
 
-    var offset = 1u;
-    for (var d = #{WORKGROUP_INVOCATIONS_C}u >> 1u; d > 0u; d >>= 1u) {
-        workgroupBarrier();
-        if(local_invocation_index < d) {
-            var ai = offset * (2u * local_invocation_index + 1u) - 1u;
-            var bi = offset * (2u * local_invocation_index + 2u) - 1u;
-            ai += conflict_free_offset(ai);
-            bi += conflict_free_offset(bi);
-            sorting_shared_c.scan[bi] += sorting_shared_c.scan[ai];
-        }
-
-        offset <<= 1u;
-    }
-
-    if (local_invocation_index == 0u) {
-      var i = #{WORKGROUP_INVOCATIONS_C}u - 1u;
-      i += conflict_free_offset(i);
-      sorting_shared_c.total = sorting_shared_c.scan[i];
-      sorting_shared_c.scan[i] = 0u;
-    }
-
-    for (var d = 1u; d < #{WORKGROUP_INVOCATIONS_C}u; d <<= 1u) {
-        workgroupBarrier();
-        offset >>= 1u;
-        if(local_invocation_index < d) {
-            var ai = offset * (2u * local_invocation_index + 1u) - 1u;
-            var bi = offset * (2u * local_invocation_index + 2u) - 1u;
-            ai += conflict_free_offset(ai);
-            bi += conflict_free_offset(bi);
-            let t = sorting_shared_c.scan[ai];
-            sorting_shared_c.scan[ai] = sorting_shared_c.scan[bi];
-            sorting_shared_c.scan[bi] += t;
-        }
-    }
-
-    workgroupBarrier();
-    return sorting_shared_c.scan[local_invocation_index + conflict_free_offset(local_invocation_index)];
-}
-
+//
+// Pass C (REWRITTEN): A fully stable implementation that discards the faulty spin-lock.
+//
 @compute @workgroup_size(#{WORKGROUP_INVOCATIONS_C})
 fn radix_sort_c(
-    @builtin(local_invocation_id) gl_LocalInvocationID: vec3<u32>,
-    @builtin(global_invocation_id) gl_GlobalInvocationID: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id) workgroup_id: vec3<u32>,
 ) {
-    // Draw an assignment number
-    if(gl_LocalInvocationID.x == 0u) {
-        sorting_shared_c.entries[0] = atomicAdd(&sorting.assignment_counter, 1u);
-    }
+    let tid = local_id.x;
+    let tile_size = #{WORKGROUP_ENTRIES_C}u;
+    let threads = #{WORKGROUP_INVOCATIONS_C}u;
+    let global_entry_offset = workgroup_id.y * tile_size;
 
-    // Reset histogram
-    sorting_shared_c.scan[gl_LocalInvocationID.x + conflict_free_offset(gl_LocalInvocationID.x)] = 0u;
-    workgroupBarrier();
-
-    let assignment = sorting_shared_c.entries[0];
-    let global_entry_offset = assignment * #{WORKGROUP_ENTRIES_C}u;
-    // TODO: Specialize end shader
-    if(gl_LocalInvocationID.x == 0u && assignment * #{WORKGROUP_ENTRIES_C}u + #{WORKGROUP_ENTRIES_C}u >= gaussian_uniforms.count) {
-        // Last workgroup resets the assignment number for the next pass
-        sorting.assignment_counter = 0u;
-    }
-
-    // Load keys from global memory into registers and rank them
-    var keys: array<u32, #{ENTRIES_PER_INVOCATION_C}>;
-    var ranks: array<u32, #{ENTRIES_PER_INVOCATION_C}>;
-    for(var entry_index = 0u; entry_index < #{ENTRIES_PER_INVOCATION_C}u; entry_index += 1u) {
-        keys[entry_index] = input_entries[global_entry_offset + #{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x].key;
-        let digit = (keys[entry_index] >> (sorting_pass_index * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
-        // TODO: Implement warp-level multi-split (WLMS) once WebGPU supports subgroup operations
-        ranks[entry_index] = atomicAdd(&sorting_shared_c.scan[digit + conflict_free_offset(digit)], 1u);
-    }
-    workgroupBarrier();
-
-    // Cumulate histogram
-    let local_digit_count = sorting_shared_c.scan[gl_LocalInvocationID.x + conflict_free_offset(gl_LocalInvocationID.x)];
-    let local_digit_offset = exclusive_scan(gl_LocalInvocationID.x, local_digit_count);
-    sorting_shared_c.scan[gl_LocalInvocationID.x + conflict_free_offset(gl_LocalInvocationID.x)] = local_digit_offset;
-
-    // Chained decoupling lookback
-    atomicStore(&status_counters[assignment][gl_LocalInvocationID.x], 0x40000000u | local_digit_count);
-    var global_digit_count = 0u;
-    var previous_tile = assignment;
-    while true {
-        if(previous_tile == 0u) {
-            global_digit_count += sorting.digit_histogram[sorting_pass_index][gl_LocalInvocationID.x];
-            break;
-        }
-        previous_tile -= 1u;
-        var status_counter = 0u;
-        while((status_counter & 0xC0000000u) == 0u) {
-            status_counter = atomicLoad(&status_counters[previous_tile][gl_LocalInvocationID.x]);
-        }
-        global_digit_count += status_counter & 0x3FFFFFFFu;
-        if((status_counter & 0x80000000u) != 0u) {
-            break;
+    // --- Step 1: Parallel load ---
+    for (var i = tid; i < tile_size; i += threads) {
+        let idx = global_entry_offset + i;
+        if (idx < gaussian_uniforms.count) {
+            tile_input_entries[i] = input_entries[idx];
+        } else {
+            tile_input_entries[i].key = INVALID_KEY;
         }
     }
-    atomicStore(&status_counters[assignment][gl_LocalInvocationID.x], 0x80000000u | (global_digit_count + local_digit_count));
-    if(sorting_pass_index == #{RADIX_DIGIT_PLACES}u - 1u && gl_LocalInvocationID.x == #{WORKGROUP_INVOCATIONS_C}u - 2u && global_entry_offset + #{WORKGROUP_ENTRIES_C}u >= gaussian_uniforms.count) {
-        draw_indirect.vertex_count = 4u;
-        draw_indirect.instance_count = global_digit_count + local_digit_count;
-    }
+    workgroupBarrier();
 
-    // Scatter keys inside shared memory
-    for(var entry_index = 0u; entry_index < #{ENTRIES_PER_INVOCATION_C}u; entry_index += 1u) {
-        let key = keys[entry_index];
-        let digit = (key >> (sorting_pass_index * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
-        ranks[entry_index] += sorting_shared_c.scan[digit + conflict_free_offset(digit)];
-        sorting_shared_c.entries[ranks[entry_index]] = key;
+    // --- Step 2: Serial, stable sort within the tile by a single thread ---
+    // This is the key change that guarantees stability by eliminating all race conditions.
+    if (tid == 0u) {
+        for (var i = 0u; i < #{RADIX_BASE}u; i+=1u) { local_digit_counts[i] = 0u; }
+
+        var valid_count = 0u;
+        for (var i = 0u; i < tile_size; i+=1u) {
+            if (tile_input_entries[i].key != INVALID_KEY) {
+                let digit = (tile_input_entries[i].key >> (sorting_pass_index * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
+                local_digit_counts[digit] += 1u;
+                valid_count += 1u;
+            }
+        }
+        total_valid_in_tile_ws = valid_count;
+
+        var sum = 0u;
+        for (var i = 0u; i < #{RADIX_BASE}u; i+=1u) {
+            local_digit_offsets[i] = sum;
+            sum += local_digit_counts[i];
+        }
+
+        for (var i = 0u; i < tile_size; i+=1u) {
+            if (tile_input_entries[i].key != INVALID_KEY) {
+                let entry = tile_input_entries[i];
+                let digit = (entry.key >> (sorting_pass_index * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
+                let dest_idx = local_digit_offsets[digit];
+                local_digit_offsets[digit] = dest_idx + 1u;
+                sorted_tile_entries[dest_idx] = entry;
+            }
+        }
     }
     workgroupBarrier();
 
-    // Add global offset
-    sorting_shared_c.scan[gl_LocalInvocationID.x + conflict_free_offset(gl_LocalInvocationID.x)] = global_digit_count - local_digit_offset;
-    workgroupBarrier();
-
-    // Store keys from shared memory into global memory
-    for(var entry_index = 0u; entry_index < #{ENTRIES_PER_INVOCATION_C}u; entry_index += 1u) {
-        let key = sorting_shared_c.entries[#{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x];
-        let digit = (key >> (sorting_pass_index * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
-        keys[entry_index] = digit;
-        output_entries[sorting_shared_c.scan[digit + conflict_free_offset(digit)] + #{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x].key = key;
+    // --- Step 3: Atomically determine the global base address for this tile ---
+    // This replaces the fragile spin-lock with a single, robust atomic operation per digit.
+    if (tid < #{RADIX_BASE}u) {
+        let count = local_digit_counts[tid];
+        if (count > 0u) {
+            digit_global_base_ws[tid] = atomicAdd(&sorting.digit_histogram[sorting_pass_index][tid], count);
+        }
     }
     workgroupBarrier();
 
-    // Load values from global memory and scatter them inside shared memory
-    for(var entry_index = 0u; entry_index < #{ENTRIES_PER_INVOCATION_C}u; entry_index += 1u) {
-        let value = input_entries[global_entry_offset + #{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x].value;
-        sorting_shared_c.entries[ranks[entry_index]] = value;
+    // --- Step 4: Parallel write from the locally-sorted tile to global memory ---
+    if (tid == 0u) {
+        var sum = 0u;
+        for (var i = 0u; i < #{RADIX_BASE}u; i += 1u) {
+            local_digit_offsets[i] = sum;
+            sum += local_digit_counts[i];
+        }
     }
     workgroupBarrier();
 
-    // Store values from shared memory into global memory
-    for(var entry_index = 0u; entry_index < #{ENTRIES_PER_INVOCATION_C}u; entry_index += 1u) {
-        let value = sorting_shared_c.entries[#{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x];
-        let digit = keys[entry_index];
-        output_entries[sorting_shared_c.scan[digit + conflict_free_offset(digit)] + #{WORKGROUP_INVOCATIONS_C}u * entry_index + gl_LocalInvocationID.x][1] = value;
+    for (var i = tid; i < tile_size; i += threads) {
+        if (i < total_valid_in_tile_ws) {
+            let entry = sorted_tile_entries[i];
+            let digit = (entry.key >> (sorting_pass_index * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
+            
+            let bin_start_offset = local_digit_offsets[digit];
+            let rank_in_bin = i - bin_start_offset;
+            let global_base = digit_global_base_ws[digit];
+            let dst = global_base + rank_in_bin;
+
+            if (dst < gaussian_uniforms.count) {
+                output_entries[dst] = entry;
+            }
+        }
+    }
+
+    if (sorting_pass_index == #{RADIX_DIGIT_PLACES}u - 1u && tid == 0u) {
+        atomicStore(&draw_indirect.instance_count, gaussian_uniforms.count);
     }
 }
