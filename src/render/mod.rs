@@ -282,7 +282,7 @@ impl<R: PlanarSync> Clone for PlanarStorageRebindQueue<R> {
 
 impl<R: PlanarSync> PlanarStorageRebindQueue<R> {
     fn push_unique(&mut self, id: AssetId<R::PlanarType>) {
-        if !self.handles.iter().any(|existing| *existing == id) {
+        if !self.handles.contains(&id) {
             self.handles.push(id);
         }
     }
