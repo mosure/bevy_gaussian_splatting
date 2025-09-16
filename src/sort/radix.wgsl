@@ -195,19 +195,23 @@ fn radix_sort_c(
     workgroupBarrier();
 
     // --- Step 3: Determine deterministic global base for each digit ---
-    if (tid < #{RADIX_BASE}u) {
-        let count = local_digit_counts[tid];
-        let tile_count = max((gaussian_uniforms.count + tile_size - 1u) / tile_size, 1u);
-        let expected = sorting_pass_index * tile_count + workgroup_id.y;
+    let tile_count = max((gaussian_uniforms.count + tile_size - 1u) / tile_size, 1u);
+    let expected_ticket = sorting_pass_index * tile_count + workgroup_id.y;
 
+    // Acquire a per-tile ticket so we only serialize once per tile instead of once per digit.
+    if (tid == 0u) {
         loop {
-            let head = atomicLoad(&sorting.digit_tile_head[tid]);
-            if (head == expected) {
-                let exchange = atomicCompareExchangeWeak(&sorting.digit_tile_head[tid], expected, expected + 1u);
+            let head = atomicLoad(&sorting.assignment_counter);
+            if (head == expected_ticket) {
+                let exchange = atomicCompareExchangeWeak(&sorting.assignment_counter, expected_ticket, expected_ticket + 1u);
                 if (exchange.exchanged) { break; }
             }
         }
+    }
+    workgroupBarrier();
 
+    if (tid < #{RADIX_BASE}u) {
+        let count = local_digit_counts[tid];
         let base = atomicAdd(&sorting.digit_histogram[sorting_pass_index][tid], count);
         digit_global_base_ws[tid] = base;
     }
@@ -238,7 +242,6 @@ fn radix_sort_c(
             }
         }
     }
-
     if (sorting_pass_index == #{RADIX_DIGIT_PLACES}u - 1u && tid == 0u) {
         atomicStore(&draw_indirect.instance_count, gaussian_uniforms.count);
     }

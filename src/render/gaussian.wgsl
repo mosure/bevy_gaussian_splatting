@@ -165,6 +165,24 @@
 #endif
 
 
+fn world_to_local_direction(ray_direction_world: vec3<f32>, transform: mat4x4<f32>) -> vec3<f32> {
+    let basis = mat3x3<f32>(
+        transform[0].xyz,
+        transform[1].xyz,
+        transform[2].xyz,
+    );
+    let basis_x = normalize(basis[0]);
+    let basis_y = normalize(basis[1]);
+    let basis_z = normalize(basis[2]);
+
+    let local = vec3<f32>(
+        dot(basis_x, ray_direction_world),
+        dot(basis_y, ray_direction_world),
+        dot(basis_z, ray_direction_world),
+    );
+
+    return normalize(local);
+}
 @vertex
 fn vs_points(
     @builtin(instance_index) instance_index: u32,
@@ -300,12 +318,13 @@ fn vs_points(
 
 // TODO: RASTERIZE_ACCELERATION
 #ifdef RASTERIZE_CLASSIFICATION
-    let ray_direction = normalize(transformed_position - view.world_position);
+    let ray_direction_world = normalize(transformed_position - view.world_position);
+    let ray_direction_local = world_to_local_direction(ray_direction_world, gaussian_uniforms.transform);
 
     #ifdef GAUSSIAN_3D_STRUCTURE
-        rgb = get_color(splat_index, ray_direction);
+        rgb = get_color(splat_index, ray_direction_local);
     #else ifdef GAUSSIAN_4D
-        rgb = get_color(splat_index, gaussian_4d.dir_t, ray_direction);
+        rgb = get_color(splat_index, gaussian_4d.dir_t, ray_direction_local);
     #endif
 
     rgb = class_to_rgb(
@@ -391,13 +410,13 @@ fn vs_points(
     rgb = base_color * scaled_mag;
 #else ifdef RASTERIZE_COLOR
     // TODO: verify color benefit for ray_direction computed at quad verticies instead of gaussian center (same as current complexity)
-    // TODO: why doesn't Transform rotation change SH color?
-    let ray_direction = normalize(transformed_position - view.world_position);
+    let ray_direction_world = normalize(transformed_position - view.world_position);
+    let ray_direction_local = world_to_local_direction(ray_direction_world, gaussian_uniforms.transform);
 
     #ifdef GAUSSIAN_3D_STRUCTURE
-        rgb = get_color(splat_index, ray_direction);
+        rgb = get_color(splat_index, ray_direction_local);
     #else ifdef GAUSSIAN_4D
-        rgb = get_color(splat_index, gaussian_4d.dir_t, ray_direction);
+        rgb = get_color(splat_index, gaussian_4d.dir_t, ray_direction_local);
     #endif
 #endif
 
