@@ -425,6 +425,7 @@ where
         settings,
     ) in gaussian_clouds.iter() {
         if settings.sort_mode != SortMode::Radix {
+            commands.entity(entity).remove::<RadixBindGroup>();
             continue;
         }
 
