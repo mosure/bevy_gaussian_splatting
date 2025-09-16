@@ -6,7 +6,7 @@ use std::{
 
 use bevy::{
     prelude::*,
-    asset::{load_internal_asset, weak_handle},
+    asset::{load_internal_asset, weak_handle, AssetEvent, AssetId},
     core_pipeline::{
         core_3d::Transparent3d,
         prepass::{
@@ -137,15 +137,25 @@ where
 
         app.add_plugins(MorphPlugin::<R>::default());
         app.add_plugins(SortPlugin::<R>::default());
+        app.init_resource::<PlanarStorageRebindQueue<R>>();
+        app.add_systems(PostUpdate, queue_planar_storage_rebinds::<R>);
 
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .add_render_command::<Transparent3d, DrawGaussians<R>>()
                 .init_resource::<GaussianUniformBindGroups>()
-                .add_systems(ExtractSchedule, extract_gaussians::<R>)
+                .init_resource::<PlanarStorageRebindQueue<R>>()
+                .add_systems(
+                    ExtractSchedule,
+                    (
+                        extract_gaussians::<R>,
+                        extract_planar_storage_rebind_queue::<R>,
+                    ),
+                )
                 .add_systems(
                     Render,
                     (
+                        refresh_planar_storage_bind_groups::<R>.in_set(RenderSet::PrepareBindGroups),
                         queue_gaussian_bind_group::<R>.in_set(RenderSet::PrepareBindGroups),
                         queue_gaussian_view_bind_groups::<R>.in_set(RenderSet::PrepareBindGroups),
                         queue_gaussian_compute_view_bind_groups::<R>.in_set(RenderSet::PrepareBindGroups),
@@ -241,6 +251,101 @@ where
             render_app
                 .init_resource::<CloudPipeline<R>>()
                 .init_resource::<SpecializedRenderPipelines<CloudPipeline<R>>>();
+        }
+    }
+}
+
+
+#[derive(Resource)]
+struct PlanarStorageRebindQueue<R: PlanarSync> {
+    handles: Vec<AssetId<R::PlanarType>>,
+    marker: std::marker::PhantomData<R>,
+}
+
+impl<R: PlanarSync> Default for PlanarStorageRebindQueue<R> {
+    fn default() -> Self {
+        Self {
+            handles: Vec::new(),
+            marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<R: PlanarSync> Clone for PlanarStorageRebindQueue<R> {
+    fn clone(&self) -> Self {
+        Self {
+            handles: self.handles.clone(),
+            marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<R: PlanarSync> PlanarStorageRebindQueue<R> {
+    fn push_unique(&mut self, id: AssetId<R::PlanarType>) {
+        if !self.handles.contains(&id) {
+            self.handles.push(id);
+        }
+    }
+}
+
+fn queue_planar_storage_rebinds<R: PlanarSync>(
+    mut events: EventReader<AssetEvent<R::PlanarType>>,
+    mut queue: ResMut<PlanarStorageRebindQueue<R>>,
+) {
+    for event in events.read() {
+        match event {
+            AssetEvent::Modified { id } | AssetEvent::LoadedWithDependencies { id } => {
+                queue.push_unique(*id);
+            }
+            AssetEvent::Removed { id } => {
+                queue.handles.retain(|handle_id| handle_id != id);
+            }
+            AssetEvent::Added { .. } | AssetEvent::Unused { .. } => {}
+        }
+    }
+}
+
+fn extract_planar_storage_rebind_queue<R: PlanarSync>(
+    mut commands: Commands,
+    mut main_world: ResMut<bevy::render::MainWorld>,
+) {
+    let mut queue = main_world.resource_mut::<PlanarStorageRebindQueue<R>>();
+    commands.insert_resource(queue.clone());
+    queue.handles.clear();
+}
+
+fn refresh_planar_storage_bind_groups<R: PlanarSync>(
+    mut commands: Commands,
+    render_device: Res<RenderDevice>,
+    gpu_planars: Res<RenderAssets<R::GpuPlanarType>>,
+    bind_group_layouts: Res<bevy_interleave::interface::storage::PlanarStorageLayouts<R>>,
+    mut queue: ResMut<PlanarStorageRebindQueue<R>>,
+    query: Query<(Entity, &R::PlanarTypeHandle)>,
+) where
+    R::GpuPlanarType: GpuPlanarStorage,
+{
+    if queue.handles.is_empty() {
+        return;
+    }
+
+    let layout = &bind_group_layouts.bind_group_layout;
+    let handles = queue.handles.clone();
+    queue.handles.clear();
+
+    for id in handles {
+        for (entity, planar_handle) in query.iter() {
+            if planar_handle.handle().id() != id {
+                continue;
+            }
+
+            if let Some(gpu_planar) = gpu_planars.get(planar_handle.handle()) {
+                let bind_group = gpu_planar.bind_group(render_device.as_ref(), layout);
+
+                commands.entity(entity).insert(PlanarStorageBindGroup::<R> {
+                    bind_group,
+                    phantom: std::marker::PhantomData,
+                });
+            }
         }
     }
 }
