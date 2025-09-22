@@ -13,6 +13,9 @@
                 rhs_position_visibility,
                 rhs_spherical_harmonics,
                 rhs_covariance_3d_opacity,
+                out_position_visibility,
+                out_spherical_harmonics,
+                out_covariance_3d_opacity,
             }
         #endif
     #else
@@ -28,16 +31,21 @@
             #import bevy_gaussian_splatting::bindings::{
                 rhs_position_visibility,
                 rhs_spherical_harmonics,
+                out_position_visibility,
+                out_spherical_harmonics,
             }
 
             #ifdef PLANAR_F16
                 #import bevy_gaussian_splatting::bindings::rhs_rotation_scale_opacity
+                #import bevy_gaussian_splatting::bindings::out_rotation_scale_opacity
             #endif
 
             #ifdef PLANAR_F32
                 #import bevy_gaussian_splatting::bindings::{
                     rhs_rotation,
                     rhs_scale_opacity,
+                    out_rotation,
+                    out_scale_opacity,
                 }
             #endif
         #endif
@@ -242,6 +250,76 @@ fn planar_visibility(value: vec4<f32>) -> f32 {
             fn get_rhs_visibility(index: u32) -> f32 {
                 return planar_visibility(rhs_position_visibility[index]);
             }
+
+            fn set_output_position_visibility(
+                index: u32,
+                position: vec3<f32>,
+                visibility: f32,
+            ) {
+                out_position_visibility[index] = vec4<f32>(position, visibility);
+            }
+
+            fn set_output_spherical_harmonics(
+                index: u32,
+                sh: array<f32, #{SH_COEFF_COUNT}>,
+            ) {
+                for (var i = 0u; i < #{HALF_SH_COEFF_COUNT}; i = i + 1u) {
+                    let base = i * 2u;
+                    out_spherical_harmonics[index][i] = pack2x16float(vec2<f32>(
+                        sh[base],
+                        sh[base + 1u],
+                    ));
+                }
+            }
+
+            #ifdef PRECOMPUTE_COVARIANCE_3D
+                fn planar_f16_encode_covariance(
+                    cov: array<f32, 6>,
+                    opacity: f32,
+                ) -> vec4<u32> {
+                    return vec4<u32>(
+                        pack2x16float(vec2<f32>(cov[1], cov[0])),
+                        pack2x16float(vec2<f32>(cov[3], cov[2])),
+                        pack2x16float(vec2<f32>(cov[5], cov[4])),
+                        pack2x16float(vec2<f32>(0.0, opacity)),
+                    );
+                }
+
+                fn set_output_covariance(
+                    index: u32,
+                    cov: array<f32, 6>,
+                    opacity: f32,
+                ) {
+                    out_covariance_3d_opacity[index] = planar_f16_encode_covariance(cov, opacity);
+                }
+            #else
+                fn planar_f16_encode_rotation_scale_opacity(
+                    rotation: vec4<f32>,
+                    scale: vec3<f32>,
+                    opacity: f32,
+                ) -> vec4<u32> {
+                    return vec4<u32>(
+                        pack2x16float(vec2<f32>(rotation.y, rotation.x)),
+                        pack2x16float(vec2<f32>(rotation.w, rotation.z)),
+                        pack2x16float(vec2<f32>(scale.y, scale.x)),
+                        pack2x16float(vec2<f32>(opacity, scale.z)),
+                    );
+                }
+
+                fn set_output_transform(
+                    index: u32,
+                    rotation: vec4<f32>,
+                    scale: vec3<f32>,
+                    opacity: f32,
+                ) {
+                    out_rotation_scale_opacity[index] = planar_f16_encode_rotation_scale_opacity(
+                        rotation,
+                        scale,
+                        opacity,
+                    );
+                }
+            #endif
+
         #endif
     #else ifdef PLANAR_F32
         fn get_color(
@@ -306,6 +384,51 @@ fn planar_visibility(value: vec4<f32>) -> f32 {
             fn get_rhs_visibility(index: u32) -> f32 {
                 return planar_visibility(rhs_position_visibility[index]);
             }
+
+            fn set_output_position_visibility(
+                index: u32,
+                position: vec3<f32>,
+                visibility: f32,
+            ) {
+                out_position_visibility[index] = vec4<f32>(position, visibility);
+            }
+
+            fn set_output_spherical_harmonics(
+                index: u32,
+                sh: array<f32, #{SH_COEFF_COUNT}>,
+            ) {
+                for (var i = 0u; i < #{SH_COEFF_COUNT}; i = i + 1u) {
+                    out_spherical_harmonics[index][i] = sh[i];
+                }
+            }
+
+            #ifdef PRECOMPUTE_COVARIANCE_3D
+                fn set_output_covariance(
+                    index: u32,
+                    cov: array<f32, 6>,
+                    opacity: f32,
+                ) {
+                    out_covariance_3d_opacity[index][0] = cov[0];
+                    out_covariance_3d_opacity[index][1] = cov[1];
+                    out_covariance_3d_opacity[index][2] = cov[2];
+                    out_covariance_3d_opacity[index][3] = cov[3];
+                    out_covariance_3d_opacity[index][4] = cov[4];
+                    out_covariance_3d_opacity[index][5] = cov[5];
+                    out_covariance_3d_opacity[index][6] = 0.0;
+                    out_covariance_3d_opacity[index][7] = opacity;
+                }
+            #else
+                fn set_output_transform(
+                    index: u32,
+                    rotation: vec4<f32>,
+                    scale: vec3<f32>,
+                    opacity: f32,
+                ) {
+                    out_rotation[index] = rotation;
+                    out_scale_opacity[index] = vec4<f32>(scale, opacity);
+                }
+            #endif
+
         #endif
     #endif
 #else ifdef GAUSSIAN_4D

@@ -55,7 +55,7 @@ default = [
 
   # TODO: bevy_interleave storage bind group read_only per plane attribute support
   # "morph_particles",
-  # "morph_interpolate",
+  "morph_interpolate",
 
   "sort_bitonic",
   "sort_radix",  # TODO: fix macos radix sort
