@@ -210,7 +210,7 @@ where
 }
 
 #[derive(Resource)]
-struct PlanarStorageRebindQueue<R: PlanarSync> {
+pub struct PlanarStorageRebindQueue<R: PlanarSync> {
     handles: Vec<AssetId<R::PlanarType>>,
     marker: std::marker::PhantomData<R>,
 }
@@ -234,7 +234,7 @@ impl<R: PlanarSync> Clone for PlanarStorageRebindQueue<R> {
 }
 
 impl<R: PlanarSync> PlanarStorageRebindQueue<R> {
-    fn push_unique(&mut self, id: AssetId<R::PlanarType>) {
+    pub fn push_unique(&mut self, id: AssetId<R::PlanarType>) {
         if !self.handles.contains(&id) {
             self.handles.push(id);
         }

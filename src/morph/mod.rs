@@ -1,6 +1,9 @@
 use bevy::prelude::*;
 use bevy_interleave::prelude::*;
 
+#[cfg(feature = "morph_interpolate")]
+pub mod interpolate;
+
 #[cfg(feature = "morph_particles")]
 pub mod particle;
 
@@ -15,10 +18,23 @@ impl<R: PlanarSync> Default for MorphPlugin<R> {
     }
 }
 
-impl<R: PlanarSync> Plugin for MorphPlugin<R> {
-    #[allow(unused)]
+impl<R> Plugin for MorphPlugin<R>
+where
+    R: PlanarSync,
+    R::GpuPlanarType: GpuPlanarStorage,
+{
     fn build(&self, app: &mut App) {
+        #[cfg(feature = "morph_interpolate")]
+        {
+            app.add_plugins(interpolate::InterpolatePlugin::<R>::default());
+        }
+
         #[cfg(feature = "morph_particles")]
-        app.add_plugins(particle::ParticleBehaviorPlugin::<R>::default());
+        {
+            app.add_plugins(particle::ParticleBehaviorPlugin::<R>::default());
+        }
+
+        #[cfg(not(any(feature = "morph_interpolate", feature = "morph_particles")))]
+        let _ = app;
     }
 }

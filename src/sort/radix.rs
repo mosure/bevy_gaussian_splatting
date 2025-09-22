@@ -1,3 +1,5 @@
+#[cfg(feature = "morph_interpolate")]
+use std::any::TypeId;
 use std::collections::HashMap;
 
 use bevy::{
@@ -24,6 +26,12 @@ use bevy::{
 };
 use bevy_interleave::{interface::storage::PlanarStorageBindGroup, prelude::*};
 use static_assertions::assert_cfg;
+
+#[cfg(feature = "morph_interpolate")]
+use crate::{
+    gaussian::formats::planar_3d::PlanarGaussian3d,
+    morph::interpolate::InterpolateLabel,
+};
 
 use crate::{
     CloudSettings, GaussianCamera,
@@ -81,9 +89,14 @@ where
         );
 
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app
-                .add_render_graph_node::<RadixSortNode<R>>(Core3d, RadixSortLabel)
-                .add_render_graph_edge(Core3d, RadixSortLabel, Node3d::LatePrepass);
+            render_app.add_render_graph_node::<RadixSortNode<R>>(Core3d, RadixSortLabel);
+
+            #[cfg(feature = "morph_interpolate")]
+            if TypeId::of::<R::PlanarType>() == TypeId::of::<PlanarGaussian3d>() {
+                render_app.add_render_graph_edge(Core3d, InterpolateLabel, RadixSortLabel);
+            }
+
+            render_app.add_render_graph_edge(Core3d, RadixSortLabel, Node3d::LatePrepass);
         }
     }
 

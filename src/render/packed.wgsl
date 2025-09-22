@@ -2,7 +2,7 @@
 
 #import bevy_gaussian_splatting::bindings::points
 #ifdef BINARY_GAUSSIAN_OP
-    #import bevy_gaussian_splatting::bindings::rhs_points
+    #import bevy_gaussian_splatting::bindings::{rhs_points, out_points}
 #endif
 
 #import bevy_gaussian_splatting::spherical_harmonics::{
@@ -104,6 +104,31 @@ fn get_rhs_opacity(index: u32) -> f32 {
 
 fn get_rhs_visibility(index: u32) -> f32 {
     return gaussian_visibility(rhs_points[index]);
+}
+
+fn set_output_position_visibility(
+    index: u32,
+    position: vec3<f32>,
+    visibility: f32,
+) {
+    out_points[index].position_visibility = vec4<f32>(position, visibility);
+}
+
+fn set_output_spherical_harmonics(
+    index: u32,
+    sh: array<f32, #{SH_COEFF_COUNT}>,
+) {
+    out_points[index].sh = sh;
+}
+
+fn set_output_transform(
+    index: u32,
+    rotation: vec4<f32>,
+    scale: vec3<f32>,
+    opacity: f32,
+) {
+    out_points[index].rotation = rotation;
+    out_points[index].scale_opacity = vec4<f32>(scale, opacity);
 }
 
 #endif

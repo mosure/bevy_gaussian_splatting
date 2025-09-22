@@ -46,6 +46,8 @@ struct GaussianUniforms {
             #else
                 @group(3) @binding(0) var<storage, read> rhs_points: array<Gaussian>;
             #endif
+
+            @group(4) @binding(0) var<storage, read_write> out_points: array<Gaussian>;
         #endif
     #endif
 
@@ -72,6 +74,19 @@ struct GaussianUniforms {
             #else
                 @group(3) @binding(2) var<storage, read> rhs_rotation: array<vec4<f32>>;
                 @group(3) @binding(3) var<storage, read> rhs_scale_opacity: array<vec4<f32>>;
+            #endif
+        #endif
+
+
+        #ifdef BINARY_GAUSSIAN_OP
+            @group(4) @binding(0) var<storage, read_write> out_position_visibility: array<vec4<f32>>;
+            @group(4) @binding(1) var<storage, read_write> out_spherical_harmonics: array<array<f32, #{SH_COEFF_COUNT}>>;
+
+            #ifdef PRECOMPUTE_COVARIANCE_3D
+                @group(4) @binding(2) var<storage, read_write> out_covariance_3d_opacity: array<array<f32, 8>>;
+            #else
+                @group(4) @binding(2) var<storage, read_write> out_rotation: array<vec4<f32>>;
+                @group(4) @binding(3) var<storage, read_write> out_scale_opacity: array<vec4<f32>>;
             #endif
         #endif
 
@@ -105,6 +120,15 @@ struct GaussianUniforms {
                 @group(3) @binding(2) var<storage, read> rhs_covariance_3d_opacity: array<vec4<u32>>;
             #else
                 @group(3) @binding(2) var<storage, read> rhs_rotation_scale_opacity: array<vec4<u32>>;
+            #endif
+
+            @group(4) @binding(0) var<storage, read_write> out_position_visibility: array<vec4<f32>>;
+            @group(4) @binding(1) var<storage, read_write> out_spherical_harmonics: array<array<u32, #{HALF_SH_COEFF_COUNT}>>;
+
+            #ifdef PRECOMPUTE_COVARIANCE_3D
+                @group(4) @binding(2) var<storage, read_write> out_covariance_3d_opacity: array<vec4<u32>>;
+            #else
+                @group(4) @binding(2) var<storage, read_write> out_rotation_scale_opacity: array<vec4<u32>>;
             #endif
         #endif
 

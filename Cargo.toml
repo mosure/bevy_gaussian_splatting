@@ -55,6 +55,7 @@ default = [
 
   # TODO: bevy_interleave storage bind group read_only per plane attribute support
   # "morph_particles",
+  # "morph_interpolate",
 
   "sort_bitonic",
   "sort_radix",  # TODO: fix macos radix sort
@@ -77,6 +78,7 @@ io_ply = ["ply-rs"]
 material_noise = ["noise", "dep:noise"]
 
 morph_particles = []
+morph_interpolate = []
 
 noise = []
 
