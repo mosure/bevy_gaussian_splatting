@@ -421,6 +421,7 @@ fn queue_gaussians<R: PlanarSync>(
 
             let key = CloudPipelineKey {
                 aabb: settings.aabb,
+                binary_gaussian_op: false,
                 opacity_adaptive_radius: settings.opacity_adaptive_radius,
                 visualize_bounding_box: settings.visualize_bounding_box,
                 draw_mode: settings.draw_mode,
@@ -732,6 +733,10 @@ pub fn shader_defs(key: CloudPipelineKey) -> Vec<ShaderDefVal> {
         shader_defs.push("USE_OBB".into());
     }
 
+    if key.binary_gaussian_op {
+        shader_defs.push("BINARY_GAUSSIAN_OP".into());
+    }
+
     if key.opacity_adaptive_radius {
         shader_defs.push("OPACITY_ADAPTIVE_RADIUS".into());
     }
@@ -813,6 +818,7 @@ pub fn shader_defs(key: CloudPipelineKey) -> Vec<ShaderDefVal> {
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Default)]
 pub struct CloudPipelineKey {
     pub aabb: bool,
+    pub binary_gaussian_op: bool,
     pub visualize_bounding_box: bool,
     pub opacity_adaptive_radius: bool,
     pub draw_mode: DrawMode,
