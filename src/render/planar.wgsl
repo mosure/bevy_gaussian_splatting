@@ -7,6 +7,14 @@
             spherical_harmonics,
             covariance_3d_opacity,
         }
+
+        #ifdef BINARY_GAUSSIAN_OP
+            #import bevy_gaussian_splatting::bindings::{
+                rhs_position_visibility,
+                rhs_spherical_harmonics,
+                rhs_covariance_3d_opacity,
+            }
+        #endif
     #else
         #import bevy_gaussian_splatting::bindings::{
             position_visibility,
@@ -15,6 +23,24 @@
             rotation_scale_opacity,
             scale_opacity,
         }
+
+        #ifdef BINARY_GAUSSIAN_OP
+            #import bevy_gaussian_splatting::bindings::{
+                rhs_position_visibility,
+                rhs_spherical_harmonics,
+            }
+
+            #ifdef PLANAR_F16
+                #import bevy_gaussian_splatting::bindings::rhs_rotation_scale_opacity
+            #endif
+
+            #ifdef PLANAR_F32
+                #import bevy_gaussian_splatting::bindings::{
+                    rhs_rotation,
+                    rhs_scale_opacity,
+                }
+            #endif
+        #endif
     #endif
 
     #import bevy_gaussian_splatting::spherical_harmonics::{
@@ -29,6 +55,16 @@
         scale_opacity,
         timestamp_timescale,
     }
+
+    #ifdef BINARY_GAUSSIAN_OP
+        #import bevy_gaussian_splatting::bindings::{
+            rhs_position_visibility,
+            rhs_spherindrical_harmonics,
+            rhs_isotropic_rotations,
+            rhs_scale_opacity,
+            rhs_timestamp_timescale,
+        }
+    #endif
 
     #import bevy_gaussian_splatting::spherical_harmonics::srgb_to_linear
     #import bevy_gaussian_splatting::spherindrical_harmonics::spherindrical_harmonics_lookup
@@ -112,6 +148,86 @@
         fn get_visibility(index: u32) -> f32 {
             return position_visibility[index].w;
         }
+
+        #ifdef BINARY_GAUSSIAN_OP
+            fn get_rhs_color(
+                index: u32,
+                ray_direction: vec3<f32>,
+            ) -> vec3<f32> {
+                let sh = get_rhs_spherical_harmonics(index);
+                let color = spherical_harmonics_lookup(ray_direction, sh);
+                return srgb_to_linear(color);
+            }
+
+            fn get_rhs_position(index: u32) -> vec3<f32> {
+                return rhs_position_visibility[index].xyz;
+            }
+
+            fn get_rhs_spherical_harmonics(index: u32) -> array<f32, #{SH_COEFF_COUNT}> {
+                var coefficients: array<f32, #{SH_COEFF_COUNT}>;
+
+                for (var i = 0u; i < #{HALF_SH_COEFF_COUNT}u; i = i + 1u) {
+                    let values = unpack2x16float(rhs_spherical_harmonics[index][i]);
+
+                    coefficients[i * 2u] = values[0];
+                    coefficients[i * 2u + 1u] = values[1];
+                }
+
+                return coefficients;
+            }
+
+            #ifdef PRECOMPUTE_COVARIANCE_3D
+                fn get_rhs_cov3d(index: u32) -> array<f32, 6> {
+                    let c0 = unpack2x16float(rhs_covariance_3d_opacity[index].x);
+                    let c1 = unpack2x16float(rhs_covariance_3d_opacity[index].y);
+                    let c2 = unpack2x16float(rhs_covariance_3d_opacity[index].z);
+
+                    var cov3d: array<f32, 6>;
+
+                    cov3d[0] = c0.y;
+                    cov3d[1] = c0.x;
+                    cov3d[2] = c1.y;
+                    cov3d[3] = c1.x;
+                    cov3d[4] = c2.y;
+                    cov3d[5] = c2.x;
+
+                    return cov3d;
+                }
+            #else
+                fn get_rhs_rotation(index: u32) -> vec4<f32> {
+                    let q0 = unpack2x16float(rhs_rotation_scale_opacity[index].x);
+                    let q1 = unpack2x16float(rhs_rotation_scale_opacity[index].y);
+
+                    return vec4<f32>(
+                        q0.yx,
+                        q1.yx,
+                    );
+                }
+
+                fn get_rhs_scale(index: u32) -> vec3<f32> {
+                    let s0 = unpack2x16float(rhs_rotation_scale_opacity[index].z);
+                    let s1 = unpack2x16float(rhs_rotation_scale_opacity[index].w);
+
+                    return vec3<f32>(
+                        s0.yx,
+                        s1.y,
+                    );
+                }
+            #endif
+
+            fn get_rhs_opacity(index: u32) -> f32 {
+                #ifdef PRECOMPUTE_COVARIANCE_3D
+                    return unpack2x16float(rhs_covariance_3d_opacity[index].w).y;
+                #else
+                    return unpack2x16float(rhs_rotation_scale_opacity[index].w).x;
+                #endif
+            }
+
+            fn get_rhs_visibility(index: u32) -> f32 {
+                return rhs_position_visibility[index].w;
+            }
+        #endif
+
     #else ifdef PLANAR_F32
         fn get_color(
             index: u32,
@@ -145,6 +261,42 @@
         fn get_visibility(index: u32) -> f32 {
             return position_visibility[index].w;
         }
+
+        #ifdef BINARY_GAUSSIAN_OP
+            fn get_rhs_color(
+                index: u32,
+                ray_direction: vec3<f32>,
+            ) -> vec3<f32> {
+                let sh = get_rhs_spherical_harmonics(index);
+                let color = spherical_harmonics_lookup(ray_direction, sh);
+                return srgb_to_linear(color);
+            }
+
+            fn get_rhs_position(index: u32) -> vec3<f32> {
+                return rhs_position_visibility[index].xyz;
+            }
+
+            fn get_rhs_spherical_harmonics(index: u32) -> array<f32, #{SH_COEFF_COUNT}> {
+                return rhs_spherical_harmonics[index];
+            }
+
+            fn get_rhs_rotation(index: u32) -> vec4<f32> {
+                return rhs_rotation[index];
+            }
+
+            fn get_rhs_scale(index: u32) -> vec3<f32> {
+                return rhs_scale_opacity[index].xyz;
+            }
+
+            fn get_rhs_opacity(index: u32) -> f32 {
+                return rhs_scale_opacity[index].w;
+            }
+
+            fn get_rhs_visibility(index: u32) -> f32 {
+                return rhs_position_visibility[index].w;
+            }
+        #endif
+
     #endif
 #else ifdef GAUSSIAN_4D
     #ifdef PLANAR_F32
@@ -202,6 +354,63 @@
         fn get_time_scale(index: u32) -> f32 {
             return timestamp_timescale[index].y;
         }
+
+        #ifdef BINARY_GAUSSIAN_OP
+            fn get_rhs_color(
+                index: u32,
+                dir_t: f32,
+                ray_direction: vec3<f32>,
+            ) -> vec3<f32> {
+                let sh = get_rhs_spherindrical_harmonics(index);
+                let color = spherindrical_harmonics_lookup(ray_direction, dir_t, sh);
+                return srgb_to_linear(color);
+            }
+
+            fn get_rhs_isotropic_rotations(index: u32) -> mat2x4<f32> {
+                let r1x = rhs_isotropic_rotations[index][0];
+                let r1y = rhs_isotropic_rotations[index][1];
+                let r1z = rhs_isotropic_rotations[index][2];
+                let r1w = rhs_isotropic_rotations[index][3];
+
+                let r2x = rhs_isotropic_rotations[index][4];
+                let r2y = rhs_isotropic_rotations[index][5];
+                let r2z = rhs_isotropic_rotations[index][6];
+                let r2w = rhs_isotropic_rotations[index][7];
+
+                return mat2x4<f32>(
+                    r1x, r1y, r1z, r1w,
+                    r2x, r2y, r2z, r2w,
+                );
+            }
+
+            fn get_rhs_scale(index: u32) -> vec3<f32> {
+                return rhs_scale_opacity[index].xyz;
+            }
+
+            fn get_rhs_opacity(index: u32) -> f32 {
+                return rhs_scale_opacity[index].w;
+            }
+
+            fn get_rhs_position(index: u32) -> vec3<f32> {
+                return rhs_position_visibility[index].xyz;
+            }
+
+            fn get_rhs_visibility(index: u32) -> f32 {
+                return rhs_position_visibility[index].w;
+            }
+
+            fn get_rhs_spherindrical_harmonics(index: u32) -> array<f32, #{SH_4D_COEFF_COUNT}> {
+                return rhs_spherindrical_harmonics[index];
+            }
+
+            fn get_rhs_timestamp(index: u32) -> f32 {
+                return rhs_timestamp_timescale[index].x;
+            }
+
+            fn get_rhs_time_scale(index: u32) -> f32 {
+                return rhs_timestamp_timescale[index].y;
+            }
+        #endif
     #endif
 
     // TODO: PLANAR_F16 for GAUSSIAN_4D

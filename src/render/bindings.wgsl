@@ -39,6 +39,14 @@ struct GaussianUniforms {
         #else
             @group(2) @binding(0) var<storage, read> points: array<Gaussian>;
         #endif
+
+        #ifdef BINARY_GAUSSIAN_OP
+            #ifdef READ_WRITE_POINTS
+                @group(3) @binding(0) var<storage, read_write> rhs_points: array<Gaussian>;
+            #else
+                @group(3) @binding(0) var<storage, read> rhs_points: array<Gaussian>;
+            #endif
+        #endif
     #endif
 
     #ifdef PLANAR_F32
@@ -49,6 +57,23 @@ struct GaussianUniforms {
         #endif
 
         @group(2) @binding(1) var<storage, read> spherical_harmonics: array<array<f32, #{SH_COEFF_COUNT}>>;
+
+        #ifdef BINARY_GAUSSIAN_OP
+            #ifdef READ_WRITE_POINTS
+                @group(3) @binding(0) var<storage, read_write> rhs_position_visibility: array<vec4<f32>>;
+            #else
+                @group(3) @binding(0) var<storage, read> rhs_position_visibility: array<vec4<f32>>;
+            #endif
+
+            @group(3) @binding(1) var<storage, read> rhs_spherical_harmonics: array<array<f32, #{SH_COEFF_COUNT}>>;
+
+            #ifdef PRECOMPUTE_COVARIANCE_3D
+                @group(3) @binding(2) var<storage, read> rhs_covariance_3d_opacity: array<array<f32, 8>>;
+            #else
+                @group(3) @binding(2) var<storage, read> rhs_rotation: array<vec4<f32>>;
+                @group(3) @binding(3) var<storage, read> rhs_scale_opacity: array<vec4<f32>>;
+            #endif
+        #endif
 
         #ifdef PRECOMPUTE_COVARIANCE_3D
             @group(2) @binding(2) var<storage, read> covariance_3d_opacity: array<array<f32, 8>>;
@@ -66,6 +91,22 @@ struct GaussianUniforms {
         #endif
 
         @group(2) @binding(1) var<storage, read> spherical_harmonics: array<array<u32, #{HALF_SH_COEFF_COUNT}>>;
+
+        #ifdef BINARY_GAUSSIAN_OP
+            #ifdef READ_WRITE_POINTS
+                @group(3) @binding(0) var<storage, read_write> rhs_position_visibility: array<vec4<f32>>;
+            #else
+                @group(3) @binding(0) var<storage, read> rhs_position_visibility: array<vec4<f32>>;
+            #endif
+
+            @group(3) @binding(1) var<storage, read> rhs_spherical_harmonics: array<array<u32, #{HALF_SH_COEFF_COUNT}>>;
+
+            #ifdef PRECOMPUTE_COVARIANCE_3D
+                @group(3) @binding(2) var<storage, read> rhs_covariance_3d_opacity: array<vec4<u32>>;
+            #else
+                @group(3) @binding(2) var<storage, read> rhs_rotation_scale_opacity: array<vec4<u32>>;
+            #endif
+        #endif
 
         #ifdef PRECOMPUTE_COVARIANCE_3D
             @group(2) @binding(2) var<storage, read> covariance_3d_opacity: array<vec4<u32>>;
@@ -88,6 +129,22 @@ struct GaussianUniforms {
         #else
             @group(2) @binding(2) var rotation_scale_opacity: texture_2d<u32>;
         #endif
+
+        #ifdef BINARY_GAUSSIAN_OP
+            @group(3) @binding(0) var rhs_position_visibility: texture_2d<f32>;
+
+            #if SH_VEC4_PLANES == 1
+                @group(3) @binding(1) var rhs_spherical_harmonics: texture_2d<u32>;
+            #else
+                @group(3) @binding(1) var rhs_spherical_harmonics: texture_2d_array<u32>;
+            #endif
+
+            #ifdef PRECOMPUTE_COVARIANCE_3D
+                @group(3) @binding(2) var rhs_covariance_3d_opacity: texture_2d<u32>;
+            #else
+                @group(3) @binding(2) var rhs_rotation_scale_opacity: texture_2d<u32>;
+            #endif
+        #endif
     #endif
 
     #ifdef PLANAR_TEXTURE_F32
@@ -102,6 +159,18 @@ struct GaussianUniforms {
         // TODO: support f32_cov3d_opacity texture
 
         @group(2) @binding(2) var rotation_scale_opacity: texture_2d<f32>;
+
+        #ifdef BINARY_GAUSSIAN_OP
+            @group(3) @binding(0) var rhs_position_visibility: texture_2d<f32>;
+
+            #if SH_VEC4_PLANES == 1
+                @group(3) @binding(1) var rhs_spherical_harmonics: texture_2d<f32>;
+            #else
+                @group(3) @binding(1) var rhs_spherical_harmonics: texture_2d_array<f32>;
+            #endif
+
+            @group(3) @binding(2) var rhs_rotation_scale_opacity: texture_2d<f32>;
+        #endif
     #endif
 #else ifdef GAUSSIAN_4D
     #ifdef PLANAR_F32
@@ -116,6 +185,14 @@ struct GaussianUniforms {
         @group(2) @binding(2) var<storage, read> isotropic_rotations: array<array<f32, 8>>;
         @group(2) @binding(3) var<storage, read> scale_opacity: array<vec4<f32>>;
         @group(2) @binding(4) var<storage, read> timestamp_timescale: array<vec4<f32>>;
+
+        #ifdef BINARY_GAUSSIAN_OP
+            @group(3) @binding(0) var<storage, read> rhs_position_visibility: array<vec4<f32>>;
+            @group(3) @binding(1) var<storage, read> rhs_spherindrical_harmonics: array<array<f32, #{SH_4D_COEFF_COUNT}>>;
+            @group(3) @binding(2) var<storage, read> rhs_isotropic_rotations: array<array<f32, 8>>;
+            @group(3) @binding(3) var<storage, read> rhs_scale_opacity: array<vec4<f32>>;
+            @group(3) @binding(4) var<storage, read> rhs_timestamp_timescale: array<vec4<f32>>;
+        #endif
     #endif
 #endif
 
