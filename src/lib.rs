@@ -8,30 +8,13 @@ pub use camera::GaussianCamera;
 
 pub use gaussian::{
     formats::{
-        planar_3d::{
-            Gaussian3d,
-            PlanarGaussian3d,
-            PlanarGaussian3dHandle,
-            random_gaussians_3d,
-        },
-        planar_4d::{
-            Gaussian4d,
-            PlanarGaussian4d,
-            PlanarGaussian4dHandle,
-            random_gaussians_4d,
-        },
+        planar_3d::{Gaussian3d, PlanarGaussian3d, PlanarGaussian3dHandle, random_gaussians_3d},
+        planar_4d::{Gaussian4d, PlanarGaussian4d, PlanarGaussian4dHandle, random_gaussians_4d},
     },
-    settings::{
-        RasterizeMode,
-        CloudSettings,
-        GaussianMode,
-    },
+    settings::{CloudSettings, GaussianMode, RasterizeMode},
 };
 
-pub use io::scene::{
-    GaussianScene,
-    GaussianSceneHandle,
-};
+pub use io::scene::{GaussianScene, GaussianSceneHandle};
 
 pub use material::spherical_harmonics::SphericalHarmonicCoefficients;
 
@@ -51,7 +34,6 @@ pub mod utils;
 
 #[cfg(feature = "noise")]
 pub mod noise;
-
 
 pub struct GaussianSplattingPlugin;
 
@@ -80,10 +62,7 @@ impl Plugin for GaussianSplattingPlugin {
             render::RenderPipelinePlugin::<Gaussian4d>::default(),
         ));
 
-        app.add_plugins((
-            material::MaterialPlugin,
-            query::QueryPlugin,
-        ));
+        app.add_plugins((material::MaterialPlugin, query::QueryPlugin));
 
         #[cfg(feature = "noise")]
         app.add_plugins(noise::NoisePlugin);

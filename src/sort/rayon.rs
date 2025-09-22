@@ -1,24 +1,13 @@
-use bevy::{
-    prelude::*,
-    math::Vec3A,
-    platform::time::Instant,
-};
+use bevy::{math::Vec3A, platform::time::Instant, prelude::*};
 use bevy_interleave::prelude::*;
 use rayon::prelude::*;
 
 use crate::{
-    camera::GaussianCamera,
     CloudSettings,
+    camera::GaussianCamera,
     gaussian::interface::CommonCloud,
-    sort::{
-        SortConfig,
-        SortMode,
-        SortTrigger,
-        SortedEntries,
-        SortedEntriesHandle,
-    },
+    sort::{SortConfig, SortMode, SortTrigger, SortedEntries, SortedEntriesHandle},
 };
-
 
 #[derive(Default)]
 pub struct RayonSortPlugin<R: PlanarSync> {
@@ -45,13 +34,9 @@ pub fn rayon_sort<R: PlanarSync>(
         &GlobalTransform,
     )>,
     mut sorted_entries_res: ResMut<Assets<SortedEntries>>,
-    mut cameras: Query<
-        &mut SortTrigger,
-        With<GaussianCamera>,
-    >,
+    mut cameras: Query<&mut SortTrigger, With<GaussianCamera>>,
     mut sort_config: ResMut<SortConfig>,
-)
-where
+) where
     R::PlanarType: CommonCloud,
 {
     // TODO: move sort to render world, use extracted views and update the existing buffer instead of creating new
@@ -64,12 +49,9 @@ where
             continue;
         }
 
-        for (
-            gaussian_cloud_handle,
-            sorted_entries_handle,
-            settings,
-            transform,
-        ) in gaussian_clouds.iter() {
+        for (gaussian_cloud_handle, sorted_entries_handle, settings, transform) in
+            gaussian_clouds.iter()
+        {
             if settings.sort_mode != SortMode::Rayon {
                 continue;
             }
@@ -95,7 +77,8 @@ where
                     let mut chunks = sorted_entries.sorted.chunks_mut(gaussians);
                     let chunk = chunks.nth(trigger.camera_index).unwrap();
 
-                    gaussian_cloud.position_par_iter()
+                    gaussian_cloud
+                        .position_par_iter()
                         .zip(chunk.par_iter_mut())
                         .enumerate()
                         .for_each(|(idx, (position, sort_entry))| {
@@ -109,7 +92,9 @@ where
                         });
 
                     chunk.par_sort_unstable_by(|a, b| {
-                        bytemuck::cast::<u32, f32>(b.key).partial_cmp(&bytemuck::cast::<u32, f32>(a.key)).unwrap_or(std::cmp::Ordering::Equal)
+                        bytemuck::cast::<u32, f32>(b.key)
+                            .partial_cmp(&bytemuck::cast::<u32, f32>(a.key))
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     });
 
                     // TODO: update DrawIndirect buffer during sort phase (GPU sort will override default DrawIndirect)
@@ -122,7 +107,8 @@ where
     let delta = sort_end_time - sort_start_time;
 
     if performed_sort {
-        sort_config.period_ms = sort_config.period_ms
+        sort_config.period_ms = sort_config
+            .period_ms
             .max(sort_config.period_ms * 4 / 5)
             .max(4 * delta.as_millis() as usize);
     }

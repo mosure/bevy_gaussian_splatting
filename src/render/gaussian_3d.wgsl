@@ -1,6 +1,5 @@
 #define_import_path bevy_gaussian_splatting::gaussian_3d
 
-
 #ifdef GAUSSIAN_3D
 #import bevy_gaussian_splatting::bindings::{
     view,
@@ -11,7 +10,6 @@
     get_rotation_matrix,
     get_scale_matrix,
 }
-
 
 #ifdef PACKED
     #ifdef PRECOMPUTE_COVARIANCE_3D
@@ -47,7 +45,6 @@
         }
     #endif
 #endif
-
 
 fn compute_cov3d(scale: vec3<f32>, rotation: vec4<f32>) -> array<f32, 6> {
     let S = get_scale_matrix(scale);

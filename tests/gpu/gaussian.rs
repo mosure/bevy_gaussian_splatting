@@ -1,33 +1,17 @@
-use std::sync::{
-    Arc,
-    Mutex,
-};
+use std::sync::{Arc, Mutex};
 
 use bevy::{
-    prelude::*,
-    app::AppExit,
-    core::FrameCount,
-    core_pipeline::tonemapping::Tonemapping,
-    render::view::screenshot::ScreenshotManager,
-    window::PrimaryWindow,
+    app::AppExit, core::FrameCount, core_pipeline::tonemapping::Tonemapping, prelude::*,
+    render::view::screenshot::ScreenshotManager, window::PrimaryWindow,
 };
 
 use bevy_gaussian_splatting::{
-    CloudSettings,
-    GaussianCamera,
-    PlanarGaussian3d,
-    PlanarGaussian3dHandle,
-    random_gaussians_3d,
+    CloudSettings, GaussianCamera, PlanarGaussian3d, PlanarGaussian3dHandle, random_gaussians_3d,
 };
 
-use _harness::{
-    TestHarness,
-    test_harness_app,
-    TestStateArc,
-};
+use _harness::{TestHarness, TestStateArc, test_harness_app};
 
 mod _harness;
-
 
 // run with `cargo run --bin test_gaussian`
 fn main() {
@@ -41,10 +25,7 @@ fn main() {
     app.run();
 }
 
-fn setup(
-    mut commands: Commands,
-    mut gaussian_assets: ResMut<Assets<PlanarGaussian3d>>,
-) {
+fn setup(mut commands: Commands, mut gaussian_assets: ResMut<Assets<PlanarGaussian3d>>) {
     let cloud = gaussian_assets.add(random_gaussians_3d(10000));
 
     commands.spawn((
@@ -78,24 +59,29 @@ fn check_image_equality(image: &Image, other: &Image) -> bool {
 }
 
 fn test_stability(captures: Arc<Mutex<Vec<Image>>>) {
-    let all_frames_similar = captures.lock().unwrap().iter()
-        .try_fold(None, |acc, image| {
-            match acc {
-                Some(acc_image) => {
-                    if check_image_equality(acc_image, image) {
-                        Some(Some(acc_image))
-                    } else {
-                        None
-                    }
-                },
-                None => Some(Some(image)),
+    let all_frames_similar = captures
+        .lock()
+        .unwrap()
+        .iter()
+        .try_fold(None, |acc, image| match acc {
+            Some(acc_image) => {
+                if check_image_equality(acc_image, image) {
+                    Some(Some(acc_image))
+                } else {
+                    None
+                }
             }
-        }).is_some();
+            None => Some(Some(image)),
+        })
+        .is_some();
     assert!(all_frames_similar, "all frames are not the same");
 }
 
 fn save_captures(captures: Arc<Mutex<Vec<Image>>>) {
-    captures.lock().unwrap().iter()
+    captures
+        .lock()
+        .unwrap()
+        .iter()
         .enumerate()
         .for_each(|(i, image)| {
             let path = format!("target/tmp/test_gaussian_frame_{}.png", i);
@@ -123,7 +109,7 @@ fn capture_ready(
     let buffer = buffer.to_owned();
 
     let buffer_frames = 10;
-    let wait_frames = 10;  // wait for gaussian cloud to load
+    let wait_frames = 10; // wait for gaussian cloud to load
     if frame_count.0 < wait_frames {
         return;
     }
@@ -138,7 +124,11 @@ fn capture_ready(
         {
             let captures = buffer.lock().unwrap();
             let frame_count = captures.len();
-            assert_eq!(frame_count, buffer_frames, "captured {} frames, expected {}", frame_count, buffer_frames);
+            assert_eq!(
+                frame_count, buffer_frames,
+                "captured {} frames, expected {}",
+                frame_count, buffer_frames
+            );
         }
 
         save_captures(buffer.clone());
@@ -150,17 +140,19 @@ fn capture_ready(
     }
 
     if let Ok(window_entity) = main_window.get_single() {
-        screenshot_manager.take_screenshot(window_entity, move |image: Image| {
-            let has_non_zero_data = image.data.iter().any(|&x| x != 0);
-            assert!(has_non_zero_data, "screenshot is all zeros");
+        screenshot_manager
+            .take_screenshot(window_entity, move |image: Image| {
+                let has_non_zero_data = image.data.iter().any(|&x| x != 0);
+                assert!(has_non_zero_data, "screenshot is all zeros");
 
-            let mut buffer = buffer_clone.lock().unwrap();
-            buffer.push(image);
+                let mut buffer = buffer_clone.lock().unwrap();
+                buffer.push(image);
 
-            if buffer.len() >= buffer_frames {
-                let mut state = state_clone.lock().unwrap();
-                state.test_completed = true;
-            }
-        }).unwrap();
+                if buffer.len() >= buffer_frames {
+                    let mut state = state_clone.lock().unwrap();
+                    state.test_completed = true;
+                }
+            })
+            .unwrap();
     }
 }

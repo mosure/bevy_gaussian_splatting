@@ -1,6 +1,5 @@
 #define_import_path bevy_gaussian_splatting::gaussian_2d
 
-
 #ifdef GAUSSIAN_2D
 #import bevy_gaussian_splatting::bindings::{
     view,
@@ -41,13 +40,11 @@
     }
 #endif
 
-
 struct Surfel {
     local_to_pixel: mat3x3<f32>,
     mean_2d: vec2<f32>,
     extent: vec2<f32>,
 };
-
 
 fn get_bounding_box_cov2d(
     extent: vec2<f32>,
@@ -76,7 +73,6 @@ fn get_bounding_box_cov2d(
         max_radius,
     );
 }
-
 
 fn compute_cov2d_surfel(
     gaussian_position: vec3<f32>,

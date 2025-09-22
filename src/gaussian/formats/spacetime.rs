@@ -1,6 +1,5 @@
 // https://github.com/oppo-us-research/SpacetimeGaussians
 
-
 // property float x
 // property float y
 // property float z

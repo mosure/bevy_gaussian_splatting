@@ -1,50 +1,39 @@
 use bevy::{
-    asset::LoadState, ecs::query::QueryItem, prelude::*, render::{
-        extract_component::{
-            ExtractComponent,
-            ExtractComponentPlugin,
-        }, render_asset::{
-            RenderAssetUsages, RenderAssets
-        }, render_resource::{
-            BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry, BindingResource, BindingType, Extent3d, ShaderStages, TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureViewDimension
-        }, renderer::RenderDevice, Render, RenderApp, RenderSet
-    }
+    asset::LoadState,
+    ecs::query::QueryItem,
+    prelude::*,
+    render::{
+        Render, RenderApp, RenderSet,
+        extract_component::{ExtractComponent, ExtractComponentPlugin},
+        render_asset::{RenderAssetUsages, RenderAssets},
+        render_resource::{
+            BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry, BindingResource,
+            BindingType, Extent3d, ShaderStages, TextureDimension, TextureFormat,
+            TextureSampleType, TextureUsages, TextureViewDimension,
+        },
+        renderer::RenderDevice,
+    },
 };
 use static_assertions::assert_cfg;
 
 #[allow(unused_imports)]
 use crate::{
     gaussian::{
-        cloud::{
-            Cloud,
-            PlanarGaussian3dHandle,
-        },
-        f32::{
-            PositionVisibility,
-            Rotation,
-            ScaleOpacity,
-        },
+        cloud::{Cloud, PlanarGaussian3dHandle},
+        f32::{PositionVisibility, Rotation, ScaleOpacity},
     },
     material::spherical_harmonics::{
-        SH_COEFF_COUNT,
-        SH_VEC4_PLANES,
-        SphericalHarmonicCoefficients,
+        SH_COEFF_COUNT, SH_VEC4_PLANES, SphericalHarmonicCoefficients,
     },
-    render::{
-        CloudPipeline,
-        GpuCloud,
-    },
+    render::{CloudPipeline, GpuCloud},
 };
 
-
 // TODO: support loading from directory of images
-
 
 assert_cfg!(
     feature = "planar",
     "texture rendering is only supported with the `planar` feature enabled",
 );
-
 
 // TODO: migrate to auto-generated GPU buffers using bevy_interleave
 // #[cfg(feature = "f16")]
@@ -83,7 +72,6 @@ impl ExtractComponent for TextureBuffers {
     }
 }
 
-
 #[derive(Default)]
 pub struct BufferTexturePlugin;
 
@@ -102,7 +90,6 @@ impl Plugin for BufferTexturePlugin {
     }
 }
 
-
 #[derive(Component, Clone, Debug)]
 pub struct GpuTextureBuffers {
     pub bind_group: BindGroup,
@@ -114,14 +101,11 @@ pub fn queue_gpu_texture_buffers(
     pipeline: ResMut<CloudPipeline>,
     render_device: ResMut<RenderDevice>,
     gpu_images: Res<RenderAssets<GpuImage>>,
-    clouds: Query<(
-        Entity,
-        &TextureBuffers,
-    )>,
+    clouds: Query<(Entity, &TextureBuffers)>,
 ) {
     // TODO: verify gpu_images are loaded
 
-    for (entity, texture_buffers,) in clouds.iter() {
+    for (entity, texture_buffers) in clouds.iter() {
         // #[cfg(feature = "f16")]
         // let bind_group = render_device.create_bind_group(
         //     Some("texture_gaussian_cloud_bind_group"),
@@ -163,34 +147,47 @@ pub fn queue_gpu_texture_buffers(
                 BindGroupEntry {
                     binding: 0,
                     resource: BindingResource::TextureView(
-                        &gpu_images.get(&texture_buffers.position_visibility).unwrap().texture_view
+                        &gpu_images
+                            .get(&texture_buffers.position_visibility)
+                            .unwrap()
+                            .texture_view,
                     ),
                 },
                 BindGroupEntry {
                     binding: 1,
                     resource: BindingResource::TextureView(
-                        &gpu_images.get(&texture_buffers.spherical_harmonics).unwrap().texture_view
+                        &gpu_images
+                            .get(&texture_buffers.spherical_harmonics)
+                            .unwrap()
+                            .texture_view,
                     ),
                 },
                 BindGroupEntry {
                     binding: 2,
                     resource: BindingResource::TextureView(
-                        &gpu_images.get(&texture_buffers.rotation).unwrap().texture_view
+                        &gpu_images
+                            .get(&texture_buffers.rotation)
+                            .unwrap()
+                            .texture_view,
                     ),
                 },
                 BindGroupEntry {
                     binding: 3,
                     resource: BindingResource::TextureView(
-                        &gpu_images.get(&texture_buffers.scale_opacity).unwrap().texture_view
+                        &gpu_images
+                            .get(&texture_buffers.scale_opacity)
+                            .unwrap()
+                            .texture_view,
                     ),
                 },
             ],
         );
 
-        commands.entity(entity).insert(GpuTextureBuffers { bind_group });
+        commands
+            .entity(entity)
+            .insert(GpuTextureBuffers { bind_group });
     }
 }
-
 
 // TODO: support asset change detection and reupload
 fn queue_textures(
@@ -198,16 +195,10 @@ fn queue_textures(
     asset_server: Res<AssetServer>,
     gaussian_cloud_res: Res<Assets<Cloud>>,
     mut images: ResMut<Assets<Image>>,
-    clouds: Query<
-        (
-            Entity,
-            &PlanarGaussian3dHandle,
-        ),
-        Without<TextureBuffers>,
-    >,
+    clouds: Query<(Entity, &PlanarGaussian3dHandle), Without<TextureBuffers>>,
 ) {
     for (entity, cloud_handle) in clouds.iter() {
-        if Some(LoadState::Loading) == asset_server.get_load_state(cloud_handle){
+        if Some(LoadState::Loading) == asset_server.get_load_state(cloud_handle) {
             continue;
         }
 
@@ -229,9 +220,10 @@ fn queue_textures(
             TextureDimension::D2,
             bytemuck::cast_slice(cloud.position_visibility.as_slice()).to_vec(),
             TextureFormat::Rgba32Float,
-            RenderAssetUsages::default(),  // TODO: if there are no CPU image derived features, set to render only
+            RenderAssetUsages::default(), // TODO: if there are no CPU image derived features, set to render only
         );
-        position_visibility.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
+        position_visibility.texture_descriptor.usage =
+            TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
         let position_visibility = images.add(position_visibility);
 
         let texture_buffers: TextureBuffers;
@@ -319,27 +311,21 @@ fn queue_textures(
     }
 }
 
-
-pub fn get_sorted_bind_group_layout(
-    render_device: &RenderDevice,
-) -> BindGroupLayout {
+pub fn get_sorted_bind_group_layout(render_device: &RenderDevice) -> BindGroupLayout {
     render_device.create_bind_group_layout(
         Some("texture_sorted_layout"),
-        &[
-            BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::all(),
-                ty: BindingType::Texture {
-                    view_dimension: TextureViewDimension::D2,
-                    sample_type: TextureSampleType::Uint,
-                    multisampled: false,
-                },
-                count: None,
+        &[BindGroupLayoutEntry {
+            binding: 0,
+            visibility: ShaderStages::all(),
+            ty: BindingType::Texture {
+                view_dimension: TextureViewDimension::D2,
+                sample_type: TextureSampleType::Uint,
+                multisampled: false,
             },
-        ],
+            count: None,
+        }],
     )
 }
-
 
 // #[cfg(feature = "f16")]
 // pub fn get_bind_group_layout(
@@ -391,11 +377,7 @@ pub fn get_sorted_bind_group_layout(
 //     )
 // }
 
-
-pub fn get_bind_group_layout(
-    render_device: &RenderDevice,
-    read_only: bool
-) -> BindGroupLayout {
+pub fn get_bind_group_layout(render_device: &RenderDevice, read_only: bool) -> BindGroupLayout {
     render_device.create_bind_group_layout(
         Some("texture_f32_gaussian_cloud_layout"),
         &[
@@ -405,7 +387,9 @@ pub fn get_bind_group_layout(
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Storage { read_only },
                     has_dynamic_offset: false,
-                    min_binding_size: BufferSize::new(std::mem::size_of::<PositionVisibility>() as u64),
+                    min_binding_size: BufferSize::new(
+                        std::mem::size_of::<PositionVisibility>() as u64
+                    ),
                 },
                 count: None,
             },
@@ -415,7 +399,9 @@ pub fn get_bind_group_layout(
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Storage { read_only },
                     has_dynamic_offset: false,
-                    min_binding_size: BufferSize::new(std::mem::size_of::<SphericalHarmonicCoefficients>() as u64),
+                    min_binding_size: BufferSize::new(std::mem::size_of::<
+                        SphericalHarmonicCoefficients,
+                    >() as u64),
                 },
                 count: None,
             },

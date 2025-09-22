@@ -1,25 +1,17 @@
 use bevy::{
+    ecs::{component::HookContext, world::DeferredWorld},
     prelude::*,
-    ecs::{
-        component::HookContext,
-        world::DeferredWorld,
-    },
     render::{
         primitives::Aabb,
         view::{
-            visibility::{
-                add_visibility_class,
-                NoFrustumCulling,
-                VisibilitySystems,
-            },
             VisibilityClass,
+            visibility::{NoFrustumCulling, VisibilitySystems, add_visibility_class},
         },
     },
 };
 use bevy_interleave::prelude::*;
 
 use crate::gaussian::interface::CommonCloud;
-
 
 #[derive(Default)]
 pub struct CloudPlugin<R: PlanarSync> {
@@ -45,31 +37,18 @@ where
 
         app.add_systems(
             PostUpdate,
-            (
-                calculate_bounds::<R>.in_set(VisibilitySystems::CalculateBounds),
-            )
+            (calculate_bounds::<R>.in_set(VisibilitySystems::CalculateBounds),),
         );
     }
 }
-
 
 // TODO: handle aabb updates (e.g. gaussian particle movements)
 #[allow(clippy::type_complexity)]
 pub fn calculate_bounds<R: PlanarSync>(
     mut commands: Commands,
     gaussian_clouds: Res<Assets<R::PlanarType>>,
-    without_aabb: Query<
-        (
-            Entity,
-            &R::PlanarTypeHandle,
-        ),
-        (
-            Without<Aabb>,
-            Without<NoFrustumCulling>,
-        ),
-    >,
-)
-where
+    without_aabb: Query<(Entity, &R::PlanarTypeHandle), (Without<Aabb>, Without<NoFrustumCulling>)>,
+) where
     R::PlanarType: CommonCloud,
 {
     for (entity, cloud_handle) in &without_aabb {

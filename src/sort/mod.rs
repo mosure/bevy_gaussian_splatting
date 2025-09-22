@@ -3,45 +3,23 @@ use core::time::Duration;
 use std::marker::PhantomData;
 
 use bevy::{
-    prelude::*,
-    ecs::system::{
-        lifetimeless::SRes,
-        SystemParamItem,
-    },
+    ecs::system::{SystemParamItem, lifetimeless::SRes},
     math::Vec3A,
     platform::time::Instant,
+    prelude::*,
     render::{
-        extract_component::{
-            ExtractComponent,
-            ExtractComponentPlugin,
-        },
+        extract_component::{ExtractComponent, ExtractComponentPlugin},
+        render_asset::{PrepareAssetError, RenderAsset, RenderAssetPlugin, RenderAssetUsages},
         render_resource::*,
-        render_asset::{
-            RenderAsset,
-            RenderAssetPlugin,
-            RenderAssetUsages,
-            PrepareAssetError,
-        },
         renderer::RenderDevice,
     },
 };
 use bevy_interleave::prelude::*;
-use bytemuck::{
-    Pod,
-    Zeroable,
-};
-use serde::{
-    Deserialize,
-    Serialize,
-};
+use bytemuck::{Pod, Zeroable};
+use serde::{Deserialize, Serialize};
 use static_assertions::assert_cfg;
 
-use crate::{
-    camera::GaussianCamera,
-    CloudSettings,
-    gaussian::interface::CommonCloud,
-};
-
+use crate::{CloudSettings, camera::GaussianCamera, gaussian::interface::CommonCloud};
 
 #[cfg(feature = "sort_bitonic")]
 pub mod bitonic;
@@ -55,7 +33,6 @@ pub mod rayon;
 #[cfg(feature = "sort_std")]
 pub mod std_sort; // rename to std_sort.rs to avoid name conflict with std crate
 
-
 assert_cfg!(
     any(
         feature = "sort_radix",
@@ -65,16 +42,7 @@ assert_cfg!(
     "no sort mode enabled",
 );
 
-
-#[derive(
-    Component,
-    Debug,
-    Clone,
-    PartialEq,
-    Reflect,
-    Serialize,
-    Deserialize,
-)]
+#[derive(Component, Debug, Clone, PartialEq, Reflect, Serialize, Deserialize)]
 pub enum SortMode {
     None,
 
@@ -104,14 +72,7 @@ impl Default for SortMode {
     }
 }
 
-
-#[derive(
-    Resource,
-    Debug,
-    Clone,
-    PartialEq,
-    Reflect,
-)]
+#[derive(Resource, Debug, Clone, PartialEq, Reflect)]
 #[reflect(Resource)]
 pub struct SortConfig {
     pub period_ms: usize,
@@ -119,19 +80,15 @@ pub struct SortConfig {
 
 impl Default for SortConfig {
     fn default() -> Self {
-        Self {
-            period_ms: 1000,
-        }
+        Self { period_ms: 1000 }
     }
 }
-
 
 #[derive(Default)]
 pub struct SortPluginFlag;
 impl Plugin for SortPluginFlag {
-    fn build(&self, _app: &mut App) { }
+    fn build(&self, _app: &mut App) {}
 }
-
 
 // TODO: make this generic /w shared components
 #[derive(Default)]
@@ -175,29 +132,14 @@ where
 
         app.add_plugins(RenderAssetPlugin::<GpuSortedEntry>::default());
 
-        app.add_systems(
-            Update,
-            (
-                update_sort_trigger,
-                update_sorted_entries_sizes,
-            )
-        );
+        app.add_systems(Update, (update_sort_trigger, update_sorted_entries_sizes));
 
         #[cfg(feature = "buffer_texture")]
         app.add_systems(PostUpdate, update_textures_on_change);
     }
 }
 
-
-#[derive(
-    Component,
-    ExtractComponent,
-    Debug,
-    Default,
-    Clone,
-    PartialEq,
-    Reflect,
-)]
+#[derive(Component, ExtractComponent, Debug, Default, Clone, PartialEq, Reflect)]
 #[reflect(Component)]
 pub struct SortTrigger {
     pub camera_index: usize,
@@ -209,39 +151,28 @@ pub struct SortTrigger {
 #[allow(clippy::type_complexity)]
 fn update_sort_trigger(
     mut commands: Commands,
-    new_gaussian_cameras: Query<
-        Entity,
-        (
-            With<Camera>,
-            With<GaussianCamera>,
-            Without<SortTrigger>,
-        ),
-    >,
-    mut existing_sort_triggers: Query<(
-        &GlobalTransform,
-        &Camera,
-        &mut SortTrigger,
-    )>,
+    new_gaussian_cameras: Query<Entity, (With<Camera>, With<GaussianCamera>, Without<SortTrigger>)>,
+    mut existing_sort_triggers: Query<(&GlobalTransform, &Camera, &mut SortTrigger)>,
     sort_config: Res<SortConfig>,
 ) {
     for entity in new_gaussian_cameras.iter() {
-        commands.entity(entity)
-            .insert(SortTrigger::default());
+        commands.entity(entity).insert(SortTrigger::default());
     }
 
-    for (
-        camera_transform,
-        camera,
-        mut sort_trigger,
-    ) in existing_sort_triggers.iter_mut() {
+    for (camera_transform, camera, mut sort_trigger) in existing_sort_triggers.iter_mut() {
         if sort_trigger.last_sort_time.is_none() {
-            assert!(camera.order >= 0, "camera order must be a non-negative index into gaussian cameras");
+            assert!(
+                camera.order >= 0,
+                "camera order must be a non-negative index into gaussian cameras"
+            );
 
             sort_trigger.camera_index = camera.order as usize;
             sort_trigger.needs_sort = true;
             sort_trigger.last_sort_time = Some(Instant::now());
             continue;
-        } else if sort_trigger.last_sort_time.unwrap().elapsed() < Duration::from_millis(sort_config.period_ms as u64) {
+        } else if sort_trigger.last_sort_time.unwrap().elapsed()
+            < Duration::from_millis(sort_config.period_ms as u64)
+        {
             continue;
         }
 
@@ -256,7 +187,6 @@ fn update_sort_trigger(
     }
 }
 
-
 #[cfg(feature = "buffer_texture")]
 fn update_textures_on_change(
     mut images: ResMut<Assets<Image>>,
@@ -270,15 +200,14 @@ fn update_textures_on_change(
                 let image = images.get_mut(&sorted_entries.texture).unwrap();
 
                 image.data = bytemuck::cast_slice(sorted_entries.sorted.as_slice()).to_vec();
-            },
-            AssetEvent::Added { id: _ } => {},
-            AssetEvent::Removed { id: _ } => {},
-            AssetEvent::LoadedWithDependencies { id: _ } => {},
-            AssetEvent::Unused { id: _ } => {},
+            }
+            AssetEvent::Added { id: _ } => {}
+            AssetEvent::Removed { id: _ } => {}
+            AssetEvent::LoadedWithDependencies { id: _ } => {}
+            AssetEvent::Unused { id: _ } => {}
         }
     }
 }
-
 
 #[allow(clippy::type_complexity)]
 fn auto_insert_sorted_entries<R: PlanarSync>(
@@ -287,24 +216,12 @@ fn auto_insert_sorted_entries<R: PlanarSync>(
     gaussian_clouds_res: Res<Assets<R::PlanarType>>,
     mut sorted_entries_res: ResMut<Assets<SortedEntries>>,
     gaussian_clouds: Query<
-        (
-            Entity,
-            &R::PlanarTypeHandle,
-            &CloudSettings,
-        ),
-        Without<SortedEntriesHandle>
+        (Entity, &R::PlanarTypeHandle, &CloudSettings),
+        Without<SortedEntriesHandle>,
     >,
-    gaussian_cameras: Query<
-        Entity,
-        (
-            With<Camera>,
-            With<GaussianCamera>
-        ),
-    >,
-    #[cfg(feature = "buffer_texture")]
-    mut images: ResMut<Assets<Image>>,
-)
-where
+    gaussian_cameras: Query<Entity, (With<Camera>, With<GaussianCamera>)>,
+    #[cfg(feature = "buffer_texture")] mut images: ResMut<Assets<Image>>,
+) where
     R::PlanarType: CommonCloud,
 {
     let camera_count = gaussian_cameras.iter().len();
@@ -314,11 +231,7 @@ where
         return;
     }
 
-    for (
-        entity,
-        gaussian_cloud_handle,
-        _settings,
-    ) in gaussian_clouds.iter() {
+    for (entity, gaussian_cloud_handle, _settings) in gaussian_clouds.iter() {
         // // TODO: specialize vertex shader for sort mode (e.g. draw_indirect but no sort indirection)
         // if settings.sort_mode == SortMode::None {
         //     continue;
@@ -345,26 +258,17 @@ where
             images,
         ));
 
-        commands.entity(entity)
+        commands
+            .entity(entity)
             .insert(SortedEntriesHandle(sorted_entries));
     }
 }
 
-
 fn update_sorted_entries_sizes(
     mut sorted_entries_res: ResMut<Assets<SortedEntries>>,
-    sorted_entries: Query<
-        &SortedEntriesHandle,
-    >,
-    gaussian_cameras: Query<
-        Entity,
-        (
-            With<Camera>,
-            With<GaussianCamera>
-        ),
-    >,
-    #[cfg(feature = "buffer_texture")]
-    mut images: ResMut<Assets<Image>>,
+    sorted_entries: Query<&SortedEntriesHandle>,
+    gaussian_cameras: Query<Entity, (With<Camera>, With<GaussianCamera>)>,
+    #[cfg(feature = "buffer_texture")] mut images: ResMut<Assets<Image>>,
 ) {
     let camera_count: usize = gaussian_cameras.iter().len();
 
@@ -388,15 +292,7 @@ fn update_sorted_entries_sizes(
     }
 }
 
-
-#[derive(
-    Component,
-    Clone,
-    Debug,
-    Default,
-    PartialEq,
-    Reflect,
-)]
+#[derive(Component, Clone, Debug, Default, PartialEq, Reflect)]
 #[reflect(Component, Default)]
 pub struct SortedEntriesHandle(pub Handle<SortedEntries>);
 
@@ -418,33 +314,15 @@ impl From<&SortedEntriesHandle> for AssetId<SortedEntries> {
     }
 }
 
-
 #[allow(dead_code)]
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Reflect,
-    ShaderType,
-    Pod,
-    Zeroable,
-)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Reflect, ShaderType, Pod, Zeroable)]
 #[repr(C)]
 pub struct SortEntry {
     pub key: u32,
     pub index: u32,
 }
 
-#[derive(
-    Clone,
-    Asset,
-    Debug,
-    Default,
-    PartialEq,
-    Reflect,
-)]
+#[derive(Clone, Asset, Debug, Default, PartialEq, Reflect)]
 pub struct SortedEntries {
     pub camera_count: usize,
     pub entry_count: usize,
@@ -458,18 +336,14 @@ impl SortedEntries {
     pub fn new(
         camera_count: usize,
         entry_count: usize,
-        #[cfg(feature = "buffer_texture")]
-        mut images: ResMut<Assets<Image>>,
+        #[cfg(feature = "buffer_texture")] mut images: ResMut<Assets<Image>>,
     ) -> Self {
         let sorted = (0..camera_count)
             .flat_map(|_camera_idx| {
-                (0..entry_count)
-                    .map(|idx| {
-                        SortEntry {
-                            key: 1,
-                            index: idx as u32,
-                        }
-                    })
+                (0..entry_count).map(|idx| SortEntry {
+                    key: 1,
+                    index: idx as u32,
+                })
             })
             .collect();
 
@@ -534,7 +408,6 @@ impl RenderAsset for GpuSortedEntry {
     }
 }
 
-
 // TODO: support instancing and multiple cameras
 //       separate entry_buffer_a binding into unique a bind group to optimize buffer updates
 #[derive(Debug, Clone)]
@@ -545,4 +418,3 @@ pub struct GpuSortedEntry {
     #[cfg(feature = "buffer_texture")]
     pub texture: Handle<Image>,
 }
-

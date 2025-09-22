@@ -1,24 +1,9 @@
 use bevy::prelude::*;
-use bevy_args::{
-    Deserialize,
-    Parser,
-    Serialize,
-};
+use bevy_args::{Deserialize, Parser, Serialize};
 
-use crate::gaussian::settings::{
-    GaussianMode,
-    PlaybackMode,
-    RasterizeMode,
-};
+use crate::gaussian::settings::{GaussianMode, PlaybackMode, RasterizeMode};
 
-
-#[derive(
-    Debug,
-    Resource,
-    Serialize,
-    Deserialize,
-    Parser,
-)]
+#[derive(Debug, Resource, Serialize, Deserialize, Parser)]
 #[command(about = "bevy_gaussian_splatting viewer", version, long_about = None)]
 pub struct GaussianSplattingViewer {
     #[arg(long, default_value = "true")]
@@ -93,7 +78,6 @@ impl Default for GaussianSplattingViewer {
     }
 }
 
-
 pub fn setup_hooks() {
     #[cfg(debug_assertions)]
     #[cfg(target_arch = "wasm32")]
@@ -101,7 +85,6 @@ pub fn setup_hooks() {
         console_error_panic_hook::set_once();
     }
 }
-
 
 pub fn log(_msg: &str) {
     #[cfg(debug_assertions)]

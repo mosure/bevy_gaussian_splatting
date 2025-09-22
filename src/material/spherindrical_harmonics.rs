@@ -2,35 +2,20 @@
 use std::marker::Copy;
 
 use bevy::{
-    prelude::*,
     asset::{load_internal_asset, weak_handle},
+    prelude::*,
     render::render_resource::ShaderType,
 };
-use bytemuck::{
-    Pod,
-    Zeroable,
-};
-use serde::{
-    Deserialize,
-    Serialize,
-    Serializer,
-    ser::SerializeTuple,
-};
+use bytemuck::{Pod, Zeroable};
+use serde::{Deserialize, Serialize, Serializer, ser::SerializeTuple};
 
 // #[cfg(feature = "f16")]
 // use half::f16;
 
 use crate::{
-    material::spherical_harmonics::{
-        SH_CHANNELS,
-        SH_DEGREE,
-    },
-    math::{
-        gcd,
-        pad_4,
-    },
+    material::spherical_harmonics::{SH_CHANNELS, SH_DEGREE},
+    math::{gcd, pad_4},
 };
-
 
 pub const SH_4D_DEGREE_TIME: usize = 2;
 
@@ -47,13 +32,12 @@ pub const POD_PLANE_COUNT: usize = SH_4D_COEFF_COUNT / POD_ARRAY_SIZE;
 pub const WASTE: usize = POD_PLANE_COUNT * POD_ARRAY_SIZE - SH_4D_COEFF_COUNT;
 static_assertions::const_assert_eq!(WASTE, 0);
 
-
 // #[cfg(feature = "f16")]
 // pub const SH_4D_VEC4_PLANES: usize = HALF_SH_4D_COEFF_COUNT / 4;
 pub const SH_4D_VEC4_PLANES: usize = SH_4D_COEFF_COUNT / 4;
 
-
-const SPHERINDRICAL_HARMONICS_SHADER_HANDLE: Handle<Shader> = weak_handle!("0b379c3c-daa3-48c5-bf4b-0262b9941a0a");
+const SPHERINDRICAL_HARMONICS_SHADER_HANDLE: Handle<Shader> =
+    weak_handle!("0b379c3c-daa3-48c5-bf4b-0262b9941a0a");
 
 pub struct SpherindricalHarmonicCoefficientsPlugin;
 impl Plugin for SpherindricalHarmonicCoefficientsPlugin {
@@ -66,7 +50,6 @@ impl Plugin for SpherindricalHarmonicCoefficientsPlugin {
         );
     }
 }
-
 
 // #[cfg(feature = "f16")]
 // #[derive(
@@ -90,23 +73,16 @@ impl Plugin for SpherindricalHarmonicCoefficientsPlugin {
 
 #[allow(dead_code)]
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Reflect,
-    ShaderType,
-    Pod,
-    Zeroable,
-    Serialize,
-    Deserialize,
+    Clone, Copy, Debug, PartialEq, Reflect, ShaderType, Pod, Zeroable, Serialize, Deserialize,
 )]
 #[repr(C)]
 pub struct SpherindricalHarmonicCoefficients {
-    #[serde(serialize_with = "coefficients_serializer", deserialize_with = "coefficients_deserializer")]
+    #[serde(
+        serialize_with = "coefficients_serializer",
+        deserialize_with = "coefficients_deserializer"
+    )]
     pub coefficients: [[f32; POD_ARRAY_SIZE]; POD_PLANE_COUNT],
 }
-
 
 // #[cfg(feature = "f16")]
 // impl Default for SpherindricalHarmonicCoefficients {
@@ -125,7 +101,6 @@ impl Default for SpherindricalHarmonicCoefficients {
     }
 }
 
-
 impl From<[f32; SH_4D_COEFF_COUNT]> for SpherindricalHarmonicCoefficients {
     fn from(flat_coefficients: [f32; SH_4D_COEFF_COUNT]) -> Self {
         let mut coefficients = [[0.0; POD_ARRAY_SIZE]; POD_PLANE_COUNT];
@@ -134,12 +109,9 @@ impl From<[f32; SH_4D_COEFF_COUNT]> for SpherindricalHarmonicCoefficients {
             coefficients[i / POD_ARRAY_SIZE][i % POD_ARRAY_SIZE] = *coefficient;
         }
 
-        Self {
-            coefficients,
-        }
+        Self { coefficients }
     }
 }
-
 
 impl SpherindricalHarmonicCoefficients {
     // #[cfg(feature = "f16")]
@@ -163,8 +135,6 @@ impl SpherindricalHarmonicCoefficients {
         self.coefficients[pod_index][pod_offset] = value;
     }
 }
-
-
 
 // #[cfg(feature = "f16")]
 // fn coefficients_serializer<S>(n: &[[u32; POD_ARRAY_SIZE]; POD_PLANE_COUNT], s: S) -> Result<S::Ok, S::Error>
@@ -211,8 +181,10 @@ impl SpherindricalHarmonicCoefficients {
 //     d.deserialize_tuple(HALF_SH_4D_COEFF_COUNT, CoefficientsVisitor)
 // }
 
-
-fn coefficients_serializer<S>(n: &[[f32; POD_ARRAY_SIZE]; POD_PLANE_COUNT], s: S) -> Result<S::Ok, S::Error>
+fn coefficients_serializer<S>(
+    n: &[[f32; POD_ARRAY_SIZE]; POD_PLANE_COUNT],
+    s: S,
+) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -224,7 +196,9 @@ where
     tup.end()
 }
 
-fn coefficients_deserializer<'de, D>(d: D) -> Result<[[f32; POD_ARRAY_SIZE]; POD_PLANE_COUNT], D::Error>
+fn coefficients_deserializer<'de, D>(
+    d: D,
+) -> Result<[[f32; POD_ARRAY_SIZE]; POD_PLANE_COUNT], D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -237,7 +211,10 @@ where
             formatter.write_str("an array of floats")
         }
 
-        fn visit_seq<A>(self, mut seq: A) -> Result<[[f32; POD_ARRAY_SIZE]; POD_PLANE_COUNT], A::Error>
+        fn visit_seq<A>(
+            self,
+            mut seq: A,
+        ) -> Result<[[f32; POD_ARRAY_SIZE]; POD_PLANE_COUNT], A::Error>
         where
             A: serde::de::SeqAccess<'de>,
         {
@@ -254,4 +231,3 @@ where
 
     d.deserialize_tuple(SH_4D_COEFF_COUNT, CoefficientsVisitor)
 }
-

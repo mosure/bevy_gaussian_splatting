@@ -3,31 +3,14 @@ use std::marker::Copy;
 
 use half::f16;
 
-use bevy::{
-    prelude::*,
-    render::render_resource::ShaderType,
-};
-use bytemuck::{
-    Pod,
-    Zeroable,
-};
-use serde::{
-    Deserialize,
-    Serialize,
-};
+use bevy::{prelude::*, render::render_resource::ShaderType};
+use bytemuck::{Pod, Zeroable};
+use serde::{Deserialize, Serialize};
 
 use crate::gaussian::{
-    f32::{
-        Covariance3dOpacity,
-        Rotation,
-        ScaleOpacity,
-    },
-    formats::{
-        planar_3d::Gaussian3d,
-        planar_4d::Gaussian4d,
-    },
+    f32::{Covariance3dOpacity, Rotation, ScaleOpacity},
+    formats::{planar_3d::Gaussian3d, planar_4d::Gaussian4d},
 };
-
 
 #[allow(dead_code)]
 #[derive(
@@ -59,8 +42,14 @@ impl RotationScaleOpacityPacked128 {
                 pack_f32s_to_u32(gaussian.rotation.rotation[2], gaussian.rotation.rotation[3]),
             ],
             scale_opacity: [
-                pack_f32s_to_u32(gaussian.scale_opacity.scale[0], gaussian.scale_opacity.scale[1]),
-                pack_f32s_to_u32(gaussian.scale_opacity.scale[2], gaussian.scale_opacity.opacity),
+                pack_f32s_to_u32(
+                    gaussian.scale_opacity.scale[0],
+                    gaussian.scale_opacity.scale[1],
+                ),
+                pack_f32s_to_u32(
+                    gaussian.scale_opacity.scale[2],
+                    gaussian.scale_opacity.opacity,
+                ),
             ],
         }
     }
@@ -70,12 +59,7 @@ impl RotationScaleOpacityPacked128 {
         let (u1, l1) = unpack_u32_to_f32s(self.rotation[1]);
 
         Rotation {
-            rotation: [
-                u0,
-                l0,
-                u1,
-                l1,
-            ],
+            rotation: [u0, l0, u1, l1],
         }
     }
 
@@ -84,11 +68,7 @@ impl RotationScaleOpacityPacked128 {
         let (u1, l1) = unpack_u32_to_f32s(self.scale_opacity[1]);
 
         ScaleOpacity {
-            scale: [
-                u0,
-                l0,
-                u1,
-            ],
+            scale: [u0, l0, u1],
             opacity: l1,
         }
     }
@@ -133,7 +113,6 @@ impl From<[u32; 4]> for RotationScaleOpacityPacked128 {
     }
 }
 
-
 #[allow(dead_code)]
 #[derive(
     Clone,
@@ -168,7 +147,7 @@ impl Covariance3dOpacityPacked128 {
                 pack_f32s_to_u32(cov3d[2], cov3d[3]),
                 pack_f32s_to_u32(cov3d[4], cov3d[5]),
             ],
-            opacity: pack_f32s_to_u32(opacity, opacity),  // TODO: benefit from 32-bit opacity
+            opacity: pack_f32s_to_u32(opacity, opacity), // TODO: benefit from 32-bit opacity
         }
     }
 
@@ -192,17 +171,11 @@ impl Covariance3dOpacityPacked128 {
 impl From<[u32; 4]> for Covariance3dOpacityPacked128 {
     fn from(cov3d_opacity: [u32; 4]) -> Self {
         Self {
-            cov3d: [
-                cov3d_opacity[0],
-                cov3d_opacity[1],
-                cov3d_opacity[2],
-            ],
+            cov3d: [cov3d_opacity[0], cov3d_opacity[1], cov3d_opacity[2]],
             opacity: cov3d_opacity[3],
         }
     }
 }
-
-
 
 #[allow(dead_code)]
 #[derive(
@@ -250,20 +223,10 @@ impl IsotropicRotations {
 
         [
             Rotation {
-                rotation: [
-                    u0,
-                    l0,
-                    u1,
-                    l1,
-                ],
+                rotation: [u0, l0, u1, l1],
             },
             Rotation {
-                rotation: [
-                    u0_r,
-                    l0_r,
-                    u1_r,
-                    l1_r,
-                ],
+                rotation: [u0_r, l0_r, u1_r, l1_r],
             },
         ]
     }
@@ -278,13 +241,8 @@ impl From<[u32; 4]> for IsotropicRotations {
     }
 }
 
-
-
 pub fn pack_f32s_to_u32(upper: f32, lower: f32) -> u32 {
-    pack_f16s_to_u32(
-        f16::from_f32(upper),
-        f16::from_f32(lower),
-    )
+    pack_f16s_to_u32(f16::from_f32(upper), f16::from_f32(lower))
 }
 
 pub fn pack_f16s_to_u32(upper: f16, lower: f16) -> u32 {
@@ -303,4 +261,3 @@ pub fn unpack_u32_to_f32s(value: u32) -> (f32, f32) {
     let (upper, lower) = unpack_u32_to_f16s(value);
     (upper.to_f32(), lower.to_f32())
 }
-

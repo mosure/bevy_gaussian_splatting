@@ -6,7 +6,6 @@
     srgb_to_linear,
 }
 
-
 #ifdef PACKED_F32
 
 fn get_position(index: u32) -> vec3<f32> {

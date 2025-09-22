@@ -6,9 +6,7 @@
     spherical_harmonics_lookup,
 }
 
-
 const PI = radians(180.0);
-
 
 fn spherindrical_harmonics_lookup(
     ray_direction: vec3<f32>,

@@ -1,10 +1,8 @@
 use bevy::prelude::*;
 use bevy_interleave::prelude::*;
 
-
 #[cfg(feature = "morph_particles")]
 pub mod particle;
-
 
 pub struct MorphPlugin<R: PlanarSync> {
     _phantom: std::marker::PhantomData<R>,

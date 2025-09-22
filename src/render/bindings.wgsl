@@ -4,7 +4,6 @@
 #import bevy_render::globals::Globals
 #import bevy_render::view::View
 
-
 @group(0) @binding(0) var<uniform> view: View;
 @group(0) @binding(1) var<uniform> globals: Globals;
 @group(0) @binding(2) var<uniform> previous_view_uniforms: PreviousViewUniforms;
@@ -26,7 +25,6 @@ struct GaussianUniforms {
 };
 @group(1) @binding(0) var<uniform> gaussian_uniforms: GaussianUniforms;
 
-
 #ifdef GAUSSIAN_3D_STRUCTURE
     #ifdef PACKED_F32
         struct Gaussian {
@@ -42,7 +40,6 @@ struct GaussianUniforms {
             @group(2) @binding(0) var<storage, read> points: array<Gaussian>;
         #endif
     #endif
-
 
     #ifdef PLANAR_F32
         #ifdef READ_WRITE_POINTS
@@ -61,7 +58,6 @@ struct GaussianUniforms {
         #endif
     #endif
 
-
     #ifdef PLANAR_F16
         #ifdef READ_WRITE_POINTS
             @group(2) @binding(0) var<storage, read_write> position_visibility: array<vec4<f32>>;
@@ -78,7 +74,6 @@ struct GaussianUniforms {
         #endif
     #endif
 
-
     #ifdef PLANAR_TEXTURE_F16
         @group(2) @binding(0) var position_visibility: texture_2d<f32>;
 
@@ -94,7 +89,6 @@ struct GaussianUniforms {
             @group(2) @binding(2) var rotation_scale_opacity: texture_2d<u32>;
         #endif
     #endif
-
 
     #ifdef PLANAR_TEXTURE_F32
         @group(2) @binding(0) var position_visibility: texture_2d<f32>;
@@ -124,7 +118,6 @@ struct GaussianUniforms {
         @group(2) @binding(4) var<storage, read> timestamp_timescale: array<vec4<f32>>;
     #endif
 #endif
-
 
 struct DrawIndirect {
     vertex_count: u32,

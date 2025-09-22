@@ -1,39 +1,17 @@
 use bevy::{
-    prelude::*,
-    app::AppExit,
-    core_pipeline::tonemapping::Tonemapping,
-    render::camera::Viewport,
+    app::AppExit, core_pipeline::tonemapping::Tonemapping, prelude::*, render::camera::Viewport,
     window::WindowResized,
 };
-use bevy_args::{
-    BevyArgsPlugin,
-    parse_args,
-};
-use bevy_inspector_egui::{
-    bevy_egui::EguiPlugin,
-    quick::WorldInspectorPlugin,
-};
-use bevy_panorbit_camera::{
-    PanOrbitCamera,
-    PanOrbitCameraPlugin,
-};
+use bevy_args::{BevyArgsPlugin, parse_args};
+use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
+use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 
 use bevy_gaussian_splatting::{
-    Gaussian3d,
-    GaussianCamera,
-    PlanarGaussian3d,
-    PlanarGaussian3dHandle,
-    CloudSettings,
-    GaussianMode,
-    GaussianSplattingPlugin,
+    CloudSettings, Gaussian3d, GaussianCamera, GaussianMode, GaussianSplattingPlugin,
+    PlanarGaussian3d, PlanarGaussian3dHandle, SphericalHarmonicCoefficients,
     gaussian::f32::Rotation,
-    utils::{
-        setup_hooks,
-        GaussianSplattingViewer,
-    },
-    SphericalHarmonicCoefficients,
+    utils::{GaussianSplattingViewer, setup_hooks},
 };
-
 
 fn multi_camera_app() {
     let config = parse_args::<GaussianSplattingViewer>();
@@ -43,24 +21,26 @@ fn multi_camera_app() {
     app.insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)));
     app.add_plugins(
         DefaultPlugins
-        .set(ImagePlugin::default_nearest())
-        .set(WindowPlugin {
-            primary_window: Some(Window {
-                mode: bevy::window::WindowMode::Windowed,
-                present_mode: bevy::window::PresentMode::AutoVsync,
-                prevent_default_event_handling: false,
-                resolution: (config.width, config.height).into(),
-                title: config.name.clone(),
+            .set(ImagePlugin::default_nearest())
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    mode: bevy::window::WindowMode::Windowed,
+                    present_mode: bevy::window::PresentMode::AutoVsync,
+                    prevent_default_event_handling: false,
+                    resolution: (config.width, config.height).into(),
+                    title: config.name.clone(),
+                    ..default()
+                }),
                 ..default()
             }),
-            ..default()
-        }),
     );
     app.add_plugins(BevyArgsPlugin::<GaussianSplattingViewer>::default());
     app.add_plugins(PanOrbitCameraPlugin);
 
     if config.editor {
-        app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: true });
+        app.add_plugins(EguiPlugin {
+            enable_multipass_for_primary_context: true,
+        });
         app.add_plugins(WorldInspectorPlugin::new());
     }
 
@@ -70,17 +50,10 @@ fn multi_camera_app() {
 
     app.add_plugins(GaussianSplattingPlugin);
     app.add_systems(Startup, setup_multi_camera);
-    app.add_systems(
-        Update,
-        (
-            press_s_to_spawn_camera,
-            set_camera_viewports,
-        )
-    );
+    app.add_systems(Update, (press_s_to_spawn_camera, set_camera_viewports));
 
     app.run();
 }
-
 
 pub fn setup_multi_camera(
     mut commands: Commands,
@@ -154,9 +127,7 @@ pub fn setup_multi_camera(
 
             let gaussian = Gaussian3d {
                 position_visibility: position.into(),
-                rotation: Rotation {
-                    rotation,
-                },
+                rotation: Rotation { rotation },
                 scale_opacity: scale.into(),
                 spherical_harmonic: red_sh,
             };
@@ -166,9 +137,7 @@ pub fn setup_multi_camera(
 
     commands.spawn((
         Transform::from_translation(Vec3::new(spacing, spacing, 0.0)),
-        PlanarGaussian3dHandle(
-            gaussian_assets.add(red_gaussians)
-        ),
+        PlanarGaussian3dHandle(gaussian_assets.add(red_gaussians)),
         CloudSettings {
             aabb: true,
             gaussian_mode: GaussianMode::Gaussian2d,
@@ -178,11 +147,9 @@ pub fn setup_multi_camera(
     ));
 
     commands.spawn((
-        GaussianCamera {
-            warmup: true,
-        },
+        GaussianCamera { warmup: true },
         Camera3d::default(),
-        Camera{
+        Camera {
             order: 0,
             ..default()
         },
@@ -218,7 +185,6 @@ pub fn setup_multi_camera(
     // ));
 }
 
-
 fn press_s_to_spawn_camera(
     keys: Res<ButtonInput<KeyCode>>,
     mut commands: Commands,
@@ -230,24 +196,21 @@ fn press_s_to_spawn_camera(
         let pos = UVec2::new(1, 0);
 
         commands.spawn((
-            GaussianCamera {
-                warmup: true,
-            },
+            GaussianCamera { warmup: true },
             Camera3d::default(),
-            Camera{
+            Camera {
                 order: 1,
                 viewport: Viewport {
                     physical_position: pos * size,
                     physical_size: size,
                     ..default()
-                }.into(),
+                }
+                .into(),
                 ..default()
             },
             Transform::from_translation(Vec3::new(0.0, 0.0, 40.0)),
             Tonemapping::None,
-            CameraPosition {
-                pos,
-            },
+            CameraPosition { pos },
             PanOrbitCamera {
                 allow_upside_down: true,
                 ..default()
@@ -255,7 +218,6 @@ fn press_s_to_spawn_camera(
         ));
     }
 }
-
 
 #[derive(Component)]
 struct CameraPosition {
@@ -281,10 +243,7 @@ fn set_camera_viewports(
     }
 }
 
-fn esc_close(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut exit: EventWriter<AppExit>
-) {
+fn esc_close(keys: Res<ButtonInput<KeyCode>>, mut exit: EventWriter<AppExit>) {
     if keys.just_pressed(KeyCode::Escape) {
         exit.write(AppExit::Success);
     }

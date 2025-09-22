@@ -13,8 +13,6 @@
     view,
 }
 
-
-
 fn calculate_motion_vector(
     world_position: vec3<f32>,
     previous_world_position: vec3<f32>,
@@ -33,7 +31,6 @@ fn calculate_motion_vector(
     // down where clip space y goes up, so y needs to be flipped.
     return (clip_position - previous_clip_position) * vec2(0.5, -0.5);
 }
-
 
 fn optical_flow_to_rgb(
     motion_vector: vec2<f32>,

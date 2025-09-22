@@ -1,30 +1,16 @@
 #![allow(dead_code)] // ShaderType derives emit unused check helpers
 use std::marker::Copy;
 
-use bevy::{
-    prelude::*,
-    render::render_resource::ShaderType,
-};
-use bytemuck::{
-    Pod,
-    Zeroable,
-};
-use serde::{
-    Deserialize,
-    Serialize,
-};
+use bevy::{prelude::*, render::render_resource::ShaderType};
+use bytemuck::{Pod, Zeroable};
+use serde::{Deserialize, Serialize};
 
 use crate::gaussian::{
     covariance::compute_covariance_3d,
-    formats::{
-        planar_3d::Gaussian3d,
-        planar_4d::Gaussian4d,
-    },
+    formats::{planar_3d::Gaussian3d, planar_4d::Gaussian4d},
 };
 
-
 pub type Position = [f32; 3];
-
 
 #[allow(dead_code)]
 #[derive(
@@ -59,19 +45,9 @@ impl From<[f32; 4]> for PositionTimestamp {
     }
 }
 
-
 #[allow(dead_code)]
 #[derive(
-    Clone,
-    Debug,
-    Copy,
-    PartialEq,
-    Reflect,
-    ShaderType,
-    Pod,
-    Zeroable,
-    Serialize,
-    Deserialize,
+    Clone, Debug, Copy, PartialEq, Reflect, ShaderType, Pod, Zeroable, Serialize, Deserialize,
 )]
 #[repr(C)]
 pub struct PositionVisibility {
@@ -101,7 +77,6 @@ impl From<[f32; 4]> for PositionVisibility {
     }
 }
 
-
 #[allow(dead_code)]
 #[derive(
     Clone,
@@ -126,7 +101,6 @@ impl From<[f32; 4]> for Rotation {
         Self { rotation }
     }
 }
-
 
 #[allow(dead_code)]
 #[derive(
@@ -174,18 +148,11 @@ impl IsotropicRotations {
 impl From<[f32; 8]> for IsotropicRotations {
     fn from(rotations: [f32; 8]) -> Self {
         Self {
-            rotation: [
-                rotations[0], rotations[1],
-                rotations[2], rotations[3],
-            ],
-            rotation_r: [
-                rotations[4], rotations[5],
-                rotations[6], rotations[7],
-            ],
+            rotation: [rotations[0], rotations[1], rotations[2], rotations[3]],
+            rotation_r: [rotations[4], rotations[5], rotations[6], rotations[7]],
         }
     }
 }
-
 
 #[allow(dead_code)]
 #[derive(
@@ -210,16 +177,11 @@ pub struct ScaleOpacity {
 impl From<[f32; 4]> for ScaleOpacity {
     fn from(scale_opacity: [f32; 4]) -> Self {
         Self {
-            scale: [
-                scale_opacity[0],
-                scale_opacity[1],
-                scale_opacity[2],
-            ],
+            scale: [scale_opacity[0], scale_opacity[1], scale_opacity[2]],
             opacity: scale_opacity[3],
         }
     }
 }
-
 
 #[allow(dead_code)]
 #[derive(
@@ -251,7 +213,6 @@ impl From<[f32; 4]> for TimestampTimescale {
         }
     }
 }
-
 
 #[allow(dead_code)]
 #[derive(
@@ -288,4 +249,3 @@ impl From<&Gaussian3d> for Covariance3dOpacity {
         }
     }
 }
-

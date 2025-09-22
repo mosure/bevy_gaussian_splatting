@@ -1,7 +1,6 @@
 // TODO: gaussian cloud 4d with temporal hierarchy
 use crate::gaussian::formats::planar_4d::PlanarGaussian4dHandle;
 
-
 pub struct TemporalGaussianLevel {
     pub instance_count: usize,
     // TODO: swap buffer slicing

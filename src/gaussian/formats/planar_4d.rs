@@ -2,40 +2,18 @@ use std::marker::Copy;
 
 use bevy::prelude::*;
 use bevy_interleave::prelude::*;
-use bytemuck::{
-    Pod,
-    Zeroable,
-};
-use rand::{
-    prelude::Distribution,
-    Rng,
-};
-use serde::{
-    Deserialize,
-    Serialize,
-};
+use bytemuck::{Pod, Zeroable};
+use rand::{Rng, prelude::Distribution};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     gaussian::{
-        f32::{
-            IsotropicRotations,
-            PositionVisibility,
-            ScaleOpacity,
-            TimestampTimescale,
-        },
-        interface::{
-            CommonCloud,
-            TestCloud,
-        },
+        f32::{IsotropicRotations, PositionVisibility, ScaleOpacity, TimestampTimescale},
+        interface::{CommonCloud, TestCloud},
         iter::PositionIter,
     },
-    material::spherindrical_harmonics::{
-        SH_4D_COEFF_COUNT,
-        SpherindricalHarmonicCoefficients,
-    },
+    material::spherindrical_harmonics::{SH_4D_COEFF_COUNT, SpherindricalHarmonicCoefficients},
 };
-
-
 
 #[derive(
     Clone,
@@ -69,7 +47,6 @@ pub struct Gaussian4d {
 //     pub scale_opacity: ScaleOpacity,
 //     pub timestamp_timescale: TimestampTimescale,
 // }
-
 
 // TODO: quantize 4d representation
 // #[derive(
@@ -221,7 +198,6 @@ pub struct Gaussian4d {
 //     }
 // }
 
-
 impl CommonCloud for PlanarGaussian4d {
     type PackedType = Gaussian4d;
 
@@ -255,7 +231,6 @@ impl From<Vec<Gaussian4d>> for PlanarGaussian4d {
     }
 }
 
-
 impl Distribution<Gaussian4d> for rand::distributions::Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Gaussian4d {
         let mut coefficients = [0.0; SH_4D_COEFF_COUNT];
@@ -273,26 +248,25 @@ impl Distribution<Gaussian4d> for rand::distributions::Standard {
                 rng.gen_range(-1.0..1.0),
                 rng.gen_range(-1.0..1.0),
                 rng.gen_range(-1.0..1.0),
-            ].into(),
+            ]
+            .into(),
             position_visibility: [
                 rng.gen_range(-20.0..20.0),
                 rng.gen_range(-20.0..20.0),
                 rng.gen_range(-20.0..20.0),
                 1.0,
-            ].into(),
+            ]
+            .into(),
             scale_opacity: [
                 rng.gen_range(0.0..1.0),
                 rng.gen_range(0.0..1.0),
                 rng.gen_range(0.0..1.0),
                 rng.gen_range(0.0..0.8),
-            ].into(),
+            ]
+            .into(),
             spherindrical_harmonic: coefficients.into(),
-            timestamp_timescale: [
-                rng.gen_range(0.0..1.0),
-                rng.gen_range(-1.0..1.0),
-                0.0,
-                0.0,
-            ].into(),
+            timestamp_timescale: [rng.gen_range(0.0..1.0), rng.gen_range(-1.0..1.0), 0.0, 0.0]
+                .into(),
         }
     }
 }
@@ -307,7 +281,6 @@ pub fn random_gaussians_4d(n: usize) -> PlanarGaussian4d {
 
     PlanarGaussian4d::from_interleaved(gaussians)
 }
-
 
 impl TestCloud for PlanarGaussian4d {
     fn test_model() -> Self {

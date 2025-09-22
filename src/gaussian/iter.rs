@@ -1,13 +1,9 @@
 #[cfg(feature = "sort_rayon")]
-use rayon::prelude::*;
-#[cfg(feature = "sort_rayon")]
 use rayon::iter::plumbing::{Consumer, UnindexedConsumer};
+#[cfg(feature = "sort_rayon")]
+use rayon::prelude::*;
 
-use crate::gaussian::f32::{
-    Position,
-    PositionVisibility,
-};
-
+use crate::gaussian::f32::{Position, PositionVisibility};
 
 pub struct PositionIter<'a> {
     slice_iter: std::slice::Iter<'a, PositionVisibility>,
@@ -51,7 +47,9 @@ impl<'a> ParallelIterator for PositionParIter<'a> {
     where
         C: UnindexedConsumer<Self::Item>,
     {
-        self.slice_par_iter.map(|pv| &pv.position).drive_unindexed(consumer)
+        self.slice_par_iter
+            .map(|pv| &pv.position)
+            .drive_unindexed(consumer)
     }
 }
 
@@ -65,9 +63,7 @@ impl IndexedParallelIterator for PositionParIter<'_> {
     where
         C: Consumer<Self::Item>,
     {
-        self.slice_par_iter
-            .map(|pv| &pv.position)
-            .drive(consumer)
+        self.slice_par_iter.map(|pv| &pv.position).drive(consumer)
     }
 
     fn with_producer<CB>(self, callback: CB) -> CB::Output

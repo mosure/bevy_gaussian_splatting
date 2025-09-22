@@ -3,24 +3,16 @@
 // c_rr --example headless --no-default-features --features "headless" -- [filename]
 
 use bevy::{
-    prelude::*,
-    app::ScheduleRunnerPlugin,
-    core_pipeline::tonemapping::Tonemapping,
+    app::ScheduleRunnerPlugin, core_pipeline::tonemapping::Tonemapping, prelude::*,
     render::renderer::RenderDevice,
 };
 use bevy_args::BevyArgsPlugin;
 
 use bevy_gaussian_splatting::{
-    CloudSettings,
-    GaussianCamera,
-    PlanarGaussian3d,
-    PlanarGaussian3dHandle,
-    GaussianSplattingPlugin,
-    gaussian::interface::TestCloud,
-    random_gaussians_3d,
+    CloudSettings, GaussianCamera, GaussianSplattingPlugin, PlanarGaussian3d,
+    PlanarGaussian3dHandle, gaussian::interface::TestCloud, random_gaussians_3d,
     utils::GaussianSplattingViewer,
 };
-
 
 /// Derived from: https://github.com/bevyengine/bevy/pull/5550
 mod frame_capture {
@@ -29,14 +21,15 @@ mod frame_capture {
 
         use bevy::prelude::*;
         use bevy::render::render_asset::RenderAssets;
-        use bevy::render::render_graph::{self, NodeRunError, RenderGraph, RenderGraphContext, RenderLabel};
+        use bevy::render::render_graph::{
+            self, NodeRunError, RenderGraph, RenderGraphContext, RenderLabel,
+        };
         use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue};
-        use bevy::render::{Extract, RenderApp};
         use bevy::render::texture::GpuImage;
+        use bevy::render::{Extract, RenderApp};
 
         use bevy::render::render_resource::{
-            Buffer, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d,
-            MapMode,
+            Buffer, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d, MapMode,
         };
         use pollster::FutureExt;
         use wgpu::{Maintain, TexelCopyBufferInfo, TexelCopyBufferLayout};
@@ -88,7 +81,10 @@ mod frame_capture {
 
                 render_app.add_systems(ExtractSchedule, image_copy_extract);
 
-                let mut graph = render_app.world_mut().get_resource_mut::<RenderGraph>().unwrap();
+                let mut graph = render_app
+                    .world_mut()
+                    .get_resource_mut::<RenderGraph>()
+                    .unwrap();
 
                 graph.add_node(ImageCopyLabel, ImageCopyDriver);
                 graph.add_node_edge(ImageCopyLabel, bevy::render::graph::CameraDriverLabel);
@@ -220,7 +216,6 @@ mod frame_capture {
 
         use super::image_copy::ImageCopier;
 
-
         #[derive(Component, Default)]
         pub struct CaptureCamera;
 
@@ -244,13 +239,13 @@ mod frame_capture {
         }
 
         impl SceneController {
-            pub fn new(width:u32, height:u32, single_image: bool) -> SceneController {
+            pub fn new(width: u32, height: u32, single_image: bool) -> SceneController {
                 SceneController {
                     state: SceneState::BuildScene,
                     name: String::from(""),
                     width,
                     height,
-                    single_image
+                    single_image,
                 }
             }
         }
@@ -348,7 +343,7 @@ mod frame_capture {
                         std::fs::create_dir_all(&images_dir).unwrap();
 
                         let image_path = images_dir.join(format!("{i}.png"));
-                        if let Err(e) = img.save(image_path){
+                        if let Err(e) = img.save(image_path) {
                             panic!("Failed to save image: {}", e);
                         };
                     }
@@ -393,7 +388,6 @@ fn setup_gaussian_cloud(
         String::from("main_scene"),
     );
 
-
     commands.spawn((
         PlanarGaussian3dHandle(cloud),
         CloudSettings::default(),
@@ -428,17 +422,21 @@ fn headless_app() {
     };
 
     // setup frame capture
-    app.insert_resource(frame_capture::scene::SceneController::new(config.width, config.height, config.single_image));
+    app.insert_resource(frame_capture::scene::SceneController::new(
+        config.width,
+        config.height,
+        config.single_image,
+    ));
     app.insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)));
 
     app.add_plugins(
         DefaultPlugins
-        .set(ImagePlugin::default_nearest())
-        .set(WindowPlugin {
-            primary_window: None,
-            exit_condition: bevy::window::ExitCondition::DontExit,
-            close_when_requested: false,
-        }),
+            .set(ImagePlugin::default_nearest())
+            .set(WindowPlugin {
+                primary_window: None,
+                exit_condition: bevy::window::ExitCondition::DontExit,
+                close_when_requested: false,
+            }),
     );
     app.add_plugins(BevyArgsPlugin::<GaussianSplattingViewer>::default());
 
@@ -453,12 +451,10 @@ fn headless_app() {
     // setup for gaussian splatting
     app.add_plugins(GaussianSplattingPlugin);
 
-
     app.init_resource::<frame_capture::scene::SceneController>();
     app.add_event::<frame_capture::scene::SceneController>();
 
     app.add_systems(Startup, setup_gaussian_cloud);
-
 
     app.run();
 }

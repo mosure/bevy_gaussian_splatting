@@ -9,11 +9,7 @@ pub mod interface;
 pub mod iter;
 pub mod settings;
 
-
 assert_cfg!(
-    any(
-        feature = "packed",
-        feature = "planar",
-    ),
+    any(feature = "packed", feature = "planar",),
     "specify one of the following features: packed, planar",
 );

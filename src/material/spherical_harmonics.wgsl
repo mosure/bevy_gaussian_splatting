@@ -1,6 +1,5 @@
 #define_import_path bevy_gaussian_splatting::spherical_harmonics
 
-
 const shc = array<f32, 16>(
     0.28209479177387814,
     -0.4886025119029199,

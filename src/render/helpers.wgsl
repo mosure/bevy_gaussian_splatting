@@ -5,7 +5,6 @@
     gaussian_uniforms,
 }
 
-
 fn cov2d(
     position: vec3<f32>,
     cov3d: array<f32, 6>,
@@ -47,7 +46,6 @@ fn cov2d(
     return vec3<f32>(cov[0][0], cov[0][1], cov[1][1]);
 }
 
-
 fn get_bounding_box_clip(
     cov2d: vec3<f32>,
     direction: vec2<f32>,
@@ -67,7 +65,6 @@ fn get_bounding_box_clip(
 
     let x_axis_length = sqrt(lambda1);
     let y_axis_length = sqrt(lambda2);
-
 
 #ifdef USE_AABB
     let radius_px = cutoff * max(x_axis_length, y_axis_length);
@@ -122,7 +119,6 @@ fn get_bounding_box_clip(
 #endif
 }
 
-
 fn intrinsic_matrix() -> mat3x4<f32> {
     let focal = vec2<f32>(
         view.clip_from_view[0].x * view.viewport.z / 2.0,
@@ -137,7 +133,6 @@ fn intrinsic_matrix() -> mat3x4<f32> {
 
     return Ks;
 }
-
 
 fn get_rotation_matrix(
     rotation: vec4<f32>,
@@ -161,7 +156,6 @@ fn get_rotation_matrix(
         1.0 - 2.0 * (x * x + y * y),
     );
 }
-
 
 fn get_scale_matrix(
     scale: vec3<f32>,

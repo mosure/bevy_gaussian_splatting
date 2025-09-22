@@ -34,7 +34,6 @@
     #import bevy_gaussian_splatting::spherindrical_harmonics::spherindrical_harmonics_lookup
 #endif
 
-
 #ifdef GAUSSIAN_3D_STRUCTURE
     #ifdef PLANAR_F16
         fn get_color(

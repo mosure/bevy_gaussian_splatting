@@ -1,11 +1,9 @@
 use bevy::{
-    prelude::*,
     asset::{load_internal_asset, weak_handle},
+    prelude::*,
 };
 
-
 const POSITION_SHADER_HANDLE: Handle<Shader> = weak_handle!("91ad4ad8-5e95-4f30-a262-7d3de4abd5a8");
-
 
 pub struct PositionMaterialPlugin;
 

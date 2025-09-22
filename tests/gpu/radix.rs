@@ -1,62 +1,38 @@
 use std::{
     process::exit,
-    sync::{
-        Arc,
-        Mutex,
-    },
+    sync::{Arc, Mutex},
 };
 
 use bevy::{
-    prelude::*,
     core::FrameCount,
     core_pipeline::{
-        core_3d::graph::{
-            Core3d,
-            Node3d,
-        },
         Transparent3d,
+        core_3d::graph::{Core3d, Node3d},
         tonemapping::Tonemapping,
     },
+    prelude::*,
     render::{
         RenderApp,
-        renderer::{
-            RenderContext,
-            RenderQueue,
-        },
         render_asset::RenderAssets,
-        render_graph::{
-            Node,
-            NodeRunError,
-            RenderGraphApp,
-            RenderGraphContext,
-        },
+        render_graph::{Node, NodeRunError, RenderGraphApp, RenderGraphContext},
         render_phase::SortedRenderPhase,
+        renderer::{RenderContext, RenderQueue},
         view::ExtractedView,
     },
 };
 
 use bevy_gaussian_splatting::{
-    GaussianCamera,
-    PlanarGaussian3d,
-    PlanarGaussian3dHandle,
-    random_gaussians_3d,
+    GaussianCamera, PlanarGaussian3d, PlanarGaussian3dHandle, random_gaussians_3d,
     sort::SortedEntries,
 };
 
-use _harness::{
-    TestHarness,
-    test_harness_app,
-    TestState,
-    TestStateArc,
-};
+use _harness::{TestHarness, TestState, TestStateArc, test_harness_app};
 
 mod _harness;
-
 
 pub mod node {
     pub const RADIX_SORT_TEST: &str = "radix_sort_test";
 }
-
 
 // run with `cargo run --bin test_gaussian --features="debug_gpu"`
 fn main() {
@@ -68,24 +44,18 @@ fn main() {
 
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
         render_app
-            .add_render_graph_node::<RadixTestNode>(
-                CORE_3D,
-                node::RADIX_SORT_TEST,
-            )
+            .add_render_graph_node::<RadixTestNode>(CORE_3D, node::RADIX_SORT_TEST)
             .add_render_graph_edge(
                 CORE_3D,
                 node::RADIX_SORT_TEST,
-                 bevy::core_pipeline::core_3d::graph::node::END_MAIN_PASS,
+                bevy::core_pipeline::core_3d::graph::node::END_MAIN_PASS,
             );
     }
 
     app.run();
 }
 
-fn setup(
-    mut commands: Commands,
-    mut gaussian_assets: ResMut<Assets<Cloud>>,
-) {
+fn setup(mut commands: Commands, mut gaussian_assets: ResMut<Assets<Cloud>>) {
     let cloud = gaussian_assets.add(random_gaussians_3d(10000));
 
     commands.spawn((
@@ -106,7 +76,6 @@ fn setup(
         GaussianCamera,
     ));
 }
-
 
 pub struct RadixTestNode {
     gaussian_clouds: QueryState<(
@@ -132,13 +101,9 @@ impl FromWorld for RadixTestNode {
     }
 }
 
-
 // TODO: update radix sort to latest paradigm
 impl Node for RadixTestNode {
-    fn update(
-        &mut self,
-        world: &mut World,
-    ) {
+    fn update(&mut self, world: &mut World) {
         let mut state = self.state.lock().unwrap();
         if state.test_completed {
             exit(0);
@@ -164,18 +129,19 @@ impl Node for RadixTestNode {
         render_context: &mut RenderContext,
         world: &World,
     ) -> Result<(), NodeRunError> {
-        for (view, _phase,) in self.views.iter_manual(world) {
+        for (view, _phase) in self.views.iter_manual(world) {
             let camera_position = view.transform.translation();
 
-            for (
-                cloud_handle,
-                sorted_entries_handle,
-            ) in self.gaussian_clouds.iter_manual(world) {
+            for (cloud_handle, sorted_entries_handle) in self.gaussian_clouds.iter_manual(world) {
                 let gaussian_cloud_res = world.get_resource::<RenderAssets<GpuCloud>>().unwrap();
-                let sorted_entries_res = world.get_resource::<RenderAssets<GpuSortedEntry>>().unwrap();
+                let sorted_entries_res = world
+                    .get_resource::<RenderAssets<GpuSortedEntry>>()
+                    .unwrap();
 
                 let mut state = self.state.lock().unwrap();
-                if gaussian_cloud_res.get(cloud_handle).is_none() || sorted_entries_res.get(sorted_entries_handle).is_none() {
+                if gaussian_cloud_res.get(cloud_handle).is_none()
+                    || sorted_entries_res.get(sorted_entries_handle).is_none()
+                {
                     continue;
                 } else if !state.test_loaded {
                     state.test_loaded = true;
@@ -188,9 +154,9 @@ impl Node for RadixTestNode {
                 wgpu::util::DownloadBuffer::read_buffer(
                     render_context.render_device().wgpu_device(),
                     world.get_resource::<RenderQueue>().unwrap().0.as_ref(),
-                    &sorted_entries.sorted_entry_buffer.slice(
-                        0..sorted_entries.sorted_entry_buffer.size()
-                    ),
+                    &sorted_entries
+                        .sorted_entry_buffer
+                        .slice(0..sorted_entries.sorted_entry_buffer.size()),
                     move |buffer: Result<wgpu::util::DownloadBuffer, wgpu::BufferAsyncError>| {
                         let binding = buffer.unwrap();
                         let u32_muck = bytemuck::cast_slice::<u8, u32>(&*binding);
@@ -202,14 +168,19 @@ impl Node for RadixTestNode {
 
                         // TODO: depth order validation over ndc cells
 
-                        radix_sorted_indices.iter()
+                        radix_sorted_indices
+                            .iter()
                             .fold(0.0, |depth_acc, &(entry_idx, idx)| {
-                                if idx == 0 || u32_muck[entry_idx - 1] == 0xffffffff || u32_muck[entry_idx - 1] == 0x0 {
+                                if idx == 0
+                                    || u32_muck[entry_idx - 1] == 0xffffffff
+                                    || u32_muck[entry_idx - 1] == 0x0
+                                {
                                     return depth_acc;
                                 }
 
                                 let position = gaussians[idx].position_visibility;
-                                let position_vec3 = Vec3::new(position[0], position[1], position[2]);
+                                let position_vec3 =
+                                    Vec3::new(position[0], position[1], position[2]);
                                 let depth = (position_vec3 - camera_position).length();
 
                                 let depth_is_non_decreasing = depth_acc <= depth;
@@ -222,11 +193,15 @@ impl Node for RadixTestNode {
                                     );
                                 }
 
-                                assert!(depth_is_non_decreasing, "radix sort, non-decreasing check failed: {} > {}", depth_acc, depth);
+                                assert!(
+                                    depth_is_non_decreasing,
+                                    "radix sort, non-decreasing check failed: {} > {}",
+                                    depth_acc, depth
+                                );
 
                                 depth_acc.max(depth)
                             });
-                    }
+                    },
                 );
             }
         }
