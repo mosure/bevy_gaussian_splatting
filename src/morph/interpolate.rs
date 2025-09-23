@@ -1,7 +1,7 @@
 use std::{any::TypeId, marker::PhantomData};
 
 use bevy::{
-    asset::{LoadState, load_internal_asset, weak_handle},
+    asset::{Assets, LoadState, load_internal_asset, weak_handle},
     core_pipeline::{
         core_3d::graph::{Core3d, Node3d},
         prepass::PreviousViewUniformOffset,
@@ -17,7 +17,7 @@ use bevy::{
             ComputePassDescriptor, ComputePipelineDescriptor, PipelineCache,
         },
         renderer::{RenderContext, RenderDevice},
-        sync_world::RenderEntity,
+        sync_world::{RenderEntity, SyncToRenderWorld},
         view::ViewUniformOffset,
     },
 };
@@ -25,7 +25,7 @@ use bevy_interleave::prelude::*;
 
 use crate::{
     camera::GaussianCamera,
-    gaussian::formats::planar_3d::PlanarGaussian3d,
+    gaussian::formats::planar_3d::{Gaussian3d, PlanarGaussian3d, PlanarGaussian3dHandle},
     render::{
         CloudPipeline, CloudPipelineKey, CloudUniform, GaussianComputeViewBindGroup,
         GaussianUniformBindGroups, PlanarStorageRebindQueue, shader_defs,
@@ -78,12 +78,54 @@ where
                     (queue_gaussian_interpolate_bind_groups::<R>.in_set(RenderSet::Queue),),
                 );
         }
+
+        app.add_systems(PostUpdate, ensure_gaussian_interpolate_synced::<R>);
+        app.add_systems(PostUpdate, ensure_gaussian_interpolate_output_gaussian3d);
     }
 
     fn finish(&self, app: &mut App) {
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app.init_resource::<GaussianInterpolatePipeline<R>>();
         }
+    }
+}
+
+fn ensure_gaussian_interpolate_synced<R: PlanarSync>(
+    mut commands: Commands,
+    query: Query<(Entity, Option<&SyncToRenderWorld>), With<GaussianInterpolate<R>>>,
+) {
+    for (entity, sync_tag) in &query {
+        if sync_tag.is_none() {
+            debug!(?entity, "adding SyncToRenderWorld to GaussianInterpolate entity");
+            commands.entity(entity).insert(SyncToRenderWorld);
+        }
+    }
+}
+
+fn ensure_gaussian_interpolate_output_gaussian3d(
+    mut commands: Commands,
+    mut planar_assets: ResMut<Assets<PlanarGaussian3d>>,
+    mut rebind_queue: ResMut<PlanarStorageRebindQueue<Gaussian3d>>,
+    query: Query<(Entity, &GaussianInterpolate<Gaussian3d>, Option<&PlanarGaussian3dHandle>)>,
+) {
+    for (entity, interpolate, existing_output) in &query {
+        if existing_output.is_some() {
+            continue;
+        }
+
+        let lhs_handle = interpolate.lhs.handle();
+        let Some(cloned_asset) = planar_assets.get(lhs_handle).map(|asset| asset.iter().collect::<PlanarGaussian3d>()) else {
+            debug!(?entity, "lhs planar asset not available for GaussianInterpolate output");
+            continue;
+        };
+
+        let output_handle_raw = planar_assets.add(cloned_asset);
+        let output_handle = PlanarGaussian3dHandle(output_handle_raw.clone());
+
+        debug!(?entity, asset_id = ?output_handle_raw.id(), "initialized GaussianInterpolate output asset from lhs");
+
+        rebind_queue.push_unique(output_handle_raw.id());
+        commands.entity(entity).insert(output_handle);
     }
 }
 
@@ -162,20 +204,33 @@ where
 
 pub fn extract_gaussian_interpolate<R>(
     mut commands: Commands,
-    query: Extract<Query<(Entity, &RenderEntity, &GaussianInterpolate<R>)>>,
+    query: Extract<Query<(RenderEntity, &GaussianInterpolate<R>)>>,
 ) where
     R: PlanarSync,
     R::PlanarTypeHandle: Clone,
 {
-    let mut extracted: Vec<(Entity, (RenderEntity, GaussianInterpolate<R>))> = Vec::new();
+    let mut extracted: Vec<(Entity, (GaussianInterpolate<R>,))> = Vec::new();
 
-    for (_entity, render_entity, component) in query.iter() {
-        let render_entity = *render_entity;
-        extracted.push((render_entity.id(), (render_entity, component.clone())));
+    for (render_entity, component) in query.iter() {
+        debug!(?render_entity, "queueing GaussianInterpolate extraction");
+        extracted.push((render_entity.into(), (component.clone(),)));
     }
 
-    if !extracted.is_empty() {
-        commands.try_insert_batch(extracted);
+    if extracted.is_empty() {
+        debug!("no GaussianInterpolate components extracted this frame");
+    } else {
+        let count = extracted.len();
+        debug!(count, "inserting GaussianInterpolate components into render world");
+        for (entity, bundle) in extracted {
+            match commands.get_entity(entity) {
+                Ok(mut entity_cmd) => {
+                    entity_cmd.insert(bundle);
+                }
+                Err(_) => {
+                    debug!(?entity, "skipping GaussianInterpolate insertion; render entity missing");
+                }
+            }
+        }
     }
 }
 
@@ -206,6 +261,7 @@ pub fn queue_gaussian_interpolate_bind_groups<R: PlanarSync>(
         }
 
         if !rebuild {
+            debug!(?entity, "GaussianInterpolate bind groups unchanged; skipping");
             continue;
         }
 
@@ -214,23 +270,30 @@ pub fn queue_gaussian_interpolate_bind_groups<R: PlanarSync>(
         let output_asset_handle = output_handle.handle().clone();
 
         let mut ready = true;
-        for handle in [&lhs_handle, &rhs_handle, &output_asset_handle] {
-            let Some(load_state) = asset_server.get_load_state(handle.id()) else {
-                ready = false;
-                break;
-            };
-            if !matches!(load_state, LoadState::Loaded) {
-                ready = false;
-                break;
+        for (label, handle) in [("lhs", &lhs_handle), ("rhs", &rhs_handle), ("output", &output_asset_handle)] {
+            match asset_server.get_load_state(handle.id()) {
+                Some(LoadState::Loaded) => {}
+                Some(load_state) => {
+                    debug!(?entity, handle_label = label, ?load_state, "waiting for GaussianInterpolate asset load");
+                    ready = false;
+                    break;
+                }
+                None => {
+                    debug!(?entity, handle_label = label, "GaussianInterpolate asset load state unavailable");
+                    ready = false;
+                    break;
+                }
             }
 
             if gpu_planars.get(handle.id()).is_none() {
+                debug!(?entity, handle_label = label, "GaussianInterpolate GPU asset not ready");
                 ready = false;
                 break;
             }
         }
 
         if !ready {
+            debug!(?entity, "deferring GaussianInterpolate bind group rebuild");
             continue;
         }
 
@@ -251,6 +314,9 @@ pub fn queue_gaussian_interpolate_bind_groups<R: PlanarSync>(
         let output_bind_group =
             output_gpu.bind_group(render_device.as_ref(), &interpolate_pipeline.output_layout);
 
+        let gaussian_count = output_gpu.len();
+        debug!(?entity, gaussian_count, "queued GaussianInterpolate bind groups");
+
         pending_inserts.push((
             entity,
             GaussianInterpolateBindGroups::<R> {
@@ -262,7 +328,11 @@ pub fn queue_gaussian_interpolate_bind_groups<R: PlanarSync>(
         ));
     }
 
-    if !pending_inserts.is_empty() {
+    if pending_inserts.is_empty() {
+        debug!("no GaussianInterpolate bind groups queued this frame");
+    } else {
+        let count = pending_inserts.len();
+        debug!(count, "inserted GaussianInterpolate bind groups into render world");
         commands.try_insert_batch(pending_inserts);
     }
 }
@@ -304,17 +374,19 @@ where
         let pipeline_cache = world.resource::<PipelineCache>();
 
         if !self.initialized {
-            if let CachedPipelineState::Ok(_) =
-                pipeline_cache.get_compute_pipeline_state(pipeline.interpolate_pipeline)
-            {
-                self.initialized = true;
-            }
-
-            if !self.initialized {
-                return;
+            match pipeline_cache.get_compute_pipeline_state(pipeline.interpolate_pipeline) {
+                CachedPipelineState::Ok(_) => {
+                    self.initialized = true;
+                    debug!("GaussianInterpolate pipeline ready");
+                }
+                state => {
+                    debug!(?state, "GaussianInterpolate pipeline not ready; skipping update");
+                    return;
+                }
             }
         }
 
+        debug!("updating GaussianInterpolate query archetypes");
         self.gaussian_clouds.update_archetypes(world);
         self.view_bind_group.update_archetypes(world);
     }
@@ -326,6 +398,7 @@ where
         world: &World,
     ) -> Result<(), NodeRunError> {
         if !self.initialized {
+            debug!("GaussianInterpolateNode run skipped: pipeline not initialized");
             return Ok(());
         }
 
@@ -333,6 +406,7 @@ where
         let pipeline = world.resource::<GaussianInterpolatePipeline<R>>();
         let gaussian_uniforms = world.resource::<GaussianUniformBindGroups>();
         let Some(uniform_bind_group) = gaussian_uniforms.base_bind_group.as_ref() else {
+            debug!("GaussianInterpolateNode run skipped: GaussianUniform base bind group missing");
             return Ok(());
         };
 
@@ -340,18 +414,23 @@ where
 
         let command_encoder = render_context.command_encoder();
 
+        debug!("GaussianInterpolateNode run starting");
+
         for (_camera, view_bind_group, view_uniform_offset, previous_view_uniform_offset) in
             self.view_bind_group.iter_manual(world)
         {
             for (_interpolate, bind_groups, cloud_uniform_index, output_handle) in
                 self.gaussian_clouds.iter_manual(world)
             {
+                let output_asset_id = output_handle.handle().id();
                 let Some(output_gpu) = gpu_planars.get(output_handle.handle()) else {
+                    debug!(output_asset_id = ?output_asset_id, "GaussianInterpolate output GPU asset missing");
                     continue;
                 };
 
                 let gaussian_count = output_gpu.len() as u32;
                 if gaussian_count == 0 {
+                    debug!(output_asset_id = ?output_asset_id, "GaussianInterpolate output has no gaussians; skipping dispatch");
                     continue;
                 }
 
@@ -377,10 +456,19 @@ where
                 pass.set_bind_group(3, &bind_groups.rhs, &[]);
                 pass.set_bind_group(4, &bind_groups.output, &[]);
 
+                debug!(
+                    output_asset_id = ?output_asset_id,
+                    gaussian_count,
+                    workgroups,
+                    uniform_index = cloud_uniform_index.index(),
+                    "dispatched GaussianInterpolate compute pass"
+                );
+
                 pass.dispatch_workgroups(workgroups, 1, 1);
             }
         }
 
+        debug!("GaussianInterpolateNode run completed");
         Ok(())
     }
 }
