@@ -173,8 +173,10 @@ where
 
         let output_layout = R::GpuPlanarType::bind_group_layout(render_device, false);
 
-        let mut key = CloudPipelineKey::default();
-        key.binary_gaussian_op = true;
+        let key = CloudPipelineKey {
+            binary_gaussian_op: true,
+            ..Default::default()
+        };
         let shader_defs = shader_defs(key);
 
         let interpolate_pipeline =
@@ -213,7 +215,7 @@ pub fn extract_gaussian_interpolate<R>(
 
     for (render_entity, component) in query.iter() {
         debug!(?render_entity, "queueing GaussianInterpolate extraction");
-        extracted.push((render_entity.into(), (component.clone(),)));
+        extracted.push((render_entity, (component.clone(),)));
     }
 
     if extracted.is_empty() {
@@ -234,6 +236,7 @@ pub fn extract_gaussian_interpolate<R>(
     }
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn queue_gaussian_interpolate_bind_groups<R: PlanarSync>(
     mut commands: Commands,
     interpolate_pipeline: Res<GaussianInterpolatePipeline<R>>,
@@ -334,6 +337,7 @@ pub fn queue_gaussian_interpolate_bind_groups<R: PlanarSync>(
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub struct GaussianInterpolateNode<R: PlanarSync> {
     gaussian_clouds: QueryState<(
         &'static GaussianInterpolate<R>,
@@ -431,7 +435,7 @@ where
                     continue;
                 }
 
-                let workgroups = (gaussian_count + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+                let workgroups = gaussian_count.div_ceil(WORKGROUP_SIZE);
                 let pipeline_id = pipeline_cache
                     .get_compute_pipeline(pipeline.interpolate_pipeline)
                     .unwrap();

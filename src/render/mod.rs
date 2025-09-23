@@ -1142,7 +1142,7 @@ pub struct GaussianComputeViewBindGroup {
 // TODO: move to gaussian camera module
 // TODO: remove cloud pipeline dependency by separating view layout
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn queue_gaussian_view_bind_groups<R: PlanarSync>(
     mut commands: Commands,
     render_device: Res<RenderDevice>,
@@ -1218,8 +1218,7 @@ pub fn queue_gaussian_view_bind_groups<R: PlanarSync>(
 }
 
 // Prepare the compute view bind group using the compute_view_layout (for compute pipelines)
-#[allow(clippy::too_many_arguments)]
-
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn queue_gaussian_compute_view_bind_groups<R: PlanarSync>(
     mut commands: Commands,
     render_device: Res<RenderDevice>,
