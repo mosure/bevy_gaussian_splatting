@@ -32,6 +32,9 @@ use bevy_gaussian_splatting::{
     utils::{GaussianSplattingViewer, log, setup_hooks},
 };
 
+#[cfg(feature = "morph_interpolate")]
+use bevy_gaussian_splatting::{Gaussian3d, morph::interpolate::GaussianInterpolate};
+
 #[cfg(feature = "material_noise")]
 use bevy_gaussian_splatting::material::noise::NoiseMaterial;
 
@@ -107,17 +110,38 @@ fn setup_gaussian_cloud(
                 cloud = gaussian_3d_assets.add(PlanarGaussian3d::test_model());
             }
 
-            commands.spawn((
-                PlanarGaussian3dHandle(cloud),
-                CloudSettings {
-                    gaussian_mode: args.gaussian_mode,
-                    playback_mode: args.playback_mode,
-                    rasterize_mode: args.rasterization_mode,
-                    ..default()
-                },
-                Name::new("gaussian_cloud_3d"),
-                ShowAxes,
-            ));
+            if let Some(input_cloud_target) = &args.input_cloud_target {
+                let input_uri = parse_input_file(input_cloud_target.as_str());
+                log(&format!("loading {input_uri}"));
+                let binary_cloud: Handle<PlanarGaussian3d> = asset_server.load(&input_uri);
+
+                commands.spawn((
+                    CloudSettings {
+                        gaussian_mode: args.gaussian_mode,
+                        playback_mode: args.playback_mode,
+                        rasterize_mode: args.rasterization_mode,
+                        ..default()
+                    },
+                    GaussianInterpolate::<Gaussian3d> {
+                        lhs: PlanarGaussian3dHandle(cloud),
+                        rhs: PlanarGaussian3dHandle(binary_cloud),
+                    },
+                    Name::new("gaussian_cloud_3d_binary"),
+                    ShowAxes,
+                ));
+            } else {
+                commands.spawn((
+                    CloudSettings {
+                        gaussian_mode: args.gaussian_mode,
+                        playback_mode: args.playback_mode,
+                        rasterize_mode: args.rasterization_mode,
+                        ..default()
+                    },
+                    PlanarGaussian3dHandle(cloud.clone()),
+                    Name::new("gaussian_cloud_3d"),
+                    ShowAxes,
+                ));
+            }
         }
         GaussianMode::Gaussian4d => {
             let cloud: Handle<PlanarGaussian4d>;

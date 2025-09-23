@@ -17,6 +17,7 @@ use bevy::{
             ComputePassDescriptor, ComputePipelineDescriptor, PipelineCache,
         },
         renderer::{RenderContext, RenderDevice},
+        sync_world::RenderEntity,
         view::ViewUniformOffset,
     },
 };
@@ -86,7 +87,8 @@ where
     }
 }
 
-#[derive(Component)]
+#[derive(Component, Debug, Default, Reflect)]
+#[reflect(Component)]
 pub struct GaussianInterpolate<R: PlanarSync> {
     pub lhs: R::PlanarTypeHandle,
     pub rhs: R::PlanarTypeHandle,
@@ -158,13 +160,22 @@ where
     }
 }
 
-pub fn extract_gaussian_interpolate<R: PlanarSync>(
+pub fn extract_gaussian_interpolate<R>(
     mut commands: Commands,
-    query: Extract<Query<(Entity, &GaussianInterpolate<R>)>>,
-) {
-    for (entity, component) in query.iter() {
-        let clone: GaussianInterpolate<R> = component.clone();
-        commands.entity(entity).insert((clone,));
+    query: Extract<Query<(Entity, &RenderEntity, &GaussianInterpolate<R>)>>,
+) where
+    R: PlanarSync,
+    R::PlanarTypeHandle: Clone,
+{
+    let mut extracted: Vec<(Entity, (RenderEntity, GaussianInterpolate<R>))> = Vec::new();
+
+    for (_entity, render_entity, component) in query.iter() {
+        let render_entity = *render_entity;
+        extracted.push((render_entity.id(), (render_entity, component.clone())));
+    }
+
+    if !extracted.is_empty() {
+        commands.try_insert_batch(extracted);
     }
 }
 
@@ -186,6 +197,7 @@ pub fn queue_gaussian_interpolate_bind_groups<R: PlanarSync>(
     R::GpuPlanarType: GpuPlanarStorage,
 {
     let inputs_changed = gaussian_cloud_pipeline.is_changed() || gpu_planars.is_changed();
+    let mut pending_inserts: Vec<(Entity, GaussianInterpolateBindGroups<R>)> = Vec::new();
 
     for (entity, interpolate, output_handle, existing) in query.iter_mut() {
         let mut rebuild = inputs_changed || interpolate.is_changed();
@@ -239,14 +251,19 @@ pub fn queue_gaussian_interpolate_bind_groups<R: PlanarSync>(
         let output_bind_group =
             output_gpu.bind_group(render_device.as_ref(), &interpolate_pipeline.output_layout);
 
-        commands
-            .entity(entity)
-            .insert(GaussianInterpolateBindGroups::<R> {
+        pending_inserts.push((
+            entity,
+            GaussianInterpolateBindGroups::<R> {
                 lhs: lhs_bind_group,
                 rhs: rhs_bind_group,
                 output: output_bind_group,
                 phantom: PhantomData,
-            });
+            },
+        ));
+    }
+
+    if !pending_inserts.is_empty() {
+        commands.try_insert_batch(pending_inserts);
     }
 }
 
@@ -367,3 +384,4 @@ where
         Ok(())
     }
 }
+

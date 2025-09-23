@@ -25,10 +25,10 @@ pub enum GaussianMode {
     Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Reflect, Serialize, Deserialize, ValueEnum,
 )]
 pub enum PlaybackMode {
-    #[default]
     Loop,
     Once,
     Sin,
+    #[default]
     Still,
 }
 

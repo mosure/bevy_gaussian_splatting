@@ -28,10 +28,7 @@ use bevy_interleave::{interface::storage::PlanarStorageBindGroup, prelude::*};
 use static_assertions::assert_cfg;
 
 #[cfg(feature = "morph_interpolate")]
-use crate::{
-    gaussian::formats::planar_3d::PlanarGaussian3d,
-    morph::interpolate::InterpolateLabel,
-};
+use crate::{gaussian::formats::planar_3d::PlanarGaussian3d, morph::interpolate::InterpolateLabel};
 
 use crate::{
     CloudSettings, GaussianCamera,
