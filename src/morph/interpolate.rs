@@ -271,15 +271,12 @@ pub fn queue_gaussian_interpolate_bind_groups<R: PlanarSync>(
 
         let mut ready = true;
         for (label, handle) in [("lhs", &lhs_handle), ("rhs", &rhs_handle), ("output", &output_asset_handle)] {
-            match asset_server.get_load_state(handle.id()) {
-                Some(LoadState::Loaded) => {}
-                Some(load_state) => {
+            // Assets created at runtime (like the interpolation output) are not tracked by the AssetServer, so
+            // `get_load_state` returns `None` even though the data is ready. Treat `None` as ready and only block
+            // while the server explicitly reports a non-loaded state.
+            if let Some(load_state) = asset_server.get_load_state(handle.id()) {
+                if !matches!(load_state, LoadState::Loaded) {
                     debug!(?entity, handle_label = label, ?load_state, "waiting for GaussianInterpolate asset load");
-                    ready = false;
-                    break;
-                }
-                None => {
-                    debug!(?entity, handle_label = label, "GaussianInterpolate asset load state unavailable");
                     ready = false;
                     break;
                 }
