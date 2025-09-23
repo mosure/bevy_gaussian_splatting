@@ -110,26 +110,44 @@ fn setup_gaussian_cloud(
                 cloud = gaussian_3d_assets.add(PlanarGaussian3d::test_model());
             }
 
-            if let Some(input_cloud_target) = &args.input_cloud_target {
-                let input_uri = parse_input_file(input_cloud_target.as_str());
-                log(&format!("loading {input_uri}"));
-                let binary_cloud: Handle<PlanarGaussian3d> = asset_server.load(&input_uri);
+            #[cfg(feature = "morph_interpolate")]
+            {
+                if let Some(input_cloud_target) = &args.input_cloud_target {
+                    let input_uri = parse_input_file(input_cloud_target.as_str());
+                    log(&format!("loading {input_uri}"));
+                    let binary_cloud: Handle<PlanarGaussian3d> = asset_server.load(&input_uri);
 
-                commands.spawn((
-                    CloudSettings {
-                        gaussian_mode: args.gaussian_mode,
-                        playback_mode: args.playback_mode,
-                        rasterize_mode: args.rasterization_mode,
-                        ..default()
-                    },
-                    GaussianInterpolate::<Gaussian3d> {
-                        lhs: PlanarGaussian3dHandle(cloud),
-                        rhs: PlanarGaussian3dHandle(binary_cloud),
-                    },
-                    Name::new("gaussian_cloud_3d_binary"),
-                    ShowAxes,
-                ));
-            } else {
+                    commands.spawn((
+                        CloudSettings {
+                            gaussian_mode: args.gaussian_mode,
+                            playback_mode: args.playback_mode,
+                            rasterize_mode: args.rasterization_mode,
+                            ..default()
+                        },
+                        GaussianInterpolate::<Gaussian3d> {
+                            lhs: PlanarGaussian3dHandle(cloud),
+                            rhs: PlanarGaussian3dHandle(binary_cloud),
+                        },
+                        Name::new("gaussian_cloud_3d_binary"),
+                        ShowAxes,
+                    ));
+                } else {
+                    commands.spawn((
+                        CloudSettings {
+                            gaussian_mode: args.gaussian_mode,
+                            playback_mode: args.playback_mode,
+                            rasterize_mode: args.rasterization_mode,
+                            ..default()
+                        },
+                        PlanarGaussian3dHandle(cloud.clone()),
+                        Name::new("gaussian_cloud_3d"),
+                        ShowAxes,
+                    ));
+                }
+            }
+
+            #[cfg(not(feature = "morph_interpolate"))]
+            {
                 commands.spawn((
                     CloudSettings {
                         gaussian_mode: args.gaussian_mode,
@@ -241,6 +259,11 @@ fn setup_sparse_select(
 fn viewer_app() {
     let config = parse_args::<GaussianSplattingViewer>();
     log(&format!("{config:?}"));
+
+    #[cfg(not(feature = "morph_interpolate"))]
+    if config.input_cloud_target.is_some() {
+        panic!("`--input-cloud-target` requires the `morph_interpolate` feature");
+    }
 
     let mut app = App::new();
 
