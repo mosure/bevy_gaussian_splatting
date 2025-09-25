@@ -13,7 +13,6 @@
 //     CloudSettings,
 // };
 
-
 // #[derive(Component, Default,)]
 // pub struct GaussianSliceData {
 //     pub data: Vec<f32>,
@@ -63,7 +62,6 @@
 //         }
 //     }
 // }
-
 
 // pub struct GaussianSliceNode {
 //     query_gaussian: QueryState<(&'static PlanarGaussian3dHandle, &'static CloudSettings)>,

@@ -1,22 +1,12 @@
 #[allow(unused_imports)]
-use std::io::{
-    BufReader,
-    Cursor,
-    ErrorKind,
-};
+use std::io::{BufReader, Cursor, ErrorKind};
 
-use bevy::asset::{
-    AssetLoader,
-    LoadContext,
-    io::Reader,
-};
+use bevy::asset::{AssetLoader, LoadContext, io::Reader};
 
 use crate::{
-    gaussian::formats::planar_3d::PlanarGaussian3d,
-    gaussian::formats::planar_4d::PlanarGaussian4d,
+    gaussian::formats::planar_3d::PlanarGaussian3d, gaussian::formats::planar_4d::PlanarGaussian4d,
     io::codec::CloudCodec,
 };
-
 
 #[derive(Default)]
 pub struct Gaussian3dLoader;
@@ -47,14 +37,16 @@ impl AssetLoader for Gaussian3dLoader {
 
                 #[cfg(not(feature = "io_ply"))]
                 {
-                    Err(std::io::Error::other("ply support not enabled, enable with io_ply feature"))
+                    Err(std::io::Error::other(
+                        "ply support not enabled, enable with io_ply feature",
+                    ))
                 }
-            },
+            }
             Some(ext) if ext == "gcloud" => {
                 let cloud = PlanarGaussian3d::decode(bytes.as_slice());
 
                 Ok(cloud)
-            },
+            }
             _ => Err(std::io::Error::other("only .ply and .gcloud supported")),
         }
     }
@@ -63,8 +55,6 @@ impl AssetLoader for Gaussian3dLoader {
         &["ply", "gcloud"]
     }
 }
-
-
 
 #[derive(Default)]
 pub struct Gaussian4dLoader;
@@ -95,12 +85,12 @@ impl AssetLoader for Gaussian4dLoader {
 
                 #[cfg(not(feature = "io_ply"))]
                 {
-                    Err(std::io::Error::other("ply4d support not enabled, enable with io_ply feature"))
+                    Err(std::io::Error::other(
+                        "ply4d support not enabled, enable with io_ply feature",
+                    ))
                 }
-            },
-            Some(ext) if ext == "gc4d" => {
-                Ok(PlanarGaussian4d::decode(bytes.as_slice()))
-            },
+            }
+            Some(ext) if ext == "gc4d" => Ok(PlanarGaussian4d::decode(bytes.as_slice())),
             _ => Err(std::io::Error::other("only .ply4d and .gc4d supported")),
         }
     }

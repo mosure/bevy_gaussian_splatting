@@ -31,7 +31,6 @@
 #import bevy_gaussian_splatting::texture::get_position
 #endif
 
-
 struct SortingGlobal {
     digit_histogram: array<array<atomic<u32>, #{RADIX_BASE}>, #{RADIX_DIGIT_PLACES}>,
     assignment_counter: atomic<u32>,
@@ -46,7 +45,6 @@ struct SortingGlobal {
 @group(3) @binding(3) var<storage, read_write> draw_indirect: DrawIndirect;
 @group(3) @binding(4) var<storage, read_write> input_entries: array<Entry>;
 @group(3) @binding(5) var<storage, read_write> output_entries: array<Entry>;
-
 
 //
 // The following three functions (`radix_reset`, `radix_sort_a`, `radix_sort_b`)
@@ -120,7 +118,6 @@ fn radix_sort_b(
     }
 }
 
-
 // --- SHARED MEMORY for the final, stable `radix_sort_c` ---
 var<workgroup> tile_input_entries: array<Entry, #{WORKGROUP_ENTRIES_C}>;
 var<workgroup> sorted_tile_entries: array<Entry, #{WORKGROUP_ENTRIES_C}>;
@@ -129,7 +126,6 @@ var<workgroup> local_digit_offsets: array<u32, #{RADIX_BASE}>;
 var<workgroup> digit_global_base_ws: array<u32, #{RADIX_BASE}>;
 var<workgroup> tile_entry_count_ws: u32;
 const INVALID_KEY: u32 = 0xFFFFFFFFu;
-
 
 //
 // Pass C (REWRITTEN): A fully stable implementation that discards the faulty spin-lock.

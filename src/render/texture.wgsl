@@ -24,14 +24,12 @@
     srgb_to_linear,
 }
 
-
 fn location(index: u32) -> vec2<i32> {
     return vec2<i32>(
         i32(index) % i32(gaussian_uniforms.count_root_ceil),
         i32(index) / i32(gaussian_uniforms.count_root_ceil),
     );
 }
-
 
 #ifdef PLANAR_TEXTURE_F16
 
@@ -271,7 +269,6 @@ fn get_color(
 }
 #endif
 
-
 #ifdef PRECOMPUTE_COVARIANCE_3D
     fn get_cov3d(index: u32) -> array<f32, 6> {
         let sample = textureLoad(
@@ -359,7 +356,6 @@ fn get_visibility(index: u32) -> f32 {
     return sample.w;
 }
 #endif
-
 
 // TODO: support f32
 #ifdef PLANAR_TEXTURE_F32

@@ -1,95 +1,54 @@
+#[cfg(feature = "morph_interpolate")]
+use std::any::TypeId;
 use std::collections::HashMap;
 
 use bevy::{
-    prelude::*,
     asset::{load_internal_asset, weak_handle},
     core_pipeline::{
-        core_3d::graph::{
-            Core3d,
-            Node3d,
-        },
+        core_3d::graph::{Core3d, Node3d},
         prepass::PreviousViewUniformOffset,
     },
+    prelude::*,
     render::{
+        Render, RenderApp, RenderSet,
         render_asset::RenderAssets,
+        render_graph::{Node, NodeRunError, RenderGraphApp, RenderGraphContext, RenderLabel},
         render_resource::{
-            BindGroup,
-            BindGroupEntry,
-            BindGroupLayout,
-            BindGroupLayoutEntry,
-            BindingResource,
-            BindingType,
-            Buffer,
-            BufferBindingType,
-            BufferDescriptor,
-            BufferInitDescriptor,
-            BufferBinding,
-            BufferSize,
-            BufferUsages,
-            CachedComputePipelineId,
-            CachedPipelineState,
-            ComputePassDescriptor,
-            ComputePipelineDescriptor,
-            PipelineCache,
+            BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry, BindingResource,
+            BindingType, Buffer, BufferBinding, BufferBindingType, BufferDescriptor,
+            BufferInitDescriptor, BufferSize, BufferUsages, CachedComputePipelineId,
+            CachedPipelineState, ComputePassDescriptor, ComputePipelineDescriptor, PipelineCache,
             ShaderStages,
         },
-        renderer::{
-            RenderContext,
-            RenderDevice,
-        },
-        render_graph::{
-            Node,
-            NodeRunError,
-            RenderGraphApp,
-            RenderGraphContext,
-            RenderLabel,
-        },
-        Render,
-        RenderApp,
-        RenderSet,
+        renderer::{RenderContext, RenderDevice},
         view::ViewUniformOffset,
     },
 };
-use bevy_interleave::{
-    prelude::*,
-    interface::storage::PlanarStorageBindGroup,
-};
+use bevy_interleave::{interface::storage::PlanarStorageBindGroup, prelude::*};
 use static_assertions::assert_cfg;
 
+#[cfg(feature = "morph_interpolate")]
+use crate::{gaussian::formats::planar_3d::PlanarGaussian3d, morph::interpolate::InterpolateLabel};
+
 use crate::{
-    CloudSettings,
-    GaussianCamera,
+    CloudSettings, GaussianCamera,
     render::{
-        CloudPipeline,
-        CloudPipelineKey,
-        GaussianUniformBindGroups,
-        ShaderDefines,
-        shader_defs,
+        CloudPipeline, CloudPipelineKey, GaussianUniformBindGroups, ShaderDefines, shader_defs,
     },
-    sort::{
-        GpuSortedEntry,
-        SortEntry,
-        SortedEntriesHandle,
-        SortMode,
-        SortPluginFlag,
-    },
+    sort::{GpuSortedEntry, SortEntry, SortMode, SortPluginFlag, SortedEntriesHandle},
 };
 
 assert_cfg!(
-    not(all(
-        feature = "sort_radix",
-        feature = "buffer_texture",
-    )),
+    not(all(feature = "sort_radix", feature = "buffer_texture",)),
     "sort_radix and buffer_texture are incompatible",
 );
 
-
 const RADIX_SHADER_HANDLE: Handle<Shader> = weak_handle!("dedb3ddf-f254-4361-8762-e221774de1ed");
-const TEMPORAL_SORT_SHADER_HANDLE: Handle<Shader> = weak_handle!("11986b71-25d8-410b-adfa-6afb107ae4de");
+const TEMPORAL_SORT_SHADER_HANDLE: Handle<Shader> =
+    weak_handle!("11986b71-25d8-410b-adfa-6afb107ae4de");
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
 pub struct RadixSortLabel;
-
 
 #[derive(Default)]
 pub struct RadixSortPlugin<R: PlanarSync> {
@@ -103,19 +62,13 @@ where
     fn build(&self, app: &mut App) {
         // TODO: run once
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app
-                .add_systems(
-                    Render,
-                    (
-                        queue_radix_bind_group::<R>.in_set(RenderSet::Queue),
-                    ),
-                );
+            render_app.add_systems(
+                Render,
+                (queue_radix_bind_group::<R>.in_set(RenderSet::Queue),),
+            );
 
             render_app.init_resource::<RadixSortBuffers<R>>();
-            render_app.add_systems(
-                ExtractSchedule,
-                update_sort_buffers::<R>,
-            );
+            render_app.add_systems(ExtractSchedule, update_sort_buffers::<R>);
         }
 
         if app.is_plugin_added::<SortPluginFlag>() {
@@ -123,12 +76,7 @@ where
             return;
         }
 
-        load_internal_asset!(
-            app,
-            RADIX_SHADER_HANDLE,
-            "radix.wgsl",
-            Shader::from_wgsl
-        );
+        load_internal_asset!(app, RADIX_SHADER_HANDLE, "radix.wgsl", Shader::from_wgsl);
 
         load_internal_asset!(
             app,
@@ -138,23 +86,20 @@ where
         );
 
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app
-                .add_render_graph_node::<RadixSortNode<R>>(
-                    Core3d,
-                    RadixSortLabel,
-                )
-                .add_render_graph_edge(
-                    Core3d,
-                    RadixSortLabel,
-                    Node3d::LatePrepass,
-                );
+            render_app.add_render_graph_node::<RadixSortNode<R>>(Core3d, RadixSortLabel);
+
+            #[cfg(feature = "morph_interpolate")]
+            if TypeId::of::<R::PlanarType>() == TypeId::of::<PlanarGaussian3d>() {
+                render_app.add_render_graph_edge(Core3d, InterpolateLabel, RadixSortLabel);
+            }
+
+            render_app.add_render_graph_edge(Core3d, RadixSortLabel, Node3d::LatePrepass);
         }
     }
 
     fn finish(&self, app: &mut App) {
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app
-                .init_resource::<RadixSortPipeline<R>>();
+            render_app.init_resource::<RadixSortPipeline<R>>();
         }
     }
 }
@@ -162,10 +107,7 @@ where
 #[derive(Resource)]
 pub struct RadixSortBuffers<R: PlanarSync> {
     // TODO: use a more ECS-friendly approach
-    pub asset_map: HashMap<
-        AssetId<R::PlanarType>,
-        GpuRadixBuffers,
-    >,
+    pub asset_map: HashMap<AssetId<R::PlanarType>, GpuRadixBuffers>,
 }
 
 impl<R: PlanarSync> Default for RadixSortBuffers<R> {
@@ -185,10 +127,7 @@ pub struct GpuRadixBuffers {
 }
 
 impl GpuRadixBuffers {
-    pub fn new(
-        count: usize,
-        render_device: &RenderDevice,
-    ) -> Self {
+    pub fn new(count: usize, render_device: &RenderDevice) -> Self {
         let sorting_global_buffer = render_device.create_buffer(&BufferDescriptor {
             label: Some("sorting global buffer"),
             size: ShaderDefines::default().sorting_buffer_size as u64,
@@ -231,13 +170,12 @@ impl GpuRadixBuffers {
     }
 }
 
-
 fn update_sort_buffers<R: PlanarSync>(
     gpu_gaussian_clouds: Res<RenderAssets<R::GpuPlanarType>>,
     mut sort_buffers: ResMut<RadixSortBuffers<R>>,
     render_device: Res<RenderDevice>,
 ) {
-    for (asset_id, cloud,) in gpu_gaussian_clouds.iter() {
+    for (asset_id, cloud) in gpu_gaussian_clouds.iter() {
         // TODO: handle cloud resize operations and resolve leaked stale buffers
         if sort_buffers.asset_map.contains_key(&asset_id) {
             continue;
@@ -247,7 +185,6 @@ fn update_sort_buffers<R: PlanarSync>(
         sort_buffers.asset_map.insert(asset_id, gpu_radix_buffers);
     }
 }
-
 
 #[derive(Resource)]
 pub struct RadixSortPipeline<R: PlanarSync> {
@@ -267,7 +204,9 @@ impl<R: PlanarSync> FromWorld for RadixSortPipeline<R> {
             ty: BindingType::Buffer {
                 ty: BufferBindingType::Storage { read_only: false },
                 has_dynamic_offset: false,
-                min_binding_size: BufferSize::new(ShaderDefines::default().sorting_buffer_size as u64),
+                min_binding_size: BufferSize::new(
+                    ShaderDefines::default().sorting_buffer_size as u64,
+                ),
             },
             count: None,
         };
@@ -278,7 +217,9 @@ impl<R: PlanarSync> FromWorld for RadixSortPipeline<R> {
             ty: BindingType::Buffer {
                 ty: BufferBindingType::Storage { read_only: false },
                 has_dynamic_offset: false,
-                min_binding_size: BufferSize::new(ShaderDefines::default().sorting_status_counters_buffer_size(1) as u64),
+                min_binding_size: BufferSize::new(
+                    ShaderDefines::default().sorting_status_counters_buffer_size(1) as u64,
+                ),
             },
             count: None,
         };
@@ -289,7 +230,9 @@ impl<R: PlanarSync> FromWorld for RadixSortPipeline<R> {
             ty: BindingType::Buffer {
                 ty: BufferBindingType::Storage { read_only: false },
                 has_dynamic_offset: false,
-                min_binding_size: BufferSize::new(std::mem::size_of::<wgpu::util::DrawIndirectArgs>() as u64),
+                min_binding_size: BufferSize::new(
+                    std::mem::size_of::<wgpu::util::DrawIndirectArgs>() as u64,
+                ),
             },
             count: None,
         };
@@ -390,8 +333,6 @@ impl<R: PlanarSync> FromWorld for RadixSortPipeline<R> {
     }
 }
 
-
-
 #[derive(Component)]
 pub struct RadixBindGroup {
     // For each digit pass idx in 0..RADIX_DIGIT_PLACES, we create 2 bind groups (parity 0/1):
@@ -414,16 +355,10 @@ pub fn queue_radix_bind_group<R: PlanarSync>(
         &CloudSettings,
     )>,
     sort_buffers: Res<RadixSortBuffers<R>>,
-)
-where
+) where
     R::GpuPlanarType: GpuPlanarStorage,
 {
-    for (
-        entity,
-        cloud_handle,
-        sorted_entries_handle,
-        settings,
-    ) in gaussian_clouds.iter() {
+    for (entity, cloud_handle, sorted_entries_handle, settings) in gaussian_clouds.iter() {
         if settings.sort_mode != SortMode::Radix {
             commands.entity(entity).remove::<RadixBindGroup>();
             continue;
@@ -450,7 +385,10 @@ where
             continue;
         }
 
-        if !sort_buffers.asset_map.contains_key(&cloud_handle.handle().id()) {
+        if !sort_buffers
+            .asset_map
+            .contains_key(&cloud_handle.handle().id())
+        {
             continue;
         }
 
@@ -490,9 +428,15 @@ where
             for pass_idx in 0..4 {
                 for parity in 0..=1 {
                     let (input_buf, output_buf) = if parity == 0 {
-                        (&sorted_entries.sorted_entry_buffer, &sorting_assets.entry_buffer_b)
+                        (
+                            &sorted_entries.sorted_entry_buffer,
+                            &sorting_assets.entry_buffer_b,
+                        )
                     } else {
-                        (&sorting_assets.entry_buffer_b, &sorted_entries.sorted_entry_buffer)
+                        (
+                            &sorting_assets.entry_buffer_b,
+                            &sorted_entries.sorted_entry_buffer,
+                        )
                     };
 
                     let group = render_device.create_bind_group(
@@ -517,7 +461,9 @@ where
                                 resource: BindingResource::Buffer(BufferBinding {
                                     buffer: input_buf,
                                     offset: 0,
-                                    size: BufferSize::new((cloud.len() * std::mem::size_of::<SortEntry>()) as u64),
+                                    size: BufferSize::new(
+                                        (cloud.len() * std::mem::size_of::<SortEntry>()) as u64,
+                                    ),
                                 }),
                             },
                             // output_entries
@@ -526,7 +472,9 @@ where
                                 resource: BindingResource::Buffer(BufferBinding {
                                     buffer: output_buf,
                                     offset: 0,
-                                    size: BufferSize::new((cloud.len() * std::mem::size_of::<SortEntry>()) as u64),
+                                    size: BufferSize::new(
+                                        (cloud.len() * std::mem::size_of::<SortEntry>()) as u64,
+                                    ),
                                 }),
                             },
                         ],
@@ -543,7 +491,6 @@ where
     }
 }
 
-
 pub struct RadixSortNode<R: PlanarSync> {
     gaussian_clouds: QueryState<(
         &'static R::PlanarTypeHandle,
@@ -553,7 +500,7 @@ pub struct RadixSortNode<R: PlanarSync> {
     initialized: bool,
     view_bind_group: QueryState<(
         &'static GaussianCamera,
-    &'static crate::render::GaussianComputeViewBindGroup,
+        &'static crate::render::GaussianComputeViewBindGroup,
         &'static ViewUniformOffset,
         &'static PreviousViewUniformOffset,
     )>,
@@ -581,7 +528,7 @@ where
             let mut pipelines_loaded = true;
             for sort_pipeline in pipeline.radix_sort_pipelines.iter() {
                 if let CachedPipelineState::Ok(_) =
-                        pipeline_cache.get_compute_pipeline_state(*sort_pipeline)
+                    pipeline_cache.get_compute_pipeline_state(*sort_pipeline)
                 {
                     continue;
                 }
@@ -615,24 +562,23 @@ where
         let gaussian_uniforms = world.resource::<GaussianUniformBindGroups>();
         let sort_buffers = world.resource::<RadixSortBuffers<R>>();
 
-        for (
-            _camera,
-            view_bind_group,
-            view_uniform_offset,
-            previous_view_uniform_offset,
-        ) in self.view_bind_group.iter_manual(world) {
-            for (
-                cloud_handle,
-                cloud_bind_group,
-                radix_bind_group,
-            ) in self.gaussian_clouds.iter_manual(world) {
+        for (_camera, view_bind_group, view_uniform_offset, previous_view_uniform_offset) in
+            self.view_bind_group.iter_manual(world)
+        {
+            for (cloud_handle, cloud_bind_group, radix_bind_group) in
+                self.gaussian_clouds.iter_manual(world)
+            {
                 let cloud = world
                     .get_resource::<RenderAssets<R::GpuPlanarType>>()
                     .unwrap()
                     .get(cloud_handle.handle())
                     .unwrap();
 
-                assert!(sort_buffers.asset_map.contains_key(&cloud_handle.handle().id()));
+                assert!(
+                    sort_buffers
+                        .asset_map
+                        .contains_key(&cloud_handle.handle().id())
+                );
                 let sorting_assets = &sort_buffers.asset_map[&cloud_handle.handle().id()];
 
                 {
@@ -652,18 +598,17 @@ where
                             None,
                         );
 
-                        command_encoder.clear_buffer(
-                            cloud.draw_indirect_buffer(),
-                            0,
-                            None,
-                        );
+                        command_encoder.clear_buffer(cloud.draw_indirect_buffer(), 0, None);
                     }
 
                     {
-                        let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
+                        let mut pass =
+                            command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
 
                         // Reset per-frame counters/histograms
-                        let radix_reset = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[0]).unwrap();
+                        let radix_reset = pipeline_cache
+                            .get_compute_pipeline(pipeline.radix_sort_pipelines[0])
+                            .unwrap();
                         pass.set_pipeline(radix_reset);
                         pass.set_bind_group(
                             0,
@@ -673,7 +618,11 @@ where
                                 previous_view_uniform_offset.offset,
                             ],
                         );
-                        pass.set_bind_group(1, gaussian_uniforms.base_bind_group.as_ref().unwrap(), &[0]);
+                        pass.set_bind_group(
+                            1,
+                            gaussian_uniforms.base_bind_group.as_ref().unwrap(),
+                            &[0],
+                        );
                         pass.set_bind_group(2, &cloud_bind_group.bind_group, &[]);
                         pass.set_bind_group(3, &radix_bind_group.radix_sort_bind_groups[0], &[]);
                         pass.dispatch_workgroups(1, 1, 1);
@@ -691,25 +640,24 @@ where
                             gaussian_uniforms.base_bind_group.as_ref().unwrap(),
                             &[0],
                         );
-                        pass.set_bind_group(
-                            2,
-                            &cloud_bind_group.bind_group,
-                            &[]
-                        );
-                        pass.set_bind_group(
-                            3,
-                            &radix_bind_group.radix_sort_bind_groups[0],
-                            &[],
-                        );
+                        pass.set_bind_group(2, &cloud_bind_group.bind_group, &[]);
+                        pass.set_bind_group(3, &radix_bind_group.radix_sort_bind_groups[0], &[]);
 
-                        let radix_sort_a = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[1]).unwrap();
+                        let radix_sort_a = pipeline_cache
+                            .get_compute_pipeline(pipeline.radix_sort_pipelines[1])
+                            .unwrap();
                         pass.set_pipeline(radix_sort_a);
 
                         let workgroup_entries_a = ShaderDefines::default().workgroup_entries_a;
-                        pass.dispatch_workgroups((cloud.len() as u32).div_ceil(workgroup_entries_a), 1, 1);
+                        pass.dispatch_workgroups(
+                            (cloud.len() as u32).div_ceil(workgroup_entries_a),
+                            1,
+                            1,
+                        );
 
-
-                        let radix_sort_b = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[2]).unwrap();
+                        let radix_sort_b = pipeline_cache
+                            .get_compute_pipeline(pipeline.radix_sort_pipelines[2])
+                            .unwrap();
                         pass.set_pipeline(radix_sort_b);
 
                         pass.dispatch_workgroups(1, radix_digit_places, 1);
@@ -725,9 +673,12 @@ where
                             );
                         }
 
-                        let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
+                        let mut pass =
+                            command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
 
-                        let radix_sort_c = pipeline_cache.get_compute_pipeline(pipeline.radix_sort_pipelines[3]).unwrap();
+                        let radix_sort_c = pipeline_cache
+                            .get_compute_pipeline(pipeline.radix_sort_pipelines[3])
+                            .unwrap();
                         pass.set_pipeline(radix_sort_c);
 
                         // Set common bind groups for view/uniforms and cloud storage
@@ -750,10 +701,18 @@ where
                         // THIS IS THE FIX:
                         let parity = (pass_idx % 2) as usize;
                         let bg_index = (pass_idx as usize) * 2 + parity;
-                        pass.set_bind_group(3, &radix_bind_group.radix_sort_bind_groups[bg_index], &[]);
+                        pass.set_bind_group(
+                            3,
+                            &radix_bind_group.radix_sort_bind_groups[bg_index],
+                            &[],
+                        );
 
                         let workgroup_entries_c = ShaderDefines::default().workgroup_entries_c;
-                        pass.dispatch_workgroups(1, (cloud.len() as u32).div_ceil(workgroup_entries_c), 1);
+                        pass.dispatch_workgroups(
+                            1,
+                            (cloud.len() as u32).div_ceil(workgroup_entries_c),
+                            1,
+                        );
                     }
                 }
             }

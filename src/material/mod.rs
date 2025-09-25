@@ -10,7 +10,6 @@ pub mod spherindrical_harmonics;
 #[cfg(feature = "material_noise")]
 pub mod noise;
 
-
 #[derive(Default)]
 pub struct MaterialPlugin;
 

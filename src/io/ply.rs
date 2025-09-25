@@ -3,35 +3,20 @@ use std::io::BufRead;
 
 use bevy_interleave::prelude::Planar;
 use ply_rs::{
-    ply::{
-        Property,
-        PropertyAccess,
-    },
     parser::Parser,
+    ply::{Property, PropertyAccess},
 };
 
 use crate::{
-    gaussian::formats::
-    {
-        planar_3d::{
-            Gaussian3d,
-            PlanarGaussian3d,
-        },
-        planar_4d::{
-            Gaussian4d,
-            PlanarGaussian4d,
-        },
+    gaussian::formats::{
+        planar_3d::{Gaussian3d, PlanarGaussian3d},
+        planar_4d::{Gaussian4d, PlanarGaussian4d},
     },
     material::{
-        spherical_harmonics::{
-            SH_CHANNELS,
-            SH_COEFF_COUNT,
-            SH_COEFF_COUNT_PER_CHANNEL,
-        },
+        spherical_harmonics::{SH_CHANNELS, SH_COEFF_COUNT, SH_COEFF_COUNT_PER_CHANNEL},
         spherindrical_harmonics::SH_4D_COEFF_COUNT,
     },
 };
-
 
 pub const MAX_SIZE_VARIANCE: f32 = 4.0;
 
@@ -42,21 +27,23 @@ impl PropertyAccess for Gaussian3d {
 
     fn set_property(&mut self, key: String, property: Property) {
         match (key.as_ref(), property) {
-            ("x", Property::Float(v))           => self.position_visibility.position[0] = v,
-            ("y", Property::Float(v))           => self.position_visibility.position[1] = v,
-            ("z", Property::Float(v))           => self.position_visibility.position[2] = v,
-            ("visibility", Property::Float(v))  => self.position_visibility.visibility = v,
-            ("f_dc_0", Property::Float(v))      => self.spherical_harmonic.set(0, v),
-            ("f_dc_1", Property::Float(v))      => self.spherical_harmonic.set(1, v),
-            ("f_dc_2", Property::Float(v))      => self.spherical_harmonic.set(2, v),
-            ("scale_0", Property::Float(v))     => self.scale_opacity.scale[0] = v,
-            ("scale_1", Property::Float(v))     => self.scale_opacity.scale[1] = v,
-            ("scale_2", Property::Float(v))     => self.scale_opacity.scale[2] = v,
-            ("opacity", Property::Float(v))     => self.scale_opacity.opacity = 1.0 / (1.0 + (-v).exp()),
-            ("rot_0", Property::Float(v))       => self.rotation.rotation[0] = v,
-            ("rot_1", Property::Float(v))       => self.rotation.rotation[1] = v,
-            ("rot_2", Property::Float(v))       => self.rotation.rotation[2] = v,
-            ("rot_3", Property::Float(v))       => self.rotation.rotation[3] = v,
+            ("x", Property::Float(v)) => self.position_visibility.position[0] = v,
+            ("y", Property::Float(v)) => self.position_visibility.position[1] = v,
+            ("z", Property::Float(v)) => self.position_visibility.position[2] = v,
+            ("visibility", Property::Float(v)) => self.position_visibility.visibility = v,
+            ("f_dc_0", Property::Float(v)) => self.spherical_harmonic.set(0, v),
+            ("f_dc_1", Property::Float(v)) => self.spherical_harmonic.set(1, v),
+            ("f_dc_2", Property::Float(v)) => self.spherical_harmonic.set(2, v),
+            ("scale_0", Property::Float(v)) => self.scale_opacity.scale[0] = v,
+            ("scale_1", Property::Float(v)) => self.scale_opacity.scale[1] = v,
+            ("scale_2", Property::Float(v)) => self.scale_opacity.scale[2] = v,
+            ("opacity", Property::Float(v)) => {
+                self.scale_opacity.opacity = 1.0 / (1.0 + (-v).exp())
+            }
+            ("rot_0", Property::Float(v)) => self.rotation.rotation[0] = v,
+            ("rot_1", Property::Float(v)) => self.rotation.rotation[1] = v,
+            ("rot_2", Property::Float(v)) => self.rotation.rotation[2] = v,
+            ("rot_3", Property::Float(v)) => self.rotation.rotation[3] = v,
             (_, Property::Float(v)) if key.starts_with("f_rest_") => {
                 let i = key[7..].parse::<usize>().unwrap();
 
@@ -81,26 +68,20 @@ impl PropertyAccess for Gaussian3d {
                     // TODO: convert higher degree SH to lower degree SH
                 }
             }
-            (_, _) => {},
+            (_, _) => {}
         }
     }
 }
 
-
-pub fn parse_ply_3d(
-    mut reader: &mut dyn BufRead,
-) -> Result<PlanarGaussian3d, std::io::Error> {
+pub fn parse_ply_3d(mut reader: &mut dyn BufRead) -> Result<PlanarGaussian3d, std::io::Error> {
     let gaussian_parser = Parser::<Gaussian3d>::new();
     let header = gaussian_parser.read_header(&mut reader)?;
 
     let mut cloud = Vec::new();
 
     let required_properties = vec![
-        "x", "y", "z",
-        "f_dc_0", "f_dc_1", "f_dc_2",
-        "scale_0", "scale_1",
-        "opacity",
-        "rot_0", "rot_1", "rot_2", "rot_3",
+        "x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "scale_0", "scale_1", "opacity", "rot_0",
+        "rot_1", "rot_2", "rot_3",
     ];
     let mut required_property_count = required_properties.len();
 
@@ -111,7 +92,10 @@ pub fn parse_ply_3d(
             }
 
             if required_property_count > 0 {
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "missing required properties"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "missing required properties",
+                ));
             }
 
             cloud = gaussian_parser.read_payload_for_element(&mut reader, element, &header)?;
@@ -120,7 +104,10 @@ pub fn parse_ply_3d(
 
     for gaussian in &mut cloud {
         // TODO: add automatic scaling normalization detection (e.g. don't normalize twice)
-        let mean_scale = (gaussian.scale_opacity.scale[0] + gaussian.scale_opacity.scale[1] + gaussian.scale_opacity.scale[2]) / 3.0;
+        let mean_scale = (gaussian.scale_opacity.scale[0]
+            + gaussian.scale_opacity.scale[1]
+            + gaussian.scale_opacity.scale[2])
+            / 3.0;
         for i in 0..3 {
             gaussian.scale_opacity.scale[i] = gaussian.scale_opacity.scale[i]
                 .max(mean_scale - MAX_SIZE_VARIANCE)
@@ -128,7 +115,10 @@ pub fn parse_ply_3d(
                 .exp();
         }
 
-        let norm = (0..4).map(|i| gaussian.rotation.rotation[i].powf(2.0)).sum::<f32>().sqrt();
+        let norm = (0..4)
+            .map(|i| gaussian.rotation.rotation[i].powf(2.0))
+            .sum::<f32>()
+            .sqrt();
         for i in 0..4 {
             gaussian.rotation.rotation[i] /= norm;
         }
@@ -141,9 +131,6 @@ pub fn parse_ply_3d(
     Ok(PlanarGaussian3d::from_interleaved(cloud))
 }
 
-
-
-
 impl PropertyAccess for Gaussian4d {
     fn new() -> Self {
         Gaussian4d::default()
@@ -154,7 +141,7 @@ impl PropertyAccess for Gaussian4d {
             ("x", Property::Float(v)) => self.position_visibility.position[0] = v,
             ("y", Property::Float(v)) => self.position_visibility.position[1] = v,
             ("z", Property::Float(v)) => self.position_visibility.position[2] = v,
-            ("visibility", Property::Float(v))  => self.position_visibility.visibility = v,
+            ("visibility", Property::Float(v)) => self.position_visibility.visibility = v,
 
             ("t", Property::Float(v)) => self.timestamp_timescale.timestamp = v,
             ("st", Property::Float(v)) => self.timestamp_timescale.timescale = v,
@@ -195,21 +182,14 @@ impl PropertyAccess for Gaussian4d {
     }
 }
 
-
-pub fn parse_ply_4d(
-    mut reader: &mut dyn BufRead,
-) -> Result<PlanarGaussian4d, std::io::Error> {
+pub fn parse_ply_4d(mut reader: &mut dyn BufRead) -> Result<PlanarGaussian4d, std::io::Error> {
     let parser = Parser::<Gaussian4d>::new();
     let header = parser.read_header(&mut reader)?;
 
     let mut cloud = Vec::new();
 
     let required_properties = vec![
-        "x", "y", "z",
-        "t", "st",
-        "sx", "sy", "sz",
-        "opacity",
-        "rot_x", "rot_y", "rot_z", "rot_w",
+        "x", "y", "z", "t", "st", "sx", "sy", "sz", "opacity", "rot_x", "rot_y", "rot_z", "rot_w",
         "rot_r_x", "rot_r_y", "rot_r_z", "rot_r_w",
     ];
     let mut required_property_count = required_properties.len();
@@ -221,7 +201,10 @@ pub fn parse_ply_4d(
             }
 
             if required_property_count > 0 {
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "missing required properties"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "missing required properties",
+                ));
             }
 
             cloud = parser.read_payload_for_element(&mut reader, element, &header)?;

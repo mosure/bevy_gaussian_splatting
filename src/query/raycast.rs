@@ -1,9 +1,5 @@
-use bevy::{
-    prelude::*,
-    render::mesh::PrimitiveTopology,
-};
+use bevy::{prelude::*, render::mesh::PrimitiveTopology};
 use std::collections::BTreeMap;
-
 
 struct Triangle {
     vertices: [Vec3; 3],
@@ -19,7 +15,10 @@ fn point_in_mesh_system(
     for (mesh_handle, transform) in mesh_query.iter() {
         if let Some(mesh) = meshes.get(mesh_handle) {
             for (point, entity) in point_query.iter() {
-                let local_point = transform.compute_matrix().inverse().transform_point3(point.position);
+                let local_point = transform
+                    .compute_matrix()
+                    .inverse()
+                    .transform_point3(point.position);
 
                 if is_point_in_mesh(&local_point, mesh) {
                     commands.entity(entity).insert(InsideMesh);
@@ -66,7 +65,6 @@ fn is_point_in_mesh(point: &Vec3, mesh: &Mesh) -> bool {
 
     intersections % 2 != 0
 }
-
 
 fn ray_intersects_triangle(ray_origin: &Vec3, ray_direction: &Vec3, triangle: &Triangle) -> bool {
     let epsilon = 0.000_001;

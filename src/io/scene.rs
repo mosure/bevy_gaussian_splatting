@@ -1,32 +1,16 @@
-
 #[allow(unused_imports)]
-use std::io::{
-    BufReader,
-    Cursor,
-    ErrorKind,
-};
+use std::io::{BufReader, Cursor, ErrorKind};
 
 use bevy::{
+    asset::{AssetLoader, LoadContext, io::Reader},
     prelude::*,
-    asset::{
-        AssetLoader,
-        LoadContext,
-        io::Reader,
-    },
 };
-use serde::{
-    Deserialize,
-    Serialize,
-};
+use serde::{Deserialize, Serialize};
 
 use crate::gaussian::{
-    formats::planar_3d::{
-        PlanarGaussian3d,
-        PlanarGaussian3dHandle,
-    },
+    formats::planar_3d::{PlanarGaussian3d, PlanarGaussian3dHandle},
     settings::CloudSettings,
 };
-
 
 #[derive(Default)]
 pub struct GaussianScenePlugin;
@@ -37,25 +21,11 @@ impl Plugin for GaussianScenePlugin {
 
         app.init_asset_loader::<GaussianSceneLoader>();
 
-        app.add_systems(
-            Update,
-            (
-                spawn_scene,
-            )
-        );
+        app.add_systems(Update, (spawn_scene,));
     }
 }
 
-
-
-#[derive(
-    Clone,
-    Debug,
-    Default,
-    Reflect,
-    Serialize,
-    Deserialize,
-)]
+#[derive(Clone, Debug, Default, Reflect, Serialize, Deserialize)]
 pub struct CloudBundle {
     pub asset_path: String,
     pub name: String,
@@ -64,15 +34,7 @@ pub struct CloudBundle {
 }
 
 // TODO: support scene hierarchy with gaussian gltf extension
-#[derive(
-    Asset,
-    Clone,
-    Debug,
-    Default,
-    Reflect,
-    Serialize,
-    Deserialize,
-)]
+#[derive(Asset, Clone, Debug, Default, Reflect, Serialize, Deserialize)]
 pub struct GaussianScene {
     pub bundles: Vec<CloudBundle>,
     pub root: Option<String>,
@@ -85,16 +47,9 @@ pub struct GaussianSceneHandle(pub Handle<GaussianScene>);
 #[derive(Component, Clone, Debug, Default, Reflect)]
 pub struct GaussianSceneLoaded;
 
-
 fn spawn_scene(
     mut commands: Commands,
-    scene_handles: Query<
-        (
-            Entity,
-            &GaussianSceneHandle,
-        ),
-        Without<GaussianSceneLoaded>,
-    >,
+    scene_handles: Query<(Entity, &GaussianSceneHandle), Without<GaussianSceneLoaded>>,
     asset_server: Res<AssetServer>,
     scenes: Res<Assets<GaussianScene>>,
 ) {
@@ -111,20 +66,17 @@ fn spawn_scene(
 
         let scene = scenes.get(&scene_handle.0).unwrap();
 
-        let bundles = scene.bundles
+        let bundles = scene
+            .bundles
             .iter()
-            .map(|bundle|{
+            .map(|bundle| {
                 let root = scene.root.clone().unwrap_or_default();
 
                 // TODO: switch between 3d and 4d clouds based on settings
                 (
-                    PlanarGaussian3dHandle(
-                        asset_server.load::<PlanarGaussian3d>(
-                            bundle.asset_path
-                                .clone()
-                                .replace("{root}", &root)
-                        )
-                    ),
+                    PlanarGaussian3dHandle(asset_server.load::<PlanarGaussian3d>(
+                        bundle.asset_path.clone().replace("{root}", &root),
+                    )),
                     Name::new(bundle.name.clone()),
                     bundle.settings.clone(),
                     bundle.transform,
@@ -142,7 +94,6 @@ fn spawn_scene(
             .insert(GaussianSceneLoaded);
     }
 }
-
 
 #[derive(Default)]
 pub struct GaussianSceneLoader;
@@ -175,7 +126,7 @@ impl AssetLoader for GaussianSceneLoader {
                     .into();
 
                 Ok(scene)
-            },
+            }
             _ => Err(std::io::Error::other("only .json supported")),
         }
     }

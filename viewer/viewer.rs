@@ -2,92 +2,57 @@
 use std::path::PathBuf;
 
 use bevy::{
-    prelude::*,
     app::AppExit,
     color::palettes::css::GOLD,
-    core_pipeline::{
-        prepass::MotionVectorPrepass,
-        tonemapping::Tonemapping,
-    },
-    diagnostic::{
-        DiagnosticsStore,
-        FrameCount,
-        FrameTimeDiagnosticsPlugin,
-    },
+    core_pipeline::{prepass::MotionVectorPrepass, tonemapping::Tonemapping},
+    diagnostic::{DiagnosticsStore, FrameCount, FrameTimeDiagnosticsPlugin},
+    prelude::*,
     render::{
         primitives::Aabb,
-        view::screenshot::{save_to_disk, Screenshot},
+        view::screenshot::{Screenshot, save_to_disk},
     },
 };
-use bevy_args::{
-    BevyArgsPlugin,
-    parse_args,
-};
-use bevy_inspector_egui::{
-    bevy_egui::EguiPlugin,
-    quick::WorldInspectorPlugin,
-};
-use bevy_panorbit_camera::{
-    PanOrbitCamera,
-    PanOrbitCameraPlugin,
-};
+use bevy_args::{BevyArgsPlugin, parse_args};
+use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
+use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 
+#[cfg(feature = "web_asset")]
+use base64::{Engine as _, engine::general_purpose::URL_SAFE};
 #[cfg(feature = "file_asset")]
 use bevy_file_asset::FileAssetPlugin;
-#[cfg(feature = "web_asset")]
-use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 #[cfg(feature = "web_asset")]
 use bevy_web_asset::WebAssetPlugin;
 
 use bevy_gaussian_splatting::{
-    CloudSettings,
-    GaussianCamera,
-    GaussianMode,
-    GaussianScene,
-    GaussianSceneHandle,
-    GaussianSplattingPlugin,
-    PlanarGaussian3d,
-    PlanarGaussian4d,
-    PlanarGaussian3dHandle,
+    CloudSettings, GaussianCamera, GaussianMode, GaussianScene, GaussianSceneHandle,
+    GaussianSplattingPlugin, PlanarGaussian3d, PlanarGaussian3dHandle, PlanarGaussian4d,
     PlanarGaussian4dHandle,
     gaussian::interface::TestCloud,
-    random_gaussians_3d,
-    random_gaussians_4d,
-    utils::{
-        GaussianSplattingViewer,
-        log,
-        setup_hooks,
-    },
+    random_gaussians_3d, random_gaussians_4d,
+    utils::{GaussianSplattingViewer, log, setup_hooks},
 };
+
+#[cfg(feature = "morph_interpolate")]
+use bevy_gaussian_splatting::{Gaussian3d, morph::interpolate::GaussianInterpolate};
 
 #[cfg(feature = "material_noise")]
 use bevy_gaussian_splatting::material::noise::NoiseMaterial;
 
 #[cfg(feature = "morph_particles")]
 use bevy_gaussian_splatting::morph::particle::{
-    ParticleBehaviors,
-    ParticleBehaviorsHandle,
-    random_particle_behaviors,
+    ParticleBehaviors, ParticleBehaviorsHandle, random_particle_behaviors,
 };
 
 #[cfg(feature = "query_select")]
-use bevy_gaussian_splatting::query::select::{
-    InvertSelectionEvent,
-    SaveSelectionEvent,
-};
+use bevy_gaussian_splatting::query::select::{InvertSelectionEvent, SaveSelectionEvent};
 
 #[cfg(feature = "query_sparse")]
 use bevy_gaussian_splatting::query::sparse::SparseSelect;
 
-
-fn parse_input_file(
-    input_file: &str,
-) -> String {
+fn parse_input_file(input_file: &str) -> String {
     #[cfg(feature = "web_asset")]
     let input_uri = match URL_SAFE.decode(input_file.as_bytes()) {
-        Ok(data) => {
-            String::from_utf8(data).unwrap()
-        },
+        Ok(data) => String::from_utf8(data).unwrap(),
         Err(e) => {
             debug!("failed to decode base64 input: {:?}", e);
             input_file.to_string()
@@ -99,7 +64,6 @@ fn parse_input_file(
 
     input_uri
 }
-
 
 fn setup_gaussian_cloud(
     mut commands: Commands,
@@ -128,10 +92,7 @@ fn setup_gaussian_cloud(
         let input_uri = parse_input_file(input_scene.as_str());
         log(&format!("loading {input_uri}"));
         let scene: Handle<GaussianScene> = asset_server.load(&input_uri);
-        commands.spawn((
-            GaussianSceneHandle(scene),
-            Name::new("gaussian_scene"),
-        ));
+        commands.spawn((GaussianSceneHandle(scene), Name::new("gaussian_scene")));
         return;
     }
 
@@ -149,17 +110,56 @@ fn setup_gaussian_cloud(
                 cloud = gaussian_3d_assets.add(PlanarGaussian3d::test_model());
             }
 
-            commands.spawn((
-                PlanarGaussian3dHandle(cloud),
-                CloudSettings {
-                    gaussian_mode: args.gaussian_mode,
-                    playback_mode: args.playback_mode,
-                    rasterize_mode: args.rasterization_mode,
-                    ..default()
-                },
-                Name::new("gaussian_cloud_3d"),
-                ShowAxes,
-            ));
+            #[cfg(feature = "morph_interpolate")]
+            {
+                if let Some(input_cloud_target) = &args.input_cloud_target {
+                    let input_uri = parse_input_file(input_cloud_target.as_str());
+                    log(&format!("loading {input_uri}"));
+                    let binary_cloud: Handle<PlanarGaussian3d> = asset_server.load(&input_uri);
+
+                    commands.spawn((
+                        CloudSettings {
+                            gaussian_mode: args.gaussian_mode,
+                            playback_mode: args.playback_mode,
+                            rasterize_mode: args.rasterization_mode,
+                            ..default()
+                        },
+                        GaussianInterpolate::<Gaussian3d> {
+                            lhs: PlanarGaussian3dHandle(cloud),
+                            rhs: PlanarGaussian3dHandle(binary_cloud),
+                        },
+                        Name::new("gaussian_cloud_3d_binary"),
+                        ShowAxes,
+                    ));
+                } else {
+                    commands.spawn((
+                        CloudSettings {
+                            gaussian_mode: args.gaussian_mode,
+                            playback_mode: args.playback_mode,
+                            rasterize_mode: args.rasterization_mode,
+                            ..default()
+                        },
+                        PlanarGaussian3dHandle(cloud.clone()),
+                        Name::new("gaussian_cloud_3d"),
+                        ShowAxes,
+                    ));
+                }
+            }
+
+            #[cfg(not(feature = "morph_interpolate"))]
+            {
+                commands.spawn((
+                    CloudSettings {
+                        gaussian_mode: args.gaussian_mode,
+                        playback_mode: args.playback_mode,
+                        rasterize_mode: args.rasterization_mode,
+                        ..default()
+                    },
+                    PlanarGaussian3dHandle(cloud.clone()),
+                    Name::new("gaussian_cloud_3d"),
+                    ShowAxes,
+                ));
+            }
         }
         GaussianMode::Gaussian4d => {
             let cloud: Handle<PlanarGaussian4d>;
@@ -189,19 +189,12 @@ fn setup_gaussian_cloud(
     }
 }
 
-
 #[cfg(feature = "morph_particles")]
 fn setup_particle_behavior(
     mut commands: Commands,
     gaussian_splatting_viewer: Res<GaussianSplattingViewer>,
     mut particle_behavior_assets: ResMut<Assets<ParticleBehaviors>>,
-    gaussian_cloud: Query<
-        (
-            Entity,
-            &PlanarGaussian3dHandle,
-        ),
-        Without<ParticleBehaviorsHandle>,
-    >,
+    gaussian_cloud: Query<(Entity, &PlanarGaussian3dHandle), Without<ParticleBehaviorsHandle>>,
 ) {
     if gaussian_cloud.is_empty() {
         return;
@@ -209,12 +202,20 @@ fn setup_particle_behavior(
 
     let mut particle_behaviors = None;
     if gaussian_splatting_viewer.particle_count > 0 {
-        log(&format!("generating {} particle behaviors", gaussian_splatting_viewer.particle_count));
-        particle_behaviors = particle_behavior_assets.add(random_particle_behaviors(gaussian_splatting_viewer.particle_count)).into();
+        log(&format!(
+            "generating {} particle behaviors",
+            gaussian_splatting_viewer.particle_count
+        ));
+        particle_behaviors = particle_behavior_assets
+            .add(random_particle_behaviors(
+                gaussian_splatting_viewer.particle_count,
+            ))
+            .into();
     }
 
     if let Some(particle_behaviors) = particle_behaviors {
-        commands.entity(gaussian_cloud.single().0)
+        commands
+            .entity(gaussian_cloud.single().0)
             .insert(ParticleBehaviorsHandle(particle_behaviors));
     }
 }
@@ -223,54 +224,46 @@ fn setup_particle_behavior(
 fn setup_noise_material(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    gaussian_clouds: Query<(
-        Entity,
-        &PlanarGaussian3dHandle,
-        Without<NoiseMaterial>,
-    )>,
+    gaussian_clouds: Query<(Entity, &PlanarGaussian3dHandle, Without<NoiseMaterial>)>,
 ) {
     if gaussian_clouds.is_empty() {
         return;
     }
 
-    for (
-        entity,
-        cloud_handle,
-        _
-    ) in gaussian_clouds.iter() {
+    for (entity, cloud_handle, _) in gaussian_clouds.iter() {
         if Some(bevy::asset::LoadState::Loading) == asset_server.get_load_state(cloud_handle) {
             continue;
         }
 
-        commands.entity(entity)
-            .insert(NoiseMaterial::default());
+        commands.entity(entity).insert(NoiseMaterial::default());
     }
 }
 
 #[cfg(feature = "query_sparse")]
 fn setup_sparse_select(
     mut commands: Commands,
-    gaussian_cloud: Query<(
-        Entity,
-        &PlanarGaussian3dHandle,
-        Without<SparseSelect>,
-    )>,
+    gaussian_cloud: Query<(Entity, &PlanarGaussian3dHandle, Without<SparseSelect>)>,
 ) {
     if gaussian_cloud.is_empty() {
         return;
     }
 
-    commands.entity(gaussian_cloud.single().0)
+    commands
+        .entity(gaussian_cloud.single().0)
         .insert(SparseSelect {
             completed: true,
             ..default()
         });
 }
 
-
 fn viewer_app() {
     let config = parse_args::<GaussianSplattingViewer>();
     log(&format!("{config:?}"));
+
+    #[cfg(not(feature = "morph_interpolate"))]
+    if config.input_cloud_target.is_some() {
+        panic!("`--input-cloud-target` requires the `morph_interpolate` feature");
+    }
 
     let mut app = App::new();
 
@@ -315,22 +308,24 @@ fn viewer_app() {
     app.insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)));
     app.add_plugins(
         DefaultPlugins
-        .set(AssetPlugin {
-            meta_check: bevy::asset::AssetMetaCheck::Never,
-            unapproved_path_mode: bevy::asset::UnapprovedPathMode::Allow,
-            ..default()
-        })
-        .set(ImagePlugin::default_nearest())
-        .set(WindowPlugin {
-            primary_window,
-            ..default()
-        })
+            .set(AssetPlugin {
+                meta_check: bevy::asset::AssetMetaCheck::Never,
+                unapproved_path_mode: bevy::asset::UnapprovedPathMode::Allow,
+                ..default()
+            })
+            .set(ImagePlugin::default_nearest())
+            .set(WindowPlugin {
+                primary_window,
+                ..default()
+            }),
     );
     app.add_plugins(BevyArgsPlugin::<GaussianSplattingViewer>::default());
     app.add_plugins(PanOrbitCameraPlugin);
 
     if config.editor {
-        app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: true });
+        app.add_plugins(EguiPlugin {
+            enable_multipass_for_primary_context: true,
+        });
         app.add_plugins(WorldInspectorPlugin::new());
     }
 
@@ -351,7 +346,6 @@ fn viewer_app() {
         app.add_systems(Startup, fps_display_setup);
         app.add_systems(Update, fps_update_system);
     }
-
 
     // setup for gaussian splatting
     app.add_plugins(GaussianSplattingPlugin);
@@ -375,7 +369,6 @@ fn viewer_app() {
     app.run();
 }
 
-
 pub fn press_s_screenshot(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
@@ -395,26 +388,14 @@ pub fn press_s_screenshot(
 #[derive(Component, Debug, Default, Reflect)]
 pub struct ShowAxes;
 
-fn draw_axes(
-    mut gizmos: Gizmos,
-    query: Query<
-        (
-            &Transform,
-            &Aabb
-        ),
-        With<ShowAxes>
-    >,
-) {
+fn draw_axes(mut gizmos: Gizmos, query: Query<(&Transform, &Aabb), With<ShowAxes>>) {
     for (&transform, &aabb) in &query {
         let length = aabb.half_extents.length();
         gizmos.axes(transform, length);
     }
 }
 
-pub fn press_esc_close(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut exit: EventWriter<AppExit>
-) {
+pub fn press_esc_close(keys: Res<ButtonInput<KeyCode>>, mut exit: EventWriter<AppExit>) {
     if keys.just_pressed(KeyCode::Escape) {
         exit.write(AppExit::Success);
     }
@@ -442,35 +423,34 @@ fn press_o_save_selection(
     }
 }
 
-fn fps_display_setup(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-) {
-    commands.spawn((
-        Text("fps: ".to_string()),
-        TextFont {
-            font: asset_server.load("fonts/Caveat-Bold.ttf"),
-            font_size: 60.0,
-            ..Default::default()
-        },
-        TextColor(Color::WHITE),
-        Node {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(5.0),
-            left: Val::Px(15.0),
-            ..default()
-        },
-        ZIndex(2),
-    )).with_child((
-        FpsText,
-        TextColor(Color::Srgba(GOLD)),
-        TextFont {
-            font: asset_server.load("fonts/Caveat-Bold.ttf"),
-            font_size: 60.0,
-            ..Default::default()
-        },
-        TextSpan::default(),
-    ));
+fn fps_display_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+    commands
+        .spawn((
+            Text("fps: ".to_string()),
+            TextFont {
+                font: asset_server.load("fonts/Caveat-Bold.ttf"),
+                font_size: 60.0,
+                ..Default::default()
+            },
+            TextColor(Color::WHITE),
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(5.0),
+                left: Val::Px(15.0),
+                ..default()
+            },
+            ZIndex(2),
+        ))
+        .with_child((
+            FpsText,
+            TextColor(Color::Srgba(GOLD)),
+            TextFont {
+                font: asset_server.load("fonts/Caveat-Bold.ttf"),
+                font_size: 60.0,
+                ..Default::default()
+            },
+            TextSpan::default(),
+        ));
 }
 
 #[derive(Component)]
@@ -488,7 +468,6 @@ fn fps_update_system(
         }
     }
 }
-
 
 pub fn main() {
     setup_hooks();

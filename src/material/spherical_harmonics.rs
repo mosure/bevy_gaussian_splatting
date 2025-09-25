@@ -2,29 +2,20 @@
 use std::marker::Copy;
 
 use bevy::{
-    prelude::*,
     asset::{load_internal_asset, weak_handle},
+    prelude::*,
     render::render_resource::ShaderType,
 };
-use bytemuck::{
-    Pod,
-    Zeroable,
-};
-use serde::{
-    Deserialize,
-    Serialize,
-    Serializer,
-    ser::SerializeTuple,
-};
+use bytemuck::{Pod, Zeroable};
+use serde::{Deserialize, Serialize, Serializer, ser::SerializeTuple};
 
 // #[cfg(feature = "f16")]
 // use half::f16;
 
 use crate::math::pad_4;
 
-
-const SPHERICAL_HARMONICS_SHADER_HANDLE: Handle<Shader> = weak_handle!("879b9cd3-ba20-4030-a8f3-adda0a042ffe");
-
+const SPHERICAL_HARMONICS_SHADER_HANDLE: Handle<Shader> =
+    weak_handle!("879b9cd3-ba20-4030-a8f3-adda0a042ffe");
 
 pub struct SphericalHarmonicCoefficientsPlugin;
 
@@ -39,7 +30,6 @@ impl Plugin for SphericalHarmonicCoefficientsPlugin {
     }
 }
 
-
 const fn num_sh_coefficients(degree: usize) -> usize {
     if degree == 0 {
         1
@@ -47,7 +37,6 @@ const fn num_sh_coefficients(degree: usize) -> usize {
         2 * degree + 1 + num_sh_coefficients(degree - 1)
     }
 }
-
 
 // TODO: let SH_DEGREE be a const generic parameter to SphericalHarmonicCoefficients
 #[cfg(feature = "sh0")]
@@ -76,7 +65,6 @@ pub const PADDED_HALF_SH_COEFF_COUNT: usize = pad_4(HALF_SH_COEFF_COUNT);
 // pub const SH_VEC4_PLANES: usize = PADDED_HALF_SH_COEFF_COUNT / 4;
 pub const SH_VEC4_PLANES: usize = SH_COEFF_COUNT / 4;
 
-
 // #[cfg(feature = "f16")]
 // #[derive(
 //     Clone,
@@ -97,26 +85,18 @@ pub const SH_VEC4_PLANES: usize = SH_COEFF_COUNT / 4;
 //     pub coefficients: [u32; HALF_SH_COEFF_COUNT],
 // }
 
-
 #[allow(dead_code)]
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Reflect,
-    ShaderType,
-    Pod,
-    Zeroable,
-    Serialize,
-    Deserialize,
+    Clone, Copy, Debug, PartialEq, Reflect, ShaderType, Pod, Zeroable, Serialize, Deserialize,
 )]
 #[repr(C)]
 pub struct SphericalHarmonicCoefficients {
-    #[serde(serialize_with = "coefficients_serializer", deserialize_with = "coefficients_deserializer")]
+    #[serde(
+        serialize_with = "coefficients_serializer",
+        deserialize_with = "coefficients_deserializer"
+    )]
     pub coefficients: [f32; SH_COEFF_COUNT],
 }
-
 
 // #[cfg(feature = "f16")]
 // impl Default for SphericalHarmonicCoefficients {
@@ -135,7 +115,6 @@ impl Default for SphericalHarmonicCoefficients {
     }
 }
 
-
 impl SphericalHarmonicCoefficients {
     // #[cfg(feature = "f16")]
     // pub fn set(&mut self, index: usize, value: f32) {
@@ -151,8 +130,6 @@ impl SphericalHarmonicCoefficients {
         self.coefficients[index] = value;
     }
 }
-
-
 
 // #[cfg(feature = "f16")]
 // fn coefficients_serializer<S>(n: &[u32; HALF_SH_COEFF_COUNT], s: S) -> Result<S::Ok, S::Error>
@@ -199,7 +176,6 @@ impl SphericalHarmonicCoefficients {
 //     d.deserialize_tuple(HALF_SH_COEFF_COUNT, CoefficientsVisitor)
 // }
 
-
 fn coefficients_serializer<S>(n: &[f32; SH_COEFF_COUNT], s: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
@@ -242,4 +218,3 @@ where
 
     d.deserialize_tuple(SH_COEFF_COUNT, CoefficientsVisitor)
 }
-

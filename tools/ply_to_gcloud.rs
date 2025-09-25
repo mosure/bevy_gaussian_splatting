@@ -1,16 +1,9 @@
-use byte_unit::{
-    Byte,
-    UnitType,
-};
+use byte_unit::{Byte, UnitType};
 
-use bevy_gaussian_splatting::io::{
-    codec::CloudCodec,
-    ply::parse_ply_3d,
-};
+use bevy_gaussian_splatting::io::{codec::CloudCodec, ply::parse_ply_3d};
 
 #[cfg(feature = "query_sparse")]
 use bevy_gaussian_splatting::query::sparse::SparseSelect;
-
 
 #[allow(dead_code)]
 fn is_point_in_transformed_sphere(pos: &[f32; 3]) -> bool {
@@ -28,7 +21,6 @@ fn is_point_in_transformed_sphere(pos: &[f32; 3]) -> bool {
 
     transformed_x.powi(2) + transformed_y.powi(2) + transformed_z.powi(2) <= 1.0
 }
-
 
 // TODO: add better argument parsing
 #[allow(unused_mut)]
@@ -59,17 +51,30 @@ fn main() {
     {
         let sparse_selection = SparseSelect::default().select(&cloud).invert(cloud.len());
 
-        cloud = sparse_selection.indicies.iter()
+        cloud = sparse_selection
+            .indicies
+            .iter()
             .map(|idx| cloud.gaussian(*idx))
             .collect();
         println!("sparsity filtered cloud size: {cloud.len()}");
     }
 
-    let base_filename = filename.split('.').next().expect("no extension").to_string();
+    let base_filename = filename
+        .split('.')
+        .next()
+        .expect("no extension")
+        .to_string();
     let gcloud_filename = base_filename + ".gcloud";
 
     cloud.write_to_file(&gcloud_filename);
 
-    let post_encode_bytes = Byte::from_u64(std::fs::metadata(&gcloud_filename).expect("failed to get metadata").len());
-    println!("output file size: {}", post_encode_bytes.get_appropriate_unit(UnitType::Decimal));
+    let post_encode_bytes = Byte::from_u64(
+        std::fs::metadata(&gcloud_filename)
+            .expect("failed to get metadata")
+            .len(),
+    );
+    println!(
+        "output file size: {}",
+        post_encode_bytes.get_appropriate_unit(UnitType::Decimal)
+    );
 }

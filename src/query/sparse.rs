@@ -1,20 +1,9 @@
-use bevy::{
-    prelude::*,
-    asset::LoadState,
-};
-use kd_tree::{
-    KdPoint,
-    KdTree,
-};
+use bevy::{asset::LoadState, prelude::*};
+use kd_tree::{KdPoint, KdTree};
 use static_assertions::assert_cfg;
 use typenum::consts::U3;
 
-use crate::{
-    Gaussian3d,
-    PlanarGaussian3d,
-    PlanarGaussian3dHandle,
-    query::select::Select,
-};
+use crate::{Gaussian3d, PlanarGaussian3d, PlanarGaussian3dHandle, query::select::Select};
 
 assert_cfg!(
     all(
@@ -23,7 +12,6 @@ assert_cfg!(
     ),
     "sparse queries and precomputed covariance are not implemented",
 );
-
 
 #[derive(Component, Debug, Reflect)]
 pub struct SparseSelect {
@@ -43,13 +31,11 @@ impl Default for SparseSelect {
 }
 
 impl SparseSelect {
-    pub fn select(
-        &self,
-        cloud: &PlanarGaussian3d,
-    ) -> Select {
+    pub fn select(&self, cloud: &PlanarGaussian3d) -> Select {
         let tree = KdTree::build_by_ordered_float(cloud.gaussian_iter().collect());
 
-        cloud.gaussian_iter()
+        cloud
+            .gaussian_iter()
             .enumerate()
             .filter(|(_idx, gaussian)| {
                 let neighbors = tree.within_radius(gaussian, self.radius);
@@ -60,7 +46,6 @@ impl SparseSelect {
             .collect::<Select>()
     }
 }
-
 
 #[derive(Default)]
 pub struct SparsePlugin;
@@ -73,7 +58,6 @@ impl Plugin for SparsePlugin {
     }
 }
 
-
 impl KdPoint for Gaussian {
     type Scalar = f32;
     type Dim = U3;
@@ -83,22 +67,13 @@ impl KdPoint for Gaussian {
     }
 }
 
-
 fn select_sparse_handler(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     gaussian_clouds_res: Res<Assets<PlanarGaussian3d>>,
-    mut selections: Query<(
-        Entity,
-        &PlanarGaussian3dHandle,
-        &mut SparseSelect,
-    )>,
+    mut selections: Query<(Entity, &PlanarGaussian3dHandle, &mut SparseSelect)>,
 ) {
-    for (
-        entity,
-        cloud_handle,
-        mut select,
-    ) in selections.iter_mut() {
+    for (entity, cloud_handle, mut select) in selections.iter_mut() {
         if Some(LoadState::Loading) == asset_server.get_load_state(cloud_handle) {
             continue;
         }
@@ -115,7 +90,8 @@ fn select_sparse_handler(
         let cloud = gaussian_clouds_res.get(cloud_handle).unwrap();
         let tree = KdTree::build_by_ordered_float(cloud.gaussian_iter().collect());
 
-        let new_selection = cloud.gaussian_iter()
+        let new_selection = cloud
+            .gaussian_iter()
             .enumerate()
             .filter(|(_idx, gaussian)| {
                 let neighbors = tree.within_radius(gaussian, select.radius);
@@ -125,7 +101,8 @@ fn select_sparse_handler(
             .map(|(idx, _gaussian)| idx)
             .collect::<Select>();
 
-        commands.entity(entity)
+        commands
+            .entity(entity)
             .remove::<Select>()
             .insert(new_selection);
     }

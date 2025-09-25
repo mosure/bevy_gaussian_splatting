@@ -6,7 +6,6 @@
 }
 #import bevy_gaussian_splatting::bindings::gaussian_uniforms
 
-
 fn class_to_rgb(
     visualization: f32,
     sh_color: vec3<f32>,

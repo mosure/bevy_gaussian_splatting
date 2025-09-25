@@ -1,24 +1,9 @@
 use bevy::prelude::*;
-use bevy_args::{
-    Deserialize,
-    Parser,
-    Serialize,
-};
+use bevy_args::{Deserialize, Parser, Serialize};
 
-use crate::gaussian::settings::{
-    GaussianMode,
-    PlaybackMode,
-    RasterizeMode,
-};
+use crate::gaussian::settings::{GaussianMode, PlaybackMode, RasterizeMode};
 
-
-#[derive(
-    Debug,
-    Resource,
-    Serialize,
-    Deserialize,
-    Parser,
-)]
+#[derive(Debug, Resource, Serialize, Deserialize, Parser)]
 #[command(about = "bevy_gaussian_splatting viewer", version, long_about = None)]
 pub struct GaussianSplattingViewer {
     #[arg(long, default_value = "true")]
@@ -51,6 +36,13 @@ pub struct GaussianSplattingViewer {
     #[arg(long, default_value = None, help = "input file path (or url/base64_url if web_asset feature is enabled)")]
     pub input_cloud: Option<String>,
 
+    #[arg(
+        long,
+        default_value = None,
+        help = "secondary input file used when morph_interpolate is enabled",
+    )]
+    pub input_cloud_target: Option<String>,
+
     #[arg(long, default_value = None, help = "input file path (or url/base64_url if web_asset feature is enabled)")]
     pub input_scene: Option<String>,
 
@@ -60,7 +52,7 @@ pub struct GaussianSplattingViewer {
     #[arg(long, value_enum, default_value_t = GaussianMode::Gaussian3d)]
     pub gaussian_mode: GaussianMode,
 
-    #[arg(long, value_enum, default_value_t = PlaybackMode::Sin)]
+    #[arg(long, value_enum, default_value_t = PlaybackMode::Still)]
     pub playback_mode: PlaybackMode,
 
     #[arg(long, value_enum, default_value_t = RasterizeMode::Color)]
@@ -83,16 +75,16 @@ impl Default for GaussianSplattingViewer {
             name: "bevy_gaussian_splatting".to_string(),
             msaa_samples: 1,
             input_cloud: None,
+            input_cloud_target: None,
             input_scene: None,
             gaussian_count: 0,
             gaussian_mode: GaussianMode::Gaussian3d,
-            playback_mode: PlaybackMode::Sin,
+            playback_mode: PlaybackMode::Still,
             rasterization_mode: RasterizeMode::Color,
             particle_count: 0,
         }
     }
 }
-
 
 pub fn setup_hooks() {
     #[cfg(debug_assertions)]
@@ -101,7 +93,6 @@ pub fn setup_hooks() {
         console_error_panic_hook::set_once();
     }
 }
-
 
 pub fn log(_msg: &str) {
     #[cfg(debug_assertions)]

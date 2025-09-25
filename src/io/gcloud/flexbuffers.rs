@@ -1,25 +1,16 @@
-use flexbuffers::{
-    FlexbufferSerializer,
-    Reader,
-};
-use serde::{
-    Deserialize,
-    Serialize,
-};
+use flexbuffers::{FlexbufferSerializer, Reader};
+use serde::{Deserialize, Serialize};
 
 use crate::{
+    gaussian::formats::{planar_3d::PlanarGaussian3d, planar_4d::PlanarGaussian4d},
     io::codec::CloudCodec,
-    gaussian::formats::{
-        planar_3d::PlanarGaussian3d,
-        planar_4d::PlanarGaussian4d,
-    },
 };
-
 
 impl CloudCodec for PlanarGaussian3d {
     fn encode(&self) -> Vec<u8> {
         let mut serializer = FlexbufferSerializer::new();
-        self.serialize(&mut serializer).expect("failed to serialize cloud");
+        self.serialize(&mut serializer)
+            .expect("failed to serialize cloud");
 
         serializer.view().to_vec()
     }
@@ -30,11 +21,11 @@ impl CloudCodec for PlanarGaussian3d {
     }
 }
 
-
 impl CloudCodec for PlanarGaussian4d {
     fn encode(&self) -> Vec<u8> {
         let mut serializer = FlexbufferSerializer::new();
-        self.serialize(&mut serializer).expect("failed to serialize cloud");
+        self.serialize(&mut serializer)
+            .expect("failed to serialize cloud");
 
         serializer.view().to_vec()
     }

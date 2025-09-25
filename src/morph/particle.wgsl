@@ -11,7 +11,6 @@
     in_frustum,
 }
 
-
 struct ParticleBehavior {
     @location(0) indicies: vec4<i32>,
     @location(1) velocity: vec4<f32>,
@@ -20,7 +19,6 @@ struct ParticleBehavior {
 }
 
 @group(3) @binding(7) var<storage, read_write> particle_behaviors: array<ParticleBehavior>;
-
 
 @compute @workgroup_size(32, 32)
 fn apply_particle_behaviors(

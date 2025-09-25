@@ -15,7 +15,6 @@
     }
 #endif
 
-
 struct DecomposedGaussian4d {
     cov3d: array<f32, 6>,
     delta_mean: vec3<f32>,
@@ -23,7 +22,6 @@ struct DecomposedGaussian4d {
     dir_t: f32,
     mask: bool,
 }
-
 
 fn outer_product(
     a: vec3<f32>,

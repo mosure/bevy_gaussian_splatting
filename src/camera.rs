@@ -1,24 +1,12 @@
 use bevy::{
     prelude::*,
-    render::extract_component::{
-        ExtractComponent,
-        ExtractComponentPlugin,
-    },
+    render::extract_component::{ExtractComponent, ExtractComponentPlugin},
 };
 
-
-#[derive(
-    Clone,
-    Component,
-    Debug,
-    Default,
-    ExtractComponent,
-    Reflect,
-)]
+#[derive(Clone, Component, Debug, Default, ExtractComponent, Reflect)]
 pub struct GaussianCamera {
     pub warmup: bool,
 }
-
 
 #[derive(Default)]
 pub struct GaussianCameraPlugin;
@@ -31,11 +19,8 @@ impl Plugin for GaussianCameraPlugin {
     }
 }
 
-
 // TODO: remove camera warmup when extracted view dynamic uniform offset synchronization is fixed
-fn apply_camera_warmup(
-    mut cameras: Query<&mut GaussianCamera>,
-) {
+fn apply_camera_warmup(mut cameras: Query<&mut GaussianCamera>) {
     for mut camera in cameras.iter_mut() {
         if camera.warmup {
             camera.warmup = false;

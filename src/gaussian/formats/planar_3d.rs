@@ -1,45 +1,23 @@
+use rand::{Rng, prelude::Distribution, seq::SliceRandom};
 use std::marker::Copy;
-use rand::{
-    prelude::Distribution,
-    seq::SliceRandom,
-    Rng,
-};
 
 use bevy::prelude::*;
 use bevy_interleave::prelude::*;
-use bytemuck::{
-    Pod,
-    Zeroable,
-};
-use serde::{
-    Deserialize,
-    Serialize,
-};
+use bytemuck::{Pod, Zeroable};
+use serde::{Deserialize, Serialize};
 
 #[allow(unused_imports)]
 use crate::{
     gaussian::{
-        f32::{
-            Covariance3dOpacity,
-            PositionVisibility,
-            Rotation,
-            ScaleOpacity,
-        },
-        interface::{
-            CommonCloud,
-            TestCloud,
-        },
+        f32::{Covariance3dOpacity, PositionVisibility, Rotation, ScaleOpacity},
+        interface::{CommonCloud, TestCloud},
         iter::PositionIter,
         settings::CloudSettings,
     },
     material::spherical_harmonics::{
-        HALF_SH_COEFF_COUNT,
-        SH_COEFF_COUNT,
-        SphericalHarmonicCoefficients,
+        HALF_SH_COEFF_COUNT, SH_COEFF_COUNT, SphericalHarmonicCoefficients,
     },
 };
-
-
 
 #[derive(
     Clone,
@@ -64,9 +42,7 @@ pub struct Gaussian3d {
     pub scale_opacity: ScaleOpacity,
 }
 
-pub type Gaussian2d = Gaussian3d;  // GaussianMode::Gaussian2d /w Gaussian3d structure
-
-
+pub type Gaussian2d = Gaussian3d; // GaussianMode::Gaussian2d /w Gaussian3d structure
 
 // #[allow(unused_imports)]
 // #[cfg(feature = "f16")]
@@ -75,7 +51,6 @@ pub type Gaussian2d = Gaussian3d;  // GaussianMode::Gaussian2d /w Gaussian3d str
 //     RotationScaleOpacityPacked128,
 //     pack_f32s_to_u32,
 // };
-
 
 // #[cfg(feature = "f16")]
 // #[derive(
@@ -97,7 +72,6 @@ pub type Gaussian2d = Gaussian3d;  // GaussianMode::Gaussian2d /w Gaussian3d str
 //     #[cfg(feature = "precompute_covariance_3d")]
 //     pub covariance_3d_opacity_packed128: Vec<Covariance3dOpacityPacked128>,
 // }
-
 
 impl CommonCloud for PlanarGaussian3d {
     type PackedType = Gaussian3d;
@@ -132,7 +106,6 @@ impl From<Vec<Gaussian3d>> for PlanarGaussian3d {
     }
 }
 
-
 impl Distribution<Gaussian3d> for rand::distributions::Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Gaussian3d {
         Gaussian3d {
@@ -141,19 +114,22 @@ impl Distribution<Gaussian3d> for rand::distributions::Standard {
                 rng.gen_range(-1.0..1.0),
                 rng.gen_range(-1.0..1.0),
                 rng.gen_range(-1.0..1.0),
-            ].into(),
+            ]
+            .into(),
             position_visibility: [
                 rng.gen_range(-20.0..20.0),
                 rng.gen_range(-20.0..20.0),
                 rng.gen_range(-20.0..20.0),
                 1.0,
-            ].into(),
+            ]
+            .into(),
             scale_opacity: [
                 rng.gen_range(0.0..1.0),
                 rng.gen_range(0.0..1.0),
                 rng.gen_range(0.0..1.0),
                 rng.gen_range(0.0..0.8),
-            ].into(),
+            ]
+            .into(),
             spherical_harmonic: SphericalHarmonicCoefficients {
                 coefficients: {
                     // #[cfg(feature = "f16")]
@@ -192,30 +168,14 @@ pub fn random_gaussians_3d(n: usize) -> PlanarGaussian3d {
     PlanarGaussian3d::from_interleaved(gaussians)
 }
 
-
 impl TestCloud for PlanarGaussian3d {
     fn test_model() -> Self {
         let mut rng = rand::thread_rng();
 
         let origin = Gaussian3d {
-            rotation: [
-                1.0,
-                0.0,
-                0.0,
-                0.0,
-            ].into(),
-            position_visibility: [
-                0.0,
-                0.0,
-                0.0,
-                1.0,
-            ].into(),
-            scale_opacity: [
-                0.125,
-                0.125,
-                0.125,
-                0.125,
-            ].into(),
+            rotation: [1.0, 0.0, 0.0, 0.0].into(),
+            position_visibility: [0.0, 0.0, 0.0, 1.0].into(),
+            scale_opacity: [0.125, 0.125, 0.125, 0.125].into(),
             spherical_harmonic: SphericalHarmonicCoefficients {
                 coefficients: {
                     // #[cfg(feature = "f16")]
@@ -253,7 +213,12 @@ impl TestCloud for PlanarGaussian3d {
                     g.position_visibility = [x, y, z, 1.0].into();
                     gaussians.push(g);
 
-                    gaussians.last_mut().unwrap().spherical_harmonic.coefficients.shuffle(&mut rng);
+                    gaussians
+                        .last_mut()
+                        .unwrap()
+                        .spherical_harmonic
+                        .coefficients
+                        .shuffle(&mut rng);
                 }
             }
         }
@@ -263,22 +228,24 @@ impl TestCloud for PlanarGaussian3d {
     }
 }
 
-
 // TODO: attempt iter() on the Planar trait
 impl PlanarGaussian3d {
-    pub fn iter(&self) -> impl Iterator<Item=Gaussian3d> + '_ {
-        self.position_visibility.iter()
+    pub fn iter(&self) -> impl Iterator<Item = Gaussian3d> + '_ {
+        self.position_visibility
+            .iter()
             .zip(self.spherical_harmonic.iter())
             .zip(self.rotation.iter())
             .zip(self.scale_opacity.iter())
-            .map(|(((position_visibility, spherical_harmonic), rotation), scale_opacity)| {
-                Gaussian3d {
-                    position_visibility: *position_visibility,
-                    spherical_harmonic: *spherical_harmonic,
+            .map(
+                |(((position_visibility, spherical_harmonic), rotation), scale_opacity)| {
+                    Gaussian3d {
+                        position_visibility: *position_visibility,
+                        spherical_harmonic: *spherical_harmonic,
 
-                    rotation: *rotation,
-                    scale_opacity: *scale_opacity,
-                }
-            })
+                        rotation: *rotation,
+                        scale_opacity: *scale_opacity,
+                    }
+                },
+            )
     }
 }

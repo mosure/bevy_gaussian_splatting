@@ -1,18 +1,7 @@
-use bincode2::{
-    deserialize_from,
-    serialize_into,
-};
-use flate2::{
-    Compression,
-    read::GzDecoder,
-    write::GzEncoder,
-};
+use bincode2::{deserialize_from, serialize_into};
+use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 
-use crate::{
-    gaussian::Cloud,
-    io::codec::CloudCodec,
-};
-
+use crate::{gaussian::Cloud, io::codec::CloudCodec};
 
 impl CloudCodec for Cloud {
     fn encode(&self) -> Vec<u8> {

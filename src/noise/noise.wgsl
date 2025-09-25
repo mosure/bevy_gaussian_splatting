@@ -1,6 +1,5 @@
 #define_import_path bevy_gaussian_splatting::noise
 
-
 //  MIT License. © Ian McEwan, Stefan Gustavson, Munrocket, Johan Helsing
 //
 fn mod289_2d(x: vec2<f32>) -> vec2<f32> {
@@ -61,7 +60,6 @@ fn simplex_2d(v: vec2<f32>) -> f32 {
     let g = vec3(a0.x * x0.x + h.x * x0.y, a0.yz * x12.xz + h.yz * x12.yw);
     return 130. * dot(m, g);
 }
-
 
 // MIT License. © Stefan Gustavson, Munrocket
 fn permute4_(x: vec4<f32>) -> vec4<f32> { return ((x * 34.0 + 1.0) * x) % vec4<f32>(289.0); }
@@ -139,7 +137,6 @@ fn perlin_3d(P: vec3<f32>) -> f32 {
     return 2.2 * n_xyz;
 }
 
-
 //  <https://www.shadertoy.com/view/Xd23Dh>
 //  by Inigo Quilez
 fn hash_23_(p: vec2<f32>) -> vec3<f32> {
@@ -169,8 +166,6 @@ fn voro_2d(x: vec2<f32>, u: f32, v: f32) -> f32 {
     return va / wt;
 }
 
-
-
 fn nrand(n: vec2<f32>) -> f32 {
     return fract(sin(dot(n, vec2<f32>(12.9898, 4.1414))) * 43758.5453);
 }
@@ -181,7 +176,6 @@ fn noise_2d(n: vec2<f32>) -> f32 {
     let f = smoothstep(vec2<f32>(0.0), vec2<f32>(1.0), fract(n));
     return mix(mix(nrand(b), nrand(b + d.yx), f.x), mix(nrand(b + d.xy), nrand(b + d.yy), f.x), f.y);
 }
-
 
 // https://www.shadertoy.com/view/MlVSzw
 const ALPHA: f32 = 0.14;

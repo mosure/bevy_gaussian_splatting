@@ -1,14 +1,10 @@
-use bevy::{
-    prelude::*,
-    render::primitives::Aabb,
-};
+use bevy::{prelude::*, render::primitives::Aabb};
 use bevy_interleave::prelude::Planar;
 
 #[cfg(feature = "sort_rayon")]
 use rayon::prelude::*;
 
 use crate::gaussian::iter::PositionIter;
-
 
 pub trait CommonCloud
 where
@@ -36,23 +32,19 @@ where
 
         #[cfg(feature = "sort_rayon")]
         {
-            (min, max) = self.position_par_iter()
+            (min, max) = self
+                .position_par_iter()
                 .fold(
                     || (min, max),
                     |(curr_min, curr_max), position| {
                         let pos = Vec3::from(*position);
                         let offset = Vec3::splat(max_scale);
-                        (
-                            curr_min.min(pos - offset),
-                            curr_max.max(pos + offset),
-                        )
+                        (curr_min.min(pos - offset), curr_max.max(pos + offset))
                     },
                 )
                 .reduce(
                     || (min, max),
-                    |(a_min, a_max), (b_min, b_max)| {
-                        (a_min.min(b_min), a_max.max(b_max))
-                    },
+                    |(a_min, a_max), (b_min, b_max)| (a_min.min(b_min), a_max.max(b_max)),
                 );
         }
 
@@ -80,6 +72,5 @@ where
 pub trait TestCloud {
     fn test_model() -> Self;
 }
-
 
 // TODO: CloudSlice and CloudStream traits

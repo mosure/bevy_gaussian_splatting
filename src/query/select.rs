@@ -3,14 +3,11 @@ use bevy_interleave::prelude::*;
 
 use crate::{
     gaussian::{
+        formats::{planar_3d::Gaussian3d, planar_4d::Gaussian4d},
         interface::CommonCloud,
-        formats::{
-            planar_3d::Gaussian3d,
-            planar_4d::Gaussian4d,
-        },
-    }, io::codec::CloudCodec,
+    },
+    io::codec::CloudCodec,
 };
-
 
 #[derive(Component, Debug, Default, Reflect)]
 pub struct Select {
@@ -19,9 +16,12 @@ pub struct Select {
 }
 
 impl FromIterator<usize> for Select {
-    fn from_iter<I: IntoIterator<Item=usize>>(iter: I) -> Self {
+    fn from_iter<I: IntoIterator<Item = usize>>(iter: I) -> Self {
         let indicies = iter.into_iter().collect::<Vec<usize>>();
-        Select { indicies, ..Default::default() }
+        Select {
+            indicies,
+            ..Default::default()
+        }
     }
 }
 
@@ -38,7 +38,6 @@ impl Select {
     }
 }
 
-
 #[derive(Default)]
 pub struct SelectPlugin;
 
@@ -54,7 +53,6 @@ impl Plugin for SelectPlugin {
     }
 }
 
-
 #[derive(Default)]
 pub struct CommonCloudSelectPlugin<R: PlanarSync>
 where
@@ -69,32 +67,25 @@ where
     R::PlanarType: CommonCloud,
 {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (
-            apply_selection::<R>,
-            invert_selection::<R>,
-            save_selection::<R>,
-        ));
+        app.add_systems(
+            Update,
+            (
+                apply_selection::<R>,
+                invert_selection::<R>,
+                save_selection::<R>,
+            ),
+        );
     }
 }
-
 
 fn apply_selection<R: PlanarSync>(
     asset_server: Res<AssetServer>,
     mut gaussian_clouds_res: ResMut<Assets<R::PlanarType>>,
-    mut selections: Query<(
-        Entity,
-        &R::PlanarTypeHandle,
-        &mut Select,
-    )>,
-)
-where
+    mut selections: Query<(Entity, &R::PlanarTypeHandle, &mut Select)>,
+) where
     R::PlanarType: CommonCloud,
 {
-    for (
-        _entity,
-        cloud_handle,
-        mut select,
-    ) in selections.iter_mut() {
+    for (_entity, cloud_handle, mut select) in selections.iter_mut() {
         if select.indicies.is_empty() || select.completed {
             continue;
         }
@@ -105,25 +96,19 @@ where
             }
         }
 
-        let cloud = gaussian_clouds_res
-            .get_mut(cloud_handle.handle())
-            .unwrap();
+        let cloud = gaussian_clouds_res.get_mut(cloud_handle.handle()).unwrap();
 
-        (0..cloud.len())
-            .for_each(|index| {
-                *cloud.visibility_mut(index) = 0.0;
-            });
+        (0..cloud.len()).for_each(|index| {
+            *cloud.visibility_mut(index) = 0.0;
+        });
 
-        select.indicies.iter()
-            .for_each(|index| {
-                *cloud.visibility_mut(*index) = 1.0;
-            });
+        select.indicies.iter().for_each(|index| {
+            *cloud.visibility_mut(*index) = 1.0;
+        });
 
         select.completed = true;
     }
 }
-
-
 
 #[derive(Event, Debug, Reflect)]
 pub struct InvertSelectionEvent;
@@ -131,13 +116,8 @@ pub struct InvertSelectionEvent;
 fn invert_selection<R: PlanarSync>(
     mut events: EventReader<InvertSelectionEvent>,
     mut gaussian_clouds_res: ResMut<Assets<R::PlanarType>>,
-    mut selections: Query<(
-        Entity,
-        &R::PlanarTypeHandle,
-        &mut Select,
-    )>,
-)
-where
+    mut selections: Query<(Entity, &R::PlanarTypeHandle, &mut Select)>,
+) where
     R::PlanarType: CommonCloud,
 {
     if events.is_empty() {
@@ -145,11 +125,7 @@ where
     }
     events.clear();
 
-    for (
-        _entity,
-        cloud_handle,
-        mut select,
-    ) in selections.iter_mut() {
+    for (_entity, cloud_handle, mut select) in selections.iter_mut() {
         if select.indicies.is_empty() {
             continue;
         }
@@ -158,24 +134,21 @@ where
 
         let mut new_indicies = Vec::with_capacity(cloud.len() - select.indicies.len());
 
-        (0..cloud.len())
-            .for_each(|index| {
-                if cloud.visibility(index) == 0.0 {
-                    new_indicies.push(index);
-                }
+        (0..cloud.len()).for_each(|index| {
+            if cloud.visibility(index) == 0.0 {
+                new_indicies.push(index);
+            }
 
-                *cloud.visibility_mut(index) = 1.0;
-            });
+            *cloud.visibility_mut(index) = 1.0;
+        });
 
-        select.indicies.iter()
-            .for_each(|index| {
-                *cloud.visibility_mut(*index) = 0.0;
-            });
+        select.indicies.iter().for_each(|index| {
+            *cloud.visibility_mut(*index) = 0.0;
+        });
 
         select.indicies = new_indicies;
     }
 }
-
 
 #[derive(Event, Debug, Reflect)]
 pub struct SaveSelectionEvent;
@@ -183,13 +156,8 @@ pub struct SaveSelectionEvent;
 pub fn save_selection<R: PlanarSync>(
     mut events: EventReader<SaveSelectionEvent>,
     mut gaussian_clouds_res: ResMut<Assets<R::PlanarType>>,
-    mut selections: Query<(
-        Entity,
-        &R::PlanarTypeHandle,
-        &Select,
-    )>,
-)
-where
+    mut selections: Query<(Entity, &R::PlanarTypeHandle, &Select)>,
+) where
     R::PlanarType: CloudCodec,
     R::PlanarType: CommonCloud,
 {
@@ -198,11 +166,7 @@ where
     }
     events.clear();
 
-    for (
-        _entity,
-        cloud_handle,
-        select,
-    ) in selections.iter_mut() {
+    for (_entity, cloud_handle, select) in selections.iter_mut() {
         let cloud = gaussian_clouds_res.get_mut(cloud_handle.handle()).unwrap();
 
         let selected = cloud.subset(select.indicies.as_slice());

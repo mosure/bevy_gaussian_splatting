@@ -1,15 +1,7 @@
-use bevy::math::{
-    Mat3,
-    Vec3,
-    Vec4,
-};
-
+use bevy::math::{Mat3, Vec3, Vec4};
 
 #[allow(non_snake_case)]
-pub fn compute_covariance_3d(
-    rotation: Vec4,
-    scale: Vec3,
-) -> [f32; 6] {
+pub fn compute_covariance_3d(rotation: Vec4, scale: Vec3) -> [f32; 6] {
     let S = Mat3::from_diagonal(scale);
 
     let r = rotation.x;

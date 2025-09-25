@@ -1,11 +1,7 @@
 use bevy_gaussian_splatting::{
-    io::codec::CloudCodec,
-    PlanarGaussian3d,
-    PlanarGaussian4d,
-    random_gaussians_3d,
+    PlanarGaussian3d, PlanarGaussian4d, io::codec::CloudCodec, random_gaussians_3d,
     random_gaussians_4d,
 };
-
 
 #[test]
 fn test_codec_3d() {

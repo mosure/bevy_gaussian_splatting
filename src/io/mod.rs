@@ -8,7 +8,6 @@ pub mod scene;
 #[cfg(feature = "io_ply")]
 pub mod ply;
 
-
 #[derive(Default)]
 pub struct IoPlugin;
 impl Plugin for IoPlugin {

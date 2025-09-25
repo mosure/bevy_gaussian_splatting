@@ -1,38 +1,15 @@
-use bevy::{
-    prelude::*,
-    app::AppExit,
-    core_pipeline::tonemapping::Tonemapping,
-};
-use bevy_args::{
-    BevyArgsPlugin,
-    parse_args,
-};
-use bevy_inspector_egui::{
-    bevy_egui::EguiPlugin,
-    quick::WorldInspectorPlugin,
-};
+use bevy::{app::AppExit, core_pipeline::tonemapping::Tonemapping, prelude::*};
+use bevy_args::{BevyArgsPlugin, parse_args};
+use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 use bevy_interleave::prelude::Planar;
-use bevy_panorbit_camera::{
-    PanOrbitCamera,
-    PanOrbitCameraPlugin,
-};
+use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 
 use bevy_gaussian_splatting::{
-    Gaussian3d,
-    GaussianCamera,
-    PlanarGaussian3d,
-    PlanarGaussian3dHandle,
-    GaussianMode,
-    CloudSettings,
-    GaussianSplattingPlugin,
+    CloudSettings, Gaussian3d, GaussianCamera, GaussianMode, GaussianSplattingPlugin,
+    PlanarGaussian3d, PlanarGaussian3dHandle, SphericalHarmonicCoefficients,
     gaussian::f32::Rotation,
-    utils::{
-        setup_hooks,
-        GaussianSplattingViewer,
-    },
-    SphericalHarmonicCoefficients,
+    utils::{GaussianSplattingViewer, setup_hooks},
 };
-
 
 pub fn setup_surfel_compare(
     mut commands: Commands,
@@ -65,9 +42,7 @@ pub fn setup_surfel_compare(
 
             let gaussian = Gaussian3d {
                 position_visibility: position.into(),
-                rotation: Rotation {
-                    rotation,
-                },
+                rotation: Rotation { rotation },
                 scale_opacity: scale.into(),
                 spherical_harmonic: blue_sh,
             };
@@ -75,9 +50,7 @@ pub fn setup_surfel_compare(
         }
     }
 
-    let cloud = gaussian_assets.add(
-        PlanarGaussian3d::from_interleaved(blue_gaussians)
-    );
+    let cloud = gaussian_assets.add(PlanarGaussian3d::from_interleaved(blue_gaussians));
     commands.spawn((
         PlanarGaussian3dHandle(cloud),
         CloudSettings {
@@ -109,9 +82,7 @@ pub fn setup_surfel_compare(
 
             let gaussian = Gaussian3d {
                 position_visibility: position.into(),
-                rotation: Rotation {
-                    rotation,
-                },
+                rotation: Rotation { rotation },
                 scale_opacity: scale.into(),
                 spherical_harmonic: red_sh,
             };
@@ -119,9 +90,7 @@ pub fn setup_surfel_compare(
         }
     }
 
-    let cloud = gaussian_assets.add(
-        PlanarGaussian3d::from_interleaved(red_gaussians)
-    );
+    let cloud = gaussian_assets.add(PlanarGaussian3d::from_interleaved(red_gaussians));
     commands.spawn((
         Transform::from_translation(Vec3::new(spacing, spacing, 0.0)),
         PlanarGaussian3dHandle(cloud),
@@ -135,7 +104,10 @@ pub fn setup_surfel_compare(
     ));
 
     let camera_transform = Transform::from_translation(Vec3::new(0.0, 1.5, 20.0));
-    info!("camera_transform: {:?}", camera_transform.compute_matrix().to_cols_array_2d());
+    info!(
+        "camera_transform: {:?}",
+        camera_transform.compute_matrix().to_cols_array_2d()
+    );
 
     commands.spawn((
         camera_transform,
@@ -157,24 +129,26 @@ fn compare_surfel_app() {
     app.insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)));
     app.add_plugins(
         DefaultPlugins
-        .set(ImagePlugin::default_nearest())
-        .set(WindowPlugin {
-            primary_window: Some(Window {
-                mode: bevy::window::WindowMode::Windowed,
-                present_mode: bevy::window::PresentMode::AutoVsync,
-                prevent_default_event_handling: false,
-                resolution: (config.width, config.height).into(),
-                title: config.name.clone(),
+            .set(ImagePlugin::default_nearest())
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    mode: bevy::window::WindowMode::Windowed,
+                    present_mode: bevy::window::PresentMode::AutoVsync,
+                    prevent_default_event_handling: false,
+                    resolution: (config.width, config.height).into(),
+                    title: config.name.clone(),
+                    ..default()
+                }),
                 ..default()
             }),
-            ..default()
-        }),
     );
     app.add_plugins(BevyArgsPlugin::<GaussianSplattingViewer>::default());
     app.add_plugins(PanOrbitCameraPlugin);
 
     if config.editor {
-        app.add_plugins(EguiPlugin { enable_multipass_for_primary_context: true });
+        app.add_plugins(EguiPlugin {
+            enable_multipass_for_primary_context: true,
+        });
         app.add_plugins(WorldInspectorPlugin::new());
     }
 
@@ -189,10 +163,7 @@ fn compare_surfel_app() {
     app.run();
 }
 
-pub fn esc_close(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut exit: EventWriter<AppExit>
-) {
+pub fn esc_close(keys: Res<ButtonInput<KeyCode>>, mut exit: EventWriter<AppExit>) {
     if keys.just_pressed(KeyCode::Escape) {
         exit.write(AppExit::Success);
     }

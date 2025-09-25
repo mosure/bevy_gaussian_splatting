@@ -102,7 +102,6 @@
     #endif
 #endif
 
-
 #ifdef BUFFER_STORAGE
     @group(3) @binding(0) var<storage, read> sorted_entries: array<Entry>;
     fn get_entry(index: u32) -> Entry {
@@ -163,7 +162,6 @@
     #endif
     };
 #endif
-
 
 fn world_to_local_direction(ray_direction_world: vec3<f32>, transform: mat4x4<f32>) -> vec3<f32> {
     let basis = mat3x3<f32>(
@@ -228,7 +226,6 @@ fn vs_points(
     let quad_index = vertex_index % 4u;
     let quad_offset = quad_vertices[quad_index];
 
-
     var opacity = get_opacity(splat_index);
 
 #ifdef OPACITY_ADAPTIVE_RADIUS
@@ -236,7 +233,6 @@ fn vs_points(
 #else
     let cutoff = 3.0;
 #endif
-
 
 #ifdef GAUSSIAN_2D
     let surfel = compute_cov2d_surfel(
@@ -312,7 +308,6 @@ fn vs_points(
         output.major_minor = bb.zw;
     #endif
 #endif
-
 
     var rgb = vec3<f32>(0.0);
 
@@ -420,7 +415,6 @@ fn vs_points(
     #endif
 #endif
 
-
     output.color = vec4<f32>(
         rgb,
         opacity * gaussian_uniforms.global_opacity,
@@ -431,7 +425,6 @@ fn vs_points(
         output.color = vec4<f32>(0.3, 1.0, 0.1, 1.0);
     }
 #endif
-
 
     output.uv = quad_offset;
     output.position = vec4<f32>(

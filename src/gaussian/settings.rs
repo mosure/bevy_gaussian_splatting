@@ -1,25 +1,9 @@
 use bevy::prelude::*;
-use bevy_args::{
-    Deserialize,
-    Serialize,
-    ValueEnum,
-};
+use bevy_args::{Deserialize, Serialize, ValueEnum};
 
 use crate::sort::SortMode;
 
-
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    Eq,
-    Hash,
-    PartialEq,
-    Reflect,
-    Serialize,
-    Deserialize,
-)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Reflect, Serialize, Deserialize)]
 pub enum DrawMode {
     #[default]
     All,
@@ -27,19 +11,8 @@ pub enum DrawMode {
     HighlightSelected,
 }
 
-
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    Eq,
-    Hash,
-    PartialEq,
-    Reflect,
-    Serialize,
-    Deserialize,
-    ValueEnum,
+    Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Reflect, Serialize, Deserialize, ValueEnum,
 )]
 pub enum GaussianMode {
     Gaussian2d,
@@ -49,39 +22,18 @@ pub enum GaussianMode {
 }
 
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    Eq,
-    Hash,
-    PartialEq,
-    Reflect,
-    Serialize,
-    Deserialize,
-    ValueEnum,
+    Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Reflect, Serialize, Deserialize, ValueEnum,
 )]
 pub enum PlaybackMode {
-    #[default]
     Loop,
     Once,
     Sin,
+    #[default]
     Still,
 }
 
-
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    Eq,
-    Hash,
-    PartialEq,
-    Reflect,
-    Serialize,
-    Deserialize,
-    ValueEnum,
+    Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Reflect, Serialize, Deserialize, ValueEnum,
 )]
 pub enum RasterizeMode {
     Classification,
@@ -94,16 +46,8 @@ pub enum RasterizeMode {
     Velocity,
 }
 
-
 // TODO: breakdown into components
-#[derive(
-    Component,
-    Clone,
-    Debug,
-    Reflect,
-    Serialize,
-    Deserialize,
-)]
+#[derive(Component, Clone, Debug, Reflect, Serialize, Deserialize)]
 #[reflect(Component)]
 #[serde(default)]
 pub struct CloudSettings {
@@ -146,27 +90,17 @@ impl Default for CloudSettings {
     }
 }
 
-
 #[derive(Default)]
 pub struct SettingsPlugin;
 impl Plugin for SettingsPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<CloudSettings>();
 
-        app.add_systems(
-            Update,
-            (
-                playback_update,
-            )
-        );
+        app.add_systems(Update, (playback_update,));
     }
 }
 
-
-fn playback_update(
-    time: Res<Time>,
-    mut query: Query<(&mut CloudSettings,)>,
-) {
+fn playback_update(time: Res<Time>, mut query: Query<(&mut CloudSettings,)>) {
     for (mut settings,) in query.iter_mut() {
         if settings.time_scale == 0.0 {
             continue;
@@ -194,7 +128,8 @@ fn playback_update(
             PlaybackMode::Sin => {
                 let theta = settings.time_scale * time.elapsed_secs();
                 let y = (theta * 2.0 * std::f32::consts::PI).sin();
-                settings.time = settings.time_start + (settings.time_stop - settings.time_start) * (y + 1.0) / 2.0;
+                settings.time = settings.time_start
+                    + (settings.time_stop - settings.time_start) * (y + 1.0) / 2.0;
             }
             PlaybackMode::Still => {}
         }
