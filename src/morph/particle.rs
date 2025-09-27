@@ -3,12 +3,12 @@ use std::marker::Copy;
 
 #[allow(unused_imports)]
 use bevy::{
-    asset::{LoadState, load_internal_asset, weak_handle},
+    asset::{LoadState, load_internal_asset, uuid_handle},
     core_pipeline::core_3d::graph::{Core3d, Node3d},
     ecs::system::{SystemParamItem, lifetimeless::SRes},
     prelude::*,
     render::{
-        Extract, Render, RenderApp, RenderSet,
+        Extract, Render, RenderApp, RenderSystems,
         render_asset::{
             PrepareAssetError, RenderAsset, RenderAssetPlugin, RenderAssetUsages, RenderAssets,
         },
@@ -36,7 +36,7 @@ use crate::{
     },
 };
 
-const PARTICLE_SHADER_HANDLE: Handle<Shader> = weak_handle!("00000000-0000-0000-0000-00369c79ab8f");
+const PARTICLE_SHADER_HANDLE: Handle<Shader> = uuid_handle!("00000000-0000-0000-0000-00369c79ab8f");
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
 pub struct MorphLabel;
@@ -60,7 +60,7 @@ impl<R: PlanarSync> Plugin for ParticleBehaviorPlugin<R> {
             // TODO: avoid duplicating the extract system
             render_app.add_systems(
                 Render,
-                (queue_particle_behavior_bind_group::<R>.in_set(RenderSet::Queue),),
+                (queue_particle_behavior_bind_group::<R>.in_set(RenderSystems::Queue),),
             );
         }
 
@@ -190,7 +190,7 @@ impl<R: PlanarSync> FromWorld for ParticleBehaviorPipeline<R> {
                 push_constant_ranges: vec![],
                 shader: PARTICLE_SHADER_HANDLE,
                 shader_defs: shader_defs.clone(),
-                entry_point: "apply_particle_behaviors".into(),
+                entry_point: Some("apply_particle_behaviors".into()),
                 zero_initialize_workgroup_memory: true,
             });
 

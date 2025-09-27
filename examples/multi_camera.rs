@@ -1,6 +1,5 @@
 use bevy::{
-    app::AppExit, core_pipeline::tonemapping::Tonemapping, prelude::*, render::camera::Viewport,
-    window::WindowResized,
+    app::AppExit, camera::Viewport, core_pipeline::tonemapping::Tonemapping, prelude::*, window::WindowResized
 };
 use bevy_args::{BevyArgsPlugin, parse_args};
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
@@ -226,7 +225,7 @@ struct CameraPosition {
 
 fn set_camera_viewports(
     windows: Query<&Window>,
-    mut resize_events: EventReader<WindowResized>,
+    mut resize_events: MessageReader<WindowResized>,
     mut cameras: Query<(&CameraPosition, &mut Camera), With<GaussianCamera>>,
 ) {
     for resize_event in resize_events.read() {
@@ -243,7 +242,7 @@ fn set_camera_viewports(
     }
 }
 
-fn esc_close(keys: Res<ButtonInput<KeyCode>>, mut exit: EventWriter<AppExit>) {
+fn esc_close(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>) {
     if keys.just_pressed(KeyCode::Escape) {
         exit.write(AppExit::Success);
     }

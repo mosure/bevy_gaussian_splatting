@@ -117,8 +117,11 @@ headless = [
   "io_ply",
   "planar",
   "buffer_storage",
+  "sh3",
   "sort_rayon",
   "sort_std",
+  "sort_bitonic",
+  "sort_radix",
 ]
 
 viewer = [
@@ -157,11 +160,13 @@ webgpu = ["bevy/webgpu"]
 
 [dependencies]
 base64 = { version = "0.22", optional = true }
-bevy_args = "~1.8"
+# TODO change after PRs get merged
+bevy_args = { git = "https://github.com/cs50victor/bevy_args", branch = "chore/bevy_0.17" }
+bevy_interleave = { git = "https://github.com/cs50victor/bevy_interleave", branch = "chore/bump_bevy" }
+
 bevy-inspector-egui = { version = "0.31", optional = true }
-bevy_interleave = { version = "0.7.2" }
 # bevy_panorbit_camera = { git = "https://github.com/mosure/bevy_panorbit_camera.git", optional = true, features = ["bevy_egui"] }
-bevy_panorbit_camera = { version = "0.26", optional = true, features = ["bevy_egui"] }
+bevy_panorbit_camera = { git = "https://github.com/kristoff3r/bevy_panorbit_camera", optional = true , features = ["bevy_egui"]}
 bevy_transform_gizmo = { version = "0.12", optional = true }
 bevy_file_asset = { version = "0.2", optional = true }
 bevy_web_asset = { version = "0.11", optional = true }
@@ -191,7 +196,7 @@ wasm-bindgen = "0.2"
 
 
 [dependencies.bevy]
-version = "0.16"
+version = "0.17.0-rc.2"
 default-features = false
 features = [
   "bevy_asset",
@@ -220,6 +225,7 @@ features = [
 
 [dev-dependencies]
 criterion = { version = "0.6", features = ["html_reports"] }
+crossbeam-channel = "0.5.15"
 futures-intrusive = { version = "0.5.0" }
 pollster = { version = "0.4.0" }
 

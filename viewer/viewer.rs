@@ -7,8 +7,8 @@ use bevy::{
     core_pipeline::{prepass::MotionVectorPrepass, tonemapping::Tonemapping},
     diagnostic::{DiagnosticsStore, FrameCount, FrameTimeDiagnosticsPlugin},
     prelude::*,
+    math::bounding::Aabb3d,
     render::{
-        primitives::Aabb,
         view::screenshot::{Screenshot, save_to_disk},
     },
 };
@@ -73,20 +73,18 @@ fn setup_gaussian_cloud(
     mut gaussian_4d_assets: ResMut<Assets<PlanarGaussian4d>>,
 ) {
     debug!("spawning camera...");
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
-        Tonemapping::None,
-        MotionVectorPrepass,
-        PanOrbitCamera {
+    commands.spawn(Camera3d::default())
+        .insert(Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)))
+        .insert(Tonemapping::None)
+        .insert(MotionVectorPrepass)
+        .insert(PanOrbitCamera {
             allow_upside_down: true,
             orbit_smoothness: 0.1,
             pan_smoothness: 0.1,
             zoom_smoothness: 0.1,
             ..default()
-        },
-        GaussianCamera::default(),
-    ));
+        })
+        .insert(GaussianCamera::default());
 
     if let Some(input_scene) = &args.input_scene {
         let input_uri = parse_input_file(input_scene.as_str());
@@ -388,14 +386,16 @@ pub fn press_s_screenshot(
 #[derive(Component, Debug, Default, Reflect)]
 pub struct ShowAxes;
 
-fn draw_axes(mut gizmos: Gizmos, query: Query<(&Transform, &Aabb), With<ShowAxes>>) {
+fn draw_axes(mut gizmos: Gizmos, query: Query<(&Transform, &Aabb3d), With<ShowAxes>>) {
     for (&transform, &aabb) in &query {
         let length = aabb.half_extents.length();
+        // let half_extents = (aabb.max - aabb.min) / 2.0;
+        // let length = half_extents.length();
         gizmos.axes(transform, length);
     }
 }
 
-pub fn press_esc_close(keys: Res<ButtonInput<KeyCode>>, mut exit: EventWriter<AppExit>) {
+pub fn press_esc_close(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>) {
     if keys.just_pressed(KeyCode::Escape) {
         exit.write(AppExit::Success);
     }
@@ -404,7 +404,7 @@ pub fn press_esc_close(keys: Res<ButtonInput<KeyCode>>, mut exit: EventWriter<Ap
 #[cfg(feature = "query_select")]
 fn press_i_invert_selection(
     keys: Res<ButtonInput<KeyCode>>,
-    mut select_inverse_events: EventWriter<InvertSelectionEvent>,
+    mut select_inverse_events: MessageWriter<InvertSelectionEvent>,
 ) {
     if keys.just_pressed(KeyCode::KeyI) {
         log("inverting selection");
@@ -415,7 +415,7 @@ fn press_i_invert_selection(
 #[cfg(feature = "query_select")]
 fn press_o_save_selection(
     keys: Res<ButtonInput<KeyCode>>,
-    mut select_inverse_events: EventWriter<SaveSelectionEvent>,
+    mut select_inverse_events: MessageWriter<SaveSelectionEvent>,
 ) {
     if keys.just_pressed(KeyCode::KeyO) {
         log("saving selection");

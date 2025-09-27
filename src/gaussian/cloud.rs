@@ -1,17 +1,29 @@
 use bevy::{
-    ecs::{component::HookContext, world::DeferredWorld},
+    camera::visibility::{NoFrustumCulling, VisibilitySystems, VisibilityClass, add_visibility_class},
+    ecs::{lifecycle::HookContext, world::DeferredWorld},
+    math::bounding::Aabb3d,
     prelude::*,
-    render::{
-        primitives::Aabb,
-        view::{
-            VisibilityClass,
-            visibility::{NoFrustumCulling, VisibilitySystems, add_visibility_class},
-        },
-    },
 };
 use bevy_interleave::prelude::*;
 
 use crate::gaussian::interface::CommonCloud;
+
+#[derive(Component, Clone, Debug)]
+pub struct GaussianCloudAabb(pub Aabb3d);
+
+impl From<Aabb3d> for GaussianCloudAabb {
+    fn from(aabb: Aabb3d) -> Self {
+        GaussianCloudAabb(aabb)
+    }
+}
+
+impl std::ops::Deref for GaussianCloudAabb {
+    type Target = Aabb3d;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 #[derive(Default)]
 pub struct CloudPlugin<R: PlanarSync> {
@@ -47,14 +59,14 @@ where
 pub fn calculate_bounds<R: PlanarSync>(
     mut commands: Commands,
     gaussian_clouds: Res<Assets<R::PlanarType>>,
-    without_aabb: Query<(Entity, &R::PlanarTypeHandle), (Without<Aabb>, Without<NoFrustumCulling>)>,
+    without_aabb: Query<(Entity, &R::PlanarTypeHandle), (Without<GaussianCloudAabb>, Without<NoFrustumCulling>)>,
 ) where
     R::PlanarType: CommonCloud,
 {
     for (entity, cloud_handle) in &without_aabb {
         if let Some(cloud) = gaussian_clouds.get(cloud_handle.handle()) {
             if let Some(aabb) = cloud.compute_aabb() {
-                commands.entity(entity).try_insert(aabb);
+                commands.entity(entity).try_insert(GaussianCloudAabb(aabb));
             }
         }
     }
