@@ -1,8 +1,6 @@
 // TODO: move to editor crate
 use std::path::PathBuf;
 
-#[cfg(not(target_arch = "wasm32"))]
-use bevy::window::WindowResolution;
 use bevy::{
     app::AppExit,
     color::palettes::css::GOLD,
@@ -281,7 +279,7 @@ fn viewer_app() {
     let primary_window = Some(Window {
         mode: bevy::window::WindowMode::Windowed,
         prevent_default_event_handling: false,
-        resolution: WindowResolution::new(
+        resolution: bevy::window::WindowResolution::new(
             config.width as u32, 
             config.height as u32
         ),

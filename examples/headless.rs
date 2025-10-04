@@ -33,7 +33,6 @@ use bevy_gaussian_splatting::{
 };
 use crossbeam_channel::{Receiver, Sender};
 use std::{
-    ops::Deref,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},

@@ -26,7 +26,10 @@ fn multi_camera_app() {
                     mode: bevy::window::WindowMode::Windowed,
                     present_mode: bevy::window::PresentMode::AutoVsync,
                     prevent_default_event_handling: false,
-                    resolution: (config.width, config.height).into(),
+                    resolution: bevy::window::WindowResolution::new(
+                        config.width as u32,
+                        config.height as u32
+                    ),
                     title: config.name.clone(),
                     ..default()
                 }),
