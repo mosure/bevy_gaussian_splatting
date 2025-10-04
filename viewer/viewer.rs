@@ -1,13 +1,14 @@
 // TODO: move to editor crate
 use std::path::PathBuf;
 
+#[cfg(not(target_arch = "wasm32"))]
+use bevy::window::WindowResolution;
 use bevy::{
     app::AppExit,
     color::palettes::css::GOLD,
     core_pipeline::{prepass::MotionVectorPrepass, tonemapping::Tonemapping},
     diagnostic::{DiagnosticsStore, FrameCount, FrameTimeDiagnosticsPlugin},
     prelude::*,
-    math::bounding::Aabb3d,
     render::{
         view::screenshot::{Screenshot, save_to_disk},
     },
@@ -21,15 +22,10 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE};
 #[cfg(feature = "file_asset")]
 use bevy_file_asset::FileAssetPlugin;
 #[cfg(feature = "web_asset")]
-use bevy_web_asset::WebAssetPlugin;
+use bevy::asset::io::web::WebAssetPlugin;
 
 use bevy_gaussian_splatting::{
-    CloudSettings, GaussianCamera, GaussianMode, GaussianScene, GaussianSceneHandle,
-    GaussianSplattingPlugin, PlanarGaussian3d, PlanarGaussian3dHandle, PlanarGaussian4d,
-    PlanarGaussian4dHandle,
-    gaussian::interface::TestCloud,
-    random_gaussians_3d, random_gaussians_4d,
-    utils::{GaussianSplattingViewer, log, setup_hooks},
+    gaussian::{cloud::GaussianCloudAabb, interface::TestCloud}, random_gaussians_3d, random_gaussians_4d, utils::{log, setup_hooks, GaussianSplattingViewer}, CloudSettings, GaussianCamera, GaussianMode, GaussianScene, GaussianSceneHandle, GaussianSplattingPlugin, PlanarGaussian3d, PlanarGaussian3dHandle, PlanarGaussian4d, PlanarGaussian4dHandle
 };
 
 #[cfg(feature = "morph_interpolate")]
@@ -285,7 +281,10 @@ fn viewer_app() {
     let primary_window = Some(Window {
         mode: bevy::window::WindowMode::Windowed,
         prevent_default_event_handling: false,
-        resolution: (config.width, config.height).into(),
+        resolution: WindowResolution::new(
+            config.width as u32, 
+            config.height as u32
+        ),
         title: config.name.clone(),
 
         #[cfg(feature = "perftest")]
@@ -300,7 +299,7 @@ fn viewer_app() {
     app.add_plugins(FileAssetPlugin);
 
     #[cfg(feature = "web_asset")]
-    app.add_plugins(WebAssetPlugin);
+    app.add_plugins(WebAssetPlugin{ silence_startup_warning: true });
 
     // setup for gaussian viewer app
     app.insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)));
@@ -321,9 +320,7 @@ fn viewer_app() {
     app.add_plugins(PanOrbitCameraPlugin);
 
     if config.editor {
-        app.add_plugins(EguiPlugin {
-            enable_multipass_for_primary_context: true,
-        });
+        app.add_plugins(EguiPlugin::default());
         app.add_plugins(WorldInspectorPlugin::new());
     }
 
@@ -386,11 +383,10 @@ pub fn press_s_screenshot(
 #[derive(Component, Debug, Default, Reflect)]
 pub struct ShowAxes;
 
-fn draw_axes(mut gizmos: Gizmos, query: Query<(&Transform, &Aabb3d), With<ShowAxes>>) {
-    for (&transform, &aabb) in &query {
-        let length = aabb.half_extents.length();
-        // let half_extents = (aabb.max - aabb.min) / 2.0;
-        // let length = half_extents.length();
+fn draw_axes(mut gizmos: Gizmos, query: Query<(&Transform, &GaussianCloudAabb), With<ShowAxes>>) {
+    for (&transform, aabb) in &query {
+        let half_extents = (aabb.max - aabb.min) / 2.0;
+        let length = half_extents.length();
         gizmos.axes(transform, length);
     }
 }
