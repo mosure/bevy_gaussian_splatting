@@ -18,6 +18,10 @@
     in_frustum,
 }
 
+#ifdef SOLARI
+#import bevy_gaussian_splatting::solari::solari_shade_diffuse
+#endif
+
 #ifdef GAUSSIAN_2D
     #import bevy_gaussian_splatting::gaussian_2d::{
         compute_cov2d_surfel,
@@ -141,6 +145,8 @@
         @location(2) conic: vec3<f32>,
         @location(3) major_minor: vec2<f32>,
     #endif
+        @location(7) world_position: vec3<f32>,
+        @location(8) world_normal: vec3<f32>,
     };
 #else
     struct GaussianVertexOutput {
@@ -160,6 +166,8 @@
         @location(2) @interpolate(flat) conic: vec3<f32>,
         @location(3) @interpolate(linear) major_minor: vec2<f32>,
     #endif
+        @location(7) @interpolate(flat) world_position: vec3<f32>,
+        @location(8) @interpolate(flat) world_normal: vec3<f32>,
     };
 #endif
 
@@ -211,6 +219,8 @@ fn vs_points(
 #endif
 
     if (discard_quad) {
+        output.world_position = transformed_position;
+        output.world_normal = normalize(transformed_position - view.world_position);
         output.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
         output.position = vec4<f32>(0.0, 0.0, 0.0, 0.0);
         return output;
@@ -420,6 +430,9 @@ fn vs_points(
         opacity * gaussian_uniforms.global_opacity,
     );
 
+    output.world_position = transformed_position;
+    output.world_normal = normalize(transformed_position - view.world_position);
+
 #ifdef HIGHLIGHT_SELECTED
     if (get_visibility(splat_index) > 0.5) {
         output.color = vec4<f32>(0.3, 1.0, 0.1, 1.0);
@@ -497,9 +510,20 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
     let alpha = min(exp(power) * input.color.a, 0.999);
 
     // TODO: round alpha to terminate depth test?
+    var shaded_rgb = input.color.rgb;
+
+#ifdef SOLARI
+    shaded_rgb = solari_shade_diffuse(
+        shaded_rgb,
+        input.world_position,
+        input.world_normal,
+        view.world_position,
+        view.exposure,
+    );
+#endif
 
     return vec4<f32>(
-        input.color.rgb * alpha,
+        shaded_rgb * alpha,
         alpha,
     );
 }

@@ -25,6 +25,8 @@ pub mod gaussian;
 pub mod io;
 pub mod material;
 pub mod math;
+#[cfg(feature = "mesh_proxy")]
+pub mod mesh;
 pub mod morph;
 pub mod query;
 pub mod render;
@@ -34,6 +36,9 @@ pub mod utils;
 
 #[cfg(feature = "noise")]
 pub mod noise;
+
+#[cfg(feature = "mesh_proxy")]
+pub use mesh::proxy::{ProxyMesh, ProxyMeshPlugin, ProxyMeshSettings, ProxyParams};
 
 pub struct GaussianSplattingPlugin;
 
@@ -61,6 +66,9 @@ impl Plugin for GaussianSplattingPlugin {
             render::RenderPipelinePlugin::<Gaussian3d>::default(),
             render::RenderPipelinePlugin::<Gaussian4d>::default(),
         ));
+
+        #[cfg(feature = "mesh_proxy")]
+        app.add_plugins(mesh::proxy::ProxyMeshPlugin);
 
         app.add_plugins((material::MaterialPlugin, query::QueryPlugin));
 

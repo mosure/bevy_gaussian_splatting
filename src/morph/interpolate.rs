@@ -96,7 +96,10 @@ fn ensure_gaussian_interpolate_synced<R: PlanarSync>(
 ) {
     for (entity, sync_tag) in &query {
         if sync_tag.is_none() {
-            debug!(?entity, "adding SyncToRenderWorld to GaussianInterpolate entity");
+            debug!(
+                ?entity,
+                "adding SyncToRenderWorld to GaussianInterpolate entity"
+            );
             commands.entity(entity).insert(SyncToRenderWorld);
         }
     }
@@ -106,7 +109,11 @@ fn ensure_gaussian_interpolate_output_gaussian3d(
     mut commands: Commands,
     mut planar_assets: ResMut<Assets<PlanarGaussian3d>>,
     mut rebind_queue: ResMut<PlanarStorageRebindQueue<Gaussian3d>>,
-    query: Query<(Entity, &GaussianInterpolate<Gaussian3d>, Option<&PlanarGaussian3dHandle>)>,
+    query: Query<(
+        Entity,
+        &GaussianInterpolate<Gaussian3d>,
+        Option<&PlanarGaussian3dHandle>,
+    )>,
 ) {
     for (entity, interpolate, existing_output) in &query {
         if existing_output.is_some() {
@@ -114,8 +121,14 @@ fn ensure_gaussian_interpolate_output_gaussian3d(
         }
 
         let lhs_handle = interpolate.lhs.handle();
-        let Some(cloned_asset) = planar_assets.get(lhs_handle).map(|asset| asset.iter().collect::<PlanarGaussian3d>()) else {
-            debug!(?entity, "lhs planar asset not available for GaussianInterpolate output");
+        let Some(cloned_asset) = planar_assets
+            .get(lhs_handle)
+            .map(|asset| asset.iter().collect::<PlanarGaussian3d>())
+        else {
+            debug!(
+                ?entity,
+                "lhs planar asset not available for GaussianInterpolate output"
+            );
             continue;
         };
 
@@ -222,14 +235,20 @@ pub fn extract_gaussian_interpolate<R>(
         debug!("no GaussianInterpolate components extracted this frame");
     } else {
         let count = extracted.len();
-        debug!(count, "inserting GaussianInterpolate components into render world");
+        debug!(
+            count,
+            "inserting GaussianInterpolate components into render world"
+        );
         for (entity, bundle) in extracted {
             match commands.get_entity(entity) {
                 Ok(mut entity_cmd) => {
                     entity_cmd.insert(bundle);
                 }
                 Err(_) => {
-                    debug!(?entity, "skipping GaussianInterpolate insertion; render entity missing");
+                    debug!(
+                        ?entity,
+                        "skipping GaussianInterpolate insertion; render entity missing"
+                    );
                 }
             }
         }
@@ -264,7 +283,10 @@ pub fn queue_gaussian_interpolate_bind_groups<R: PlanarSync>(
         }
 
         if !rebuild {
-            debug!(?entity, "GaussianInterpolate bind groups unchanged; skipping");
+            debug!(
+                ?entity,
+                "GaussianInterpolate bind groups unchanged; skipping"
+            );
             continue;
         }
 
@@ -273,20 +295,33 @@ pub fn queue_gaussian_interpolate_bind_groups<R: PlanarSync>(
         let output_asset_handle = output_handle.handle().clone();
 
         let mut ready = true;
-        for (label, handle) in [("lhs", &lhs_handle), ("rhs", &rhs_handle), ("output", &output_asset_handle)] {
+        for (label, handle) in [
+            ("lhs", &lhs_handle),
+            ("rhs", &rhs_handle),
+            ("output", &output_asset_handle),
+        ] {
             // Assets created at runtime (like the interpolation output) are not tracked by the AssetServer, so
             // `get_load_state` returns `None` even though the data is ready. Treat `None` as ready and only block
             // while the server explicitly reports a non-loaded state.
             if let Some(load_state) = asset_server.get_load_state(handle.id()) {
                 if !matches!(load_state, LoadState::Loaded) {
-                    debug!(?entity, handle_label = label, ?load_state, "waiting for GaussianInterpolate asset load");
+                    debug!(
+                        ?entity,
+                        handle_label = label,
+                        ?load_state,
+                        "waiting for GaussianInterpolate asset load"
+                    );
                     ready = false;
                     break;
                 }
             }
 
             if gpu_planars.get(handle.id()).is_none() {
-                debug!(?entity, handle_label = label, "GaussianInterpolate GPU asset not ready");
+                debug!(
+                    ?entity,
+                    handle_label = label,
+                    "GaussianInterpolate GPU asset not ready"
+                );
                 ready = false;
                 break;
             }
@@ -315,7 +350,10 @@ pub fn queue_gaussian_interpolate_bind_groups<R: PlanarSync>(
             output_gpu.bind_group(render_device.as_ref(), &interpolate_pipeline.output_layout);
 
         let gaussian_count = output_gpu.len();
-        debug!(?entity, gaussian_count, "queued GaussianInterpolate bind groups");
+        debug!(
+            ?entity,
+            gaussian_count, "queued GaussianInterpolate bind groups"
+        );
 
         pending_inserts.push((
             entity,
@@ -332,7 +370,10 @@ pub fn queue_gaussian_interpolate_bind_groups<R: PlanarSync>(
         debug!("no GaussianInterpolate bind groups queued this frame");
     } else {
         let count = pending_inserts.len();
-        debug!(count, "inserted GaussianInterpolate bind groups into render world");
+        debug!(
+            count,
+            "inserted GaussianInterpolate bind groups into render world"
+        );
         commands.try_insert_batch(pending_inserts);
     }
 }
@@ -381,7 +422,10 @@ where
                     debug!("GaussianInterpolate pipeline ready");
                 }
                 state => {
-                    debug!(?state, "GaussianInterpolate pipeline not ready; skipping update");
+                    debug!(
+                        ?state,
+                        "GaussianInterpolate pipeline not ready; skipping update"
+                    );
                     return;
                 }
             }
@@ -473,4 +517,3 @@ where
         Ok(())
     }
 }
-

@@ -36,6 +36,9 @@ use bevy::{
 };
 use bevy_interleave::prelude::*;
 
+#[cfg(feature = "solari")]
+mod solari;
+
 use crate::{
     camera::GaussianCamera,
     gaussian::{
@@ -126,6 +129,9 @@ where
                         queue_gaussians::<R>.in_set(RenderSet::Queue),
                     ),
                 );
+
+            #[cfg(feature = "solari")]
+            solari::configure_render_app::<R>(render_app);
         }
 
         // TODO: refactor common resources into a common plugin
@@ -464,6 +470,8 @@ pub struct CloudPipeline<R: PlanarSync> {
     pub view_layout: BindGroupLayout,
     pub compute_view_layout: BindGroupLayout,
     pub sorted_layout: BindGroupLayout,
+    #[cfg(feature = "solari")]
+    pub solari: solari::CloudPipelineSolariExtras,
     phantom: std::marker::PhantomData<R>,
 }
 
@@ -617,6 +625,9 @@ where
         #[cfg(feature = "buffer_texture")]
         let sorted_layout = texture::get_sorted_bind_group_layout(render_device);
 
+        #[cfg(feature = "solari")]
+        let solari = solari::init_cloud_pipeline_extras(render_device);
+
         debug!("created cloud pipeline");
 
         Self {
@@ -626,6 +637,8 @@ where
             compute_view_layout,
             shader: GAUSSIAN_SHADER_HANDLE,
             sorted_layout,
+            #[cfg(feature = "solari")]
+            solari,
             phantom: std::marker::PhantomData,
         }
     }
@@ -724,6 +737,9 @@ pub fn shader_defs(key: CloudPipelineKey) -> Vec<ShaderDefVal> {
             defines.temporal_sort_window_size,
         ),
     ];
+
+    #[cfg(feature = "solari")]
+    solari::push_shader_defs(&mut shader_defs);
 
     if key.aabb {
         shader_defs.push("USE_AABB".into());
@@ -842,14 +858,28 @@ impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
 
         debug!("specializing cloud pipeline");
 
-        RenderPipelineDescriptor {
-            label: Some("gaussian cloud render pipeline".into()),
-            layout: vec![
+        #[cfg(feature = "solari")]
+        let layout = solari::pipeline_layout(
+            self,
+            vec![
                 self.view_layout.clone(),
                 self.gaussian_uniform_layout.clone(),
                 self.gaussian_cloud_layout.clone(),
                 self.sorted_layout.clone(),
             ],
+        );
+
+        #[cfg(not(feature = "solari"))]
+        let layout = vec![
+            self.view_layout.clone(),
+            self.gaussian_uniform_layout.clone(),
+            self.gaussian_cloud_layout.clone(),
+            self.sorted_layout.clone(),
+        ];
+
+        RenderPipelineDescriptor {
+            label: Some("gaussian cloud render pipeline".into()),
+            layout,
             vertex: VertexState {
                 shader: self.shader.clone(),
                 shader_defs: shader_defs.clone(),
@@ -902,6 +932,7 @@ impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
     }
 }
 
+#[cfg(not(feature = "solari"))]
 type DrawGaussians<R: PlanarSync> = (
     SetItemPipeline,
     // SetViewBindGroup<0>,
@@ -909,6 +940,9 @@ type DrawGaussians<R: PlanarSync> = (
     SetGaussianUniformBindGroup<1>,
     DrawGaussianInstanced<R>,
 );
+
+#[cfg(feature = "solari")]
+type DrawGaussians<R: PlanarSync> = solari::DrawGaussians<R>;
 
 #[allow(dead_code)]
 #[derive(Component, ShaderType, Clone, Copy)]

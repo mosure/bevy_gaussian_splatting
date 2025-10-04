@@ -34,6 +34,8 @@ bevy_gaussian_splatting --input-cloud [file://gaussian.ply | https://mitchell.mo
 - [X] 3dgs
 - [x] 4dgs
 - [x] multi-cloud scene format
+- [x] lighting and shadows
+- [ ] morph targets and skeletons
 - [ ] gltf gaussian extensions
 - [ ] 4dgs motion blur
 - [ ] [deformable radial kernel](https://github.com/VAST-AI-Research/Deformable-Radial-Kernel-Splatting)
@@ -45,10 +47,8 @@ bevy_gaussian_splatting --input-cloud [file://gaussian.ply | https://mitchell.mo
 - [ ] 4D gaussian cloud wavelet compression
 - [ ] accelerated spatial queries
 - [ ] temporal depth sorting
-- [ ] skeletons
 - [ ] volume masks
 - [ ] level of detail
-- [ ] lighting and shadows
 - [ ] bevy_openxr support
 - [ ] bevy 3D camera to gaussian cloud pipeline
 
