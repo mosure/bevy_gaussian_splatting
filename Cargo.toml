@@ -53,11 +53,13 @@ default = [
   "query_select",
   # "query_sparse",
 
+  "mesh_proxy",
+
   # TODO: bevy_interleave storage bind group read_only per plane attribute support
   # "morph_particles",
   "morph_interpolate",
 
-  "solari",
+  # "solari",
 
   "sort_bitonic",
   "sort_radix",  # TODO: fix macos radix sort

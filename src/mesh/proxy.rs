@@ -2,6 +2,7 @@ use bevy::{
     ecs::query::{Or, Without},
     prelude::*,
 };
+// TODO: depend on lin_alg crate for Vec3
 use mcubes::{MarchingCubes, MeshSide, Vec3 as McVec3};
 
 use crate::{
@@ -84,7 +85,7 @@ fn generate_mesh_proxyes(
     >,
 ) {
     for (entity, settings, handle, existing_proxy) in &query {
-        let Some(cloud) = planar_clouds.get(handle.handle()) else {
+        let Some(cloud) = planar_clouds.get(&handle.0) else {
             continue;
         };
 
@@ -152,8 +153,8 @@ fn mesh_from_gaussians(
 
     let marching_cubes = MarchingCubes::new(
         (nx, ny, nz),
-        McVec3::new(size.x, size.y, size.z),
-        McVec3::new(steps.x, steps.y, steps.z),
+        (size.x, size.y, size.z),
+        (steps.x, steps.y, steps.z),
         McVec3::new(minv.x, minv.y, minv.z),
         values,
         params.iso_threshold,
@@ -180,14 +181,17 @@ fn mesh_from_gaussians(
         })
         .collect();
 
-    let indices: Vec<u32> = mesh_data.indices.iter().copied().collect();
+    let indices: Vec<u32> = mesh_data.indices
+        .iter()
+        .map(|&i| i as u32)
+        .collect();
 
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList);
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsage::default());
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0f32, 0.0f32]; mesh.count_vertices()]);
 
-    mesh.set_indices(Some(Indices::U32(indices)));
+    mesh.insert_indices(Some(Indices::U32(indices)));
 
     let normals_attr = mesh
         .attribute(Mesh::ATTRIBUTE_NORMAL)
