@@ -1,4 +1,4 @@
-use bevy::{prelude::*, render::primitives::Aabb};
+use bevy::{prelude::*, math::bounding::Aabb3d};
 use bevy_interleave::prelude::Planar;
 
 #[cfg(feature = "sort_rayon")]
@@ -19,7 +19,7 @@ where
         self.len_sqrt_ceil().pow(2)
     }
 
-    fn compute_aabb(&self) -> Option<Aabb> {
+    fn compute_aabb(&self) -> Option<Aabb3d> {
         if self.is_empty() {
             return None;
         }
@@ -56,7 +56,7 @@ where
             }
         }
 
-        Aabb::from_min_max(min, max).into()
+        Some(Aabb3d { min: min.into(), max: max.into() })
     }
 
     fn visibility(&self, index: usize) -> f32;

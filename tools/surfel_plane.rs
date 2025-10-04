@@ -146,9 +146,7 @@ fn compare_surfel_app() {
     app.add_plugins(PanOrbitCameraPlugin);
 
     if config.editor {
-        app.add_plugins(EguiPlugin {
-            enable_multipass_for_primary_context: true,
-        });
+        app.add_plugins(EguiPlugin::default());
         app.add_plugins(WorldInspectorPlugin::new());
     }
 

@@ -45,8 +45,8 @@ impl Plugin for SelectPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Select>();
 
-        app.add_event::<InvertSelectionEvent>();
-        app.add_event::<SaveSelectionEvent>();
+        app.add_message::<InvertSelectionEvent>();
+        app.add_message::<SaveSelectionEvent>();
 
         app.add_plugins(CommonCloudSelectPlugin::<Gaussian3d>::default());
         app.add_plugins(CommonCloudSelectPlugin::<Gaussian4d>::default());
@@ -110,11 +110,11 @@ fn apply_selection<R: PlanarSync>(
     }
 }
 
-#[derive(Event, Debug, Reflect)]
+#[derive(Message, Debug, Reflect)]
 pub struct InvertSelectionEvent;
 
 fn invert_selection<R: PlanarSync>(
-    mut events: EventReader<InvertSelectionEvent>,
+    mut events: MessageReader<InvertSelectionEvent>,
     mut gaussian_clouds_res: ResMut<Assets<R::PlanarType>>,
     mut selections: Query<(Entity, &R::PlanarTypeHandle, &mut Select)>,
 ) where
@@ -150,11 +150,11 @@ fn invert_selection<R: PlanarSync>(
     }
 }
 
-#[derive(Event, Debug, Reflect)]
+#[derive(Message, Debug, Reflect)]
 pub struct SaveSelectionEvent;
 
 pub fn save_selection<R: PlanarSync>(
-    mut events: EventReader<SaveSelectionEvent>,
+    mut events: MessageReader<SaveSelectionEvent>,
     mut gaussian_clouds_res: ResMut<Assets<R::PlanarType>>,
     mut selections: Query<(Entity, &R::PlanarTypeHandle, &Select)>,
 ) where

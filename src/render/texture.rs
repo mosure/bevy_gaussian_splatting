@@ -3,7 +3,7 @@ use bevy::{
     ecs::query::QueryItem,
     prelude::*,
     render::{
-        Render, RenderApp, RenderSet,
+        Render, RenderApp, RenderSystems,
         extract_component::{ExtractComponent, ExtractComponentPlugin},
         render_asset::{RenderAssetUsages, RenderAssets},
         render_resource::{
@@ -85,7 +85,7 @@ impl Plugin for BufferTexturePlugin {
         let render_app = app.sub_app_mut(RenderApp);
         render_app.add_systems(
             Render,
-            queue_gpu_texture_buffers.in_set(RenderSet::PrepareAssets),
+            queue_gpu_texture_buffers.in_set(RenderSystems::PrepareAssets),
         );
     }
 }

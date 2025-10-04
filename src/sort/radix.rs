@@ -3,16 +3,16 @@ use std::any::TypeId;
 use std::collections::HashMap;
 
 use bevy::{
-    asset::{load_internal_asset, weak_handle},
+    asset::{load_internal_asset, uuid_handle},
     core_pipeline::{
         core_3d::graph::{Core3d, Node3d},
         prepass::PreviousViewUniformOffset,
     },
     prelude::*,
     render::{
-        Render, RenderApp, RenderSet,
+        Render, RenderApp, RenderSystems,
         render_asset::RenderAssets,
-        render_graph::{Node, NodeRunError, RenderGraphApp, RenderGraphContext, RenderLabel},
+        render_graph::{Node, NodeRunError, RenderGraphContext, RenderLabel, RenderGraphExt},
         render_resource::{
             BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry, BindingResource,
             BindingType, Buffer, BufferBinding, BufferBindingType, BufferDescriptor,
@@ -43,9 +43,9 @@ assert_cfg!(
     "sort_radix and buffer_texture are incompatible",
 );
 
-const RADIX_SHADER_HANDLE: Handle<Shader> = weak_handle!("dedb3ddf-f254-4361-8762-e221774de1ed");
+const RADIX_SHADER_HANDLE: Handle<Shader> = uuid_handle!("dedb3ddf-f254-4361-8762-e221774de1ed");
 const TEMPORAL_SORT_SHADER_HANDLE: Handle<Shader> =
-    weak_handle!("11986b71-25d8-410b-adfa-6afb107ae4de");
+    uuid_handle!("11986b71-25d8-410b-adfa-6afb107ae4de");
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
 pub struct RadixSortLabel;
@@ -64,7 +64,7 @@ where
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app.add_systems(
                 Render,
-                (queue_radix_bind_group::<R>.in_set(RenderSet::Queue),),
+                (queue_radix_bind_group::<R>.in_set(RenderSystems::Queue),),
             );
 
             render_app.init_resource::<RadixSortBuffers<R>>();
@@ -291,7 +291,7 @@ impl<R: PlanarSync> FromWorld for RadixSortPipeline<R> {
             push_constant_ranges: vec![],
             shader: RADIX_SHADER_HANDLE,
             shader_defs: shader_defs.clone(),
-            entry_point: "radix_reset".into(),
+            entry_point: Some("radix_reset".into()),
             zero_initialize_workgroup_memory: true,
         });
 
@@ -301,7 +301,7 @@ impl<R: PlanarSync> FromWorld for RadixSortPipeline<R> {
             push_constant_ranges: vec![],
             shader: RADIX_SHADER_HANDLE,
             shader_defs: shader_defs.clone(),
-            entry_point: "radix_sort_a".into(),
+            entry_point: Some("radix_sort_a".into()),
             zero_initialize_workgroup_memory: true,
         });
 
@@ -311,7 +311,7 @@ impl<R: PlanarSync> FromWorld for RadixSortPipeline<R> {
             push_constant_ranges: vec![],
             shader: RADIX_SHADER_HANDLE,
             shader_defs: shader_defs.clone(),
-            entry_point: "radix_sort_b".into(),
+            entry_point: Some("radix_sort_b".into()),
             zero_initialize_workgroup_memory: true,
         });
 
@@ -321,7 +321,7 @@ impl<R: PlanarSync> FromWorld for RadixSortPipeline<R> {
             push_constant_ranges: vec![],
             shader: RADIX_SHADER_HANDLE,
             shader_defs: shader_defs.clone(),
-            entry_point: "radix_sort_c".into(),
+            entry_point: Some("radix_sort_c".into()),
             zero_initialize_workgroup_memory: true,
         });
 

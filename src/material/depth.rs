@@ -1,9 +1,9 @@
 use bevy::{
-    asset::{load_internal_asset, weak_handle},
+    asset::{load_internal_asset, uuid_handle},
     prelude::*,
 };
 
-const DEPTH_SHADER_HANDLE: Handle<Shader> = weak_handle!("72e596c7-6226-4366-af26-2acceb34c8a4");
+const DEPTH_SHADER_HANDLE: Handle<Shader> = uuid_handle!("72e596c7-6226-4366-af26-2acceb34c8a4");
 
 pub struct DepthMaterialPlugin;
 

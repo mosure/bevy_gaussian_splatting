@@ -1,361 +1,93 @@
-// for running the gaussian splatting viewer without a window ( i.e on a server )
-//! ensure the "headless_output" directory exists in the root of the project
-// c_rr --example headless --no-default-features --features "headless" -- [filename]
+//! Headless rendering for gaussian splatting
+//!
+//! Renders gaussian splatting to images without creating a window.
+//! Based on Bevy's headless_renderer example.
+//!
+//! Usage: cargo run --example headless --no-default-features --features "headless" -- [filename]
 
 use bevy::{
-    app::ScheduleRunnerPlugin, core_pipeline::tonemapping::Tonemapping, prelude::*,
-    render::renderer::RenderDevice,
+    app::{AppExit, ScheduleRunnerPlugin},
+    camera::RenderTarget,
+    core_pipeline::tonemapping::Tonemapping,
+    image::TextureFormatPixelInfo,
+    prelude::*,
+    render::{
+        render_asset::RenderAssets,
+        render_graph::{self, NodeRunError, RenderGraph, RenderGraphContext, RenderLabel},
+        render_resource::{
+            Buffer, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d, MapMode,
+            PollType, TexelCopyBufferInfo, TexelCopyBufferLayout, TextureFormat, TextureUsages,
+        },
+        renderer::{RenderContext, RenderDevice, RenderQueue},
+        texture::GpuImage,
+        Extract, Render, RenderApp, RenderSystems,
+    },
+    window::ExitCondition,
+    winit::WinitPlugin,
 };
 use bevy_args::BevyArgsPlugin;
-
 use bevy_gaussian_splatting::{
     CloudSettings, GaussianCamera, GaussianSplattingPlugin, PlanarGaussian3d,
     PlanarGaussian3dHandle, gaussian::interface::TestCloud, random_gaussians_3d,
     utils::GaussianSplattingViewer,
 };
+use crossbeam_channel::{Receiver, Sender};
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
-/// Derived from: https://github.com/bevyengine/bevy/pull/5550
-mod frame_capture {
-    pub mod image_copy {
-        use std::sync::Arc;
+#[derive(Resource, Deref)]
+struct MainWorldReceiver(Receiver<Vec<u8>>);
 
-        use bevy::prelude::*;
-        use bevy::render::render_asset::RenderAssets;
-        use bevy::render::render_graph::{
-            self, NodeRunError, RenderGraph, RenderGraphContext, RenderLabel,
-        };
-        use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue};
-        use bevy::render::texture::GpuImage;
-        use bevy::render::{Extract, RenderApp};
+#[derive(Resource, Deref)]
+struct RenderWorldSender(Sender<Vec<u8>>);
 
-        use bevy::render::render_resource::{
-            Buffer, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d, MapMode,
-        };
-        use pollster::FutureExt;
-        use wgpu::{Maintain, TexelCopyBufferInfo, TexelCopyBufferLayout};
+#[derive(Debug, Default, Resource)]
+struct CaptureController {
+    frames_to_wait: u32,
+    width: u32,
+    height: u32,
+}
 
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        pub fn receive_images(
-            image_copiers: Query<&ImageCopier>,
-            mut images: ResMut<Assets<Image>>,
-            render_device: Res<RenderDevice>,
-        ) {
-            for image_copier in image_copiers.iter() {
-                if !image_copier.enabled() {
-                    continue;
-                }
-                // Derived from: https://sotrh.github.io/learn-wgpu/showcase/windowless/#a-triangle-without-a-window
-                // We need to scope the mapping variables so that we can
-                // unmap the buffer
-                async {
-                    let buffer_slice = image_copier.buffer.slice(..);
-
-                    // NOTE: We have to create the mapping THEN device.poll() before await
-                    // the future. Otherwise the application will freeze.
-                    let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
-                    buffer_slice.map_async(MapMode::Read, move |result| {
-                        tx.send(result).unwrap();
-                    });
-                    render_device.poll(Maintain::Wait);
-                    rx.receive().await.unwrap().unwrap();
-                    if let Some(image) = images.get_mut(&image_copier.dst_image) {
-                        image.data = buffer_slice.get_mapped_range().to_vec().into();
-                    }
-
-                    image_copier.buffer.unmap();
-                }
-                .block_on();
-            }
-        }
-
-        #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
-        pub struct ImageCopyLabel;
-
-        pub struct ImageCopyPlugin;
-        impl Plugin for ImageCopyPlugin {
-            fn build(&self, app: &mut App) {
-                let render_app = app
-                    .add_systems(Update, receive_images)
-                    .sub_app_mut(RenderApp);
-
-                render_app.add_systems(ExtractSchedule, image_copy_extract);
-
-                let mut graph = render_app
-                    .world_mut()
-                    .get_resource_mut::<RenderGraph>()
-                    .unwrap();
-
-                graph.add_node(ImageCopyLabel, ImageCopyDriver);
-                graph.add_node_edge(ImageCopyLabel, bevy::render::graph::CameraDriverLabel);
-            }
-        }
-
-        #[derive(Clone, Default, Resource, Deref, DerefMut)]
-        pub struct ImageCopiers(pub Vec<ImageCopier>);
-
-        #[derive(Clone, Component)]
-        pub struct ImageCopier {
-            buffer: Buffer,
-            enabled: Arc<AtomicBool>,
-            src_image: Handle<Image>,
-            dst_image: Handle<Image>,
-        }
-
-        impl ImageCopier {
-            pub fn new(
-                src_image: Handle<Image>,
-                dst_image: Handle<Image>,
-                size: Extent3d,
-                render_device: &RenderDevice,
-            ) -> ImageCopier {
-                let padded_bytes_per_row =
-                    RenderDevice::align_copy_bytes_per_row((size.width) as usize) * 4;
-
-                let cpu_buffer = render_device.create_buffer(&BufferDescriptor {
-                    label: None,
-                    size: padded_bytes_per_row as u64 * size.height as u64,
-                    usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-
-                ImageCopier {
-                    buffer: cpu_buffer,
-                    src_image,
-                    dst_image,
-                    enabled: Arc::new(AtomicBool::new(true)),
-                }
-            }
-
-            pub fn enabled(&self) -> bool {
-                self.enabled.load(Ordering::Relaxed)
-            }
-        }
-
-        pub fn image_copy_extract(
-            mut commands: Commands,
-            image_copiers: Extract<Query<&ImageCopier>>,
-        ) {
-            commands.insert_resource(ImageCopiers(
-                image_copiers.iter().cloned().collect::<Vec<ImageCopier>>(),
-            ));
-        }
-
-        #[derive(Default)]
-        pub struct ImageCopyDriver;
-
-        impl render_graph::Node for ImageCopyDriver {
-            fn run(
-                &self,
-                _graph: &mut RenderGraphContext,
-                render_context: &mut RenderContext,
-                world: &World,
-            ) -> Result<(), NodeRunError> {
-                let image_copiers = world.get_resource::<ImageCopiers>().unwrap();
-                let gpu_images = world.get_resource::<RenderAssets<GpuImage>>().unwrap();
-
-                for image_copier in image_copiers.iter() {
-                    if !image_copier.enabled() {
-                        continue;
-                    }
-
-                    let src_image = gpu_images.get(&image_copier.src_image).unwrap();
-
-                    let mut encoder = render_context
-                        .render_device()
-                        .create_command_encoder(&CommandEncoderDescriptor::default());
-
-                    let block_dimensions = src_image.texture_format.block_dimensions();
-                    let block_size = src_image.texture_format.block_copy_size(None).unwrap();
-
-                    let padded_bytes_per_row = RenderDevice::align_copy_bytes_per_row(
-                        (src_image.size.width as usize / block_dimensions.0 as usize)
-                            * block_size as usize,
-                    );
-
-                    let texture_extent = Extent3d {
-                        width: src_image.size.width as u32,
-                        height: src_image.size.height as u32,
-                        depth_or_array_layers: 1,
-                    };
-
-                    encoder.copy_texture_to_buffer(
-                        src_image.texture.as_image_copy(),
-                        TexelCopyBufferInfo {
-                            buffer: &image_copier.buffer,
-                            layout: TexelCopyBufferLayout {
-                                offset: 0,
-                                bytes_per_row: Some(
-                                    std::num::NonZeroU32::new(padded_bytes_per_row as u32)
-                                        .unwrap()
-                                        .into(),
-                                ),
-                                rows_per_image: None,
-                            },
-                        },
-                        texture_extent,
-                    );
-
-                    let render_queue = world.get_resource::<RenderQueue>().unwrap();
-                    render_queue.submit(std::iter::once(encoder.finish()));
-                }
-
-                Ok(())
-            }
+impl CaptureController {
+    pub fn new(width: u32, height: u32) -> Self {
+        Self {
+            frames_to_wait: 40, 
+            width,
+            height,
         }
     }
-    pub mod scene {
-        use std::path::PathBuf;
+}
 
-        use bevy::{
-            app::AppExit,
-            prelude::*,
-            render::{camera::RenderTarget, renderer::RenderDevice},
-        };
-        use wgpu::{Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages};
-
-        use super::image_copy::ImageCopier;
-
-        #[derive(Component, Default)]
-        pub struct CaptureCamera;
-
-        #[derive(Component, Deref, DerefMut)]
-        struct ImageToSave(Handle<Image>);
-
-        pub struct CaptureFramePlugin;
-        impl Plugin for CaptureFramePlugin {
-            fn build(&self, app: &mut App) {
-                app.add_systems(PostUpdate, update);
-            }
-        }
-
-        #[derive(Debug, Default, Resource, Event)]
-        pub struct SceneController {
-            state: SceneState,
-            name: String,
-            width: u32,
-            height: u32,
-            single_image: bool,
-        }
-
-        impl SceneController {
-            pub fn new(width: u32, height: u32, single_image: bool) -> SceneController {
-                SceneController {
-                    state: SceneState::BuildScene,
-                    name: String::from(""),
-                    width,
-                    height,
-                    single_image,
-                }
-            }
-        }
-
-        #[derive(Debug, Default)]
-        pub enum SceneState {
-            #[default]
-            BuildScene,
-            Render(u32),
-        }
-
-        pub fn setup_render_target(
-            commands: &mut Commands,
-            images: &mut ResMut<Assets<Image>>,
-            render_device: &Res<RenderDevice>,
-            scene_controller: &mut ResMut<SceneController>,
-            pre_roll_frames: u32,
-            scene_name: String,
-        ) -> RenderTarget {
-            let size = Extent3d {
-                width: scene_controller.width,
-                height: scene_controller.height,
-                ..Default::default()
-            };
-
-            // This is the texture that will be rendered to.
-            let mut render_target_image = Image {
-                texture_descriptor: TextureDescriptor {
-                    label: None,
-                    size,
-                    dimension: TextureDimension::D2,
-                    format: TextureFormat::Rgba8UnormSrgb,
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    usage: TextureUsages::COPY_SRC
-                        | TextureUsages::COPY_DST
-                        | TextureUsages::TEXTURE_BINDING
-                        | TextureUsages::RENDER_ATTACHMENT,
-                    view_formats: &[],
-                },
-                ..Default::default()
-            };
-            render_target_image.resize(size);
-            let render_target_image_handle = images.add(render_target_image);
-
-            // This is the texture that will be copied to.
-            let mut cpu_image = Image {
-                texture_descriptor: TextureDescriptor {
-                    label: None,
-                    size,
-                    dimension: TextureDimension::D2,
-                    format: TextureFormat::Rgba8UnormSrgb,
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    usage: TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                },
-                ..Default::default()
-            };
-            cpu_image.resize(size);
-            let cpu_image_handle = images.add(cpu_image);
-
-            commands.spawn(ImageCopier::new(
-                render_target_image_handle.clone(),
-                cpu_image_handle.clone(),
-                size,
-                render_device,
-            ));
-
-            commands.spawn(ImageToSave(cpu_image_handle));
-
-            scene_controller.state = SceneState::Render(pre_roll_frames);
-            scene_controller.name = scene_name;
-            RenderTarget::Image(render_target_image_handle.into())
-        }
-
-        fn update(
-            images_to_save: Query<&ImageToSave>,
-            mut images: ResMut<Assets<Image>>,
-            mut scene_controller: ResMut<SceneController>,
-            mut app_exit_writer: EventWriter<AppExit>,
-        ) {
-            if let SceneState::Render(n) = scene_controller.state {
-                if n < 1 {
-                    for (i, image) in images_to_save.iter().enumerate() {
-                        let img_bytes = images.get_mut(image.id()).unwrap();
-
-                        let img = match img_bytes.clone().try_into_dynamic() {
-                            Ok(img) => img.to_rgba8(),
-                            Err(e) => panic!("Failed to create image buffer {e:?}"),
-                        };
-
-                        let images_dir =
-                            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("headless_output");
-                        std::fs::create_dir_all(&images_dir).unwrap();
-
-                        let image_path = images_dir.join(format!("{i}.png"));
-                        if let Err(e) = img.save(image_path) {
-                            panic!("Failed to save image: {}", e);
-                        };
-                    }
-                    if scene_controller.single_image {
-                        app_exit_writer.write(AppExit::Success);
-                    }
-                } else {
-                    scene_controller.state = SceneState::Render(n - 1);
-                }
-            }
-        }
-    }
+fn main() {
+    App::new()
+        .insert_resource(CaptureController::new(1920, 1080))
+        .insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)))
+        .add_plugins(
+            DefaultPlugins
+                .set(ImagePlugin::default_nearest())
+                .set(WindowPlugin {
+                    primary_window: None,
+                    exit_condition: ExitCondition::DontExit,
+                    ..default()
+                })
+                // Disable WinitPlugin for headless environments
+                .disable::<WinitPlugin>(),
+        )
+        .add_plugins(BevyArgsPlugin::<GaussianSplattingViewer>::default())
+        .add_plugins(ImageCopyPlugin)
+        .add_plugins(CaptureFramePlugin)
+        .add_plugins(ScheduleRunnerPlugin::run_loop(
+            Duration::from_secs_f64(1.0 / 60.0),
+        ))
+        .add_plugins(GaussianSplattingPlugin)
+        .add_systems(Startup, setup_gaussian_cloud)
+        .run();
 }
 
 fn setup_gaussian_cloud(
@@ -363,30 +95,42 @@ fn setup_gaussian_cloud(
     asset_server: Res<AssetServer>,
     args: Res<GaussianSplattingViewer>,
     mut gaussian_assets: ResMut<Assets<PlanarGaussian3d>>,
-    mut scene_controller: ResMut<frame_capture::scene::SceneController>,
     mut images: ResMut<Assets<Image>>,
     render_device: Res<RenderDevice>,
+    controller: Res<CaptureController>,
 ) {
-    let cloud: Handle<PlanarGaussian3d>;
-
-    if args.gaussian_count > 0 {
-        println!("generating {} gaussians", args.gaussian_count);
-        cloud = gaussian_assets.add(random_gaussians_3d(args.gaussian_count));
+    // Load or generate gaussian cloud
+    let cloud = if args.gaussian_count > 0 {
+        println!("Generating {} gaussians", args.gaussian_count);
+        gaussian_assets.add(random_gaussians_3d(args.gaussian_count))
     } else if args.input_cloud.is_some() && !args.input_cloud.as_ref().unwrap().is_empty() {
-        println!("loading {:?}", args.input_cloud);
-        cloud = asset_server.load(&args.input_cloud.as_ref().unwrap().clone());
+        println!("Loading {:?}", args.input_cloud);
+        asset_server.load(&args.input_cloud.as_ref().unwrap().clone())
     } else {
-        cloud = gaussian_assets.add(PlanarGaussian3d::test_model());
-    }
+        gaussian_assets.add(PlanarGaussian3d::test_model())
+    };
 
-    let render_target = frame_capture::scene::setup_render_target(
-        &mut commands,
-        &mut images,
-        &render_device,
-        &mut scene_controller,
-        15,
-        String::from("main_scene"),
+    // Setup render target
+    let size = Extent3d {
+        width: controller.width,
+        height: controller.height,
+        ..default()
+    };
+
+    let mut render_target_image = Image::new_target_texture(
+        size.width,
+        size.height,
+        TextureFormat::bevy_default(),
     );
+    render_target_image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+    let render_target_handle = images.add(render_target_image);
+
+    let cpu_image = Image::new_target_texture(
+        size.width,
+        size.height,
+        TextureFormat::bevy_default(),
+    );
+    let cpu_image_handle = images.add(cpu_image);
 
     commands.spawn((
         PlanarGaussian3dHandle(cloud),
@@ -396,69 +140,256 @@ fn setup_gaussian_cloud(
 
     commands.spawn((
         Camera3d::default(),
-        Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
-        Tonemapping::None,
         Camera {
-            target: render_target,
+            target: RenderTarget::Image(render_target_handle.clone().into()),
             ..default()
         },
+        Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
+        Tonemapping::None,
         GaussianCamera::default(),
     ));
-}
 
-pub struct AppConfig {
-    width: u32,
-    height: u32,
-    single_image: bool,
-}
-
-fn headless_app() {
-    let mut app = App::new();
-
-    let config = AppConfig {
-        width: 1920,
-        height: 1080,
-        single_image: true,
-    };
-
-    // setup frame capture
-    app.insert_resource(frame_capture::scene::SceneController::new(
-        config.width,
-        config.height,
-        config.single_image,
-    ));
-    app.insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)));
-
-    app.add_plugins(
-        DefaultPlugins
-            .set(ImagePlugin::default_nearest())
-            .set(WindowPlugin {
-                primary_window: None,
-                exit_condition: bevy::window::ExitCondition::DontExit,
-                close_when_requested: false,
-            }),
-    );
-    app.add_plugins(BevyArgsPlugin::<GaussianSplattingViewer>::default());
-
-    // headless frame capture
-    app.add_plugins(frame_capture::image_copy::ImageCopyPlugin);
-    app.add_plugins(frame_capture::scene::CaptureFramePlugin);
-
-    app.add_plugins(ScheduleRunnerPlugin::run_loop(
-        core::time::Duration::from_secs_f64(1.0 / 60.0),
+    // Spawn image copier for GPU->CPU transfer
+    commands.spawn(ImageCopier::new(
+        render_target_handle,
+        size,
+        &render_device,
     ));
 
-    // setup for gaussian splatting
-    app.add_plugins(GaussianSplattingPlugin);
-
-    app.init_resource::<frame_capture::scene::SceneController>();
-    app.add_event::<frame_capture::scene::SceneController>();
-
-    app.add_systems(Startup, setup_gaussian_cloud);
-
-    app.run();
+    // Spawn image to save
+    commands.spawn(ImageToSave(cpu_image_handle));
 }
 
-pub fn main() {
-    headless_app();
+/// Plugin for copying images from GPU to CPU
+pub struct ImageCopyPlugin;
+
+impl Plugin for ImageCopyPlugin {
+    fn build(&self, app: &mut App) {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+
+        let render_app = app
+            .insert_resource(MainWorldReceiver(receiver))
+            .sub_app_mut(RenderApp);
+
+        let mut graph = render_app.world_mut().resource_mut::<RenderGraph>();
+        graph.add_node(ImageCopy, ImageCopyDriver);
+        graph.add_node_edge(bevy::render::graph::CameraDriverLabel, ImageCopy);
+
+        render_app
+            .insert_resource(RenderWorldSender(sender))
+            .add_systems(ExtractSchedule, extract_image_copiers)
+            .add_systems(
+                Render,
+                receive_image_from_buffer.after(RenderSystems::Render),
+            );
+    }
+}
+
+pub struct CaptureFramePlugin;
+
+impl Plugin for CaptureFramePlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(PostUpdate, save_captured_frame);
+    }
+}
+
+#[derive(Clone, Component)]
+struct ImageCopier {
+    buffer: Buffer,
+    enabled: Arc<AtomicBool>,
+    src_image: Handle<Image>,
+}
+
+impl ImageCopier {
+    pub fn new(src_image: Handle<Image>, size: Extent3d, render_device: &RenderDevice) -> Self {
+        let padded_bytes_per_row =
+            RenderDevice::align_copy_bytes_per_row(size.width as usize) * 4;
+
+        let buffer = render_device.create_buffer(&BufferDescriptor {
+            label: Some("image_copier_buffer"),
+            size: padded_bytes_per_row as u64 * size.height as u64,
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        Self {
+            buffer,
+            src_image,
+            enabled: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+}
+
+#[derive(Clone, Default, Resource, Deref)]
+struct ImageCopiers(Vec<ImageCopier>);
+
+fn extract_image_copiers(
+    mut commands: Commands,
+    image_copiers: Extract<Query<&ImageCopier>>,
+) {
+    commands.insert_resource(ImageCopiers(
+        image_copiers.iter().cloned().collect(),
+    ));
+}
+
+/// RenderGraph label
+#[derive(Debug, PartialEq, Eq, Clone, Hash, RenderLabel)]
+struct ImageCopy;
+
+#[derive(Default)]
+struct ImageCopyDriver;
+
+impl render_graph::Node for ImageCopyDriver {
+    fn run(
+        &self,
+        _graph: &mut RenderGraphContext,
+        render_context: &mut RenderContext,
+        world: &World,
+    ) -> Result<(), NodeRunError> {
+        let image_copiers = world.get_resource::<ImageCopiers>().unwrap();
+        let gpu_images = world.get_resource::<RenderAssets<GpuImage>>().unwrap();
+
+        for image_copier in image_copiers.iter() {
+            if !image_copier.enabled() {
+                continue;
+            }
+
+            let Some(src_image) = gpu_images.get(&image_copier.src_image) else {
+                continue;
+            };
+
+            let mut encoder = render_context
+                .render_device()
+                .create_command_encoder(&CommandEncoderDescriptor::default());
+
+            let block_dimensions = src_image.texture_format.block_dimensions();
+            let block_size = src_image.texture_format.block_copy_size(None).unwrap();
+
+            let padded_bytes_per_row = RenderDevice::align_copy_bytes_per_row(
+                (src_image.size.width as usize / block_dimensions.0 as usize) * block_size as usize,
+            );
+
+            encoder.copy_texture_to_buffer(
+                src_image.texture.as_image_copy(),
+                TexelCopyBufferInfo {
+                    buffer: &image_copier.buffer,
+                    layout: TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(
+                            std::num::NonZero::<u32>::new(padded_bytes_per_row as u32)
+                                .unwrap()
+                                .into(),
+                        ),
+                        rows_per_image: None,
+                    },
+                },
+                src_image.size,
+            );
+
+            let render_queue = world.get_resource::<RenderQueue>().unwrap();
+            render_queue.submit(std::iter::once(encoder.finish()));
+        }
+
+        Ok(())
+    }
+}
+
+fn receive_image_from_buffer(
+    image_copiers: Res<ImageCopiers>,
+    render_device: Res<RenderDevice>,
+    sender: Res<RenderWorldSender>,
+) {
+    for image_copier in image_copiers.0.iter() {
+        if !image_copier.enabled() {
+            continue;
+        }
+
+        let buffer_slice = image_copier.buffer.slice(..);
+        let (tx, rx) = crossbeam_channel::bounded(1);
+
+        buffer_slice.map_async(MapMode::Read, move |result| match result {
+            Ok(()) => tx.send(()).expect("Failed to send map result"),
+            Err(err) => panic!("Failed to map buffer: {err}"),
+        });
+
+        render_device
+            .poll(PollType::Wait)
+            .expect("Failed to poll device");
+
+        rx.recv().expect("Failed to receive buffer map");
+
+        let _ = sender.send(buffer_slice.get_mapped_range().to_vec());
+        image_copier.buffer.unmap();
+    }
+}
+
+#[derive(Component, Deref)]
+struct ImageToSave(Handle<Image>);
+
+fn save_captured_frame(
+    images_to_save: Query<&ImageToSave>,
+    receiver: Res<MainWorldReceiver>,
+    mut images: ResMut<Assets<Image>>,
+    mut controller: ResMut<CaptureController>,
+    mut app_exit: MessageWriter<AppExit>,
+) {
+    if controller.frames_to_wait > 0 {
+        controller.frames_to_wait -= 1;
+        while receiver.try_recv().is_ok() {}
+        return;
+    }
+
+    // Try to receive image data
+    let mut image_data = Vec::new();
+    while let Ok(data) = receiver.try_recv() {
+        image_data = data; 
+    }
+
+    if image_data.is_empty() {
+        return;
+    }
+
+    for image_handle in images_to_save.iter() {
+        let Some(image) = images.get_mut(image_handle.id()) else {
+            continue;
+        };
+
+        let row_bytes = image.width() as usize
+            * image.texture_descriptor.format.pixel_size().unwrap();
+        let aligned_row_bytes = RenderDevice::align_copy_bytes_per_row(row_bytes);
+
+        if row_bytes == aligned_row_bytes {
+            image.data.as_mut().unwrap().clone_from(&image_data);
+        } else {
+            // Shrink to original size
+            image.data = Some(
+                image_data
+                    .chunks(aligned_row_bytes)
+                    .take(image.height() as usize)
+                    .flat_map(|row| &row[..row_bytes.min(row.len())])
+                    .cloned()
+                    .collect(),
+            );
+        }
+
+        let img = match image.clone().try_into_dynamic() {
+            Ok(img) => img.to_rgba8(),
+            Err(e) => panic!("Failed to create image: {e:?}"),
+        };
+
+        let output_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("headless_output");
+        std::fs::create_dir_all(&output_dir).unwrap();
+        let output_path = output_dir.join("0.png");
+
+        info!("Saving screenshot to {:?}", output_path);
+        if let Err(e) = img.save(&output_path) {
+            panic!("Failed to save image: {e}");
+        }
+    }
+
+    app_exit.write(AppExit::Success);
 }

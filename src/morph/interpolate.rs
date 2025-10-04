@@ -1,17 +1,17 @@
 use std::{any::TypeId, marker::PhantomData};
 
 use bevy::{
-    asset::{Assets, LoadState, load_internal_asset, weak_handle},
+    asset::{Assets, LoadState, load_internal_asset, uuid_handle},
     core_pipeline::{
         core_3d::graph::{Core3d, Node3d},
         prepass::PreviousViewUniformOffset,
     },
     prelude::*,
     render::{
-        Extract, ExtractSchedule, Render, RenderApp, RenderSet,
+        Extract, ExtractSchedule, Render, RenderApp, RenderSystems,
         extract_component::DynamicUniformIndex,
         render_asset::RenderAssets,
-        render_graph::{Node, NodeRunError, RenderGraphApp, RenderGraphContext, RenderLabel},
+        render_graph::{Node, NodeRunError, RenderGraphContext, RenderLabel, RenderGraphExt},
         render_resource::{
             BindGroup, BindGroupLayout, CachedComputePipelineId, CachedPipelineState,
             ComputePassDescriptor, ComputePipelineDescriptor, PipelineCache,
@@ -33,7 +33,7 @@ use crate::{
 };
 
 const INTERPOLATE_SHADER_HANDLE: Handle<Shader> =
-    weak_handle!("b0b03f7e-9ec2-4e7d-bc96-3ddc1a8c5942");
+    uuid_handle!("b0b03f7e-9ec2-4e7d-bc96-3ddc1a8c5942");
 const WORKGROUP_SIZE: u32 = 256;
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
@@ -75,7 +75,7 @@ where
                 .add_systems(ExtractSchedule, extract_gaussian_interpolate::<R>)
                 .add_systems(
                     Render,
-                    (queue_gaussian_interpolate_bind_groups::<R>.in_set(RenderSet::Queue),),
+                    (queue_gaussian_interpolate_bind_groups::<R>.in_set(RenderSystems::Queue),),
                 );
         }
 
@@ -192,7 +192,7 @@ where
                 push_constant_ranges: vec![],
                 shader: INTERPOLATE_SHADER_HANDLE,
                 shader_defs,
-                entry_point: "interpolate_gaussians".into(),
+                entry_point: Some("interpolate_gaussians".into()),
                 zero_initialize_workgroup_memory: true,
             });
 
