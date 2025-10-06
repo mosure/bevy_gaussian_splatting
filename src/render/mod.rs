@@ -977,7 +977,7 @@ pub fn extract_gaussians<R: PlanarSync>(
         commands_list.push((
             entity,
             GpuCloudBundle::<R> {
-                aabb: aabb.clone(),
+                aabb: *aabb,
                 settings: settings.clone(),
                 settings_uniform,
                 sorted_entries: sorted_entries.clone(),

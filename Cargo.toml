@@ -162,10 +162,10 @@ webgpu = ["bevy/webgpu"]
 [dependencies]
 base64 = { version = "0.22", optional = true }
 bevy_args = { version = "2.0.0" }
-bevy-inspector-egui = { git = "https://github.com/jakobhellermann/bevy-inspector-egui", optional = true }
+bevy-inspector-egui = { version = "0.34.0", optional = true }
 bevy_interleave = { version = "0.8.0" }
 # bevy_panorbit_camera = { git = "https://github.com/mosure/bevy_panorbit_camera.git", optional = true, features = ["bevy_egui"] }
-bevy_panorbit_camera = { git = "https://github.com/kristoff3r/bevy_panorbit_camera", optional = true , features = ["bevy_egui"]}
+bevy_panorbit_camera = { version = "0.29.0", optional = true , features = ["bevy_egui"]}
 bevy_transform_gizmo = { version = "0.12", optional = true }
 bevy_file_asset = { git = "https://github.com/cs50victor/bevy_file_asset", branch = "chore/bump_bevy", optional = true }
 bincode2 = { version = "2.0", optional = true }
