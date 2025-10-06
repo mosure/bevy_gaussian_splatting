@@ -2,7 +2,7 @@
 use std::marker::Copy;
 
 use bevy::{
-    asset::{load_internal_asset, weak_handle},
+    asset::{load_internal_asset, uuid_handle},
     prelude::*,
     render::render_resource::ShaderType,
 };
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize, Serializer, ser::SerializeTuple};
 use crate::math::pad_4;
 
 const SPHERICAL_HARMONICS_SHADER_HANDLE: Handle<Shader> =
-    weak_handle!("879b9cd3-ba20-4030-a8f3-adda0a042ffe");
+    uuid_handle!("879b9cd3-ba20-4030-a8f3-adda0a042ffe");
 
 pub struct SphericalHarmonicCoefficientsPlugin;
 

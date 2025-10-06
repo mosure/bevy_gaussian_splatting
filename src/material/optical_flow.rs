@@ -1,10 +1,10 @@
 use bevy::{
-    asset::{load_internal_asset, weak_handle},
+    asset::{load_internal_asset, uuid_handle},
     prelude::*,
 };
 
 const OPTICAL_FLOW_SHADER_HANDLE: Handle<Shader> =
-    weak_handle!("e25fefbf-dd95-46f2-89bb-91175f6bb4a6");
+    uuid_handle!("e25fefbf-dd95-46f2-89bb-91175f6bb4a6");
 
 pub struct OpticalFlowMaterialPlugin;
 

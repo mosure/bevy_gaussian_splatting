@@ -2,39 +2,26 @@
 use std::{hash::Hash, num::NonZero};
 
 use bevy::{
-    asset::{AssetEvent, AssetId, load_internal_asset, weak_handle},
-    core_pipeline::{
+    asset::{load_internal_asset, uuid_handle, AssetEvent, AssetId}, camera::primitives::Aabb, core_pipeline::{
         core_3d::Transparent3d,
         prepass::{
             MotionVectorPrepass, PreviousViewData, PreviousViewUniformOffset, PreviousViewUniforms,
         },
-    },
-    ecs::{
+    }, ecs::{
         query::ROQueryItem,
-        system::{SystemParamItem, lifetimeless::*},
-    },
-    pbr::PrepassViewBindGroup,
-    prelude::*,
-    render::{
-        Extract, Render, RenderApp, RenderSet,
-        extract_component::{ComponentUniforms, DynamicUniformIndex, UniformComponentPlugin},
-        globals::{GlobalsBuffer, GlobalsUniform},
-        primitives::Aabb,
-        render_asset::RenderAssets,
-        render_phase::{
+        system::{lifetimeless::*, SystemParamItem},
+    }, pbr::PrepassViewBindGroup, prelude::*, render::{
+        extract_component::{ComponentUniforms, DynamicUniformIndex, UniformComponentPlugin}, globals::{GlobalsBuffer, GlobalsUniform}, render_asset::RenderAssets, render_phase::{
             AddRenderCommand, DrawFunctions, PhaseItem, PhaseItemExtraIndex, RenderCommand,
             RenderCommandResult, SetItemPipeline, TrackedRenderPass, ViewSortedRenderPhases,
-        },
-        render_resource::*,
-        renderer::RenderDevice,
-        sync_world::RenderEntity,
-        view::{
-            ExtractedView, RenderVisibilityRanges, RenderVisibleEntities,
-            VISIBILITY_RANGES_STORAGE_BUFFER_COUNT, ViewUniform, ViewUniformOffset, ViewUniforms,
-        },
-    },
+        }, render_resource::*, renderer::RenderDevice, sync_world::RenderEntity, view::{
+            ExtractedView, RenderVisibilityRanges, RenderVisibleEntities, ViewUniform, ViewUniformOffset, ViewUniforms, VISIBILITY_RANGES_STORAGE_BUFFER_COUNT
+        }, Extract, Render, RenderApp, RenderSystems
+    }
 };
+use bevy::shader::ShaderDefVal;
 use bevy_interleave::prelude::*;
+use bevy::render::render_resource::TextureFormat;
 
 use crate::{
     camera::GaussianCamera,
@@ -60,20 +47,20 @@ mod planar;
 #[cfg(feature = "buffer_texture")]
 mod texture;
 
-const BINDINGS_SHADER_HANDLE: Handle<Shader> = weak_handle!("cfd9a3d9-a0cb-40c8-ab0b-073110a02474");
-const GAUSSIAN_SHADER_HANDLE: Handle<Shader> = weak_handle!("9a18d83b-137d-4f44-9628-e2defc4b62b0");
+const BINDINGS_SHADER_HANDLE: Handle<Shader> = uuid_handle!("cfd9a3d9-a0cb-40c8-ab0b-073110a02474");
+const GAUSSIAN_SHADER_HANDLE: Handle<Shader> = uuid_handle!("9a18d83b-137d-4f44-9628-e2defc4b62b0");
 const GAUSSIAN_2D_SHADER_HANDLE: Handle<Shader> =
-    weak_handle!("713fb941-b4f5-408e-bbde-32fb7dc447ce");
+    uuid_handle!("713fb941-b4f5-408e-bbde-32fb7dc447ce");
 const GAUSSIAN_3D_SHADER_HANDLE: Handle<Shader> =
-    weak_handle!("b7eb322b-983b-4ce0-a5a2-3c0d6cb06d65");
+    uuid_handle!("b7eb322b-983b-4ce0-a5a2-3c0d6cb06d65");
 const GAUSSIAN_4D_SHADER_HANDLE: Handle<Shader> =
-    weak_handle!("26234995-0932-4dfa-ab8d-53df1e779dd4");
-const HELPERS_SHADER_HANDLE: Handle<Shader> = weak_handle!("9ca57ab0-07de-4a43-94f8-547c38e292cb");
-const PACKED_SHADER_HANDLE: Handle<Shader> = weak_handle!("5bb62086-7004-4575-9972-274dc8acccf1");
-const PLANAR_SHADER_HANDLE: Handle<Shader> = weak_handle!("d6a3f978-f795-4786-8475-26366f28d852");
-const TEXTURE_SHADER_HANDLE: Handle<Shader> = weak_handle!("500e2ebf-51a8-402e-9c88-e0d5152c3486");
+    uuid_handle!("26234995-0932-4dfa-ab8d-53df1e779dd4");
+const HELPERS_SHADER_HANDLE: Handle<Shader> = uuid_handle!("9ca57ab0-07de-4a43-94f8-547c38e292cb");
+const PACKED_SHADER_HANDLE: Handle<Shader> = uuid_handle!("5bb62086-7004-4575-9972-274dc8acccf1");
+const PLANAR_SHADER_HANDLE: Handle<Shader> = uuid_handle!("d6a3f978-f795-4786-8475-26366f28d852");
+const TEXTURE_SHADER_HANDLE: Handle<Shader> = uuid_handle!("500e2ebf-51a8-402e-9c88-e0d5152c3486");
 const TRANSFORM_SHADER_HANDLE: Handle<Shader> =
-    weak_handle!("648516b2-87cc-4937-ae1c-d986952e9fa7");
+    uuid_handle!("648516b2-87cc-4937-ae1c-d986952e9fa7");
 
 // TODO: consider refactor to bind via bevy's mesh (dynamic vertex planes) + shared batching/instancing/preprocessing
 //       utilize RawBufferVec<T> for gaussian data?
@@ -118,12 +105,12 @@ where
                     Render,
                     (
                         refresh_planar_storage_bind_groups::<R>
-                            .in_set(RenderSet::PrepareBindGroups),
-                        queue_gaussian_bind_group::<R>.in_set(RenderSet::PrepareBindGroups),
-                        queue_gaussian_view_bind_groups::<R>.in_set(RenderSet::PrepareBindGroups),
+                            .in_set(RenderSystems::PrepareBindGroups),
+                        queue_gaussian_bind_group::<R>.in_set(RenderSystems::PrepareBindGroups),
+                        queue_gaussian_view_bind_groups::<R>.in_set(RenderSystems::PrepareBindGroups),
                         queue_gaussian_compute_view_bind_groups::<R>
-                            .in_set(RenderSet::PrepareBindGroups),
-                        queue_gaussians::<R>.in_set(RenderSet::Queue),
+                            .in_set(RenderSystems::PrepareBindGroups),
+                        queue_gaussians::<R>.in_set(RenderSystems::Queue),
                     ),
                 );
         }
@@ -242,7 +229,7 @@ impl<R: PlanarSync> PlanarStorageRebindQueue<R> {
 }
 
 fn queue_planar_storage_rebinds<R: PlanarSync>(
-    mut events: EventReader<AssetEvent<R::PlanarType>>,
+    mut events: MessageReader<AssetEvent<R::PlanarType>>,
     mut queue: ResMut<PlanarStorageRebindQueue<R>>,
 ) {
     for event in events.read() {
@@ -314,9 +301,9 @@ pub struct GpuCloudBundle<R: PlanarSync> {
 }
 
 #[cfg(feature = "buffer_storage")]
-type GpuCloudBundleQuery<R: PlanarSync> = (
+type GpuCloudBundleQuery<R: bevy_interleave::prelude::PlanarSync> = (
     Entity,
-    &'static R::PlanarTypeHandle,
+    &'static <R as bevy_interleave::prelude::PlanarSync>::PlanarTypeHandle,
     &'static Aabb,
     &'static SortedEntriesHandle,
     &'static CloudSettings,
@@ -325,9 +312,9 @@ type GpuCloudBundleQuery<R: PlanarSync> = (
 );
 
 #[cfg(feature = "buffer_texture")]
-type GpuCloudBundleQuery<R: PlanarTexture> = (
+type GpuCloudBundleQuery<R: bevy_interleave::prelude::PlanarSync> = (
     Entity,
-    &'static R::PlanarTypeHandle,
+    &'static <R as bevy_interleave::prelude::PlanarSync>::PlanarTypeHandle,
     &'static Aabb,
     &'static SortedEntriesHandle,
     &'static CloudSettings,
@@ -336,17 +323,17 @@ type GpuCloudBundleQuery<R: PlanarTexture> = (
 );
 
 #[cfg(feature = "buffer_storage")]
-type GpuCloudBindGroupQuery<R: PlanarSync> = (
+type GpuCloudBindGroupQuery<R: bevy_interleave::prelude::PlanarSync> = (
     Entity,
-    &'static R::PlanarTypeHandle,
+    &'static <R as bevy_interleave::prelude::PlanarSync>::PlanarTypeHandle,
     &'static SortedEntriesHandle,
     Option<&'static SortBindGroup>,
 );
 
 #[cfg(feature = "buffer_texture")]
-type GpuCloudBindGroupQuery<R: PlanarTexture> = (
+type GpuCloudBindGroupQuery<R: bevy_interleave::prelude::PlanarSync> = (
     Entity,
-    &'static R::PlanarTypeHandle,
+    &'static <R as bevy_interleave::prelude::PlanarSync>::PlanarTypeHandle,
     &'static SortedEntriesHandle,
     Option<&'static SortBindGroup>,
     &'static texture::GpuTextureBuffers,
@@ -434,10 +421,12 @@ fn queue_gaussians<R: PlanarSync>(
             let pipeline = pipelines.specialize(&pipeline_cache, &custom_pipeline, key);
 
             let rangefinder = view.rangefinder3d();
+            let aabb_center = (aabb.min() + aabb.max()) / 2.0;
+            let aabb_size = aabb.max() - aabb.min();
             let center = *transform
                 * GlobalTransform::from(
-                    Transform::from_translation(aabb.center.into())
-                        .with_scale((aabb.half_extents * 2.).into()),
+                    Transform::from_translation(aabb_center.into())
+                        .with_scale(aabb_size.into()),
                 );
             let distance = rangefinder.distance_translation(&center.translation());
 
@@ -853,13 +842,13 @@ impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
             vertex: VertexState {
                 shader: self.shader.clone(),
                 shader_defs: shader_defs.clone(),
-                entry_point: "vs_points".into(),
+                entry_point: Some("vs_points".into()),
                 buffers: vec![],
             },
             fragment: Some(FragmentState {
                 shader: self.shader.clone(),
                 shader_defs,
-                entry_point: "fs_main".into(),
+                entry_point: Some("fs_main".into()),
                 targets: vec![Some(ColorTargetState {
                     format,
                     blend: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
@@ -902,7 +891,7 @@ impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
     }
 }
 
-type DrawGaussians<R: PlanarSync> = (
+type DrawGaussians<R: bevy_interleave::prelude::PlanarSync> = (
     SetItemPipeline,
     // SetViewBindGroup<0>,
     SetPreviousViewBindGroup<0>,
@@ -972,7 +961,7 @@ pub fn extract_gaussians<R: PlanarSync>(
         let cloud = gaussian_cloud_res.get(cloud_handle.handle()).unwrap();
 
         let settings_uniform = CloudUniform {
-            transform: transform.compute_matrix(),
+            transform: transform.to_matrix(),
             global_opacity: settings.global_opacity,
             global_scale: settings.global_scale,
             count: cloud.len() as u32,
@@ -1304,7 +1293,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetViewBindGroup<I> {
     #[inline]
     fn render<'w>(
         _: &P,
-        (gaussian_view_bind_group, view_uniform): ROQueryItem<'w, Self::ViewQuery>,
+        (gaussian_view_bind_group, view_uniform): ROQueryItem<'w, 'w, Self::ViewQuery>,
         _entity: Option<()>,
         _: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
@@ -1331,6 +1320,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetPreviousViewBindGroup
     fn render<'w>(
         _: &P,
         (view_uniform_offset, has_motion_vector_prepass, previous_view_uniform_offset): ROQueryItem<
+            'w,
             'w,
             Self::ViewQuery,
         >,
@@ -1373,7 +1363,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianUniformBindGr
     fn render<'w>(
         _item: &P,
         _view: (),
-        gaussian_cloud_index: Option<ROQueryItem<'w, Self::ItemQuery>>,
+        gaussian_cloud_index: Option<ROQueryItem<'w, 'w, Self::ItemQuery>>,
         bind_groups: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {

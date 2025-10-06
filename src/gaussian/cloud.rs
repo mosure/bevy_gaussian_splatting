@@ -1,13 +1,8 @@
 use bevy::{
-    ecs::{component::HookContext, world::DeferredWorld},
+    camera::{primitives::Aabb, visibility::{add_visibility_class, NoFrustumCulling, VisibilityClass, VisibilitySystems}},
+    ecs::{lifecycle::HookContext, world::DeferredWorld},
+    math::bounding::BoundingVolume,
     prelude::*,
-    render::{
-        primitives::Aabb,
-        view::{
-            VisibilityClass,
-            visibility::{NoFrustumCulling, VisibilitySystems, add_visibility_class},
-        },
-    },
 };
 use bevy_interleave::prelude::*;
 
@@ -53,8 +48,11 @@ pub fn calculate_bounds<R: PlanarSync>(
 {
     for (entity, cloud_handle) in &without_aabb {
         if let Some(cloud) = gaussian_clouds.get(cloud_handle.handle()) {
-            if let Some(aabb) = cloud.compute_aabb() {
-                commands.entity(entity).try_insert(aabb);
+            if let Some(aabb3d) = cloud.compute_aabb() {
+                commands.entity(entity).try_insert(Aabb {
+                    center: aabb3d.center(),
+                    half_extents: aabb3d.half_size(),
+                });
             }
         }
     }

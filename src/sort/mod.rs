@@ -7,9 +7,10 @@ use bevy::{
     math::Vec3A,
     platform::time::Instant,
     prelude::*,
+    asset::RenderAssetUsages,
     render::{
         extract_component::{ExtractComponent, ExtractComponentPlugin},
-        render_asset::{PrepareAssetError, RenderAsset, RenderAssetPlugin, RenderAssetUsages},
+        render_asset::{PrepareAssetError, RenderAsset, RenderAssetPlugin},
         render_resource::*,
         renderer::RenderDevice,
     },
@@ -190,7 +191,7 @@ fn update_sort_trigger(
 #[cfg(feature = "buffer_texture")]
 fn update_textures_on_change(
     mut images: ResMut<Assets<Image>>,
-    mut ev_asset: EventReader<AssetEvent<SortedEntries>>,
+    mut ev_asset: MessageReader<AssetEvent<SortedEntries>>,
     sorted_entries_res: Res<Assets<SortedEntries>>,
 ) {
     for ev in ev_asset.read() {
@@ -286,7 +287,7 @@ fn update_sorted_entries_sizes(
                     #[cfg(feature = "buffer_texture")]
                     images,
                 );
-                sorted_entries_res.insert(handle, new_entry);
+                let _ = sorted_entries_res.insert(handle, new_entry);
             }
         }
     }
@@ -385,6 +386,7 @@ impl RenderAsset for GpuSortedEntry {
         source: Self::SourceAsset,
         _: AssetId<Self::SourceAsset>,
         render_device: &mut SystemParamItem<Self::Param>,
+        _: Option<&Self>,
     ) -> Result<Self, PrepareAssetError<Self::SourceAsset>> {
         let sorted_entry_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("sorted_entry_buffer"),

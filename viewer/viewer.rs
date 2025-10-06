@@ -2,15 +2,7 @@
 use std::path::PathBuf;
 
 use bevy::{
-    app::AppExit,
-    color::palettes::css::GOLD,
-    core_pipeline::{prepass::MotionVectorPrepass, tonemapping::Tonemapping},
-    diagnostic::{DiagnosticsStore, FrameCount, FrameTimeDiagnosticsPlugin},
-    prelude::*,
-    render::{
-        primitives::Aabb,
-        view::screenshot::{Screenshot, save_to_disk},
-    },
+    app::AppExit, camera::primitives::Aabb, color::palettes::css::GOLD, core_pipeline::{prepass::MotionVectorPrepass, tonemapping::Tonemapping}, diagnostic::{DiagnosticsStore, FrameCount, FrameTimeDiagnosticsPlugin}, prelude::*, render::view::screenshot::{save_to_disk, Screenshot}
 };
 use bevy_args::{BevyArgsPlugin, parse_args};
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
@@ -21,15 +13,10 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE};
 #[cfg(feature = "file_asset")]
 use bevy_file_asset::FileAssetPlugin;
 #[cfg(feature = "web_asset")]
-use bevy_web_asset::WebAssetPlugin;
+use bevy::asset::io::web::WebAssetPlugin;
 
 use bevy_gaussian_splatting::{
-    CloudSettings, GaussianCamera, GaussianMode, GaussianScene, GaussianSceneHandle,
-    GaussianSplattingPlugin, PlanarGaussian3d, PlanarGaussian3dHandle, PlanarGaussian4d,
-    PlanarGaussian4dHandle,
-    gaussian::interface::TestCloud,
-    random_gaussians_3d, random_gaussians_4d,
-    utils::{GaussianSplattingViewer, log, setup_hooks},
+    gaussian::interface::TestCloud, random_gaussians_3d, random_gaussians_4d, utils::{log, setup_hooks, GaussianSplattingViewer}, CloudSettings, GaussianCamera, GaussianMode, GaussianScene, GaussianSceneHandle, GaussianSplattingPlugin, PlanarGaussian3d, PlanarGaussian3dHandle, PlanarGaussian4d, PlanarGaussian4dHandle
 };
 
 #[cfg(feature = "morph_interpolate")]
@@ -73,20 +60,18 @@ fn setup_gaussian_cloud(
     mut gaussian_4d_assets: ResMut<Assets<PlanarGaussian4d>>,
 ) {
     debug!("spawning camera...");
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
-        Tonemapping::None,
-        MotionVectorPrepass,
-        PanOrbitCamera {
+    commands.spawn(Camera3d::default())
+        .insert(Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)))
+        .insert(Tonemapping::None)
+        .insert(MotionVectorPrepass)
+        .insert(PanOrbitCamera {
             allow_upside_down: true,
             orbit_smoothness: 0.1,
             pan_smoothness: 0.1,
             zoom_smoothness: 0.1,
             ..default()
-        },
-        GaussianCamera::default(),
-    ));
+        })
+        .insert(GaussianCamera::default());
 
     if let Some(input_scene) = &args.input_scene {
         let input_uri = parse_input_file(input_scene.as_str());
@@ -287,7 +272,10 @@ fn viewer_app() {
     let primary_window = Some(Window {
         mode: bevy::window::WindowMode::Windowed,
         prevent_default_event_handling: false,
-        resolution: (config.width, config.height).into(),
+        resolution: bevy::window::WindowResolution::new(
+            config.width as u32, 
+            config.height as u32
+        ),
         title: config.name.clone(),
 
         #[cfg(feature = "perftest")]
@@ -302,7 +290,7 @@ fn viewer_app() {
     app.add_plugins(FileAssetPlugin);
 
     #[cfg(feature = "web_asset")]
-    app.add_plugins(WebAssetPlugin);
+    app.add_plugins(WebAssetPlugin{ silence_startup_warning: true });
 
     // setup for gaussian viewer app
     app.insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)));
@@ -323,9 +311,7 @@ fn viewer_app() {
     app.add_plugins(PanOrbitCameraPlugin);
 
     if config.editor {
-        app.add_plugins(EguiPlugin {
-            enable_multipass_for_primary_context: true,
-        });
+        app.add_plugins(EguiPlugin::default());
         app.add_plugins(WorldInspectorPlugin::new());
     }
 
@@ -389,13 +375,13 @@ pub fn press_s_screenshot(
 pub struct ShowAxes;
 
 fn draw_axes(mut gizmos: Gizmos, query: Query<(&Transform, &Aabb), With<ShowAxes>>) {
-    for (&transform, &aabb) in &query {
+    for (&transform, aabb) in &query {
         let length = aabb.half_extents.length();
         gizmos.axes(transform, length);
     }
 }
 
-pub fn press_esc_close(keys: Res<ButtonInput<KeyCode>>, mut exit: EventWriter<AppExit>) {
+pub fn press_esc_close(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>) {
     if keys.just_pressed(KeyCode::Escape) {
         exit.write(AppExit::Success);
     }
@@ -404,7 +390,7 @@ pub fn press_esc_close(keys: Res<ButtonInput<KeyCode>>, mut exit: EventWriter<Ap
 #[cfg(feature = "query_select")]
 fn press_i_invert_selection(
     keys: Res<ButtonInput<KeyCode>>,
-    mut select_inverse_events: EventWriter<InvertSelectionEvent>,
+    mut select_inverse_events: MessageWriter<InvertSelectionEvent>,
 ) {
     if keys.just_pressed(KeyCode::KeyI) {
         log("inverting selection");
@@ -415,7 +401,7 @@ fn press_i_invert_selection(
 #[cfg(feature = "query_select")]
 fn press_o_save_selection(
     keys: Res<ButtonInput<KeyCode>>,
-    mut select_inverse_events: EventWriter<SaveSelectionEvent>,
+    mut select_inverse_events: MessageWriter<SaveSelectionEvent>,
 ) {
     if keys.just_pressed(KeyCode::KeyO) {
         log("saving selection");
