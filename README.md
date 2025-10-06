@@ -115,6 +115,7 @@ the following tools are compatible with `bevy_gaussian_splatting`:
 
 | `bevy_gaussian_splatting` | `bevy` |
 | :--                       | :--    |
+| `6.0`                     | `0.17` |
 | `5.0`                     | `0.16` |
 | `3.0`                     | `0.15` |
 | `2.3`                     | `0.14` |

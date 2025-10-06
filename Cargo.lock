@@ -1091,8 +1091,9 @@ dependencies = [
 
 [[package]]
 name = "bevy_file_asset"
-version = "0.2.0"
-source = "git+https://github.com/cs50victor/bevy_file_asset?branch=chore%2Fbump_bevy#a84d11ce756eb18f616249d8678bda7457fec8c2"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22c76d921706dff761b754161e61e6da134d7ac57c288309b902c7129646e7d7"
 dependencies = [
  "bevy 0.17.2",
  "console_error_panic_hook",

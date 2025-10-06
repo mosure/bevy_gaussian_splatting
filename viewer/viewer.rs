@@ -12,8 +12,6 @@ use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE};
 #[cfg(feature = "file_asset")]
 use bevy_file_asset::FileAssetPlugin;
-#[cfg(feature = "web_asset")]
-use bevy::asset::io::web::WebAssetPlugin;
 
 use bevy_gaussian_splatting::{
     gaussian::interface::TestCloud, random_gaussians_3d, random_gaussians_4d, utils::{log, setup_hooks, GaussianSplattingViewer}, CloudSettings, GaussianCamera, GaussianMode, GaussianScene, GaussianSceneHandle, GaussianSplattingPlugin, PlanarGaussian3d, PlanarGaussian3dHandle, PlanarGaussian4d, PlanarGaussian4dHandle
@@ -288,9 +286,6 @@ fn viewer_app() {
 
     #[cfg(feature = "file_asset")]
     app.add_plugins(FileAssetPlugin);
-
-    #[cfg(feature = "web_asset")]
-    app.add_plugins(WebAssetPlugin{ silence_startup_warning: true });
 
     // setup for gaussian viewer app
     app.insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)));
