@@ -134,6 +134,37 @@ viewer = [
   "bevy/png",
 ]
 
+relighting_example = [
+  "bevy/asset_processor",
+  "bevy/bevy_asset",
+  "bevy/bevy_audio",
+  "bevy/bevy_color",
+  "bevy/bevy_core_pipeline",
+  "bevy/bevy_post_process",
+  "bevy/bevy_anti_alias",
+  "bevy/bevy_gizmos",
+  "bevy/bevy_gltf",
+  "bevy/bevy_log",
+  "bevy/bevy_pbr",
+  "bevy/bevy_render",
+  "bevy/bevy_scene",
+  "bevy/bevy_image",
+  "bevy/bevy_mesh",
+  "bevy/bevy_camera",
+  "bevy/bevy_light",
+  "bevy/bevy_state",
+  "bevy/bevy_ui",
+  "bevy/bevy_text",
+  "bevy/png",
+  "bevy/jpeg",
+  "bevy/compressed_image_saver",
+  "bevy/reflect_auto_register",
+  "bevy/reflect_functions",
+  "bevy/serialize",
+  "bevy/smaa_luts",
+  "bevy/tonemapping_luts",
+]
+
 web = [
   "buffer_storage",
   "sh0",
@@ -167,6 +198,7 @@ bevy_interleave = { version = "0.8.0" }
 bevy_panorbit_camera = { version = "0.29.0", optional = true , features = ["bevy_egui"]}
 bevy_transform_gizmo = { version = "0.12", optional = true }
 bevy_file_asset = { version = "0.3", optional = true }
+bevy_pbr = "0.17"
 bincode2 = { version = "2.0", optional = true }
 byte-unit = { version = "5.1", optional = true }
 bytemuck = "1.23"
@@ -177,6 +209,7 @@ half = { version = "2.6", features = ["serde"] }
 # image = { version = "0.25.6", default-features = false, features = ["png"] }
 kd-tree = { version = "0.6", optional = true }
 noise = { version = "0.9.0", optional = true }
+png = { version = "0.17", optional = true }
 ply-rs = { version = "0.1", optional = true }
 rand = "0.8"
 rayon = { version = "1.8", optional = true }
@@ -270,6 +303,11 @@ name = "surfel_plane"
 path = "tools/surfel_plane.rs"
 required-features = ["debug_tooling"]
 
+[[bin]]
+name = "generate_ggx_lut"
+path = "tools/generate_ggx_lut.rs"
+required-features = ["png"]
+
 
 [[bin]]
 name = "test_gaussian"
@@ -292,6 +330,11 @@ path = "examples/headless.rs"
 [[example]]
 name = "multi_camera"
 path = "examples/multi_camera.rs"
+
+[[example]]
+name = "relighting"
+path = "examples/relighting.rs"
+required-features = ["relighting_example"]
 
 
 [[bench]]

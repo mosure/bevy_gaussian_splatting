@@ -1,8 +1,4 @@
-#import bevy_gaussian_splatting::bindings::{
-    view,
-    gaussian_uniforms,
-    Entry,
-}
+#import bevy_gaussian_splatting::bindings::{gaussian_uniforms, Entry}
 #import bevy_gaussian_splatting::classification::class_to_rgb
 #import bevy_gaussian_splatting::depth::depth_to_rgb
 #import bevy_gaussian_splatting::optical_flow::{
@@ -17,6 +13,12 @@
     world_to_clip,
     in_frustum,
 }
+
+#import bevy_pbr::{
+    pbr_functions::{apply_pbr_lighting, calculate_view, main_pass_post_lighting_processing},
+    pbr_types,
+};
+#import bevy_pbr::mesh_view_bindings as view_bindings;
 
 #ifdef GAUSSIAN_2D
     #import bevy_gaussian_splatting::gaussian_2d::{
@@ -123,6 +125,23 @@
     }
 #endif
 
+struct NormalData {
+    normal: vec3<f32>,
+    confidence: f32,
+}
+
+struct PbrMaterialData {
+    base_color: vec3<f32>,
+    metallic: f32,
+    perceptual_roughness: f32,
+    reflectance: f32,
+    ambient_occlusion: f32,
+    _pad: f32,
+}
+
+@group(4) @binding(0) var<storage, read> decomposed_normals: array<NormalData>;
+@group(4) @binding(1) var<storage, read> pbr_materials: array<PbrMaterialData>;
+
 #ifdef WEBGL2
     struct GaussianVertexOutput {
         @builtin(position) position: vec4<f32>,
@@ -141,6 +160,7 @@
         @location(2) conic: vec3<f32>,
         @location(3) major_minor: vec2<f32>,
     #endif
+        @location(7) gaussian_index: u32,
     };
 #else
     struct GaussianVertexOutput {
@@ -160,6 +180,7 @@
         @location(2) @interpolate(flat) conic: vec3<f32>,
         @location(3) @interpolate(linear) major_minor: vec2<f32>,
     #endif
+        @location(7) @interpolate(flat) gaussian_index: u32,
     };
 #endif
 
@@ -313,7 +334,7 @@ fn vs_points(
 
 // TODO: RASTERIZE_ACCELERATION
 #ifdef RASTERIZE_CLASSIFICATION
-    let ray_direction_world = normalize(transformed_position - view.world_position);
+    let ray_direction_world = normalize(transformed_position - view_bindings::view.world_position);
     let ray_direction_local = world_to_local_direction(ray_direction_world, gaussian_uniforms.transform);
 
     #ifdef GAUSSIAN_3D_STRUCTURE
@@ -334,7 +355,7 @@ fn vs_points(
     let min_position = (gaussian_uniforms.transform * first_position).xyz;
     let max_position = (gaussian_uniforms.transform * last_position).xyz;
 
-    let camera_position = view.world_position;
+    let camera_position = view_bindings::view.world_position;
 
     let min_distance = length(min_position - camera_position);
     let max_distance = length(max_position - camera_position);
@@ -357,7 +378,7 @@ fn vs_points(
     let L = T * S * R;
 
     let local_normal = vec4<f32>(L[2], 0.0);
-    let world_normal = view.view_from_world * local_normal;
+    let world_normal = view_bindings::view.view_from_world * local_normal;
 
     let t = normalize(world_normal);
 
@@ -405,7 +426,7 @@ fn vs_points(
     rgb = base_color * scaled_mag;
 #else ifdef RASTERIZE_COLOR
     // TODO: verify color benefit for ray_direction computed at quad verticies instead of gaussian center (same as current complexity)
-    let ray_direction_world = normalize(transformed_position - view.world_position);
+    let ray_direction_world = normalize(transformed_position - view_bindings::view.world_position);
     let ray_direction_local = world_to_local_direction(ray_direction_world, gaussian_uniforms.transform);
 
     #ifdef GAUSSIAN_3D_STRUCTURE
@@ -431,6 +452,7 @@ fn vs_points(
         projected_position.xy + bb.xy,
         projected_position.zw,
     );
+    output.gaussian_index = splat_index;
 
     return output;
 }
@@ -443,7 +465,7 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
     let mean_2d = input.mean_2d;
     let aspect = vec2<f32>(
         1.0,
-        view.viewport.z / view.viewport.w,
+        view_bindings::view.viewport.z / view_bindings::view.viewport.w,
     );
     let pixel_coord = input.uv * radius * aspect + mean_2d;
 
@@ -496,10 +518,65 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
 
     let alpha = min(exp(power) * input.color.a, 0.999);
 
-    // TODO: round alpha to terminate depth test?
+#ifdef HIGHLIGHT_SELECTED
+    if (get_visibility(input.gaussian_index) > 0.5) {
+        return vec4<f32>(input.color.rgb * alpha, alpha);
+    }
+#endif
 
+#ifdef RASTERIZE_COLOR
+    if (alpha <= 0.0) {
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    }
+
+    if (input.gaussian_index >= arrayLength(&pbr_materials)) {
+        return vec4<f32>(input.color.rgb * alpha, alpha);
+    }
+
+    let material = pbr_materials[input.gaussian_index];
+    let normal_data = decomposed_normals[input.gaussian_index];
+
+    let clamped_metallic = clamp(material.metallic, 0.0, 1.0);
+    let clamped_roughness = clamp(material.perceptual_roughness, 0.089, 1.0);
+    let clamped_reflectance = clamp(material.reflectance, 0.0, 1.0);
+    let clamped_occlusion = clamp(material.ambient_occlusion, 0.0, 1.0);
+
+    var world_normal = normalize(normal_data.normal);
+    let has_nan = any(world_normal != world_normal);
+    if (normal_data.confidence <= 0.0 || has_nan) {
+        world_normal = vec3<f32>(0.0, 0.0, 1.0);
+    }
+
+    let local_position = get_position(input.gaussian_index);
+    let world_position = (gaussian_uniforms.transform * vec4<f32>(local_position, 1.0)).xyz;
+    let is_orthographic = view_bindings::view.clip_from_view[3].w == 1.0;
+
+    var pbr_input = pbr_types::pbr_input_new();
+    pbr_input.material.base_color = vec4<f32>(material.base_color, 1.0);
+    pbr_input.material.metallic = clamped_metallic;
+    pbr_input.material.perceptual_roughness = clamped_roughness;
+    pbr_input.material.reflectance = vec3<f32>(clamped_reflectance);
+    pbr_input.material.flags =
+        pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_BLEND |
+        pbr_types::STANDARD_MATERIAL_FLAGS_DOUBLE_SIDED_BIT |
+        pbr_types::STANDARD_MATERIAL_FLAGS_FOG_ENABLED_BIT;
+    pbr_input.material.deferred_lighting_pass_id = 1u;
+    pbr_input.diffuse_occlusion = vec3<f32>(clamped_occlusion);
+    pbr_input.specular_occlusion = clamped_occlusion;
+    pbr_input.world_position = vec4<f32>(world_position, 1.0);
+    pbr_input.is_orthographic = is_orthographic;
+    pbr_input.V = calculate_view(pbr_input.world_position, is_orthographic);
+    pbr_input.world_normal = world_normal;
+    pbr_input.N = world_normal;
+
+    var lit_color = apply_pbr_lighting(pbr_input);
+    lit_color = main_pass_post_lighting_processing(pbr_input, lit_color);
+
+    return vec4<f32>(lit_color.rgb * alpha, alpha);
+#else
     return vec4<f32>(
         input.color.rgb * alpha,
         alpha,
     );
+#endif
 }

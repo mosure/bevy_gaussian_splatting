@@ -18,3 +18,4 @@ out/
 screenshots/
 headless_output/
 www/assets/
+.web-asset-cache

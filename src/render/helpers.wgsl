@@ -1,9 +1,7 @@
 #define_import_path bevy_gaussian_splatting::helpers
 
-#import bevy_gaussian_splatting::bindings::{
-    view,
-    gaussian_uniforms,
-}
+#import bevy_gaussian_splatting::bindings::gaussian_uniforms
+#import bevy_pbr::mesh_view_bindings as view_bindings
 
 fn cov2d(
     position: vec3<f32>,
@@ -15,11 +13,11 @@ fn cov2d(
         cov3d[2], cov3d[4], cov3d[5],
     );
 
-    var t = view.view_from_world * vec4<f32>(position, 1.0);
+    var t = view_bindings::view.view_from_world * vec4<f32>(position, 1.0);
 
     let focal = vec2<f32>(
-        view.clip_from_view[0].x * view.viewport.z,
-        view.clip_from_view[1].y * view.viewport.w,
+        view_bindings::view.clip_from_view[0].x * view_bindings::view.viewport.z,
+        view_bindings::view.clip_from_view[1].y * view_bindings::view.viewport.w,
     );
 
     let s = 1.0 / (t.z * t.z);
@@ -31,9 +29,9 @@ fn cov2d(
 
     let W = transpose(
         mat3x3<f32>(
-            view.view_from_world[0].xyz,
-            view.view_from_world[1].xyz,
-            view.view_from_world[2].xyz,
+            view_bindings::view.view_from_world[0].xyz,
+            view_bindings::view.view_from_world[1].xyz,
+            view_bindings::view.view_from_world[2].xyz,
         )
     );
 
@@ -69,7 +67,7 @@ fn get_bounding_box_clip(
 #ifdef USE_AABB
     let radius_px = cutoff * max(x_axis_length, y_axis_length);
     let radius_ndc = vec2<f32>(
-        radius_px / view.viewport.zw,
+        radius_px / view_bindings::view.viewport.zw,
     );
 
     return vec4<f32>(
@@ -109,7 +107,7 @@ fn get_bounding_box_clip(
     let scaled_vertex = direction * bounds;
     let rotated_vertex = scaled_vertex * rotation_matrix;
 
-    let scaling_factor = 1.0 / view.viewport.zw;
+    let scaling_factor = 1.0 / view_bindings::view.viewport.zw;
     let ndc_vertex = rotated_vertex * scaling_factor;
 
     return vec4<f32>(
@@ -121,13 +119,13 @@ fn get_bounding_box_clip(
 
 fn intrinsic_matrix() -> mat3x4<f32> {
     let focal = vec2<f32>(
-        view.clip_from_view[0].x * view.viewport.z / 2.0,
-        view.clip_from_view[1].y * view.viewport.w / 2.0,
+        view_bindings::view.clip_from_view[0].x * view_bindings::view.viewport.z / 2.0,
+        view_bindings::view.clip_from_view[1].y * view_bindings::view.viewport.w / 2.0,
     );
 
     let Ks = mat3x4<f32>(
-        vec4<f32>(focal.x, 0.0, 0.0, (view.viewport.z - 1.0) / 2.0),
-        vec4<f32>(0.0, focal.y, 0.0, (view.viewport.w - 1.0) / 2.0),
+        vec4<f32>(focal.x, 0.0, 0.0, (view_bindings::view.viewport.z - 1.0) / 2.0),
+        vec4<f32>(0.0, focal.y, 0.0, (view_bindings::view.viewport.w - 1.0) / 2.0),
         vec4<f32>(0.0, 0.0, 0.0, 1.0)
     );
 
