@@ -2,36 +2,22 @@
 use std::{hash::Hash, num::NonZero};
 
 use bevy::{
-    asset::{AssetEvent, AssetId, load_internal_asset, uuid_handle},
-    core_pipeline::{
+    asset::{load_internal_asset, uuid_handle, AssetEvent, AssetId}, camera::primitives::Aabb, core_pipeline::{
         core_3d::Transparent3d,
         prepass::{
             MotionVectorPrepass, PreviousViewData, PreviousViewUniformOffset, PreviousViewUniforms,
         },
-    },
-    ecs::{
+    }, ecs::{
         query::ROQueryItem,
-        system::{SystemParamItem, lifetimeless::*},
-    },
-    pbr::PrepassViewBindGroup,
-    prelude::*,
-    render::{
-        Extract, Render, RenderApp, RenderSystems,
-        extract_component::{ComponentUniforms, DynamicUniformIndex, UniformComponentPlugin},
-        globals::{GlobalsBuffer, GlobalsUniform},
-        render_asset::RenderAssets,
-        render_phase::{
+        system::{lifetimeless::*, SystemParamItem},
+    }, pbr::PrepassViewBindGroup, prelude::*, render::{
+        extract_component::{ComponentUniforms, DynamicUniformIndex, UniformComponentPlugin}, globals::{GlobalsBuffer, GlobalsUniform}, render_asset::RenderAssets, render_phase::{
             AddRenderCommand, DrawFunctions, PhaseItem, PhaseItemExtraIndex, RenderCommand,
             RenderCommandResult, SetItemPipeline, TrackedRenderPass, ViewSortedRenderPhases,
-        },
-        render_resource::*,
-        renderer::RenderDevice,
-        sync_world::RenderEntity,
-        view::{
-            ExtractedView, RenderVisibilityRanges, RenderVisibleEntities,
-            VISIBILITY_RANGES_STORAGE_BUFFER_COUNT, ViewUniform, ViewUniformOffset, ViewUniforms,
-        },
-    },
+        }, render_resource::*, renderer::RenderDevice, sync_world::RenderEntity, view::{
+            ExtractedView, RenderVisibilityRanges, RenderVisibleEntities, ViewUniform, ViewUniformOffset, ViewUniforms, VISIBILITY_RANGES_STORAGE_BUFFER_COUNT
+        }, Extract, Render, RenderApp, RenderSystems
+    }
 };
 use bevy::shader::ShaderDefVal;
 use bevy_interleave::prelude::*;
@@ -40,7 +26,7 @@ use bevy::render::render_resource::TextureFormat;
 use crate::{
     camera::GaussianCamera,
     gaussian::{
-        cloud::{CloudVisibilityClass, GaussianCloudAabb},
+        cloud::CloudVisibilityClass,
         interface::CommonCloud,
         settings::{CloudSettings, DrawMode, GaussianMode, RasterizeMode},
     },
@@ -306,7 +292,7 @@ fn refresh_planar_storage_bind_groups<R: PlanarSync>(
 
 #[derive(Bundle)]
 pub struct GpuCloudBundle<R: PlanarSync> {
-    pub aabb: GaussianCloudAabb,
+    pub aabb: Aabb,
     pub settings: CloudSettings,
     pub settings_uniform: CloudUniform,
     pub sorted_entries: SortedEntriesHandle,
@@ -318,7 +304,7 @@ pub struct GpuCloudBundle<R: PlanarSync> {
 type GpuCloudBundleQuery<R: bevy_interleave::prelude::PlanarSync> = (
     Entity,
     &'static <R as bevy_interleave::prelude::PlanarSync>::PlanarTypeHandle,
-    &'static GaussianCloudAabb,
+    &'static Aabb,
     &'static SortedEntriesHandle,
     &'static CloudSettings,
     &'static GlobalTransform,
@@ -329,7 +315,7 @@ type GpuCloudBundleQuery<R: bevy_interleave::prelude::PlanarSync> = (
 type GpuCloudBundleQuery<R: bevy_interleave::prelude::PlanarSync> = (
     Entity,
     &'static <R as bevy_interleave::prelude::PlanarSync>::PlanarTypeHandle,
-    &'static GaussianCloudAabb,
+    &'static Aabb,
     &'static SortedEntriesHandle,
     &'static CloudSettings,
     &'static GlobalTransform,
@@ -435,8 +421,8 @@ fn queue_gaussians<R: PlanarSync>(
             let pipeline = pipelines.specialize(&pipeline_cache, &custom_pipeline, key);
 
             let rangefinder = view.rangefinder3d();
-            let aabb_center = (aabb.0.min + aabb.0.max) / 2.0;
-            let aabb_size = aabb.0.max - aabb.0.min;
+            let aabb_center = (aabb.min() + aabb.max()) / 2.0;
+            let aabb_size = aabb.max() - aabb.min();
             let center = *transform
                 * GlobalTransform::from(
                     Transform::from_translation(aabb_center.into())
@@ -940,7 +926,7 @@ pub fn extract_gaussians<R: PlanarSync>(
             RenderEntity,
             &ViewVisibility,
             &R::PlanarTypeHandle,
-            &GaussianCloudAabb,
+            &Aabb,
             &SortedEntriesHandle,
             &CloudSettings,
             &GlobalTransform,
@@ -984,8 +970,8 @@ pub fn extract_gaussians<R: PlanarSync>(
             time_start: settings.time_start,
             time_stop: settings.time_stop,
             num_classes: settings.num_classes as u32,
-            min: aabb.0.min.extend(1.0),
-            max: aabb.0.max.extend(1.0),
+            min: aabb.min().extend(1.0),
+            max: aabb.max().extend(1.0),
         };
 
         commands_list.push((

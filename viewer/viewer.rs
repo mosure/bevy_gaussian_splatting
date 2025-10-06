@@ -2,14 +2,7 @@
 use std::path::PathBuf;
 
 use bevy::{
-    app::AppExit,
-    color::palettes::css::GOLD,
-    core_pipeline::{prepass::MotionVectorPrepass, tonemapping::Tonemapping},
-    diagnostic::{DiagnosticsStore, FrameCount, FrameTimeDiagnosticsPlugin},
-    prelude::*,
-    render::{
-        view::screenshot::{Screenshot, save_to_disk},
-    },
+    app::AppExit, camera::primitives::Aabb, color::palettes::css::GOLD, core_pipeline::{prepass::MotionVectorPrepass, tonemapping::Tonemapping}, diagnostic::{DiagnosticsStore, FrameCount, FrameTimeDiagnosticsPlugin}, prelude::*, render::view::screenshot::{save_to_disk, Screenshot}
 };
 use bevy_args::{BevyArgsPlugin, parse_args};
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
@@ -23,7 +16,7 @@ use bevy_file_asset::FileAssetPlugin;
 use bevy::asset::io::web::WebAssetPlugin;
 
 use bevy_gaussian_splatting::{
-    gaussian::{cloud::GaussianCloudAabb, interface::TestCloud}, random_gaussians_3d, random_gaussians_4d, utils::{log, setup_hooks, GaussianSplattingViewer}, CloudSettings, GaussianCamera, GaussianMode, GaussianScene, GaussianSceneHandle, GaussianSplattingPlugin, PlanarGaussian3d, PlanarGaussian3dHandle, PlanarGaussian4d, PlanarGaussian4dHandle
+    gaussian::interface::TestCloud, random_gaussians_3d, random_gaussians_4d, utils::{log, setup_hooks, GaussianSplattingViewer}, CloudSettings, GaussianCamera, GaussianMode, GaussianScene, GaussianSceneHandle, GaussianSplattingPlugin, PlanarGaussian3d, PlanarGaussian3dHandle, PlanarGaussian4d, PlanarGaussian4dHandle
 };
 
 #[cfg(feature = "morph_interpolate")]
@@ -381,10 +374,9 @@ pub fn press_s_screenshot(
 #[derive(Component, Debug, Default, Reflect)]
 pub struct ShowAxes;
 
-fn draw_axes(mut gizmos: Gizmos, query: Query<(&Transform, &GaussianCloudAabb), With<ShowAxes>>) {
+fn draw_axes(mut gizmos: Gizmos, query: Query<(&Transform, &Aabb), With<ShowAxes>>) {
     for (&transform, aabb) in &query {
-        let half_extents = (aabb.max - aabb.min) / 2.0;
-        let length = half_extents.length();
+        let length = aabb.half_extents.length();
         gizmos.axes(transform, length);
     }
 }
