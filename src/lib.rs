@@ -26,6 +26,7 @@ pub mod io;
 pub mod material;
 pub mod math;
 pub mod morph;
+pub mod pbr_decomposition;
 pub mod query;
 pub mod render;
 pub mod sort;
@@ -62,7 +63,11 @@ impl Plugin for GaussianSplattingPlugin {
             render::RenderPipelinePlugin::<Gaussian4d>::default(),
         ));
 
-        app.add_plugins((material::MaterialPlugin, query::QueryPlugin));
+        app.add_plugins((
+            material::MaterialPlugin,
+            pbr_decomposition::PbrDecompositionPlugin,
+            query::QueryPlugin,
+        ));
 
         #[cfg(feature = "noise")]
         app.add_plugins(noise::NoisePlugin);

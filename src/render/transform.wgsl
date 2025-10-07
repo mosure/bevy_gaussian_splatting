@@ -1,6 +1,6 @@
 #define_import_path bevy_gaussian_splatting::transform
 
-#import bevy_gaussian_splatting::bindings::view
+#import bevy_pbr::mesh_view_bindings::view
 
 fn world_to_clip(world_pos: vec3<f32>) -> vec4<f32> {
     let homogenous_pos = view.unjittered_clip_from_world * vec4<f32>(world_pos, 1.0);

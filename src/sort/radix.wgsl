@@ -1,5 +1,4 @@
 #import bevy_gaussian_splatting::bindings::{
-    view,
     globals,
     gaussian_uniforms,
     sorting_pass_index,
@@ -12,6 +11,7 @@
     DrawIndirect,
     Entry,
 }
+#import bevy_pbr::mesh_view_bindings as view_bindings;
 #import bevy_gaussian_splatting::transform::{
     world_to_clip,
     in_frustum,
@@ -90,7 +90,7 @@ fn radix_sort_a(
         let position = vec4<f32>(get_position(entry_index), 1.0);
         let transformed_position = (gaussian_uniforms.transform * position).xyz;
         let clip_space_pos = world_to_clip(transformed_position);
-        let diff = transformed_position - view.world_position;
+        let diff = transformed_position - view_bindings::view.world_position;
         let dist2 = dot(diff, diff);
         let dist_bits = bitcast<u32>(dist2);
         let key_distance = 0xFFFFFFFFu - dist_bits;

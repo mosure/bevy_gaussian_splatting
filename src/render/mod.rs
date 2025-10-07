@@ -1,32 +1,46 @@
 #![allow(dead_code)] // ShaderType derives emit unused check helpers
-use std::{hash::Hash, num::NonZero};
+use std::{any::TypeId, hash::Hash, num::NonZero};
 
-use bevy::{
-    asset::{load_internal_asset, uuid_handle, AssetEvent, AssetId}, camera::primitives::Aabb, core_pipeline::{
-        core_3d::Transparent3d,
-        prepass::{
-            MotionVectorPrepass, PreviousViewData, PreviousViewUniformOffset, PreviousViewUniforms,
-        },
-    }, ecs::{
-        query::ROQueryItem,
-        system::{lifetimeless::*, SystemParamItem},
-    }, pbr::PrepassViewBindGroup, prelude::*, render::{
-        extract_component::{ComponentUniforms, DynamicUniformIndex, UniformComponentPlugin}, globals::{GlobalsBuffer, GlobalsUniform}, render_asset::RenderAssets, render_phase::{
-            AddRenderCommand, DrawFunctions, PhaseItem, PhaseItemExtraIndex, RenderCommand,
-            RenderCommandResult, SetItemPipeline, TrackedRenderPass, ViewSortedRenderPhases,
-        }, render_resource::*, renderer::RenderDevice, sync_world::RenderEntity, view::{
-            ExtractedView, RenderVisibilityRanges, RenderVisibleEntities, ViewUniform, ViewUniformOffset, ViewUniforms, VISIBILITY_RANGES_STORAGE_BUFFER_COUNT
-        }, Extract, Render, RenderApp, RenderSystems
-    }
-};
-use bevy::shader::ShaderDefVal;
-use bevy_interleave::prelude::*;
 use bevy::render::render_resource::TextureFormat;
+use bevy::shader::ShaderDefVal;
+use bevy::{
+    asset::{AssetEvent, AssetId, load_internal_asset, uuid_handle},
+    camera::primitives::Aabb,
+    core_pipeline::{
+        core_3d::Transparent3d,
+        prepass::{PreviousViewData, PreviousViewUniforms},
+    },
+    ecs::{
+        query::ROQueryItem,
+        system::{SystemParamItem, lifetimeless::*},
+    },
+    prelude::*,
+        render::{
+            Extract, Render, RenderApp, RenderSystems,
+            extract_component::{ComponentUniforms, DynamicUniformIndex, UniformComponentPlugin},
+            globals::{GlobalsBuffer, GlobalsUniform},
+            render_asset::RenderAssets, render_phase::{
+                AddRenderCommand, DrawFunctions, PhaseItem, PhaseItemExtraIndex, RenderCommand,
+                RenderCommandResult, SetItemPipeline, TrackedRenderPass, ViewSortedRenderPhases,
+            },
+            render_resource::*, renderer::RenderDevice, sync_world::RenderEntity,
+            view::{
+                ExtractedView, RenderVisibilityRanges, RenderVisibleEntities,
+                VISIBILITY_RANGES_STORAGE_BUFFER_COUNT, ViewUniform, ViewUniformOffset, ViewUniforms,
+            },
+        },
+};
+use bevy_interleave::prelude::*;
+use bytemuck::{bytes_of, Pod, Zeroable};
+use bevy::core_pipeline::{oit::OrderIndependentTransparencySettings, prepass::ViewPrepassTextures};
+use bevy_pbr::{MeshPipelineViewLayoutKey, MeshPipelineViewLayouts, SetMeshViewBindGroup};
+use bevy::render::texture::FallbackImage;
 
 use crate::{
     camera::GaussianCamera,
     gaussian::{
         cloud::CloudVisibilityClass,
+        formats::planar_3d::{Gaussian3d, PlanarGaussian3dHandle},
         interface::CommonCloud,
         settings::{CloudSettings, DrawMode, GaussianMode, RasterizeMode},
     },
@@ -35,6 +49,12 @@ use crate::{
         spherindrical_harmonics::{SH_4D_COEFF_COUNT, SH_4D_DEGREE_TIME},
     },
     morph::MorphPlugin,
+    pbr_decomposition::{
+        material_separation::MaterialSeparationBuffers,
+        normal_estimation::NormalEstimationBuffers,
+        types::{NormalData, PbrMaterialData},
+    },
+    material::gaussian_material::{GaussianMaterial, GaussianMaterialBounds, GaussianMaterialHandle, RenderGaussianMaterials},
     sort::{GpuSortedEntry, SortEntry, SortPlugin, SortTrigger, SortedEntriesHandle},
 };
 
@@ -61,6 +81,15 @@ const PLANAR_SHADER_HANDLE: Handle<Shader> = uuid_handle!("d6a3f978-f795-4786-84
 const TEXTURE_SHADER_HANDLE: Handle<Shader> = uuid_handle!("500e2ebf-51a8-402e-9c88-e0d5152c3486");
 const TRANSFORM_SHADER_HANDLE: Handle<Shader> =
     uuid_handle!("648516b2-87cc-4937-ae1c-d986952e9fa7");
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct GaussianMaterialOverrideUniform {
+    base_color_factor: [f32; 4],
+    bounds_min: [f32; 4],
+    bounds_size: [f32; 4],
+    flags: [u32; 4],
+}
 
 // TODO: consider refactor to bind via bevy's mesh (dynamic vertex planes) + shared batching/instancing/preprocessing
 //       utilize RawBufferVec<T> for gaussian data?
@@ -107,12 +136,20 @@ where
                         refresh_planar_storage_bind_groups::<R>
                             .in_set(RenderSystems::PrepareBindGroups),
                         queue_gaussian_bind_group::<R>.in_set(RenderSystems::PrepareBindGroups),
-                        queue_gaussian_view_bind_groups::<R>.in_set(RenderSystems::PrepareBindGroups),
+                        queue_gaussian_view_bind_groups::<R>
+                            .in_set(RenderSystems::PrepareBindGroups),
                         queue_gaussian_compute_view_bind_groups::<R>
                             .in_set(RenderSystems::PrepareBindGroups),
                         queue_gaussians::<R>.in_set(RenderSystems::Queue),
                     ),
                 );
+
+            if TypeId::of::<R::PlanarTypeHandle>() == TypeId::of::<PlanarGaussian3dHandle>() {
+                render_app.add_systems(
+                    Render,
+                    queue_gaussian_pbr_bind_group_3d.in_set(RenderSystems::PrepareBindGroups),
+                );
+            }
         }
 
         // TODO: refactor common resources into a common plugin
@@ -354,12 +391,14 @@ fn queue_gaussians<R: PlanarSync>(
         &GaussianCamera,
         &RenderVisibleEntities,
         Option<&Msaa>,
+        Option<&ViewPrepassTextures>,
+        Has<OrderIndependentTransparencySettings>,
     )>,
     gaussian_splatting_bundles: Query<GpuCloudBundleQuery<R>>,
 ) {
     debug!("queue_gaussians");
 
-    let warmup = views.iter().any(|(_, camera, _, _)| camera.warmup);
+    let warmup = views.iter().any(|(_, camera, _, _, _, _)| camera.warmup);
     if warmup {
         debug!("skipping gaussian cloud render during warmup");
         return;
@@ -375,7 +414,7 @@ fn queue_gaussians<R: PlanarSync>(
         .read()
         .id::<DrawGaussians<R>>();
 
-    for (view, _, visible_entities, msaa) in &mut views {
+    for (view, _, visible_entities, msaa, prepass_textures, has_oit) in &mut views {
         debug!("queue gaussians view");
         let Some(transparent_phase) = transparent_render_phases.get_mut(&view.retained_view_entity)
         else {
@@ -404,7 +443,12 @@ fn queue_gaussians<R: PlanarSync>(
                 return;
             }
 
-            let msaa = msaa.cloned().unwrap_or_default();
+            let msaa = msaa.map(|m| m.clone()).unwrap_or_default();
+            let mut mesh_view_layout_key =
+                MeshPipelineViewLayoutKey::from(msaa) | MeshPipelineViewLayoutKey::from(prepass_textures);
+            if has_oit {
+                mesh_view_layout_key |= MeshPipelineViewLayoutKey::OIT_ENABLED;
+            }
 
             let key = CloudPipelineKey {
                 aabb: settings.aabb,
@@ -416,6 +460,7 @@ fn queue_gaussians<R: PlanarSync>(
                 rasterize_mode: settings.rasterize_mode,
                 sample_count: msaa.samples(),
                 hdr: view.hdr,
+                mesh_view_layout_key_bits: mesh_view_layout_key.bits(),
             };
 
             let pipeline = pipelines.specialize(&pipeline_cache, &custom_pipeline, key);
@@ -425,8 +470,7 @@ fn queue_gaussians<R: PlanarSync>(
             let aabb_size = aabb.max() - aabb.min();
             let center = *transform
                 * GlobalTransform::from(
-                    Transform::from_translation(aabb_center.into())
-                        .with_scale(aabb_size.into()),
+                    Transform::from_translation(aabb_center.into()).with_scale(aabb_size.into()),
                 );
             let distance = rangefinder.distance_translation(&center.translation());
 
@@ -453,6 +497,15 @@ pub struct CloudPipeline<R: PlanarSync> {
     pub view_layout: BindGroupLayout,
     pub compute_view_layout: BindGroupLayout,
     pub sorted_layout: BindGroupLayout,
+    pub pbr_layout: BindGroupLayout,
+    pub fallback_normals: Buffer,
+    pub fallback_materials: Buffer,
+    pub fallback_bind_group: BindGroup,
+    pub gaussian_material_layout: BindGroupLayout,
+    pub _fallback_material_override_uniform: Buffer,
+    pub fallback_material_override_bind_group: BindGroup,
+    pub _fallback_material_override_sampler: Sampler,
+    mesh_view_layouts: MeshPipelineViewLayouts,
     phantom: std::marker::PhantomData<R>,
 }
 
@@ -606,6 +659,139 @@ where
         #[cfg(feature = "buffer_texture")]
         let sorted_layout = texture::get_sorted_bind_group_layout(render_device);
 
+        let pbr_layout = render_device.create_bind_group_layout(
+            Some("gaussian_pbr_layout"),
+            &[
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::VERTEX_FRAGMENT,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(NormalData::min_size()),
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: ShaderStages::VERTEX_FRAGMENT,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(PbrMaterialData::min_size()),
+                    },
+                    count: None,
+                },
+            ],
+        );
+
+        let gaussian_material_layout = render_device.create_bind_group_layout(
+            Some("gaussian_material_override_layout"),
+            &[
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: BufferSize::new(std::mem::size_of::<GaussianMaterialOverrideUniform>() as u64),
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Texture {
+                        sample_type: TextureSampleType::Float { filterable: true },
+                        view_dimension: TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        );
+
+        let fallback_normal = NormalData::default();
+        let fallback_normals = render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("gaussian_pbr_fallback_normals"),
+            contents: bytes_of(&fallback_normal),
+            usage: BufferUsages::STORAGE,
+        });
+
+        let fallback_material = PbrMaterialData::default();
+        let fallback_materials = render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("gaussian_pbr_fallback_materials"),
+            contents: bytes_of(&fallback_material),
+            usage: BufferUsages::STORAGE,
+        });
+
+        let fallback_bind_group = render_device.create_bind_group(
+            "gaussian_pbr_fallback_bind_group",
+            &pbr_layout,
+            &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &fallback_normals,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &fallback_materials,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+            ],
+        );
+
+        let fallback_image = render_world.resource::<FallbackImage>();
+
+        let fallback_override = GaussianMaterialOverrideUniform {
+            base_color_factor: [1.0, 1.0, 1.0, 1.0],
+            bounds_min: [0.0, 0.0, 0.0, 0.0],
+            bounds_size: [1.0, 1.0, 1.0, 0.0],
+            flags: [0, 0, 0, 0],
+        };
+
+        let fallback_material_override_uniform = render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("gaussian_material_override_uniform"),
+            contents: bytes_of(&fallback_override),
+            usage: BufferUsages::UNIFORM,
+        });
+
+        let fallback_material_override_sampler = fallback_image.d2.sampler.clone();
+
+        let fallback_material_override_bind_group = render_device.create_bind_group(
+            "gaussian_material_override_fallback",
+            &gaussian_material_layout,
+            &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: fallback_material_override_uniform.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::TextureView(&fallback_image.d2.texture_view),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::Sampler(&fallback_material_override_sampler),
+                },
+            ],
+        );
+
+        let mesh_view_layouts = render_world.resource::<MeshPipelineViewLayouts>().clone();
+
         debug!("created cloud pipeline");
 
         Self {
@@ -615,6 +801,15 @@ where
             compute_view_layout,
             shader: GAUSSIAN_SHADER_HANDLE,
             sorted_layout,
+            pbr_layout,
+            fallback_normals,
+            fallback_materials,
+            fallback_bind_group,
+            gaussian_material_layout,
+            _fallback_material_override_uniform: fallback_material_override_uniform,
+            fallback_material_override_bind_group,
+            _fallback_material_override_sampler: fallback_material_override_sampler,
+            mesh_view_layouts,
             phantom: std::marker::PhantomData,
         }
     }
@@ -815,6 +1010,7 @@ pub struct CloudPipelineKey {
     pub rasterize_mode: RasterizeMode,
     pub sample_count: u32,
     pub hdr: bool,
+    pub mesh_view_layout_key_bits: u32,
 }
 
 impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
@@ -831,13 +1027,19 @@ impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
 
         debug!("specializing cloud pipeline");
 
+        let view_layout_key =
+            MeshPipelineViewLayoutKey::from_bits_truncate(key.mesh_view_layout_key_bits);
+        let view_layout = &self.mesh_view_layouts[view_layout_key.bits() as usize].main_layout;
+
         RenderPipelineDescriptor {
             label: Some("gaussian cloud render pipeline".into()),
             layout: vec![
-                self.view_layout.clone(),
+                view_layout.clone(),
                 self.gaussian_uniform_layout.clone(),
                 self.gaussian_cloud_layout.clone(),
                 self.sorted_layout.clone(),
+                self.pbr_layout.clone(),
+                self.gaussian_material_layout.clone(),
             ],
             vertex: VertexState {
                 shader: self.shader.clone(),
@@ -893,8 +1095,7 @@ impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
 
 type DrawGaussians<R: bevy_interleave::prelude::PlanarSync> = (
     SetItemPipeline,
-    // SetViewBindGroup<0>,
-    SetPreviousViewBindGroup<0>,
+    SetMeshViewBindGroup<0>,
     SetGaussianUniformBindGroup<1>,
     DrawGaussianInstanced<R>,
 );
@@ -998,6 +1199,21 @@ pub struct GaussianUniformBindGroups {
 #[derive(Component)]
 pub struct SortBindGroup {
     pub sorted_bind_group: BindGroup,
+}
+
+#[derive(Component)]
+pub struct GaussianPbrBindGroup {
+    pub bind_group: BindGroup,
+}
+
+#[derive(Component)]
+pub struct GaussianMaterialOverrideBindGroup {
+    pub bind_group: BindGroup,
+    pub uniform: Buffer,
+    pub asset_id: Option<AssetId<GaussianMaterial>>,
+    pub revision: u64,
+    pub bounds_min: Vec3,
+    pub bounds_size: Vec3,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1115,6 +1331,157 @@ fn queue_gaussian_bind_group<R: PlanarSync>(
         commands
             .entity(entity)
             .insert(SortBindGroup { sorted_bind_group });
+    }
+}
+
+fn queue_gaussian_pbr_bind_group_3d(
+    mut commands: Commands,
+    render_device: Res<RenderDevice>,
+    gaussian_cloud_pipeline: Res<CloudPipeline<Gaussian3d>>,
+    normals_res: Res<NormalEstimationBuffers>,
+    materials_res: Res<MaterialSeparationBuffers>,
+    material_assets: Res<RenderGaussianMaterials>,
+    gaussian_clouds: Query<(
+        Entity,
+        &PlanarGaussian3dHandle,
+        &CloudUniform,
+        Option<&GaussianPbrBindGroup>,
+        Option<&GaussianMaterialOverrideBindGroup>,
+        Option<&GaussianMaterialHandle>,
+    )>,
+) {
+    let pipeline_changed = gaussian_cloud_pipeline.is_changed();
+
+    for (entity, planar_handle, cloud_uniform, existing_pbr, existing_override, material_handle) in
+        gaussian_clouds.iter()
+    {
+        if existing_pbr.is_some() && !pipeline_changed {
+            continue;
+        }
+
+        let asset_id = planar_handle.handle().id();
+        let Some(normals_gpu) = normals_res.asset_map.get(&asset_id) else {
+            continue;
+        };
+        let Some(materials_gpu) = materials_res.asset_map.get(&asset_id) else {
+            continue;
+        };
+
+        let bind_group = render_device.create_bind_group(
+            "gaussian_pbr_bind_group",
+            &gaussian_cloud_pipeline.pbr_layout,
+            &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &normals_gpu.normals,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &materials_gpu.materials,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+            ],
+        );
+
+        commands
+            .entity(entity)
+            .insert(GaussianPbrBindGroup { bind_group });
+
+        // Material override handling
+        let Some(material_asset_id) = material_handle
+            .filter(|h| h.is_strong())
+            .map(|h| h.id())
+        else {
+            if existing_override.is_some() {
+                commands
+                    .entity(entity)
+                    .remove::<GaussianMaterialOverrideBindGroup>();
+            }
+            continue;
+        };
+
+        let Some(cached_material) = material_assets.map.get(&material_asset_id) else {
+            if existing_override.is_some() {
+                commands
+                    .entity(entity)
+                    .remove::<GaussianMaterialOverrideBindGroup>();
+            }
+            continue;
+        };
+
+        let gpu_material = &cached_material.material;
+
+        let bounds = gpu_material
+            .bounds_override
+            .unwrap_or(GaussianMaterialBounds {
+                min: cloud_uniform.min.truncate(),
+                max: cloud_uniform.max.truncate(),
+            });
+
+        let bounds_min = bounds.min;
+        let bounds_size = (bounds.max - bounds.min).max(Vec3::splat(1e-3));
+
+        let needs_override_update = pipeline_changed
+            || existing_override
+                .map(|override_bg| {
+                    override_bg.asset_id != Some(material_asset_id)
+                        || override_bg.bounds_min != bounds_min
+                        || override_bg.bounds_size != bounds_size
+                        || override_bg.revision != cached_material.revision
+                })
+                .unwrap_or(true);
+
+        if !needs_override_update {
+            continue;
+        }
+
+        let override_uniform = GaussianMaterialOverrideUniform {
+            base_color_factor: gpu_material.base_color.into(),
+            bounds_min: bounds_min.extend(0.0).to_array(),
+            bounds_size: bounds_size.extend(0.0).to_array(),
+            flags: [gpu_material.use_texture, gpu_material.projection_axis, 0, 0],
+        };
+
+        let uniform_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("gaussian_material_override_uniform"),
+            contents: bytes_of(&override_uniform),
+            usage: BufferUsages::UNIFORM,
+        });
+
+        let override_bind_group = render_device.create_bind_group(
+            "gaussian_material_override_bind_group",
+            &gaussian_cloud_pipeline.gaussian_material_layout,
+            &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::TextureView(&gpu_material.texture_view),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::Sampler(&gpu_material.sampler),
+                },
+            ],
+        );
+
+        commands.entity(entity).insert(GaussianMaterialOverrideBindGroup {
+            bind_group: override_bind_group,
+            uniform: uniform_buffer,
+            asset_id: Some(material_asset_id),
+            revision: cached_material.revision,
+            bounds_min,
+            bounds_size,
+        });
     }
 }
 
@@ -1284,74 +1651,6 @@ pub fn queue_gaussian_compute_view_bind_groups<R: PlanarSync>(
     }
 }
 
-pub struct SetViewBindGroup<const I: usize>;
-impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetViewBindGroup<I> {
-    type Param = ();
-    type ViewQuery = (Read<GaussianViewBindGroup>, Read<ViewUniformOffset>);
-    type ItemQuery = ();
-
-    #[inline]
-    fn render<'w>(
-        _: &P,
-        (gaussian_view_bind_group, view_uniform): ROQueryItem<'w, 'w, Self::ViewQuery>,
-        _entity: Option<()>,
-        _: SystemParamItem<'w, '_, Self::Param>,
-        pass: &mut TrackedRenderPass<'w>,
-    ) -> RenderCommandResult {
-        pass.set_bind_group(I, &gaussian_view_bind_group.value, &[view_uniform.offset]);
-
-        debug!("set view bind group");
-
-        RenderCommandResult::Success
-    }
-}
-
-pub struct SetPreviousViewBindGroup<const I: usize>;
-impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetPreviousViewBindGroup<I> {
-    type Param = SRes<PrepassViewBindGroup>;
-    type ViewQuery = (
-        Read<ViewUniformOffset>,
-        Option<Has<MotionVectorPrepass>>,
-        Option<Read<PreviousViewUniformOffset>>,
-    );
-    type ItemQuery = ();
-
-    #[inline]
-    fn render<'w>(
-        _: &P,
-        (view_uniform_offset, has_motion_vector_prepass, previous_view_uniform_offset): ROQueryItem<
-            'w,
-            'w,
-            Self::ViewQuery,
-        >,
-        _entity: Option<()>,
-        prepass_view_bind_group: SystemParamItem<'w, '_, Self::Param>,
-        pass: &mut TrackedRenderPass<'w>,
-    ) -> RenderCommandResult {
-        let prepass_view_bind_group = prepass_view_bind_group.into_inner();
-        match previous_view_uniform_offset {
-            Some(previous_view_uniform_offset) if has_motion_vector_prepass.unwrap_or_default() => {
-                pass.set_bind_group(
-                    I,
-                    prepass_view_bind_group.motion_vectors.as_ref().unwrap(),
-                    &[
-                        view_uniform_offset.offset,
-                        previous_view_uniform_offset.offset,
-                    ],
-                );
-            }
-            _ => pass.set_bind_group(
-                I,
-                prepass_view_bind_group.motion_vectors.as_ref().unwrap(),
-                &[view_uniform_offset.offset, 0],
-            ),
-        }
-
-        debug!("set previous view bind group");
-
-        RenderCommandResult::Success
-    }
-}
 
 pub struct SetGaussianUniformBindGroup<const I: usize>;
 impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianUniformBindGroup<I> {
@@ -1405,12 +1704,17 @@ impl<P: PhaseItem, R: PlanarSync> RenderCommand<P> for DrawGaussianInstanced<R>
 where
     R::GpuPlanarType: GpuPlanarStorage,
 {
-    type Param = SRes<RenderAssets<R::GpuPlanarType>>;
+    type Param = (
+        SRes<RenderAssets<R::GpuPlanarType>>,
+        SRes<CloudPipeline<R>>,
+    );
     type ViewQuery = Read<SortTrigger>;
     type ItemQuery = (
         Read<R::PlanarTypeHandle>,
         Read<PlanarStorageBindGroup<R>>,
         Read<SortBindGroup>,
+        Option<Read<GaussianPbrBindGroup>>,
+        Option<Read<GaussianMaterialOverrideBindGroup>>,
     );
 
     #[inline]
@@ -1421,16 +1725,27 @@ where
             &'w R::PlanarTypeHandle,
             &'w PlanarStorageBindGroup<R>,
             &'w SortBindGroup,
+            Option<&'w GaussianPbrBindGroup>,
+            Option<&'w GaussianMaterialOverrideBindGroup>,
         )>,
-        gaussian_clouds: SystemParamItem<'w, '_, Self::Param>,
+        gaussian_resources: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
         debug!("render call");
 
-        let (handle, planar_bind_groups, sort_bind_groups) =
+        let gaussian_assets: &RenderAssets<R::GpuPlanarType> = gaussian_resources.0.into_inner();
+        let pipeline: &CloudPipeline<R> = gaussian_resources.1.into_inner();
+
+        let (
+            handle,
+            planar_bind_groups,
+            sort_bind_groups,
+            maybe_pbr_bind_group,
+            maybe_material_override,
+        ) =
             entity.expect("gaussian cloud entity not found");
 
-        let gpu_gaussian_cloud = match gaussian_clouds.into_inner().get(handle.handle()) {
+        let gpu_gaussian_cloud = match gaussian_assets.get(handle.handle()) {
             Some(gpu_gaussian_cloud) => gpu_gaussian_cloud,
             None => {
                 debug!("gpu cloud not found");
@@ -1450,6 +1765,16 @@ where
                 * std::mem::size_of::<SortEntry>() as u32
                 * gpu_gaussian_cloud.len() as u32],
         );
+
+        let pbr_bind_group = maybe_pbr_bind_group
+            .map(|bg| &bg.bind_group)
+            .unwrap_or(&pipeline.fallback_bind_group);
+        pass.set_bind_group(4, pbr_bind_group, &[]);
+
+        let material_override_bind_group = maybe_material_override
+            .map(|bg| &bg.bind_group)
+            .unwrap_or(&pipeline.fallback_material_override_bind_group);
+        pass.set_bind_group(5, material_override_bind_group, &[]);
 
         #[cfg(feature = "webgl2")]
         pass.draw(0..4, 0..gpu_gaussian_cloud.count as u32);

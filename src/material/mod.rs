@@ -6,6 +6,7 @@ pub mod optical_flow;
 pub mod position;
 pub mod spherical_harmonics;
 pub mod spherindrical_harmonics;
+pub mod gaussian_material;
 
 #[cfg(feature = "material_noise")]
 pub mod noise;
@@ -26,6 +27,7 @@ impl Plugin for MaterialPlugin {
             position::PositionMaterialPlugin,
             spherical_harmonics::SphericalHarmonicCoefficientsPlugin,
             spherindrical_harmonics::SpherindricalHarmonicCoefficientsPlugin,
+            gaussian_material::GaussianMaterialPlugin,
         ));
     }
 }
