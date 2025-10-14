@@ -151,58 +151,53 @@ impl Node for RadixTestNode {
                 let sorted_entries = sorted_entries_res.get(sorted_entries_handle).unwrap();
                 let gaussians = cloud.debug_gpu.gaussians.clone();
 
-                wgpu::util::DownloadBuffer::read_buffer(
-                    render_context.render_device().wgpu_device(),
-                    world.get_resource::<RenderQueue>().unwrap().0.as_ref(),
-                    &sorted_entries
-                        .sorted_entry_buffer
-                        .slice(0..sorted_entries.sorted_entry_buffer.size()),
-                    move |buffer: Result<wgpu::util::DownloadBuffer, wgpu::BufferAsyncError>| {
-                        let binding = buffer.unwrap();
-                        let u32_muck = bytemuck::cast_slice::<u8, u32>(&*binding);
-
-                        let mut radix_sorted_indices = Vec::new();
-                        for i in (1..u32_muck.len()).step_by(2) {
-                            radix_sorted_indices.push((i, u32_muck[i] as usize));
+                move |buffer: Result<wgpu::util::DownloadBuffer, wgpu::BufferAsyncError>| {
+                    let binding = buffer.unwrap();
+                    let u32_muck = bytemuck::cast_slice::<u8, u32>(&*binding);
+                
+                    let mut radix_sorted_indices = Vec::new();
+                    for i in (1..u32_muck.len()).step_by(2) {
+                        radix_sorted_indices.push((i, u32_muck[i] as usize));
+                    }
+                
+                    // ✅ Project point into NDC space using view-projection matrix
+                    let view_proj = view.projection * view.transform.compute_matrix().inverse();
+                
+                    radix_sorted_indices.iter().fold(f32::NEG_INFINITY, |prev_depth, &(entry_idx, idx)| {
+                        if idx == 0 || u32_muck[entry_idx - 1] == 0xffffffff || u32_muck[entry_idx - 1] == 0x0 {
+                            return prev_depth;
                         }
-
-                        // TODO: depth order validation over ndc cells
-
-                        radix_sorted_indices
-                            .iter()
-                            .fold(0.0, |depth_acc, &(entry_idx, idx)| {
-                                if idx == 0
-                                    || u32_muck[entry_idx - 1] == 0xffffffff
-                                    || u32_muck[entry_idx - 1] == 0x0
-                                {
-                                    return depth_acc;
-                                }
-
-                                let position = gaussians[idx].position_visibility;
-                                let position_vec3 =
-                                    Vec3::new(position[0], position[1], position[2]);
-                                let depth = (position_vec3 - camera_position).length();
-
-                                let depth_is_non_decreasing = depth_acc <= depth;
-                                if !depth_is_non_decreasing {
-                                    println!(
-                                        "radix keys: [..., {:#010x}, {:#010x}, {:#010x}, ...]",
-                                        u32_muck[entry_idx - 1 - 2],
-                                        u32_muck[entry_idx - 1],
-                                        u32_muck[entry_idx - 1 + 2],
-                                    );
-                                }
-
-                                assert!(
-                                    depth_is_non_decreasing,
-                                    "radix sort, non-decreasing check failed: {} > {}",
-                                    depth_acc, depth
-                                );
-
-                                depth_acc.max(depth)
-                            });
-                    },
-                );
+                
+                        let position = gaussians[idx].position_visibility;
+                        let position_vec3 = Vec3::new(position[0], position[1], position[2]);
+                
+                        // ✅ Project into clip space and normalize to NDC
+                        let clip_pos = view_proj.project_point3(position_vec3);
+                        let ndc_z = clip_pos.z;
+                
+                        // ✅ Assert non-decreasing NDC Z for back-to-front sorting
+                        if ndc_z < prev_depth {
+                            println!(
+                                "Depth order error at idx {idx} → NDC z: {:.6} < {:.6}",
+                                ndc_z, prev_depth
+                            );
+                            println!(
+                                "Radix keys: [..., {:#010x}, {:#010x}, {:#010x}, ...]",
+                                u32_muck[entry_idx - 1 - 2],
+                                u32_muck[entry_idx - 1],
+                                u32_muck[entry_idx - 1 + 2],
+                            );
+                        }
+                
+                        assert!(
+                            ndc_z >= prev_depth,
+                            "❌ Radix sort NDC-Z check failed: depth order incorrect ({} < {})",
+                            ndc_z, prev_depth
+                        );
+                
+                        ndc_z
+                    });
+                }
             }
         }
 
