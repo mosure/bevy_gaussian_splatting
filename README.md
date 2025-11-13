@@ -17,7 +17,7 @@ cargo +nightly install bevy_gaussian_splatting
 bevy_gaussian_splatting --input-cloud [file://gaussian.ply | https://mitchell.mosure.me/go_trimmed.ply]
 ```
 
-> note: default bevy_gaussian_splatting features require nightly rust for generic associated types. to use on stable, disable default features and enable `nightly_generic_alias` feature
+> note: default bevy_gaussian_splatting features require nightly rust for generic associated types. to use on stable, disable default features and `nightly_generic_alias` feature
 
 
 ## capabilities
