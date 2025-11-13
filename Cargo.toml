@@ -57,6 +57,8 @@ default = [
   # "morph_particles",
   "morph_interpolate",
 
+  "nightly_generic_alias",
+
   "sort_bitonic",
   "sort_radix",  # TODO: fix macos radix sort
   "sort_rayon",
@@ -79,6 +81,8 @@ material_noise = ["noise", "dep:noise"]
 
 morph_particles = []
 morph_interpolate = []
+
+nightly_generic_alias = []
 
 noise = []
 
