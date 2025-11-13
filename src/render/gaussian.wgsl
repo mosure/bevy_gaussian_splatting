@@ -331,8 +331,8 @@ fn vs_points(
     let first_position = vec4<f32>(get_position(get_entry(1u).value), 1.0);
     let last_position = vec4<f32>(get_position(get_entry(gaussian_uniforms.count - 1u).value), 1.0);
 
-    let min_position = (gaussian_uniforms.transform * first_position).xyz;
-    let max_position = (gaussian_uniforms.transform * last_position).xyz;
+    let min_position = (gaussian_uniforms.transform * last_position).xyz;
+    let max_position = (gaussian_uniforms.transform * first_position).xyz;
 
     let camera_position = view.world_position;
 
