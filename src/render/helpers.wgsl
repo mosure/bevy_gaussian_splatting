@@ -79,7 +79,45 @@ fn get_bounding_box_clip(
 #endif
 
 #ifdef USE_OBB
+    let a = (cov2d.x - cov2d.z) * (cov2d.x - cov2d.z);
+    let b = sqrt(a + 4.0 * cov2d.y * cov2d.y);
+    let major_radius = sqrt((cov2d.x + cov2d.z + b) * 0.5);
+    let minor_radius = sqrt((cov2d.x + cov2d.z - b) * 0.5);
 
+    let bounds = cutoff * vec2<f32>(
+        major_radius,
+        minor_radius,
+    );
+
+    let eigvec1 = normalize(vec2<f32>(
+        -cov2d.y,
+        lambda1 - cov2d.x,
+    ));
+    let eigvec2 = vec2<f32>(
+        eigvec1.y,
+        -eigvec1.x
+    );
+
+    let rotation_matrix = transpose(
+        mat2x2(
+            eigvec1,
+            eigvec2,
+        )
+    );
+
+    let scaled_vertex = direction * bounds;
+    let rotated_vertex = scaled_vertex * rotation_matrix;
+
+    let scaling_factor = 1.0 / view.viewport.zw;
+    let ndc_vertex = rotated_vertex * scaling_factor;
+
+    return vec4<f32>(
+        ndc_vertex,
+        rotated_vertex,
+    );
+#endif
+
+#ifdef USE_TRIANGLE
     let a = (cov2d.x - cov2d.z) * (cov2d.x - cov2d.z);
     let b = sqrt(a + 4.0 * cov2d.y * cov2d.y);
     let major_radius = sqrt((cov2d.x + cov2d.z + b) * 0.5);

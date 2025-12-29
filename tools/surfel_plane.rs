@@ -5,7 +5,7 @@ use bevy_interleave::prelude::Planar;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 
 use bevy_gaussian_splatting::{
-    CloudSettings, Gaussian3d, GaussianCamera, GaussianMode, GaussianSplattingPlugin,
+    CloudSettings, Gaussian3d, GaussianBounds, GaussianCamera, GaussianMode, GaussianSplattingPlugin,
     PlanarGaussian3d, PlanarGaussian3dHandle, SphericalHarmonicCoefficients,
     gaussian::f32::Rotation,
     utils::{GaussianSplattingViewer, setup_hooks},
@@ -96,7 +96,7 @@ pub fn setup_surfel_compare(
         PlanarGaussian3dHandle(cloud),
         CloudSettings {
             visualize_bounding_box,
-            aabb: true,
+            bounds: GaussianBounds::Aabb,
             gaussian_mode: GaussianMode::Gaussian2d,
             ..default()
         },

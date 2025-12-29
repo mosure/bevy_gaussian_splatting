@@ -11,7 +11,7 @@ pub use gaussian::{
         planar_3d::{Gaussian3d, PlanarGaussian3d, PlanarGaussian3dHandle, random_gaussians_3d},
         planar_4d::{Gaussian4d, PlanarGaussian4d, PlanarGaussian4dHandle, random_gaussians_4d},
     },
-    settings::{CloudSettings, GaussianMode, RasterizeMode},
+    settings::{CloudSettings, GaussianBounds, GaussianMode, RasterizeMode},
 };
 
 pub use io::scene::{GaussianScene, GaussianSceneHandle};

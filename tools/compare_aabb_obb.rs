@@ -5,7 +5,7 @@ use bevy_interleave::prelude::Planar;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 
 use bevy_gaussian_splatting::{
-    CloudSettings, Gaussian3d, GaussianCamera, GaussianSplattingPlugin, PlanarGaussian3d,
+    CloudSettings, Gaussian3d, GaussianBounds, GaussianCamera, GaussianSplattingPlugin, PlanarGaussian3d,
     PlanarGaussian3dHandle, SphericalHarmonicCoefficients,
     utils::{GaussianSplattingViewer, setup_hooks},
 };
@@ -30,7 +30,7 @@ pub fn setup_aabb_obb_compare(
             blue_aabb_gaussian,
         ]))),
         CloudSettings {
-            aabb: true,
+            bounds: GaussianBounds::Aabb,
             visualize_bounding_box: true,
             ..default()
         },
@@ -53,7 +53,7 @@ pub fn setup_aabb_obb_compare(
             red_obb_gaussian,
         ]))),
         CloudSettings {
-            aabb: false,
+            bounds: GaussianBounds::Obb,
             visualize_bounding_box: true,
             ..default()
         },

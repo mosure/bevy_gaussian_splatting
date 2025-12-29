@@ -28,7 +28,7 @@ use crate::{
     gaussian::{
         cloud::CloudVisibilityClass,
         interface::CommonCloud,
-        settings::{CloudSettings, DrawMode, GaussianMode, RasterizeMode},
+        settings::{CloudSettings, DrawMode, GaussianBounds, GaussianMode, RasterizeMode},
     },
     material::{
         spherical_harmonics::{HALF_SH_COEFF_COUNT, SH_COEFF_COUNT, SH_DEGREE, SH_VEC4_PLANES},
@@ -407,7 +407,7 @@ fn queue_gaussians<R: PlanarSync>(
             let msaa = msaa.cloned().unwrap_or_default();
 
             let key = CloudPipelineKey {
-                aabb: settings.aabb,
+                bounds: settings.bounds,
                 binary_gaussian_op: false,
                 opacity_adaptive_radius: settings.opacity_adaptive_radius,
                 visualize_bounding_box: settings.visualize_bounding_box,
@@ -714,12 +714,10 @@ pub fn shader_defs(key: CloudPipelineKey) -> Vec<ShaderDefVal> {
         ),
     ];
 
-    if key.aabb {
-        shader_defs.push("USE_AABB".into());
-    }
-
-    if !key.aabb {
-        shader_defs.push("USE_OBB".into());
+    match key.bounds {
+        GaussianBounds::Aabb => shader_defs.push("USE_AABB".into()),
+        GaussianBounds::Obb => shader_defs.push("USE_OBB".into()),
+        GaussianBounds::Triangle => shader_defs.push("USE_TRIANGLE".into()),
     }
 
     if key.binary_gaussian_op {
@@ -806,7 +804,7 @@ pub fn shader_defs(key: CloudPipelineKey) -> Vec<ShaderDefVal> {
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Default)]
 pub struct CloudPipelineKey {
-    pub aabb: bool,
+    pub bounds: GaussianBounds,
     pub binary_gaussian_op: bool,
     pub visualize_bounding_box: bool,
     pub opacity_adaptive_radius: bool,
@@ -907,6 +905,7 @@ pub struct CloudUniform {
     pub global_scale: f32,
     pub count: u32,
     pub count_root_ceil: u32,
+    pub vertex_count: u32,
     pub time: f32,
     pub time_start: f32,
     pub time_stop: f32,
@@ -966,6 +965,7 @@ pub fn extract_gaussians<R: PlanarSync>(
             global_scale: settings.global_scale,
             count: cloud.len() as u32,
             count_root_ceil: (cloud.len() as f32).sqrt().ceil() as u32,
+            vertex_count: settings.bounds.vertex_count(),
             time: settings.time,
             time_start: settings.time_start,
             time_stop: settings.time_stop,

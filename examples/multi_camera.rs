@@ -6,7 +6,7 @@ use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 
 use bevy_gaussian_splatting::{
-    CloudSettings, Gaussian3d, GaussianCamera, GaussianMode, GaussianSplattingPlugin,
+    CloudSettings, Gaussian3d, GaussianBounds, GaussianCamera, GaussianMode, GaussianSplattingPlugin,
     PlanarGaussian3d, PlanarGaussian3dHandle, SphericalHarmonicCoefficients,
     gaussian::f32::Rotation,
     utils::{GaussianSplattingViewer, setup_hooks},
@@ -139,7 +139,7 @@ pub fn setup_multi_camera(
         Transform::from_translation(Vec3::new(spacing, spacing, 0.0)),
         PlanarGaussian3dHandle(gaussian_assets.add(red_gaussians)),
         CloudSettings {
-            aabb: true,
+            bounds: GaussianBounds::Aabb,
             gaussian_mode: GaussianMode::Gaussian2d,
             ..default()
         },

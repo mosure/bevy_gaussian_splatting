@@ -35,6 +35,25 @@ pub enum PlaybackMode {
 #[derive(
     Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Reflect, Serialize, Deserialize, ValueEnum,
 )]
+pub enum GaussianBounds {
+    Aabb,
+    #[default]
+    Obb,
+    Triangle,
+}
+
+impl GaussianBounds {
+    pub const fn vertex_count(self) -> u32 {
+        match self {
+            GaussianBounds::Triangle => 3,
+            GaussianBounds::Aabb | GaussianBounds::Obb => 4,
+        }
+    }
+}
+
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Reflect, Serialize, Deserialize, ValueEnum,
+)]
 pub enum RasterizeMode {
     Classification,
     #[default]
@@ -51,7 +70,7 @@ pub enum RasterizeMode {
 #[reflect(Component)]
 #[serde(default)]
 pub struct CloudSettings {
-    pub aabb: bool,
+    pub bounds: GaussianBounds,
     pub global_opacity: f32,
     pub global_scale: f32,
     pub opacity_adaptive_radius: bool,
@@ -71,7 +90,7 @@ pub struct CloudSettings {
 impl Default for CloudSettings {
     fn default() -> Self {
         Self {
-            aabb: false,
+            bounds: GaussianBounds::default(),
             global_opacity: 1.0,
             global_scale: 1.0,
             opacity_adaptive_radius: true,
@@ -94,6 +113,7 @@ impl Default for CloudSettings {
 pub struct SettingsPlugin;
 impl Plugin for SettingsPlugin {
     fn build(&self, app: &mut App) {
+        app.register_type::<GaussianBounds>();
         app.register_type::<CloudSettings>();
 
         app.add_systems(Update, (playback_update,));

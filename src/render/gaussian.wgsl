@@ -216,15 +216,28 @@ fn vs_points(
         return output;
     }
 
-    var quad_vertices = array<vec2<f32>, 4>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(-1.0,  1.0),
-        vec2<f32>( 1.0, -1.0),
-        vec2<f32>( 1.0,  1.0),
-    );
+    #ifdef USE_TRIANGLE
+        let vertex_count: u32 = 3u;
+        let sqrt3 = sqrt(3.0);
+        var bounds_vertices = array<vec2<f32>, 3>(
+            vec2<f32>(0.0, 2.0),
+            vec2<f32>( sqrt3, -1.0),
+            vec2<f32>(-sqrt3, -1.0),
+        );
+    #else
+        let vertex_count: u32 = 4u;
+        var bounds_vertices = array<vec2<f32>, 4>(
+            vec2<f32>(-1.0, -1.0),
+            vec2<f32>(-1.0,  1.0),
+            vec2<f32>( 1.0, -1.0),
+            vec2<f32>( 1.0,  1.0),
+        );
+    #endif
 
-    let quad_index = vertex_index % 4u;
-    let quad_offset = quad_vertices[quad_index];
+    let bounds_index = vertex_index % vertex_count;
+    let bounds_offset = bounds_vertices[bounds_index];
+
+    let vertex_uv = bounds_offset;
 
     var opacity = get_opacity(splat_index);
 
@@ -248,7 +261,7 @@ fn vs_points(
 
     let bb = get_bounding_box_cov2d(
         surfel.extent,
-        quad_offset,
+        bounds_offset,
         cutoff,
     );
     output.radius = bb.zw;
@@ -292,11 +305,23 @@ fn vs_points(
 
     let bb = get_bounding_box_clip(
         gaussian_cov2d,
-        quad_offset,
+        bounds_offset,
         cutoff,
     );
 
     #ifdef USE_AABB
+        let det = gaussian_cov2d.x * gaussian_cov2d.z - gaussian_cov2d.y * gaussian_cov2d.y;
+        let det_inv = 1.0 / det;
+        let conic = vec3<f32>(
+            gaussian_cov2d.z * det_inv,
+            -gaussian_cov2d.y * det_inv,
+            gaussian_cov2d.x * det_inv
+        );
+        output.conic = conic;
+        output.major_minor = bb.zw;
+    #endif
+
+    #ifdef USE_TRIANGLE
         let det = gaussian_cov2d.x * gaussian_cov2d.z - gaussian_cov2d.y * gaussian_cov2d.y;
         let det_inv = 1.0 / det;
         let conic = vec3<f32>(
@@ -426,7 +451,7 @@ fn vs_points(
     }
 #endif
 
-    output.uv = quad_offset;
+    output.uv = vertex_uv;
     output.position = vec4<f32>(
         projected_position.xy + bb.xy,
         projected_position.zw,
@@ -437,34 +462,70 @@ fn vs_points(
 
 @fragment
 fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
-#ifdef USE_AABB
-#ifdef GAUSSIAN_2D
-    let radius = input.radius;
-    let mean_2d = input.mean_2d;
-    let aspect = vec2<f32>(
-        1.0,
-        view.viewport.z / view.viewport.w,
-    );
-    let pixel_coord = input.uv * radius * aspect + mean_2d;
+    var power: f32 = 0.0;
 
-    let power = surfel_fragment_power(
-        mat3x3<f32>(
-            input.local_to_pixel_u,
-            input.local_to_pixel_v,
-            input.local_to_pixel_w,
-        ),
-        pixel_coord,
-        mean_2d,
-    );
-#else ifdef GAUSSIAN_3D
-    let d = -input.major_minor;
-    let conic = input.conic;
-    let power = -0.5 * (conic.x * d.x * d.x + conic.z * d.y * d.y) + conic.y * d.x * d.y;
-#else ifdef GAUSSIAN_4D
-    let d = -input.major_minor;
-    let conic = input.conic;
-    let power = -0.5 * (conic.x * d.x * d.x + conic.z * d.y * d.y) + conic.y * d.x * d.y;
+#ifdef USE_AABB
+    #ifdef GAUSSIAN_2D
+        let radius = input.radius;
+        let mean_2d = input.mean_2d;
+        let aspect = vec2<f32>(
+            1.0,
+            view.viewport.z / view.viewport.w,
+        );
+        let pixel_coord = input.uv * radius * aspect + mean_2d;
+
+        power = surfel_fragment_power(
+            mat3x3<f32>(
+                input.local_to_pixel_u,
+                input.local_to_pixel_v,
+                input.local_to_pixel_w,
+            ),
+            pixel_coord,
+            mean_2d,
+        );
+    #else ifdef GAUSSIAN_3D
+        let d = -input.major_minor;
+        let conic = input.conic;
+        power = -0.5 * (conic.x * d.x * d.x + conic.z * d.y * d.y) + conic.y * d.x * d.y;
+    #else ifdef GAUSSIAN_4D
+        let d = -input.major_minor;
+        let conic = input.conic;
+        power = -0.5 * (conic.x * d.x * d.x + conic.z * d.y * d.y) + conic.y * d.x * d.y;
+    #endif
+
+    if (power > 0.0) {
+        discard;
+    }
 #endif
+
+#ifdef USE_TRIANGLE
+    #ifdef GAUSSIAN_2D
+        let radius = input.radius;
+        let mean_2d = input.mean_2d;
+        let aspect = vec2<f32>(
+            1.0,
+            view.viewport.z / view.viewport.w,
+        );
+        let pixel_coord = input.uv * radius * aspect + mean_2d;
+
+        power = surfel_fragment_power(
+            mat3x3<f32>(
+                input.local_to_pixel_u,
+                input.local_to_pixel_v,
+                input.local_to_pixel_w,
+            ),
+            pixel_coord,
+            mean_2d,
+        );
+    #else ifdef GAUSSIAN_3D
+        let d = -input.major_minor;
+        let conic = input.conic;
+        power = -0.5 * (conic.x * d.x * d.x + conic.z * d.y * d.y) + conic.y * d.x * d.y;
+    #else ifdef GAUSSIAN_4D
+        let d = -input.major_minor;
+        let conic = input.conic;
+        power = -0.5 * (conic.x * d.x * d.x + conic.z * d.y * d.y) + conic.y * d.x * d.y;
+    #endif
 
     if (power > 0.0) {
         discard;
@@ -476,7 +537,7 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
     let sigma_squared = 2.0 * sigma * sigma;
     let distance_squared = dot(input.uv, input.uv);
 
-    let power = -distance_squared / sigma_squared;
+    power = -distance_squared / sigma_squared;
 
     if (distance_squared > 3.0 * 3.0) {
         discard;
@@ -484,14 +545,30 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
 #endif
 
 #ifdef VISUALIZE_BOUNDING_BOX
-    let uv = input.uv * 0.5 + 0.5;
-    let edge_width = 0.08;
-    if (
-        (uv.x < edge_width || uv.x > 1.0 - edge_width) ||
-        (uv.y < edge_width || uv.y > 1.0 - edge_width)
-    ) {
-        return vec4<f32>(0.3, 1.0, 0.1, 1.0);
-    }
+    #ifdef USE_TRIANGLE
+        let sqrt3 = sqrt(3.0);
+        let v0 = vec2<f32>(0.0, 2.0);
+        let v1 = vec2<f32>( sqrt3, -1.0);
+        let v2 = vec2<f32>(-sqrt3, -1.0);
+        let denom = (v1.y - v2.y) * (v0.x - v2.x) + (v2.x - v1.x) * (v0.y - v2.y);
+        let bary0 = ((v1.y - v2.y) * (input.uv.x - v2.x) + (v2.x - v1.x) * (input.uv.y - v2.y)) / denom;
+        let bary1 = ((v2.y - v0.y) * (input.uv.x - v2.x) + (v0.x - v2.x) * (input.uv.y - v2.y)) / denom;
+        let bary2 = 1.0 - bary0 - bary1;
+        let edge_width = 0.05;
+        let min_bary = min(min(bary0, bary1), bary2);
+        if (min_bary < edge_width) {
+            return vec4<f32>(0.3, 1.0, 0.1, 1.0);
+        }
+    #else
+        let uv = input.uv * 0.5 + 0.5;
+        let edge_width = 0.08;
+        if (
+            (uv.x < edge_width || uv.x > 1.0 - edge_width) ||
+            (uv.y < edge_width || uv.y > 1.0 - edge_width)
+        ) {
+            return vec4<f32>(0.3, 1.0, 0.1, 1.0);
+        }
+    #endif
 #endif
 
     let alpha = min(exp(power) * input.color.a, 0.999);
