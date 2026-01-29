@@ -105,7 +105,7 @@ fn setup_gaussian_cloud(
         gaussian_assets.add(random_gaussians_3d(args.gaussian_count))
     } else if args.input_cloud.is_some() && !args.input_cloud.as_ref().unwrap().is_empty() {
         println!("Loading {:?}", args.input_cloud);
-        asset_server.load(&args.input_cloud.as_ref().unwrap().clone())
+        asset_server.load(args.input_cloud.as_ref().unwrap())
     } else {
         gaussian_assets.add(PlanarGaussian3d::test_model())
     };
@@ -121,6 +121,7 @@ fn setup_gaussian_cloud(
         size.width,
         size.height,
         TextureFormat::bevy_default(),
+        None,
     );
     render_target_image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
     let render_target_handle = images.add(render_target_image);
@@ -129,6 +130,7 @@ fn setup_gaussian_cloud(
         size.width,
         size.height,
         TextureFormat::bevy_default(),
+        None,
     );
     let cpu_image_handle = images.add(cpu_image);
 
@@ -140,10 +142,8 @@ fn setup_gaussian_cloud(
 
     commands.spawn((
         Camera3d::default(),
-        Camera {
-            target: RenderTarget::Image(render_target_handle.clone().into()),
-            ..default()
-        },
+        Camera::default(),
+        RenderTarget::Image(render_target_handle.clone().into()),
         Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
         Tonemapping::None,
         GaussianCamera::default(),
@@ -317,7 +317,7 @@ fn receive_image_from_buffer(
         });
 
         render_device
-            .poll(PollType::Wait)
+            .poll(PollType::wait_indefinitely())
             .expect("Failed to poll device");
 
         rx.recv().expect("Failed to receive buffer map");

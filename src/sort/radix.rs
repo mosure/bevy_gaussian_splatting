@@ -14,8 +14,9 @@ use bevy::{
         render_asset::RenderAssets,
         render_graph::{Node, NodeRunError, RenderGraphContext, RenderLabel, RenderGraphExt},
         render_resource::{
-            BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry, BindingResource,
-            BindingType, Buffer, BufferBinding, BufferBindingType, BufferDescriptor,
+            BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
+            BindGroupLayoutEntry, BindingResource, BindingType, Buffer, BufferBinding,
+            BufferBindingType, BufferDescriptor,
             BufferInitDescriptor, BufferSize, BufferUsages, CachedComputePipelineId,
             CachedPipelineState, ComputePassDescriptor, ComputePipelineDescriptor, PipelineCache,
             ShaderStages,
@@ -237,50 +238,53 @@ impl<R: PlanarSync> FromWorld for RadixSortPipeline<R> {
             count: None,
         };
 
+        let radix_sort_layout_entries = [
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: BufferSize::new(std::mem::size_of::<u32>() as u64),
+                },
+                count: None,
+            },
+            sorting_buffer_entry,
+            sorting_status_counters_buffer_entry,
+            draw_indirect_buffer_entry,
+            BindGroupLayoutEntry {
+                binding: 4,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: BufferSize::new(std::mem::size_of::<SortEntry>() as u64),
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 5,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: BufferSize::new(std::mem::size_of::<SortEntry>() as u64),
+                },
+                count: None,
+            },
+        ];
+        let radix_sort_layout_desc =
+            BindGroupLayoutDescriptor::new("radix_sort_layout", &radix_sort_layout_entries);
         let radix_sort_layout = render_device.create_bind_group_layout(
             Some("radix_sort_layout"),
-            &[
-                BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: ShaderStages::COMPUTE,
-                    ty: BindingType::Buffer {
-                        ty: BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(std::mem::size_of::<u32>() as u64),
-                    },
-                    count: None,
-                },
-                sorting_buffer_entry,
-                sorting_status_counters_buffer_entry,
-                draw_indirect_buffer_entry,
-                BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: ShaderStages::COMPUTE,
-                    ty: BindingType::Buffer {
-                        ty: BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(std::mem::size_of::<SortEntry>() as u64),
-                    },
-                    count: None,
-                },
-                BindGroupLayoutEntry {
-                    binding: 5,
-                    visibility: ShaderStages::COMPUTE,
-                    ty: BindingType::Buffer {
-                        ty: BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(std::mem::size_of::<SortEntry>() as u64),
-                    },
-                    count: None,
-                },
-            ],
+            &radix_sort_layout_entries,
         );
 
         let sorting_layout = vec![
-            gaussian_cloud_pipeline.compute_view_layout.clone(),
-            gaussian_cloud_pipeline.gaussian_uniform_layout.clone(),
-            gaussian_cloud_pipeline.gaussian_cloud_layout.clone(),
-            radix_sort_layout.clone(),
+            gaussian_cloud_pipeline.compute_view_layout_desc.clone(),
+            gaussian_cloud_pipeline.gaussian_uniform_layout_desc.clone(),
+            gaussian_cloud_pipeline.gaussian_cloud_layout_desc.clone(),
+            radix_sort_layout_desc.clone(),
         ];
         let shader_defs = shader_defs(CloudPipelineKey::default());
 
@@ -365,20 +369,20 @@ pub fn queue_radix_bind_group<R: PlanarSync>(
         }
 
         // TODO: deduplicate asset load checks
-        if let Some(load_state) = asset_server.get_load_state(cloud_handle.handle()) {
-            if load_state.is_loading() {
-                continue;
-            }
+        if let Some(load_state) = asset_server.get_load_state(cloud_handle.handle())
+            && load_state.is_loading()
+        {
+            continue;
         }
 
         if gaussian_cloud_res.get(cloud_handle.handle()).is_none() {
             continue;
         }
 
-        if let Some(load_state) = asset_server.get_load_state(&sorted_entries_handle.0) {
-            if load_state.is_loading() {
-                continue;
-            }
+        if let Some(load_state) = asset_server.get_load_state(&sorted_entries_handle.0)
+            && load_state.is_loading()
+        {
+            continue;
         }
 
         if sorted_entries_res.get(sorted_entries_handle).is_none() {

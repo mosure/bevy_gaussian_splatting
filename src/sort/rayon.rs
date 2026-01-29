@@ -59,46 +59,46 @@ pub fn rayon_sort<R: PlanarSync>(
             trigger.needs_sort = false;
             performed_sort = true;
 
-            if let Some(load_state) = asset_server.get_load_state(gaussian_cloud_handle.handle()) {
-                if load_state.is_loading() {
-                    continue;
-                }
+            if let Some(load_state) = asset_server.get_load_state(gaussian_cloud_handle.handle())
+                && load_state.is_loading()
+            {
+                continue;
             }
 
-            if let Some(load_state) = asset_server.get_load_state(&sorted_entries_handle.0) {
-                if load_state.is_loading() {
-                    continue;
-                }
+            if let Some(load_state) = asset_server.get_load_state(&sorted_entries_handle.0)
+                && load_state.is_loading()
+            {
+                continue;
             }
 
-            if let Some(gaussian_cloud) = gaussian_clouds_res.get(gaussian_cloud_handle.handle()) {
-                if let Some(sorted_entries) = sorted_entries_res.get_mut(sorted_entries_handle) {
-                    let gaussians = gaussian_cloud.len();
-                    let mut chunks = sorted_entries.sorted.chunks_mut(gaussians);
-                    let chunk = chunks.nth(trigger.camera_index).unwrap();
+            if let Some(gaussian_cloud) = gaussian_clouds_res.get(gaussian_cloud_handle.handle())
+                && let Some(sorted_entries) = sorted_entries_res.get_mut(sorted_entries_handle)
+            {
+                let gaussians = gaussian_cloud.len();
+                let mut chunks = sorted_entries.sorted.chunks_mut(gaussians);
+                let chunk = chunks.nth(trigger.camera_index).unwrap();
 
-                    gaussian_cloud
-                        .position_par_iter()
-                        .zip(chunk.par_iter_mut())
-                        .enumerate()
-                        .for_each(|(idx, (position, sort_entry))| {
-                            let position = Vec3A::from_slice(position.as_ref());
-                            let position = transform.affine().transform_point3a(position);
+                gaussian_cloud
+                    .position_par_iter()
+                    .zip(chunk.par_iter_mut())
+                    .enumerate()
+                    .for_each(|(idx, (position, sort_entry))| {
+                        let position = Vec3A::from_slice(position.as_ref());
+                        let position = transform.affine().transform_point3a(position);
 
-                            let delta = trigger.last_camera_position - position;
+                        let delta = trigger.last_camera_position - position;
 
-                            sort_entry.key = bytemuck::cast(delta.length_squared());
-                            sort_entry.index = idx as u32;
-                        });
-
-                    chunk.par_sort_unstable_by(|a, b| {
-                        bytemuck::cast::<u32, f32>(b.key)
-                            .partial_cmp(&bytemuck::cast::<u32, f32>(a.key))
-                            .unwrap_or(std::cmp::Ordering::Equal)
+                        sort_entry.key = bytemuck::cast(delta.length_squared());
+                        sort_entry.index = idx as u32;
                     });
 
-                    // TODO: update DrawIndirect buffer during sort phase (GPU sort will override default DrawIndirect)
-                }
+                chunk.par_sort_unstable_by(|a, b| {
+                    bytemuck::cast::<u32, f32>(b.key)
+                        .partial_cmp(&bytemuck::cast::<u32, f32>(a.key))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+
+                // TODO: update DrawIndirect buffer during sort phase (GPU sort will override default DrawIndirect)
             }
         }
     }

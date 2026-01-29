@@ -242,11 +242,11 @@ fn auto_insert_sorted_entries<R: PlanarSync>(
         //     continue;
         // }
 
-        if let Some(load_state) = asset_server.get_load_state(gaussian_cloud_handle.handle()) {
-            if load_state.is_loading() {
-                debug!("cloud asset is still loading");
-                continue;
-            }
+        if let Some(load_state) = asset_server.get_load_state(gaussian_cloud_handle.handle())
+            && load_state.is_loading()
+        {
+            debug!("cloud asset is still loading");
+            continue;
         }
 
         let cloud = gaussian_clouds_res.get(gaussian_cloud_handle.handle());
@@ -283,16 +283,16 @@ fn update_sorted_entries_sizes(
             continue;
         }
 
-        if let Some(sorted_entries) = sorted_entries_res.get(handle) {
-            if sorted_entries.camera_count != camera_count {
-                let new_entry = SortedEntries::new(
-                    camera_count,
-                    sorted_entries.entry_count,
-                    #[cfg(feature = "buffer_texture")]
-                    images,
-                );
-                let _ = sorted_entries_res.insert(handle, new_entry);
-            }
+        if let Some(sorted_entries) = sorted_entries_res.get(handle)
+            && sorted_entries.camera_count != camera_count
+        {
+            let new_entry = SortedEntries::new(
+                camera_count,
+                sorted_entries.entry_count,
+                #[cfg(feature = "buffer_texture")]
+                images,
+            );
+            let _ = sorted_entries_res.insert(handle, new_entry);
         }
     }
 }

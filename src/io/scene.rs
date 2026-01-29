@@ -5,6 +5,7 @@ use bevy::{
     asset::{AssetLoader, LoadContext, io::Reader},
     prelude::*,
 };
+use bevy::reflect::TypePath;
 use serde::{Deserialize, Serialize};
 
 use crate::gaussian::{
@@ -54,10 +55,10 @@ fn spawn_scene(
     scenes: Res<Assets<GaussianScene>>,
 ) {
     for (entity, scene_handle) in scene_handles.iter() {
-        if let Some(load_state) = &asset_server.get_load_state(&scene_handle.0) {
-            if !load_state.is_loaded() {
-                continue;
-            }
+        if let Some(load_state) = asset_server.get_load_state(&scene_handle.0)
+            && !load_state.is_loaded()
+        {
+            continue;
         }
 
         if scenes.get(&scene_handle.0).is_none() {
@@ -95,7 +96,7 @@ fn spawn_scene(
     }
 }
 
-#[derive(Default)]
+#[derive(Default, TypePath)]
 pub struct GaussianSceneLoader;
 
 impl AssetLoader for GaussianSceneLoader {
@@ -112,8 +113,14 @@ impl AssetLoader for GaussianSceneLoader {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
 
-        match load_context.path().extension() {
-            Some(ext) if ext == "json" => {
+        let extension = load_context
+            .path()
+            .path()
+            .extension()
+            .and_then(|ext| ext.to_str());
+
+        match extension {
+            Some("json") => {
                 let mut scene: GaussianScene = serde_json::from_slice(&bytes)
                     .map_err(|err| std::io::Error::new(ErrorKind::InvalidData, err))?;
 
@@ -121,7 +128,6 @@ impl AssetLoader for GaussianSceneLoader {
                     .path()
                     .parent()
                     .expect("invalid scene path")
-                    .to_string_lossy()
                     .to_string()
                     .into();
 

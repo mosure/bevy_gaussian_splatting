@@ -2,17 +2,26 @@
 use std::path::PathBuf;
 
 use bevy::{
-    app::AppExit, camera::primitives::Aabb, color::palettes::css::GOLD, core_pipeline::{prepass::MotionVectorPrepass, tonemapping::Tonemapping}, diagnostic::{DiagnosticsStore, FrameCount, FrameTimeDiagnosticsPlugin}, prelude::*, render::view::screenshot::{save_to_disk, Screenshot}
+    app::AppExit,
+    camera::primitives::Aabb,
+    color::palettes::css::GOLD,
+    core_pipeline::{prepass::MotionVectorPrepass, tonemapping::Tonemapping},
+    diagnostic::{DiagnosticsStore, FrameCount, FrameTimeDiagnosticsPlugin},
+    prelude::*,
+    render::view::screenshot::{save_to_disk, Screenshot},
 };
+
+#[cfg(all(feature = "file_asset", not(target_arch = "wasm32")))]
+use bevy::asset::{AssetApp, io::{AssetSourceBuilder, file::FileAssetReader}};
+
+#[cfg(feature = "web_asset")]
+use bevy::asset::io::web::WebAssetPlugin;
 use bevy_args::{BevyArgsPlugin, parse_args};
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 
 #[cfg(feature = "web_asset")]
 use base64::{Engine as _, engine::general_purpose::URL_SAFE};
-#[cfg(feature = "file_asset")]
-use bevy_file_asset::FileAssetPlugin;
-
 use bevy_gaussian_splatting::{
     gaussian::interface::TestCloud, random_gaussians_3d, random_gaussians_4d, utils::{log, setup_hooks, GaussianSplattingViewer}, CloudSettings, GaussianCamera, GaussianMode, GaussianScene, GaussianSceneHandle, GaussianSplattingPlugin, PlanarGaussian3d, PlanarGaussian3dHandle, PlanarGaussian4d, PlanarGaussian4dHandle
 };
@@ -284,8 +293,17 @@ fn viewer_app() {
         ..default()
     });
 
-    #[cfg(feature = "file_asset")]
-    app.add_plugins(FileAssetPlugin);
+    #[cfg(feature = "web_asset")]
+    app.add_plugins(WebAssetPlugin {
+        silence_startup_warning: true,
+    });
+
+    #[cfg(all(feature = "file_asset", not(target_arch = "wasm32")))]
+    app.register_asset_source(
+        "file",
+        AssetSourceBuilder::new(|| Box::new(FileAssetReader::new("")))
+            .with_processed_reader(|| Box::new(FileAssetReader::new(""))),
+    );
 
     // setup for gaussian viewer app
     app.insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)));
@@ -442,10 +460,10 @@ fn fps_update_system(
     mut query: Query<&mut TextSpan, With<FpsText>>,
 ) {
     for mut text in &mut query {
-        if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) {
-            if let Some(value) = fps.smoothed() {
-                **text = format!("{value:.2}");
-            }
+        if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS)
+            && let Some(value) = fps.smoothed()
+        {
+            **text = format!("{value:.2}");
         }
     }
 }

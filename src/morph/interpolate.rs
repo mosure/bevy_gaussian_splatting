@@ -28,7 +28,7 @@ use crate::{
     gaussian::formats::planar_3d::{Gaussian3d, PlanarGaussian3d, PlanarGaussian3dHandle},
     render::{
         CloudPipeline, CloudPipelineKey, CloudUniform, GaussianComputeViewBindGroup,
-        GaussianUniformBindGroups, PlanarStorageRebindQueue, shader_defs,
+        GaussianUniformBindGroups, PlanarStorageRebindQueue, shader_defs, storage_layout_descriptor,
     },
 };
 
@@ -55,6 +55,7 @@ impl<R> Plugin for InterpolatePlugin<R>
 where
     R: PlanarSync + Send + Sync + 'static,
     R::GpuPlanarType: GpuPlanarStorage,
+    <R::GpuPlanarType as GpuPlanar>::PackedType: ReflectInterleaved,
 {
     fn build(&self, app: &mut App) {
         if TypeId::of::<R::PlanarType>() != TypeId::of::<PlanarGaussian3d>() {
@@ -165,6 +166,7 @@ pub struct GaussianInterpolatePipeline<R: PlanarSync> {
 impl<R: PlanarSync> FromWorld for GaussianInterpolatePipeline<R>
 where
     R::GpuPlanarType: GpuPlanarStorage,
+    <R::GpuPlanarType as GpuPlanar>::PackedType: ReflectInterleaved,
 {
     fn from_world(render_world: &mut World) -> Self {
         let render_device = render_world.resource::<RenderDevice>();
@@ -172,6 +174,10 @@ where
         let pipeline_cache = render_world.resource::<PipelineCache>();
 
         let output_layout = R::GpuPlanarType::bind_group_layout(render_device, false);
+        let output_layout_desc = storage_layout_descriptor::<<R::GpuPlanarType as GpuPlanar>::PackedType>(
+            "gaussian_interpolate_output_layout",
+            false,
+        );
 
         let key = CloudPipelineKey {
             binary_gaussian_op: true,
@@ -183,11 +189,11 @@ where
             pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
                 label: Some("gaussian_interpolate_pipeline".into()),
                 layout: vec![
-                    gaussian_cloud_pipeline.compute_view_layout.clone(),
-                    gaussian_cloud_pipeline.gaussian_uniform_layout.clone(),
-                    gaussian_cloud_pipeline.gaussian_cloud_layout.clone(),
-                    gaussian_cloud_pipeline.gaussian_cloud_layout.clone(),
-                    output_layout.clone(),
+                    gaussian_cloud_pipeline.compute_view_layout_desc.clone(),
+                    gaussian_cloud_pipeline.gaussian_uniform_layout_desc.clone(),
+                    gaussian_cloud_pipeline.gaussian_cloud_layout_desc.clone(),
+                    gaussian_cloud_pipeline.gaussian_cloud_layout_desc.clone(),
+                    output_layout_desc,
                 ],
                 push_constant_ranges: vec![],
                 shader: INTERPOLATE_SHADER_HANDLE,
@@ -277,12 +283,12 @@ pub fn queue_gaussian_interpolate_bind_groups<R: PlanarSync>(
             // Assets created at runtime (like the interpolation output) are not tracked by the AssetServer, so
             // `get_load_state` returns `None` even though the data is ready. Treat `None` as ready and only block
             // while the server explicitly reports a non-loaded state.
-            if let Some(load_state) = asset_server.get_load_state(handle.id()) {
-                if !matches!(load_state, LoadState::Loaded) {
-                    debug!(?entity, handle_label = label, ?load_state, "waiting for GaussianInterpolate asset load");
-                    ready = false;
-                    break;
-                }
+            if let Some(load_state) = asset_server.get_load_state(handle.id())
+                && !matches!(load_state, LoadState::Loaded)
+            {
+                debug!(?entity, handle_label = label, ?load_state, "waiting for GaussianInterpolate asset load");
+                ready = false;
+                break;
             }
 
             if gpu_planars.get(handle.id()).is_none() {
@@ -473,4 +479,3 @@ where
         Ok(())
     }
 }
-

@@ -1,9 +1,9 @@
 [package]
 name = "bevy_gaussian_splatting"
 description = "bevy gaussian splatting render pipeline plugin"
-version = "6.0.0"
+version = "7.0.0"
 edition = "2024"
-rust-version = "1.85.0"
+rust-version = "1.89.0"
 authors = ["mosure <mitchell@mosure.me>"]
 license = "MIT OR Apache-2.0"
 keywords = [
@@ -73,9 +73,9 @@ default = [
 
 debug_gpu = []
 
-io_bincode2 = ["bincode2", "flate2"]
-io_flexbuffers = ["flexbuffers"]
-io_ply = ["ply-rs"]
+io_bincode2 = ["dep:bincode2", "dep:flate2"]
+io_flexbuffers = ["dep:flexbuffers"]
+io_ply = ["dep:ply-rs"]
 
 material_noise = ["noise", "dep:noise"]
 
@@ -102,15 +102,15 @@ buffer_texture = []
 
 query_raycast = []
 query_select = []
-query_sparse = ["kd-tree", "query_select"]
+query_sparse = ["dep:kd-tree", "query_select"]
 
 sort_bitonic = []
 sort_radix = []
-sort_rayon = ["rayon"]
+sort_rayon = ["dep:rayon"]
 sort_std = []
 
 testing = []
-tooling = ["byte-unit"]
+tooling = ["dep:byte-unit"]
 debug_tooling = ["tooling"]
 
 perftest = []
@@ -129,8 +129,8 @@ headless = [
 ]
 
 viewer = [
-  "bevy-inspector-egui",
-  "bevy_panorbit_camera",
+  "dep:bevy-inspector-egui",
+  "dep:bevy_panorbit_camera",
   # "bevy_transform_gizmo",
   "bevy/bevy_gizmos",
   "bevy/bevy_ui",
@@ -150,11 +150,9 @@ web = [
   "web_asset",
   "webgpu",
 ]
-file_asset = [
-  "bevy_file_asset",
-]
+file_asset = []
 web_asset = [
-  "base64",
+  "dep:base64",
   "bevy/http",
   "bevy/https",
 ]
@@ -166,12 +164,11 @@ webgpu = ["bevy/webgpu"]
 
 [dependencies]
 base64 = { version = "0.22", optional = true }
-bevy_args = { version = "2.0.0" }
-bevy-inspector-egui = { version = "0.35.0", optional = true }
-bevy_interleave = { version = "0.8.1" }
-bevy_panorbit_camera = { version = "0.33.0", optional = true , features = ["bevy_egui"]}
-bevy_transform_gizmo = { version = "0.12", optional = true }
-bevy_file_asset = { version = "0.3", optional = true }
+bevy_args = { version = "3.0.0" }
+bevy-inspector-egui = { version = "0.36.0", optional = true }
+bevy_interleave = { version = "0.9.0" }
+bevy_panorbit_camera = { version = "0.34.0", optional = true, features = ["bevy_egui"] }
+bevy_transform_gizmo = { version = "0.12.1", optional = true }
 bincode2 = { version = "2.0", optional = true }
 byte-unit = { version = "5.2", optional = true }
 bytemuck = "1.23"
@@ -189,7 +186,7 @@ serde = "1.0"
 serde_json = "1.0"
 static_assertions = "1.1"
 typenum = "1.18"
-wgpu = "26"
+wgpu = "27"
 
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -199,7 +196,7 @@ wasm-bindgen = "0.2"
 
 
 [dependencies.bevy]
-version = "0.17"
+version = "0.18"
 default-features = false
 features = [
   "bevy_asset",

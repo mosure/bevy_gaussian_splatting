@@ -90,10 +90,10 @@ fn apply_selection<R: PlanarSync>(
             continue;
         }
 
-        if let Some(load_state) = asset_server.get_load_state(cloud_handle.handle()) {
-            if load_state.is_loading() {
-                continue;
-            }
+        if let Some(load_state) = asset_server.get_load_state(cloud_handle.handle())
+            && load_state.is_loading()
+        {
+            continue;
         }
 
         let cloud = gaussian_clouds_res.get_mut(cloud_handle.handle()).unwrap();

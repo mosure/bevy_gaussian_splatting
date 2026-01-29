@@ -1,14 +1,14 @@
 #[allow(unused_imports)]
 use std::io::{BufReader, Cursor, ErrorKind};
 
-use bevy::asset::{AssetLoader, LoadContext, io::Reader};
+use bevy::{asset::{AssetLoader, LoadContext, io::Reader}, reflect::TypePath};
 
 use crate::{
     gaussian::formats::planar_3d::PlanarGaussian3d, gaussian::formats::planar_4d::PlanarGaussian4d,
     io::codec::CloudCodec,
 };
 
-#[derive(Default)]
+#[derive(Default, TypePath)]
 pub struct Gaussian3dLoader;
 
 impl AssetLoader for Gaussian3dLoader {
@@ -25,8 +25,14 @@ impl AssetLoader for Gaussian3dLoader {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
 
-        match load_context.path().extension() {
-            Some(ext) if ext == "ply" => {
+        let extension = load_context
+            .path()
+            .path()
+            .extension()
+            .and_then(|ext| ext.to_str());
+
+        match extension {
+            Some("ply") => {
                 #[cfg(feature = "io_ply")]
                 {
                     let cursor = Cursor::new(bytes);
@@ -42,7 +48,7 @@ impl AssetLoader for Gaussian3dLoader {
                     ))
                 }
             }
-            Some(ext) if ext == "gcloud" => {
+            Some("gcloud") => {
                 let cloud = PlanarGaussian3d::decode(bytes.as_slice());
 
                 Ok(cloud)
@@ -56,7 +62,7 @@ impl AssetLoader for Gaussian3dLoader {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, TypePath)]
 pub struct Gaussian4dLoader;
 
 impl AssetLoader for Gaussian4dLoader {
@@ -73,8 +79,14 @@ impl AssetLoader for Gaussian4dLoader {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
 
-        match load_context.path().extension() {
-            Some(ext) if ext == "ply4d" => {
+        let extension = load_context
+            .path()
+            .path()
+            .extension()
+            .and_then(|ext| ext.to_str());
+
+        match extension {
+            Some("ply4d") => {
                 #[cfg(feature = "io_ply")]
                 {
                     let cursor = Cursor::new(bytes);
@@ -90,7 +102,7 @@ impl AssetLoader for Gaussian4dLoader {
                     ))
                 }
             }
-            Some(ext) if ext == "gc4d" => Ok(PlanarGaussian4d::decode(bytes.as_slice())),
+            Some("gc4d") => Ok(PlanarGaussian4d::decode(bytes.as_slice())),
             _ => Err(std::io::Error::other("only .ply4d and .gc4d supported")),
         }
     }

@@ -22,6 +22,7 @@ impl<R> Plugin for MorphPlugin<R>
 where
     R: PlanarSync,
     R::GpuPlanarType: GpuPlanarStorage,
+    <R::GpuPlanarType as GpuPlanar>::PackedType: ReflectInterleaved,
 {
     fn build(&self, app: &mut App) {
         #[cfg(feature = "morph_interpolate")]

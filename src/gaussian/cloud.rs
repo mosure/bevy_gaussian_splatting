@@ -47,13 +47,13 @@ pub fn calculate_bounds<R: PlanarSync>(
     R::PlanarType: CommonCloud,
 {
     for (entity, cloud_handle) in &without_aabb {
-        if let Some(cloud) = gaussian_clouds.get(cloud_handle.handle()) {
-            if let Some(aabb3d) = cloud.compute_aabb() {
-                commands.entity(entity).try_insert(Aabb {
-                    center: aabb3d.center(),
-                    half_extents: aabb3d.half_size(),
-                });
-            }
+        if let Some(cloud) = gaussian_clouds.get(cloud_handle.handle())
+            && let Some(aabb3d) = cloud.compute_aabb()
+        {
+            commands.entity(entity).try_insert(Aabb {
+                center: aabb3d.center(),
+                half_extents: aabb3d.half_size(),
+            });
         }
     }
 }

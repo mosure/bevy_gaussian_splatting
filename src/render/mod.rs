@@ -1,5 +1,5 @@
 #![allow(dead_code)] // ShaderType derives emit unused check helpers
-use std::{hash::Hash, num::NonZero};
+use std::{borrow::Cow, hash::Hash, num::NonZero};
 
 use bevy::{
     asset::{load_internal_asset, uuid_handle, AssetEvent, AssetId}, camera::primitives::Aabb, core_pipeline::{
@@ -80,6 +80,7 @@ impl<R: PlanarSync> Plugin for RenderPipelinePlugin<R>
 where
     R::PlanarType: CommonCloud,
     R::GpuPlanarType: GpuPlanarStorage,
+    <R::GpuPlanarType as GpuPlanar>::PackedType: ReflectInterleaved,
 {
     fn build(&self, app: &mut App) {
         debug!("building render pipeline plugin");
@@ -301,6 +302,7 @@ pub struct GpuCloudBundle<R: PlanarSync> {
 }
 
 #[cfg(feature = "buffer_storage")]
+#[allow(type_alias_bounds)]
 type GpuCloudBundleQuery<R: bevy_interleave::prelude::PlanarSync> = (
     Entity,
     &'static <R as bevy_interleave::prelude::PlanarSync>::PlanarTypeHandle,
@@ -312,6 +314,7 @@ type GpuCloudBundleQuery<R: bevy_interleave::prelude::PlanarSync> = (
 );
 
 #[cfg(feature = "buffer_texture")]
+#[allow(type_alias_bounds)]
 type GpuCloudBundleQuery<R: bevy_interleave::prelude::PlanarSync> = (
     Entity,
     &'static <R as bevy_interleave::prelude::PlanarSync>::PlanarTypeHandle,
@@ -323,6 +326,7 @@ type GpuCloudBundleQuery<R: bevy_interleave::prelude::PlanarSync> = (
 );
 
 #[cfg(feature = "buffer_storage")]
+#[allow(type_alias_bounds)]
 type GpuCloudBindGroupQuery<R: bevy_interleave::prelude::PlanarSync> = (
     Entity,
     &'static <R as bevy_interleave::prelude::PlanarSync>::PlanarTypeHandle,
@@ -331,6 +335,7 @@ type GpuCloudBindGroupQuery<R: bevy_interleave::prelude::PlanarSync> = (
 );
 
 #[cfg(feature = "buffer_texture")]
+#[allow(type_alias_bounds)]
 type GpuCloudBindGroupQuery<R: bevy_interleave::prelude::PlanarSync> = (
     Entity,
     &'static <R as bevy_interleave::prelude::PlanarSync>::PlanarTypeHandle,
@@ -428,7 +433,7 @@ fn queue_gaussians<R: PlanarSync>(
                     Transform::from_translation(aabb_center.into())
                         .with_scale(aabb_size.into()),
                 );
-            let distance = rangefinder.distance_translation(&center.translation());
+            let distance = rangefinder.distance(&center.translation());
 
             transparent_phase.add(Transparent3d {
                 entity: (*render_entity, *visible_entity),
@@ -449,10 +454,15 @@ fn queue_gaussians<R: PlanarSync>(
 pub struct CloudPipeline<R: PlanarSync> {
     shader: Handle<Shader>,
     pub gaussian_cloud_layout: BindGroupLayout,
+    pub gaussian_cloud_layout_desc: BindGroupLayoutDescriptor,
     pub gaussian_uniform_layout: BindGroupLayout,
+    pub gaussian_uniform_layout_desc: BindGroupLayoutDescriptor,
     pub view_layout: BindGroupLayout,
+    pub view_layout_desc: BindGroupLayoutDescriptor,
     pub compute_view_layout: BindGroupLayout,
+    pub compute_view_layout_desc: BindGroupLayoutDescriptor,
     pub sorted_layout: BindGroupLayout,
+    pub sorted_layout_desc: BindGroupLayoutDescriptor,
     phantom: std::marker::PhantomData<R>,
 }
 
@@ -475,9 +485,32 @@ fn buffer_layout(
     }
 }
 
+pub(crate) fn storage_layout_descriptor<P: ReflectInterleaved>(
+    label: impl Into<Cow<'static, str>>,
+    read_only: bool,
+) -> BindGroupLayoutDescriptor {
+    let entries = P::min_binding_sizes()
+        .iter()
+        .enumerate()
+        .map(|(idx, size)| BindGroupLayoutEntry {
+            binding: idx as u32,
+            visibility: ShaderStages::VERTEX_FRAGMENT | ShaderStages::COMPUTE,
+            ty: BindingType::Buffer {
+                ty: BufferBindingType::Storage { read_only },
+                has_dynamic_offset: false,
+                min_binding_size: BufferSize::new(*size as u64),
+            },
+            count: None,
+        })
+        .collect::<Vec<_>>();
+
+    BindGroupLayoutDescriptor::new(label, &entries)
+}
+
 impl<R: PlanarSync> FromWorld for CloudPipeline<R>
 where
     R::GpuPlanarType: GpuPlanarStorage,
+    <R::GpuPlanarType as GpuPlanar>::PackedType: ReflectInterleaved,
 {
     fn from_world(render_world: &mut World) -> Self {
         let render_device = render_world.resource::<RenderDevice>();
@@ -560,26 +593,39 @@ where
             visibility_ranges_entry,
         ];
 
+        let view_layout_desc = BindGroupLayoutDescriptor::new(
+            "gaussian_view_layout",
+            &view_layout_entries,
+        );
         let view_layout = render_device
             .create_bind_group_layout(Some("gaussian_view_layout"), &view_layout_entries);
 
+        let compute_view_layout_desc = BindGroupLayoutDescriptor::new(
+            "gaussian_compute_view_layout",
+            &compute_view_layout_entries,
+        );
         let compute_view_layout = render_device.create_bind_group_layout(
             Some("gaussian_compute_view_layout"),
             &compute_view_layout_entries,
         );
 
+        let gaussian_uniform_layout_entries = [BindGroupLayoutEntry {
+            binding: 0,
+            visibility: ShaderStages::VERTEX_FRAGMENT | ShaderStages::COMPUTE,
+            ty: BindingType::Buffer {
+                ty: BufferBindingType::Uniform,
+                has_dynamic_offset: true,
+                min_binding_size: Some(CloudUniform::min_size()),
+            },
+            count: None,
+        }];
+        let gaussian_uniform_layout_desc = BindGroupLayoutDescriptor::new(
+            "gaussian_uniform_layout",
+            &gaussian_uniform_layout_entries,
+        );
         let gaussian_uniform_layout = render_device.create_bind_group_layout(
             Some("gaussian_uniform_layout"),
-            &[BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::VERTEX_FRAGMENT | ShaderStages::COMPUTE,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: true,
-                    min_binding_size: Some(CloudUniform::min_size()),
-                },
-                count: None,
-            }],
+            &gaussian_uniform_layout_entries,
         );
 
         #[cfg(not(feature = "morph_particles"))]
@@ -588,33 +634,60 @@ where
         let read_only = false;
 
         let gaussian_cloud_layout = R::GpuPlanarType::bind_group_layout(render_device, read_only);
+        let gaussian_cloud_layout_desc = storage_layout_descriptor::<
+            <R::GpuPlanarType as GpuPlanar>::PackedType,
+        >("gaussian_cloud_layout", read_only);
 
-        #[cfg(feature = "buffer_storage")]
+        #[cfg(all(feature = "buffer_storage", not(feature = "buffer_texture")))]
+        let sorted_layout_entries = [BindGroupLayoutEntry {
+            binding: 0,
+            visibility: ShaderStages::VERTEX_FRAGMENT,
+            ty: BindingType::Buffer {
+                ty: BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: true,
+                min_binding_size: BufferSize::new(std::mem::size_of::<SortEntry>() as u64),
+            },
+            count: None,
+        }];
+        #[cfg(all(feature = "buffer_storage", not(feature = "buffer_texture")))]
+        let sorted_layout_desc =
+            BindGroupLayoutDescriptor::new("sorted_layout", &sorted_layout_entries);
+        #[cfg(all(feature = "buffer_storage", not(feature = "buffer_texture")))]
         let sorted_layout = render_device.create_bind_group_layout(
             Some("sorted_layout"),
+            &sorted_layout_entries,
+        );
+        #[cfg(feature = "buffer_texture")]
+        let sorted_layout = texture::get_sorted_bind_group_layout(render_device);
+        #[cfg(feature = "buffer_texture")]
+        let sorted_layout_desc = BindGroupLayoutDescriptor::new(
+            "texture_sorted_layout",
             &[BindGroupLayoutEntry {
                 binding: 0,
-                visibility: ShaderStages::VERTEX_FRAGMENT,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: true,
-                    min_binding_size: BufferSize::new(std::mem::size_of::<SortEntry>() as u64),
+                visibility: ShaderStages::VERTEX_FRAGMENT | ShaderStages::COMPUTE,
+                ty: BindingType::Texture {
+                    view_dimension: TextureViewDimension::D2,
+                    sample_type: TextureSampleType::Uint,
+                    multisampled: false,
                 },
                 count: None,
             }],
         );
-        #[cfg(feature = "buffer_texture")]
-        let sorted_layout = texture::get_sorted_bind_group_layout(render_device);
 
         debug!("created cloud pipeline");
 
         Self {
             gaussian_cloud_layout,
+            gaussian_cloud_layout_desc,
             gaussian_uniform_layout,
+            gaussian_uniform_layout_desc,
             view_layout,
+            view_layout_desc,
             compute_view_layout,
+            compute_view_layout_desc,
             shader: GAUSSIAN_SHADER_HANDLE,
             sorted_layout,
+            sorted_layout_desc,
             phantom: std::marker::PhantomData,
         }
     }
@@ -834,10 +907,10 @@ impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
         RenderPipelineDescriptor {
             label: Some("gaussian cloud render pipeline".into()),
             layout: vec![
-                self.view_layout.clone(),
-                self.gaussian_uniform_layout.clone(),
-                self.gaussian_cloud_layout.clone(),
-                self.sorted_layout.clone(),
+                self.view_layout_desc.clone(),
+                self.gaussian_uniform_layout_desc.clone(),
+                self.gaussian_cloud_layout_desc.clone(),
+                self.sorted_layout_desc.clone(),
             ],
             vertex: VertexState {
                 shader: self.shader.clone(),
@@ -891,6 +964,7 @@ impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
     }
 }
 
+#[allow(type_alias_bounds)]
 type DrawGaussians<R: bevy_interleave::prelude::PlanarSync> = (
     SetItemPipeline,
     // SetViewBindGroup<0>,
@@ -946,11 +1020,11 @@ pub fn extract_gaussians<R: PlanarSync>(
             continue;
         }
 
-        if let Some(load_state) = asset_server.get_load_state(cloud_handle.handle()) {
-            if load_state.is_loading() {
-                debug!("gaussian cloud asset loading");
-                continue;
-            }
+        if let Some(load_state) = asset_server.get_load_state(cloud_handle.handle())
+            && load_state.is_loading()
+        {
+            debug!("gaussian cloud asset loading");
+            continue;
         }
 
         if gaussian_cloud_res.get(cloud_handle.handle()).is_none() {
@@ -1053,11 +1127,11 @@ fn queue_gaussian_bind_group<R: PlanarSync>(
             continue;
         }
 
-        if let Some(load_state) = asset_server.get_load_state(cloud_handle.handle()) {
-            if load_state.is_loading() {
-                debug!("queue gaussian bind group: cloud asset loading");
-                continue;
-            }
+        if let Some(load_state) = asset_server.get_load_state(cloud_handle.handle())
+            && load_state.is_loading()
+        {
+            debug!("queue gaussian bind group: cloud asset loading");
+            continue;
         }
 
         if gaussian_cloud_res.get(cloud_handle.handle()).is_none() {
@@ -1065,11 +1139,11 @@ fn queue_gaussian_bind_group<R: PlanarSync>(
             continue;
         }
 
-        if let Some(load_state) = asset_server.get_load_state(&sorted_entries_handle.0) {
-            if load_state.is_loading() {
-                debug!("queue gaussian bind group: sorted entries asset loading");
-                continue;
-            }
+        if let Some(load_state) = asset_server.get_load_state(&sorted_entries_handle.0)
+            && load_state.is_loading()
+        {
+            debug!("queue gaussian bind group: sorted entries asset loading");
+            continue;
         }
 
         if sorted_entries_res.get(&sorted_entries_handle.0).is_none() {
