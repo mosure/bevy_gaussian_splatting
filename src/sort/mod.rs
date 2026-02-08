@@ -3,11 +3,11 @@ use core::time::Duration;
 use std::marker::PhantomData;
 
 use bevy::{
+    asset::RenderAssetUsages,
     ecs::system::{SystemParamItem, lifetimeless::SRes},
     math::Vec3A,
     platform::time::Instant,
     prelude::*,
-    asset::RenderAssetUsages,
     render::{
         extract_component::{ExtractComponent, ExtractComponentPlugin},
         render_asset::{PrepareAssetError, RenderAsset, RenderAssetPlugin},
@@ -174,7 +174,8 @@ fn update_sort_trigger(
                 continue;
             }
             Some(last_sort_time)
-                if last_sort_time.elapsed() < Duration::from_millis(sort_config.period_ms as u64) =>
+                if last_sort_time.elapsed()
+                    < Duration::from_millis(sort_config.period_ms as u64) =>
             {
                 continue;
             }

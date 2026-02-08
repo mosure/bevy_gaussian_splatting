@@ -1,4 +1,8 @@
-use rand::{distr::{Distribution, StandardUniform}, rng, Rng};
+use rand::{
+    Rng,
+    distr::{Distribution, StandardUniform},
+    rng,
+};
 use std::marker::Copy;
 
 #[allow(unused_imports)]
@@ -166,9 +170,7 @@ impl<R: PlanarSync> FromWorld for ParticleBehaviorPipeline<R> {
             ty: BindingType::Buffer {
                 ty: BufferBindingType::Storage { read_only: false },
                 has_dynamic_offset: false,
-                min_binding_size: BufferSize::new(
-                    std::mem::size_of::<ParticleBehavior>() as u64
-                ),
+                min_binding_size: BufferSize::new(std::mem::size_of::<ParticleBehavior>() as u64),
             },
             count: None,
         }];

@@ -31,6 +31,14 @@ fn location(index: u32) -> vec2<i32> {
     );
 }
 
+fn convert_sh_color_to_linear(color: vec3<f32>) -> vec3<f32> {
+    if gaussian_uniforms.color_space == 1u {
+        return color;
+    }
+
+    return srgb_to_linear(color);
+}
+
 #ifdef PLANAR_TEXTURE_F16
 
 fn get_position(index: u32) -> vec3<f32> {
@@ -228,7 +236,7 @@ fn get_color(
     color += shc[15] * r15 * ray_direction.x * (rds.x - 3.0 * rds.y);
 #endif
 
-    return srgb_to_linear(color);
+    return convert_sh_color_to_linear(color);
 }
 #else
 fn get_spherical_harmonics(index: u32) -> array<f32, #{SH_COEFF_COUNT}> {
@@ -265,7 +273,7 @@ fn get_color(
 ) -> vec3<f32> {
     let sh = get_spherical_harmonics(index);
     let color = spherical_harmonics_lookup(ray_direction, sh);
-    return srgb_to_linear(color);
+    return convert_sh_color_to_linear(color);
 }
 #endif
 

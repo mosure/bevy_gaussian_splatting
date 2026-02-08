@@ -1,5 +1,8 @@
 use bevy::{
-    camera::{primitives::Aabb, visibility::{add_visibility_class, NoFrustumCulling, VisibilityClass, VisibilitySystems}},
+    camera::{
+        primitives::Aabb,
+        visibility::{NoFrustumCulling, VisibilityClass, VisibilitySystems, add_visibility_class},
+    },
     ecs::{lifecycle::HookContext, world::DeferredWorld},
     math::bounding::BoundingVolume,
     prelude::*,

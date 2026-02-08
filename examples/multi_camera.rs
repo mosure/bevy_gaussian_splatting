@@ -1,5 +1,6 @@
 use bevy::{
-    app::AppExit, camera::Viewport, core_pipeline::tonemapping::Tonemapping, prelude::*, window::WindowResized
+    app::AppExit, camera::Viewport, core_pipeline::tonemapping::Tonemapping, prelude::*,
+    window::WindowResized,
 };
 use bevy_args::{BevyArgsPlugin, parse_args};
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
@@ -28,7 +29,7 @@ fn multi_camera_app() {
                     prevent_default_event_handling: false,
                     resolution: bevy::window::WindowResolution::new(
                         config.width as u32,
-                        config.height as u32
+                        config.height as u32,
                     ),
                     title: config.name.clone(),
                     ..default()

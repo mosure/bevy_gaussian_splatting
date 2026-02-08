@@ -1,6 +1,6 @@
 #define_import_path bevy_gaussian_splatting::packed
 
-#import bevy_gaussian_splatting::bindings::points
+#import bevy_gaussian_splatting::bindings::{gaussian_uniforms, points}
 #ifdef BINARY_GAUSSIAN_OP
     #import bevy_gaussian_splatting::bindings::{rhs_points, out_points}
 #endif
@@ -11,6 +11,13 @@
 }
 
 #ifdef PACKED_F32
+    fn convert_sh_color_to_linear(color: vec3<f32>) -> vec3<f32> {
+        if gaussian_uniforms.color_space == 1u {
+            return color;
+        }
+
+        return srgb_to_linear(color);
+    }
 
     fn gaussian_position(point: Gaussian) -> vec3<f32> {
         return point.position_visibility.xyz;
@@ -19,7 +26,7 @@
     fn gaussian_color(point: Gaussian, ray_direction: vec3<f32>) -> vec3<f32> {
         let sh = gaussian_spherical_harmonics(point);
         let color = spherical_harmonics_lookup(ray_direction, sh);
-        return srgb_to_linear(color);
+        return convert_sh_color_to_linear(color);
     }
 
     fn gaussian_spherical_harmonics(point: Gaussian) -> array<f32, #{SH_COEFF_COUNT}> {

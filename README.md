@@ -35,8 +35,7 @@ bevy_gaussian_splatting --input-cloud [file://gaussian.ply | https://mitchell.mo
 - [X] 2dgs
 - [X] 3dgs
 - [x] 4dgs
-- [x] multi-cloud scene format
-- [ ] gltf gaussian extensions
+- [X] glTF `KHR_gaussian_splatting` scene loading
 - [ ] 4dgs motion blur
 - [ ] [deformable radial kernel](https://github.com/VAST-AI-Research/Deformable-Radial-Kernel-Splatting)
 - [ ] implicit mlp node (isotropic rotation, color)

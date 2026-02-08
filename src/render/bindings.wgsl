@@ -20,6 +20,7 @@ struct GaussianUniforms {
     time_start: f32,
     time_stop: f32,
     num_classes: u32,
+    color_space: u32,
     min: vec4<f32>,
     max: vec4<f32>,
 };

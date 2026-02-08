@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "base_viewer": "../index.html",
+  "examples": [
+    {
+      "id": "seeded-scoop",
+      "title": "Seeded Scoop",
+      "description": "Deterministic cloud (seed 7) tuned for color splats.",
+      "tags": ["generated", "color", "3d"],
+      "thumbnail": "thumbnails/seeded-scoop.png",
+      "args": {
+        "name": "Seeded Scoop",
+        "gaussian_count": 4000,
+        "gaussian_seed": 7,
+        "gaussian_mode": "Gaussian3d",
+        "rasterization_mode": "Color",
+        "show_axes": false,
+        "show_fps": true,
+        "cloud_rotation": "0,25,0",
+        "cloud_scale": "1.2"
+      }
+    },
+    {
+      "id": "seeded-depth",
+      "title": "Seeded Depth",
+      "description": "Seeded cloud (42) with depth shading.",
+      "tags": ["generated", "depth", "3d"],
+      "thumbnail": "thumbnails/seeded-depth.png",
+      "args": {
+        "name": "Seeded Depth",
+        "gaussian_count": 4000,
+        "gaussian_seed": 42,
+        "gaussian_mode": "Gaussian3d",
+        "rasterization_mode": "Depth",
+        "show_axes": false,
+        "show_fps": true,
+        "cloud_rotation": "0,-12,0",
+        "cloud_scale": "1.2"
+      }
+    },
+    {
+      "id": "seeded-normal",
+      "title": "Seeded Normals",
+      "description": "Normal visualization with seed 1337.",
+      "tags": ["generated", "normal", "3d"],
+      "thumbnail": "thumbnails/seeded-normal.png",
+      "args": {
+        "name": "Seeded Normals",
+        "gaussian_count": 4000,
+        "gaussian_seed": 1337,
+        "gaussian_mode": "Gaussian3d",
+        "rasterization_mode": "Normal",
+        "show_axes": false,
+        "show_fps": true,
+        "cloud_rotation": "0,35,0",
+        "cloud_scale": "1.2"
+      }
+    }
+  ]
+}

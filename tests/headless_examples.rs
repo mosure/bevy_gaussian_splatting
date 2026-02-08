@@ -1,10 +1,3 @@
-//! Headless rendering for gaussian splatting
-//!
-//! Renders gaussian splatting to images without creating a window.
-//! Based on Bevy's headless_renderer example.
-//!
-//! Usage: cargo run --example headless --no-default-features --features "headless" -- [filename]
-
 use bevy::{
     app::{AppExit, ScheduleRunnerPlugin},
     camera::RenderTarget,
@@ -25,7 +18,6 @@ use bevy::{
     window::ExitCondition,
     winit::WinitPlugin,
 };
-use bevy_args::BevyArgsPlugin;
 use bevy_gaussian_splatting::{
     CloudSettings, GaussianCamera, GaussianMode, GaussianSplattingPlugin, PlanarGaussian3d,
     PlanarGaussian3dHandle, PlanarGaussian4d, PlanarGaussian4dHandle,
@@ -33,6 +25,8 @@ use bevy_gaussian_splatting::{
     random_gaussians_4d, random_gaussians_4d_seeded, utils::GaussianSplattingViewer,
 };
 use crossbeam_channel::{Receiver, Sender};
+use serde::Deserialize;
+use serde_json::Value;
 use std::{
     path::PathBuf,
     sync::{
@@ -41,6 +35,29 @@ use std::{
     },
     time::Duration,
 };
+
+const MANIFEST_PATH: &str = "www/examples/examples.json";
+const THUMB_WIDTH: u32 = 960;
+const THUMB_HEIGHT: u32 = 540;
+
+#[derive(Debug, Deserialize)]
+struct ExamplesManifest {
+    schema_version: u32,
+    examples: Vec<ExampleEntry>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct ExampleEntry {
+    id: String,
+    title: String,
+    description: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    thumbnail: String,
+    #[serde(default)]
+    args: Value,
+}
 
 #[derive(Resource, Deref)]
 struct MainWorldReceiver(Receiver<Vec<u8>>);
@@ -65,22 +82,83 @@ impl CaptureController {
     }
 }
 
-fn main() {
+#[derive(Resource, Clone)]
+struct OutputTarget {
+    path: PathBuf,
+}
+
+#[test]
+fn render_example_thumbnails() {
+    let manifest = load_manifest();
+    assert_eq!(manifest.schema_version, 1, "unexpected manifest version");
+
+    for example in manifest.examples {
+        let mut args = apply_args(GaussianSplattingViewer::default(), &example.args);
+        args.width = THUMB_WIDTH as f32;
+        args.height = THUMB_HEIGHT as f32;
+
+        let output_path = PathBuf::from("www/examples").join(&example.thumbnail);
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent).expect("failed to create thumbnail directory");
+        }
+
+        render_example(args, output_path);
+    }
+}
+
+fn load_manifest() -> ExamplesManifest {
+    let data = std::fs::read_to_string(MANIFEST_PATH).expect("failed to read examples manifest");
+    serde_json::from_str(&data).expect("failed to parse examples manifest")
+}
+
+fn apply_args(mut base: GaussianSplattingViewer, args: &Value) -> GaussianSplattingViewer {
+    let mut base_value = serde_json::to_value(&base).expect("failed to serialize args");
+    let Some(base_map) = base_value.as_object_mut() else {
+        panic!("expected base args to serialize to object");
+    };
+
+    let Some(args_map) = args.as_object() else {
+        if args.is_null() {
+            return base;
+        }
+        panic!("expected args to be a JSON object");
+    };
+
+    for (key, value) in args_map.iter() {
+        if !base_map.contains_key(key) {
+            panic!("unknown viewer arg: {key}");
+        }
+        base_map.insert(key.clone(), value.clone());
+    }
+
+    base = serde_json::from_value(base_value).expect("failed to deserialize args");
+    base
+}
+
+fn render_example(args: GaussianSplattingViewer, output_path: PathBuf) {
     App::new()
-        .insert_resource(CaptureController::new(1920, 1080))
+        .insert_resource(CaptureController::new(THUMB_WIDTH, THUMB_HEIGHT))
+        .insert_resource(OutputTarget { path: output_path })
         .insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)))
+        .insert_resource(args)
         .add_plugins(
             DefaultPlugins
+                .set(AssetPlugin {
+                    file_path: "www".to_string(),
+                    processed_file_path: "www".to_string(),
+                    meta_check: bevy::asset::AssetMetaCheck::Never,
+                    unapproved_path_mode: bevy::asset::UnapprovedPathMode::Allow,
+                    ..default()
+                })
                 .set(ImagePlugin::default_nearest())
                 .set(WindowPlugin {
                     primary_window: None,
                     exit_condition: ExitCondition::DontExit,
                     ..default()
                 })
-                // Disable WinitPlugin for headless environments
-                .disable::<WinitPlugin>(),
+                .disable::<WinitPlugin>()
+                .disable::<bevy::log::LogPlugin>(),
         )
-        .add_plugins(BevyArgsPlugin::<GaussianSplattingViewer>::default())
         .add_plugins(ImageCopyPlugin)
         .add_plugins(CaptureFramePlugin)
         .add_plugins(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(
@@ -110,7 +188,6 @@ fn setup_gaussian_cloud(
         ..default()
     };
 
-    // Setup render target
     let size = Extent3d {
         width: controller.width,
         height: controller.height,
@@ -128,17 +205,14 @@ fn setup_gaussian_cloud(
 
     match args.gaussian_mode {
         GaussianMode::Gaussian2d | GaussianMode::Gaussian3d => {
-            // Load or generate gaussian cloud
             let cloud = if args.gaussian_count > 0 {
-                println!("Generating {} gaussians", args.gaussian_count);
                 if let Some(seed) = args.gaussian_seed {
                     gaussian_assets.add(random_gaussians_3d_seeded(args.gaussian_count, seed))
                 } else {
                     gaussian_assets.add(random_gaussians_3d(args.gaussian_count))
                 }
-            } else if args.input_cloud.is_some() && !args.input_cloud.as_ref().unwrap().is_empty() {
-                println!("Loading {:?}", args.input_cloud);
-                asset_server.load(args.input_cloud.as_ref().unwrap())
+            } else if let Some(input_cloud) = &args.input_cloud {
+                asset_server.load(input_cloud)
             } else {
                 gaussian_assets.add(PlanarGaussian3d::test_model())
             };
@@ -152,15 +226,13 @@ fn setup_gaussian_cloud(
         }
         GaussianMode::Gaussian4d => {
             let cloud = if args.gaussian_count > 0 {
-                println!("Generating {} gaussians", args.gaussian_count);
                 if let Some(seed) = args.gaussian_seed {
                     gaussian_4d_assets.add(random_gaussians_4d_seeded(args.gaussian_count, seed))
                 } else {
                     gaussian_4d_assets.add(random_gaussians_4d(args.gaussian_count))
                 }
-            } else if args.input_cloud.is_some() && !args.input_cloud.as_ref().unwrap().is_empty() {
-                println!("Loading {:?}", args.input_cloud);
-                asset_server.load(args.input_cloud.as_ref().unwrap())
+            } else if let Some(input_cloud) = &args.input_cloud {
+                asset_server.load(input_cloud)
             } else {
                 gaussian_4d_assets.add(PlanarGaussian4d::test_model())
             };
@@ -183,14 +255,11 @@ fn setup_gaussian_cloud(
         GaussianCamera::default(),
     ));
 
-    // Spawn image copier for GPU->CPU transfer
     commands.spawn(ImageCopier::new(render_target_handle, size, &render_device));
 
-    // Spawn image to save
     commands.spawn(ImageToSave(cpu_image_handle));
 }
 
-/// Plugin for copying images from GPU to CPU
 pub struct ImageCopyPlugin;
 
 impl Plugin for ImageCopyPlugin {
@@ -260,7 +329,6 @@ fn extract_image_copiers(mut commands: Commands, image_copiers: Extract<Query<&I
     commands.insert_resource(ImageCopiers(image_copiers.iter().cloned().collect()));
 }
 
-/// RenderGraph label
 #[derive(Debug, PartialEq, Eq, Clone, Hash, RenderLabel)]
 struct ImageCopy;
 
@@ -357,6 +425,7 @@ struct ImageToSave(Handle<Image>);
 fn save_captured_frame(
     images_to_save: Query<&ImageToSave>,
     receiver: Res<MainWorldReceiver>,
+    output_target: Res<OutputTarget>,
     mut images: ResMut<Assets<Image>>,
     mut controller: ResMut<CaptureController>,
     mut app_exit: MessageWriter<AppExit>,
@@ -367,7 +436,6 @@ fn save_captured_frame(
         return;
     }
 
-    // Try to receive image data
     let mut image_data = Vec::new();
     while let Ok(data) = receiver.try_recv() {
         image_data = data;
@@ -389,7 +457,6 @@ fn save_captured_frame(
         if row_bytes == aligned_row_bytes {
             image.data.as_mut().unwrap().clone_from(&image_data);
         } else {
-            // Shrink to original size
             image.data = Some(
                 image_data
                     .chunks(aligned_row_bytes)
@@ -405,12 +472,8 @@ fn save_captured_frame(
             Err(e) => panic!("Failed to create image: {e:?}"),
         };
 
-        let output_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("headless_output");
-        std::fs::create_dir_all(&output_dir).unwrap();
-        let output_path = output_dir.join("0.png");
-
-        info!("Saving screenshot to {:?}", output_path);
-        if let Err(e) = img.save(&output_path) {
+        info!("Saving screenshot to {:?}", output_target.path);
+        if let Err(e) = img.save(&output_target.path) {
             panic!("Failed to save image: {e}");
         }
     }

@@ -8,13 +8,22 @@ pub use camera::GaussianCamera;
 
 pub use gaussian::{
     formats::{
-        planar_3d::{Gaussian3d, PlanarGaussian3d, PlanarGaussian3dHandle, random_gaussians_3d},
-        planar_4d::{Gaussian4d, PlanarGaussian4d, PlanarGaussian4dHandle, random_gaussians_4d},
+        planar_3d::{
+            Gaussian3d, PlanarGaussian3d, PlanarGaussian3dHandle, random_gaussians_3d,
+            random_gaussians_3d_seeded,
+        },
+        planar_4d::{
+            Gaussian4d, PlanarGaussian4d, PlanarGaussian4dHandle, random_gaussians_4d,
+            random_gaussians_4d_seeded,
+        },
     },
     settings::{CloudSettings, GaussianMode, RasterizeMode},
 };
 
-pub use io::scene::{GaussianScene, GaussianSceneHandle};
+pub use io::scene::{
+    GaussianKernel, GaussianPrimitiveMetadata, GaussianProjection, GaussianScene,
+    GaussianSceneHandle, GaussianSortingMethod,
+};
 
 pub use material::spherical_harmonics::SphericalHarmonicCoefficients;
 

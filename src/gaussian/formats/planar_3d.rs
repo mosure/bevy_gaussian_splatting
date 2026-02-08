@@ -1,4 +1,10 @@
-use rand::{distr::{Distribution, StandardUniform}, rng, Rng, seq::SliceRandom};
+use rand::{
+    Rng, SeedableRng,
+    distr::{Distribution, StandardUniform},
+    rng,
+    rngs::StdRng,
+    seq::SliceRandom,
+};
 use std::marker::Copy;
 
 use bevy::prelude::*;
@@ -34,11 +40,16 @@ use crate::{
     Serialize,
     Deserialize,
 )]
+#[serde(default)]
 #[repr(C)]
 pub struct Gaussian3d {
+    #[serde(default)]
     pub position_visibility: PositionVisibility,
+    #[serde(default)]
     pub spherical_harmonic: SphericalHarmonicCoefficients,
+    #[serde(default)]
     pub rotation: Rotation,
+    #[serde(default)]
     pub scale_opacity: ScaleOpacity,
 }
 
@@ -163,6 +174,17 @@ pub fn random_gaussians_3d(n: usize) -> PlanarGaussian3d {
 
     for _ in 0..n {
         gaussians.push(rng.random());
+    }
+
+    PlanarGaussian3d::from_interleaved(gaussians)
+}
+
+pub fn random_gaussians_3d_seeded(n: usize, seed: u64) -> PlanarGaussian3d {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut gaussians: Vec<Gaussian3d> = Vec::with_capacity(n);
+
+    for _ in 0..n {
+        gaussians.push(StandardUniform.sample(&mut rng));
     }
 
     PlanarGaussian3d::from_interleaved(gaussians)

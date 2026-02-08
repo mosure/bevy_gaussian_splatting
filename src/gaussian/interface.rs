@@ -1,4 +1,4 @@
-use bevy::{prelude::*, math::bounding::Aabb3d};
+use bevy::{math::bounding::Aabb3d, prelude::*};
 use bevy_interleave::prelude::Planar;
 
 #[cfg(feature = "sort_rayon")]
@@ -56,7 +56,10 @@ where
             }
         }
 
-        Some(Aabb3d { min: min.into(), max: max.into() })
+        Some(Aabb3d {
+            min: min.into(),
+            max: max.into(),
+        })
     }
 
     fn visibility(&self, index: usize) -> f32;

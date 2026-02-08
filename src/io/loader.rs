@@ -1,7 +1,10 @@
 #[allow(unused_imports)]
 use std::io::{BufReader, Cursor, ErrorKind};
 
-use bevy::{asset::{AssetLoader, LoadContext, io::Reader}, reflect::TypePath};
+use bevy::{
+    asset::{AssetLoader, LoadContext, io::Reader},
+    reflect::TypePath,
+};
 
 use crate::{
     gaussian::formats::planar_3d::PlanarGaussian3d, gaussian::formats::planar_4d::PlanarGaussian4d,

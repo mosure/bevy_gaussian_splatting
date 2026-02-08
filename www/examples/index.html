@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Examples | bevy_gaussian_splatting</title>
+    <link rel="stylesheet" href="./examples.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="hero">
+        <div class="hero-top">
+          <p class="eyebrow">bevy_gaussian_splatting</p>
+          <nav class="nav">
+            <a href="../index.html">Viewer</a>
+            <a href="./examples.json">Examples JSON</a>
+          </nav>
+        </div>
+        <div class="hero-body">
+          <div class="hero-text">
+            <h1>Gaussian Splatting Examples</h1>
+            <p class="subtitle">
+              Curated viewer presets with live query parameters, rendered into
+              thumbnails by the headless pipeline.
+            </p>
+          </div>
+          <div class="hero-actions">
+            <a class="button" href="../index.html">Open viewer</a>
+            <a class="button ghost" href="./examples.json">View config</a>
+          </div>
+        </div>
+      </header>
+
+      <section class="toolbar">
+        <label class="search">
+          <span>Search</span>
+          <input
+            data-search
+            type="search"
+            placeholder="Find a look, mode, or asset"
+            autocomplete="off"
+          />
+        </label>
+        <div class="meta" data-meta>Loading examples...</div>
+      </section>
+
+      <section class="grid" data-grid></section>
+      <section class="empty" data-empty hidden>
+        <h2>No matches</h2>
+        <p>Try a different keyword or clear the filter.</p>
+      </section>
+
+      <footer class="footer">
+        <p>
+          Each card links straight into the viewer with its query params applied.
+          Resize the window or tweak parameters to make your own presets.
+        </p>
+      </footer>
+    </div>
+
+    <template id="example-card">
+      <article class="card">
+        <a class="card-link" href="#">
+          <div class="thumb">
+            <img alt="" loading="lazy" />
+          </div>
+          <div class="card-body">
+            <div class="card-header">
+              <h3 class="example-title"></h3>
+              <span class="card-id"></span>
+            </div>
+            <p class="example-description"></p>
+            <div class="tag-row"></div>
+          </div>
+        </a>
+      </article>
+    </template>
+
+    <script type="module" src="./examples.js"></script>
+  </body>
+</html>

@@ -46,6 +46,13 @@ pub enum RasterizeMode {
     Velocity,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Reflect, Serialize, Deserialize)]
+pub enum GaussianColorSpace {
+    #[default]
+    SrgbRec709Display,
+    LinRec709Display,
+}
+
 // TODO: breakdown into components
 #[derive(Component, Clone, Debug, Reflect, Serialize, Deserialize)]
 #[reflect(Component)]
@@ -61,6 +68,7 @@ pub struct CloudSettings {
     pub gaussian_mode: GaussianMode,
     pub playback_mode: PlaybackMode,
     pub rasterize_mode: RasterizeMode,
+    pub color_space: GaussianColorSpace,
     pub num_classes: usize,
     pub time: f32,
     pub time_scale: f32,
@@ -80,6 +88,7 @@ impl Default for CloudSettings {
             draw_mode: DrawMode::default(),
             gaussian_mode: GaussianMode::default(),
             rasterize_mode: RasterizeMode::default(),
+            color_space: GaussianColorSpace::default(),
             num_classes: 1,
             playback_mode: PlaybackMode::default(),
             time: 0.0,

@@ -12,14 +12,13 @@ use bevy::{
     render::{
         Render, RenderApp, RenderSystems,
         render_asset::RenderAssets,
-        render_graph::{Node, NodeRunError, RenderGraphContext, RenderLabel, RenderGraphExt},
+        render_graph::{Node, NodeRunError, RenderGraphContext, RenderGraphExt, RenderLabel},
         render_resource::{
             BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
             BindGroupLayoutEntry, BindingResource, BindingType, Buffer, BufferBinding,
-            BufferBindingType, BufferDescriptor,
-            BufferInitDescriptor, BufferSize, BufferUsages, CachedComputePipelineId,
-            CachedPipelineState, ComputePassDescriptor, ComputePipelineDescriptor, PipelineCache,
-            ShaderStages,
+            BufferBindingType, BufferDescriptor, BufferInitDescriptor, BufferSize, BufferUsages,
+            CachedComputePipelineId, CachedPipelineState, ComputePassDescriptor,
+            ComputePipelineDescriptor, PipelineCache, ShaderStages,
         },
         renderer::{RenderContext, RenderDevice},
         view::ViewUniformOffset,
@@ -275,10 +274,8 @@ impl<R: PlanarSync> FromWorld for RadixSortPipeline<R> {
         ];
         let radix_sort_layout_desc =
             BindGroupLayoutDescriptor::new("radix_sort_layout", &radix_sort_layout_entries);
-        let radix_sort_layout = render_device.create_bind_group_layout(
-            Some("radix_sort_layout"),
-            &radix_sort_layout_entries,
-        );
+        let radix_sort_layout = render_device
+            .create_bind_group_layout(Some("radix_sort_layout"), &radix_sort_layout_entries);
 
         let sorting_layout = vec![
             gaussian_cloud_pipeline.compute_view_layout_desc.clone(),

@@ -1,34 +1,49 @@
 #![allow(dead_code)] // ShaderType derives emit unused check helpers
 use std::{borrow::Cow, hash::Hash, num::NonZero};
 
+use bevy::render::render_resource::TextureFormat;
+use bevy::shader::ShaderDefVal;
 use bevy::{
-    asset::{load_internal_asset, uuid_handle, AssetEvent, AssetId}, camera::primitives::Aabb, core_pipeline::{
+    asset::{AssetEvent, AssetId, load_internal_asset, uuid_handle},
+    camera::primitives::Aabb,
+    core_pipeline::{
         core_3d::Transparent3d,
         prepass::{
             MotionVectorPrepass, PreviousViewData, PreviousViewUniformOffset, PreviousViewUniforms,
         },
-    }, ecs::{
+    },
+    ecs::{
         query::ROQueryItem,
-        system::{lifetimeless::*, SystemParamItem},
-    }, pbr::PrepassViewBindGroup, prelude::*, render::{
-        extract_component::{ComponentUniforms, DynamicUniformIndex, UniformComponentPlugin}, globals::{GlobalsBuffer, GlobalsUniform}, render_asset::RenderAssets, render_phase::{
+        system::{SystemParamItem, lifetimeless::*},
+    },
+    pbr::PrepassViewBindGroup,
+    prelude::*,
+    render::{
+        Extract, Render, RenderApp, RenderSystems,
+        extract_component::{ComponentUniforms, DynamicUniformIndex, UniformComponentPlugin},
+        globals::{GlobalsBuffer, GlobalsUniform},
+        render_asset::RenderAssets,
+        render_phase::{
             AddRenderCommand, DrawFunctions, PhaseItem, PhaseItemExtraIndex, RenderCommand,
             RenderCommandResult, SetItemPipeline, TrackedRenderPass, ViewSortedRenderPhases,
-        }, render_resource::*, renderer::RenderDevice, sync_world::RenderEntity, view::{
-            ExtractedView, RenderVisibilityRanges, RenderVisibleEntities, ViewUniform, ViewUniformOffset, ViewUniforms, VISIBILITY_RANGES_STORAGE_BUFFER_COUNT
-        }, Extract, Render, RenderApp, RenderSystems
-    }
+        },
+        render_resource::*,
+        renderer::RenderDevice,
+        sync_world::RenderEntity,
+        view::{
+            ExtractedView, RenderVisibilityRanges, RenderVisibleEntities,
+            VISIBILITY_RANGES_STORAGE_BUFFER_COUNT, ViewUniform, ViewUniformOffset, ViewUniforms,
+        },
+    },
 };
-use bevy::shader::ShaderDefVal;
 use bevy_interleave::prelude::*;
-use bevy::render::render_resource::TextureFormat;
 
 use crate::{
     camera::GaussianCamera,
     gaussian::{
         cloud::CloudVisibilityClass,
         interface::CommonCloud,
-        settings::{CloudSettings, DrawMode, GaussianMode, RasterizeMode},
+        settings::{CloudSettings, DrawMode, GaussianColorSpace, GaussianMode, RasterizeMode},
     },
     material::{
         spherical_harmonics::{HALF_SH_COEFF_COUNT, SH_COEFF_COUNT, SH_DEGREE, SH_VEC4_PLANES},
@@ -108,7 +123,8 @@ where
                         refresh_planar_storage_bind_groups::<R>
                             .in_set(RenderSystems::PrepareBindGroups),
                         queue_gaussian_bind_group::<R>.in_set(RenderSystems::PrepareBindGroups),
-                        queue_gaussian_view_bind_groups::<R>.in_set(RenderSystems::PrepareBindGroups),
+                        queue_gaussian_view_bind_groups::<R>
+                            .in_set(RenderSystems::PrepareBindGroups),
                         queue_gaussian_compute_view_bind_groups::<R>
                             .in_set(RenderSystems::PrepareBindGroups),
                         queue_gaussians::<R>.in_set(RenderSystems::Queue),
@@ -430,8 +446,7 @@ fn queue_gaussians<R: PlanarSync>(
             let aabb_size = aabb.max() - aabb.min();
             let center = *transform
                 * GlobalTransform::from(
-                    Transform::from_translation(aabb_center.into())
-                        .with_scale(aabb_size.into()),
+                    Transform::from_translation(aabb_center.into()).with_scale(aabb_size.into()),
                 );
             let distance = rangefinder.distance(&center.translation());
 
@@ -593,10 +608,8 @@ where
             visibility_ranges_entry,
         ];
 
-        let view_layout_desc = BindGroupLayoutDescriptor::new(
-            "gaussian_view_layout",
-            &view_layout_entries,
-        );
+        let view_layout_desc =
+            BindGroupLayoutDescriptor::new("gaussian_view_layout", &view_layout_entries);
         let view_layout = render_device
             .create_bind_group_layout(Some("gaussian_view_layout"), &view_layout_entries);
 
@@ -653,10 +666,8 @@ where
         let sorted_layout_desc =
             BindGroupLayoutDescriptor::new("sorted_layout", &sorted_layout_entries);
         #[cfg(all(feature = "buffer_storage", not(feature = "buffer_texture")))]
-        let sorted_layout = render_device.create_bind_group_layout(
-            Some("sorted_layout"),
-            &sorted_layout_entries,
-        );
+        let sorted_layout =
+            render_device.create_bind_group_layout(Some("sorted_layout"), &sorted_layout_entries);
         #[cfg(feature = "buffer_texture")]
         let sorted_layout = texture::get_sorted_bind_group_layout(render_device);
         #[cfg(feature = "buffer_texture")]
@@ -985,6 +996,7 @@ pub struct CloudUniform {
     pub time_start: f32,
     pub time_stop: f32,
     pub num_classes: u32,
+    pub color_space: u32,
     pub min: Vec4,
     pub max: Vec4,
 }
@@ -1044,6 +1056,10 @@ pub fn extract_gaussians<R: PlanarSync>(
             time_start: settings.time_start,
             time_stop: settings.time_stop,
             num_classes: settings.num_classes as u32,
+            color_space: match settings.color_space {
+                GaussianColorSpace::SrgbRec709Display => 0,
+                GaussianColorSpace::LinRec709Display => 1,
+            },
             min: aabb.min().extend(1.0),
             max: aabb.max().extend(1.0),
         };

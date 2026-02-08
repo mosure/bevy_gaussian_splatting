@@ -8,11 +8,14 @@ use bevy::{
     core_pipeline::{prepass::MotionVectorPrepass, tonemapping::Tonemapping},
     diagnostic::{DiagnosticsStore, FrameCount, FrameTimeDiagnosticsPlugin},
     prelude::*,
-    render::view::screenshot::{save_to_disk, Screenshot},
+    render::view::screenshot::{Screenshot, save_to_disk},
 };
 
 #[cfg(all(feature = "file_asset", not(target_arch = "wasm32")))]
-use bevy::asset::{AssetApp, io::{AssetSourceBuilder, file::FileAssetReader}};
+use bevy::asset::{
+    AssetApp,
+    io::{AssetSourceBuilder, file::FileAssetReader},
+};
 
 #[cfg(feature = "web_asset")]
 use bevy::asset::io::web::WebAssetPlugin;
@@ -23,7 +26,13 @@ use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 #[cfg(feature = "web_asset")]
 use base64::{Engine as _, engine::general_purpose::URL_SAFE};
 use bevy_gaussian_splatting::{
-    gaussian::interface::TestCloud, random_gaussians_3d, random_gaussians_4d, utils::{log, setup_hooks, GaussianSplattingViewer}, CloudSettings, GaussianCamera, GaussianMode, GaussianScene, GaussianSceneHandle, GaussianSplattingPlugin, PlanarGaussian3d, PlanarGaussian3dHandle, PlanarGaussian4d, PlanarGaussian4dHandle
+    CloudSettings, GaussianCamera, GaussianMode, GaussianScene, GaussianSceneHandle,
+    GaussianSplattingPlugin, PlanarGaussian3d, PlanarGaussian3dHandle, PlanarGaussian4d,
+    PlanarGaussian4dHandle,
+    gaussian::interface::TestCloud,
+    random_gaussians_3d, random_gaussians_3d_seeded, random_gaussians_4d,
+    random_gaussians_4d_seeded,
+    utils::{GaussianSplattingViewer, log, setup_hooks},
 };
 
 #[cfg(feature = "morph_interpolate")]
@@ -67,7 +76,9 @@ fn setup_gaussian_cloud(
     mut gaussian_4d_assets: ResMut<Assets<PlanarGaussian4d>>,
 ) {
     debug!("spawning camera...");
-    commands.spawn(Camera3d::default())
+    let cloud_transform = args.cloud_transform();
+    commands
+        .spawn(Camera3d::default())
         .insert(Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)))
         .insert(Tonemapping::None)
         .insert(MotionVectorPrepass)
@@ -84,7 +95,11 @@ fn setup_gaussian_cloud(
         let input_uri = parse_input_file(input_scene.as_str());
         log(&format!("loading {input_uri}"));
         let scene: Handle<GaussianScene> = asset_server.load(&input_uri);
-        commands.spawn((GaussianSceneHandle(scene), Name::new("gaussian_scene")));
+        commands.spawn((
+            GaussianSceneHandle(scene),
+            Name::new("gaussian_scene"),
+            cloud_transform,
+        ));
         return;
     }
 
@@ -93,7 +108,11 @@ fn setup_gaussian_cloud(
             let cloud: Handle<PlanarGaussian3d>;
             if args.gaussian_count > 0 {
                 log(&format!("generating {} gaussians", args.gaussian_count));
-                cloud = gaussian_3d_assets.add(random_gaussians_3d(args.gaussian_count));
+                cloud = if let Some(seed) = args.gaussian_seed {
+                    gaussian_3d_assets.add(random_gaussians_3d_seeded(args.gaussian_count, seed))
+                } else {
+                    gaussian_3d_assets.add(random_gaussians_3d(args.gaussian_count))
+                };
             } else if let Some(input_cloud) = &args.input_cloud {
                 let input_uri = parse_input_file(input_cloud.as_str());
                 log(&format!("loading {input_uri}"));
@@ -122,6 +141,7 @@ fn setup_gaussian_cloud(
                         },
                         Name::new("gaussian_cloud_3d_binary"),
                         ShowAxes,
+                        cloud_transform,
                     ));
                 } else {
                     commands.spawn((
@@ -134,6 +154,7 @@ fn setup_gaussian_cloud(
                         PlanarGaussian3dHandle(cloud.clone()),
                         Name::new("gaussian_cloud_3d"),
                         ShowAxes,
+                        cloud_transform,
                     ));
                 }
             }
@@ -150,6 +171,7 @@ fn setup_gaussian_cloud(
                     PlanarGaussian3dHandle(cloud.clone()),
                     Name::new("gaussian_cloud_3d"),
                     ShowAxes,
+                    cloud_transform,
                 ));
             }
         }
@@ -157,7 +179,11 @@ fn setup_gaussian_cloud(
             let cloud: Handle<PlanarGaussian4d>;
             if args.gaussian_count > 0 {
                 log(&format!("generating {} gaussians", args.gaussian_count));
-                cloud = gaussian_4d_assets.add(random_gaussians_4d(args.gaussian_count));
+                cloud = if let Some(seed) = args.gaussian_seed {
+                    gaussian_4d_assets.add(random_gaussians_4d_seeded(args.gaussian_count, seed))
+                } else {
+                    gaussian_4d_assets.add(random_gaussians_4d(args.gaussian_count))
+                };
             } else if let Some(input_cloud) = &args.input_cloud {
                 let input_uri = parse_input_file(input_cloud.as_str());
                 log(&format!("loading {input_uri}"));
@@ -176,6 +202,7 @@ fn setup_gaussian_cloud(
                 },
                 Name::new("gaussian_cloud_4d"),
                 ShowAxes,
+                cloud_transform,
             ));
         }
     }
@@ -279,10 +306,7 @@ fn viewer_app() {
     let primary_window = Some(Window {
         mode: bevy::window::WindowMode::Windowed,
         prevent_default_event_handling: false,
-        resolution: bevy::window::WindowResolution::new(
-            config.width as u32, 
-            config.height as u32
-        ),
+        resolution: bevy::window::WindowResolution::new(config.width as u32, config.height as u32),
         title: config.name.clone(),
 
         #[cfg(feature = "perftest")]

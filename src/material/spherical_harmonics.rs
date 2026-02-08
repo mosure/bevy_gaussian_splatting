@@ -206,15 +206,17 @@ where
             A: serde::de::SeqAccess<'de>,
         {
             let mut coefficients = [0.0; SH_COEFF_COUNT];
+            let mut index = 0usize;
 
-            for (i, coefficient) in coefficients.iter_mut().enumerate().take(SH_COEFF_COUNT) {
-                *coefficient = seq
-                    .next_element()?
-                    .ok_or_else(|| serde::de::Error::invalid_length(i, &self))?;
+            while let Some(value) = seq.next_element()? {
+                if index < SH_COEFF_COUNT {
+                    coefficients[index] = value;
+                }
+                index += 1;
             }
             Ok(coefficients)
         }
     }
 
-    d.deserialize_tuple(SH_COEFF_COUNT, CoefficientsVisitor)
+    d.deserialize_seq(CoefficientsVisitor)
 }

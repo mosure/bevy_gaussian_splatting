@@ -3,7 +3,12 @@ use std::marker::Copy;
 use bevy::prelude::*;
 use bevy_interleave::prelude::*;
 use bytemuck::{Pod, Zeroable};
-use rand::{distr::{Distribution, StandardUniform}, rng, Rng};
+use rand::{
+    Rng, SeedableRng,
+    distr::{Distribution, StandardUniform},
+    rng,
+    rngs::StdRng,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -30,12 +35,18 @@ use crate::{
     Serialize,
     Deserialize,
 )]
+#[serde(default)]
 #[repr(C)]
 pub struct Gaussian4d {
+    #[serde(default)]
     pub position_visibility: PositionVisibility,
+    #[serde(default)]
     pub spherindrical_harmonic: SpherindricalHarmonicCoefficients,
+    #[serde(default)]
     pub isotropic_rotations: IsotropicRotations,
+    #[serde(default)]
     pub scale_opacity: ScaleOpacity,
+    #[serde(default)]
     pub timestamp_timescale: TimestampTimescale,
 }
 
@@ -271,7 +282,7 @@ impl Distribution<Gaussian4d> for StandardUniform {
                 0.0,
                 0.0,
             ]
-                .into(),
+            .into(),
         }
     }
 }
@@ -282,6 +293,17 @@ pub fn random_gaussians_4d(n: usize) -> PlanarGaussian4d {
 
     for _ in 0..n {
         gaussians.push(rng.random());
+    }
+
+    PlanarGaussian4d::from_interleaved(gaussians)
+}
+
+pub fn random_gaussians_4d_seeded(n: usize, seed: u64) -> PlanarGaussian4d {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut gaussians: Vec<Gaussian4d> = Vec::with_capacity(n);
+
+    for _ in 0..n {
+        gaussians.push(StandardUniform.sample(&mut rng));
     }
 
     PlanarGaussian4d::from_interleaved(gaussians)
