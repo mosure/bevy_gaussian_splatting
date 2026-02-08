@@ -4,6 +4,10 @@ use bevy_gaussian_splatting::io::{codec::CloudCodec, ply::parse_ply_3d};
 
 #[cfg(feature = "query_sparse")]
 use bevy_gaussian_splatting::query::sparse::SparseSelect;
+#[cfg(feature = "query_sparse")]
+use bevy_interleave::prelude::Planar;
+#[cfg(feature = "query_sparse")]
+use std::collections::HashSet;
 
 #[allow(dead_code)]
 fn is_point_in_transformed_sphere(pos: &[f32; 3]) -> bool {
@@ -50,13 +54,17 @@ fn main() {
     #[cfg(feature = "query_sparse")]
     {
         let sparse_selection = SparseSelect::default().select(&cloud).invert(cloud.len());
-
-        cloud = sparse_selection
+        let keep = sparse_selection
             .indicies
+            .into_iter()
+            .collect::<HashSet<_>>();
+
+        cloud = cloud
             .iter()
-            .map(|idx| cloud.gaussian(*idx))
+            .enumerate()
+            .filter_map(|(idx, gaussian)| keep.contains(&idx).then_some(gaussian))
             .collect();
-        println!("sparsity filtered cloud size: {cloud.len()}");
+        println!("sparsity filtered cloud size: {}", cloud.len());
     }
 
     let base_filename = filename

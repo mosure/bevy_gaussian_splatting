@@ -7,16 +7,14 @@ use std::marker::Copy;
 
 #[allow(unused_imports)]
 use bevy::{
-    asset::{LoadState, load_internal_asset, uuid_handle},
+    asset::{LoadState, RenderAssetUsages, load_internal_asset, uuid_handle},
     core_pipeline::core_3d::graph::{Core3d, Node3d},
     ecs::system::{SystemParamItem, lifetimeless::SRes},
     prelude::*,
     render::{
         Extract, Render, RenderApp, RenderSystems,
-        render_asset::{
-            PrepareAssetError, RenderAsset, RenderAssetPlugin, RenderAssetUsages, RenderAssets,
-        },
-        render_graph::{Node, NodeRunError, RenderGraphApp, RenderGraphContext, RenderLabel},
+        render_asset::{PrepareAssetError, RenderAsset, RenderAssetPlugin, RenderAssets},
+        render_graph::{Node, NodeRunError, RenderGraphContext, RenderGraphExt, RenderLabel},
         render_resource::{
             BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
             BindGroupLayoutEntry, BindingResource, BindingType, Buffer, BufferBinding,
@@ -114,7 +112,7 @@ pub fn extract_particle_behaviors(
         commands_list.push((entity, behaviors.clone()));
     }
     *prev_commands_len = commands_list.len();
-    commands.insert_or_spawn_batch(commands_list);
+    commands.insert_batch(commands_list);
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +129,7 @@ impl RenderAsset for GpuParticleBehaviorBuffers {
         source: Self::SourceAsset,
         _: AssetId<Self::SourceAsset>,
         render_device: &mut SystemParamItem<Self::Param>,
+        _: Option<&Self>,
     ) -> Result<Self, PrepareAssetError<Self::SourceAsset>> {
         let particle_behavior_count = source.0.len() as u32;
 
@@ -224,10 +223,10 @@ pub fn queue_particle_behavior_bind_group<R: PlanarSync>(
     particle_behaviors: Query<(Entity, &ParticleBehaviorsHandle)>,
 ) {
     for (entity, behaviors_handle) in particle_behaviors.iter() {
-        if let Some(load_state) = asset_server.get_load_state(&behaviors_handle.0) {
-            if load_state.is_loading() {
-                continue;
-            }
+        if let Some(load_state) = asset_server.get_load_state(&behaviors_handle.0)
+            && load_state.is_loading()
+        {
+            continue;
         }
 
         if particle_behaviors_res.get(&behaviors_handle.0).is_none() {

@@ -9,6 +9,28 @@ const state = {
   baseViewer: '../index.html',
 };
 
+const resolveExampleArgs = (example) => {
+  const resolved = { ...(example.args || {}) };
+  const hasScene = typeof example.input_scene === 'string' && example.input_scene.length > 0;
+  const hasCloud = typeof example.input_cloud === 'string' && example.input_cloud.length > 0;
+
+  if (hasScene && hasCloud) {
+    console.warn(
+      `Example "${example.id}" defines both input_scene and input_cloud; using input_scene.`,
+    );
+  }
+
+  if (hasScene) {
+    resolved.input_scene = example.input_scene;
+    delete resolved.input_cloud;
+  } else if (hasCloud) {
+    resolved.input_cloud = example.input_cloud;
+    delete resolved.input_scene;
+  }
+
+  return resolved;
+};
+
 const toQueryString = (args = {}) => {
   const params = new URLSearchParams();
   Object.entries(args).forEach(([key, value]) => {
@@ -49,7 +71,7 @@ const renderExamples = (examples) => {
     const image = card.querySelector('img');
     const tagRow = card.querySelector('.tag-row');
 
-    link.href = buildViewerUrl(example.args);
+    link.href = buildViewerUrl(resolveExampleArgs(example));
     title.textContent = example.title;
     description.textContent = example.description;
     id.textContent = example.id;

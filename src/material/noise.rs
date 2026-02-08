@@ -1,15 +1,17 @@
 use bevy::prelude::*;
+use bevy_interleave::prelude::{Planar, PlanarHandle};
 use noise::{NoiseFn, RidgedMulti, Simplex};
 
-use crate::{Gaussian3d, PlanarGaussian3d, PlanarGaussian3dHandle};
+use crate::{PlanarGaussian3dHandle, gaussian::formats::planar_3d::PlanarGaussian3d};
 
 #[derive(Component, Debug, Reflect)]
 pub struct NoiseMaterial {
     pub scale: f32,
 }
+
 impl Default for NoiseMaterial {
     fn default() -> Self {
-        NoiseMaterial { scale: 1.0 }
+        Self { scale: 1.0 }
     }
 }
 
@@ -17,46 +19,38 @@ impl Default for NoiseMaterial {
 pub struct NoiseMaterialPlugin;
 
 impl Plugin for NoiseMaterialPlugin {
-    #[allow(unused)]
     fn build(&self, app: &mut App) {
         app.register_type::<NoiseMaterial>();
-
         app.add_systems(Update, apply_noise_cpu);
     }
 }
 
 fn apply_noise_cpu(
-    mut gaussian_clouds_res: ResMut<Assets<Cloud>>,
-    mut selections: Query<(
-        Entity,
-        &PlanarGaussian3dHandle,
-        &NoiseMaterial,
-        Changed<NoiseMaterial>,
-    )>,
+    mut gaussian_clouds_res: ResMut<Assets<PlanarGaussian3d>>,
+    selections: Query<(&PlanarGaussian3dHandle, &NoiseMaterial), Changed<NoiseMaterial>>,
 ) {
-    for (_entity, cloud_handle, noise_material, changed) in selections.iter_mut() {
-        if !changed {
+    for (cloud_handle, noise_material) in selections.iter() {
+        let Some(cloud) = gaussian_clouds_res.get_mut(cloud_handle.handle()) else {
             continue;
-        }
+        };
 
-        let mut rigid_multi = RidgedMulti::<Simplex>::default();
-        rigid_multi.frequency = noise_material.scale as f64;
+        let rigid_multi = RidgedMulti::<Simplex>::default();
+        let scale = noise_material.scale as f64;
 
-        let cloud = gaussian_clouds_res.get_mut(cloud_handle).unwrap();
+        for index in 0..cloud.len() {
+            let position = cloud.position_visibility[index].position;
+            let x = position[0] as f64 * scale;
+            let y = position[1] as f64 * scale;
+            let z = position[2] as f64 * scale;
 
-        cloud.gaussians.iter_mut().for_each(|gaussian| {
-            let point = |gaussian: &Gaussian3d, idx| {
-                let x = gaussian.position_visibility[0];
-                let y = gaussian.position_visibility[1];
-                let z = gaussian.position_visibility[2];
-
-                [x as f64, y as f64, z as f64, idx as f64]
-            };
-
-            for i in 0..gaussian.spherical_harmonic.coefficients.len() {
-                let noise = rigid_multi.get(point(&gaussian, i));
-                gaussian.spherical_harmonic.coefficients[i] = noise as f32;
+            for (coefficient_index, coefficient) in cloud.spherical_harmonic[index]
+                .coefficients
+                .iter_mut()
+                .enumerate()
+            {
+                let noise = rigid_multi.get([x, y, z, coefficient_index as f64]);
+                *coefficient = noise as f32;
             }
-        });
+        }
     }
 }

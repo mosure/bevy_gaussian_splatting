@@ -4,7 +4,7 @@
 [![GitHub License](https://img.shields.io/github/license/mosure/bevy_gaussian_splatting)](https://raw.githubusercontent.com/mosure/bevy_gaussian_splatting/main/LICENSE-MIT)
 [![crates.io](https://img.shields.io/crates/v/bevy_gaussian_splatting.svg)](https://crates.io/crates/bevy_gaussian_splatting)
 
-bevy gaussian splatting render pipeline plugin. view the [live demo](https://mosure.github.io/bevy_gaussian_splatting?input_cloud=https://mitchell.mosure.me/go_trimmed.ply)
+bevy gaussian splatting render pipeline plugin. view the [live demo gallery](https://mosure.github.io/bevy_gaussian_splatting/examples/) or open [`trellis.glb`](https://mosure.github.io/bevy_gaussian_splatting/index.html?input_scene=https%3A%2F%2Fmitchell.mosure.me%2Ftrellis.glb&rasterization_mode=Color) directly.
 
 ![Alt text](docs/bevy_gaussian_splatting_demo.webp)
 ![Alt text](docs/go.gif)
@@ -15,9 +15,16 @@ bevy gaussian splatting render pipeline plugin. view the [live demo](https://mos
 ```bash
 cargo +nightly install bevy_gaussian_splatting
 bevy_gaussian_splatting --input-cloud [file://gaussian.ply | https://mitchell.mosure.me/go_trimmed.ply]
+bevy_gaussian_splatting --input-scene [file://scene.glb | https://mitchell.mosure.me/trellis.glb]
 ```
 
 > note: default bevy_gaussian_splatting features require nightly rust for generic associated types. to use on stable, disable default features and `nightly_generic_alias` feature
+
+## viewer hotkeys
+
+- `Esc`: close viewer
+- `S`: save screenshot to `screenshots/`
+- `G`: export the loaded gaussian scene to `exports/gaussian_scene_<frame>.glb` (cloud transforms + active camera)
 
 
 ## capabilities
@@ -35,7 +42,7 @@ bevy_gaussian_splatting --input-cloud [file://gaussian.ply | https://mitchell.mo
 - [X] 2dgs
 - [X] 3dgs
 - [x] 4dgs
-- [X] glTF `KHR_gaussian_splatting` scene loading
+- [X] [glTF `KHR_gaussian_splatting`](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_gaussian_splatting) scene load/save
 - [ ] 4dgs motion blur
 - [ ] [deformable radial kernel](https://github.com/VAST-AI-Research/Deformable-Radial-Kernel-Splatting)
 - [ ] implicit mlp node (isotropic rotation, color)
@@ -65,7 +72,7 @@ use bevy_gaussian_splatting::{
 };
 
 fn main() {
-    App::build()
+    App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(GaussianSplattingPlugin)
         .add_systems(Startup, setup_gaussian_cloud)

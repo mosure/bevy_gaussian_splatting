@@ -1,5 +1,7 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::io::ErrorKind;
+use std::path::Path;
 
 use base64::Engine as _;
 use bevy::reflect::TypePath;
@@ -13,7 +15,7 @@ use gltf::{
     buffer::Source,
 };
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::gaussian::{
     formats::planar_3d::{Gaussian3d, PlanarGaussian3d, PlanarGaussian3dHandle},
@@ -26,10 +28,12 @@ use crate::material::spherical_harmonics::{
 const KHR_GAUSSIAN_SPLATTING_EXTENSION: &str = "KHR_gaussian_splatting";
 
 const ATTR_POSITION: &str = "POSITION";
+const ATTR_COLOR_0: &str = "COLOR_0";
 const ATTR_ROTATION: &str = "KHR_gaussian_splatting:ROTATION";
 const ATTR_SCALE: &str = "KHR_gaussian_splatting:SCALE";
 const ATTR_OPACITY: &str = "KHR_gaussian_splatting:OPACITY";
 const ATTR_SH_PREFIX: &str = "KHR_gaussian_splatting:SH_DEGREE_";
+const SH_DEGREE_ZERO_BASIS: f32 = 0.282_095;
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Reflect)]
 pub enum GaussianKernel {
@@ -49,11 +53,34 @@ pub enum GaussianSortingMethod {
     CameraDistance,
 }
 
+#[derive(Clone, Debug, Reflect)]
+pub struct GaussianPrimitiveSpec {
+    pub kernel: String,
+    pub color_space: String,
+    pub projection: String,
+    pub sorting_method: String,
+    #[reflect(ignore)]
+    pub extension_object: Option<Value>,
+}
+
+impl Default for GaussianPrimitiveSpec {
+    fn default() -> Self {
+        Self {
+            kernel: "ellipse".to_owned(),
+            color_space: "srgb_rec709_display".to_owned(),
+            projection: "perspective".to_owned(),
+            sorting_method: "cameraDistance".to_owned(),
+            extension_object: None,
+        }
+    }
+}
+
 #[derive(Component, Clone, Debug, Default, Reflect)]
 pub struct GaussianPrimitiveMetadata {
     pub kernel: GaussianKernel,
     pub projection: GaussianProjection,
     pub sorting_method: GaussianSortingMethod,
+    pub spec: GaussianPrimitiveSpec,
 }
 
 #[derive(Clone, Debug, Default, Reflect)]
@@ -65,9 +92,46 @@ pub struct CloudBundle {
     pub metadata: GaussianPrimitiveMetadata,
 }
 
+#[derive(Clone, Debug, Default, Reflect)]
+pub struct SceneCamera {
+    pub name: String,
+    pub transform: Transform,
+}
+
 #[derive(Asset, Clone, Debug, Default, Reflect)]
 pub struct GaussianScene {
     pub bundles: Vec<CloudBundle>,
+    pub cameras: Vec<SceneCamera>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SceneExportCloud {
+    pub cloud: PlanarGaussian3d,
+    pub name: String,
+    pub settings: CloudSettings,
+    pub transform: Transform,
+    pub metadata: GaussianPrimitiveMetadata,
+}
+
+#[derive(Clone, Debug)]
+pub struct SceneExportCamera {
+    pub name: String,
+    pub transform: Transform,
+    pub yfov_radians: f32,
+    pub znear: f32,
+    pub zfar: Option<f32>,
+}
+
+impl Default for SceneExportCamera {
+    fn default() -> Self {
+        Self {
+            name: "camera".to_owned(),
+            transform: Transform::default(),
+            yfov_radians: std::f32::consts::FRAC_PI_4,
+            znear: 0.01,
+            zfar: Some(1000.0),
+        }
+    }
 }
 
 #[derive(Component, Clone, Debug, Default, Reflect)]
@@ -85,8 +149,10 @@ impl Plugin for GaussianScenePlugin {
         app.register_type::<GaussianKernel>();
         app.register_type::<GaussianProjection>();
         app.register_type::<GaussianSortingMethod>();
+        app.register_type::<GaussianPrimitiveSpec>();
         app.register_type::<GaussianPrimitiveMetadata>();
         app.register_type::<CloudBundle>();
+        app.register_type::<SceneCamera>();
         app.register_type::<GaussianScene>();
         app.register_type::<GaussianSceneHandle>();
         app.register_type::<GaussianSceneLoaded>();
@@ -251,6 +317,7 @@ async fn load_gltf_scene(
     };
 
     let mut bundles = Vec::new();
+    let mut cameras = Vec::new();
     let mut bundle_index = 0usize;
 
     for node in scene.nodes() {
@@ -264,6 +331,7 @@ async fn load_gltf_scene(
             load_context,
             &mut bundle_index,
             &mut bundles,
+            &mut cameras,
         )?;
     }
 
@@ -274,7 +342,7 @@ async fn load_gltf_scene(
         ));
     }
 
-    Ok(GaussianScene { bundles })
+    Ok(GaussianScene { bundles, cameras })
 }
 
 fn ensure_gaussian_extension_used(extensions_used: &[String]) -> Result<(), std::io::Error> {
@@ -363,6 +431,13 @@ fn collect_gaussian_primitives(
                         kernel,
                         projection,
                         sorting_method,
+                        spec: GaussianPrimitiveSpec {
+                            kernel: extension.kernel.clone(),
+                            color_space: extension.color_space.clone(),
+                            projection: extension.projection.clone(),
+                            sorting_method: extension.sorting_method.clone(),
+                            extension_object: Some(extension_value.clone()),
+                        },
                     },
                     color_space,
                 },
@@ -378,14 +453,24 @@ fn parse_kernel(
     mesh_index: usize,
     primitive_index: usize,
 ) -> Result<GaussianKernel, std::io::Error> {
-    match value {
-        "ellipse" => Ok(GaussianKernel::Ellipse),
-        _ => Err(std::io::Error::new(
+    if value.trim().is_empty() {
+        return Err(std::io::Error::new(
             ErrorKind::InvalidData,
             format!(
-                "mesh {mesh_index} primitive {primitive_index} uses unsupported KHR_gaussian_splatting kernel '{value}'; only 'ellipse' is currently supported"
+                "mesh {mesh_index} primitive {primitive_index} has an empty KHR_gaussian_splatting kernel value"
             ),
-        )),
+        ));
+    }
+
+    match value {
+        "ellipse" => Ok(GaussianKernel::Ellipse),
+        _ => {
+            warn!(
+                "mesh {} primitive {} uses extension kernel '{}'; falling back to base kernel 'ellipse'",
+                mesh_index, primitive_index, value
+            );
+            Ok(GaussianKernel::Ellipse)
+        }
     }
 }
 
@@ -394,15 +479,25 @@ fn parse_color_space(
     mesh_index: usize,
     primitive_index: usize,
 ) -> Result<GaussianColorSpace, std::io::Error> {
+    if value.trim().is_empty() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "mesh {mesh_index} primitive {primitive_index} has an empty KHR_gaussian_splatting colorSpace value"
+            ),
+        ));
+    }
+
     match value {
         "srgb_rec709_display" => Ok(GaussianColorSpace::SrgbRec709Display),
         "lin_rec709_display" => Ok(GaussianColorSpace::LinRec709Display),
-        _ => Err(std::io::Error::new(
-            ErrorKind::InvalidData,
-            format!(
-                "mesh {mesh_index} primitive {primitive_index} uses unsupported KHR_gaussian_splatting colorSpace '{value}'"
-            ),
-        )),
+        _ => {
+            warn!(
+                "mesh {} primitive {} uses extension colorSpace '{}'; falling back to 'srgb_rec709_display'",
+                mesh_index, primitive_index, value
+            );
+            Ok(GaussianColorSpace::SrgbRec709Display)
+        }
     }
 }
 
@@ -411,14 +506,24 @@ fn parse_projection(
     mesh_index: usize,
     primitive_index: usize,
 ) -> Result<GaussianProjection, std::io::Error> {
-    match value {
-        "perspective" => Ok(GaussianProjection::Perspective),
-        _ => Err(std::io::Error::new(
+    if value.trim().is_empty() {
+        return Err(std::io::Error::new(
             ErrorKind::InvalidData,
             format!(
-                "mesh {mesh_index} primitive {primitive_index} uses unsupported KHR_gaussian_splatting projection '{value}'; only 'perspective' is currently supported"
+                "mesh {mesh_index} primitive {primitive_index} has an empty KHR_gaussian_splatting projection value"
             ),
-        )),
+        ));
+    }
+
+    match value {
+        "perspective" => Ok(GaussianProjection::Perspective),
+        _ => {
+            warn!(
+                "mesh {} primitive {} uses extension projection '{}'; falling back to 'perspective'",
+                mesh_index, primitive_index, value
+            );
+            Ok(GaussianProjection::Perspective)
+        }
     }
 }
 
@@ -427,14 +532,24 @@ fn parse_sorting_method(
     mesh_index: usize,
     primitive_index: usize,
 ) -> Result<GaussianSortingMethod, std::io::Error> {
-    match value {
-        "cameraDistance" => Ok(GaussianSortingMethod::CameraDistance),
-        _ => Err(std::io::Error::new(
+    if value.trim().is_empty() {
+        return Err(std::io::Error::new(
             ErrorKind::InvalidData,
             format!(
-                "mesh {mesh_index} primitive {primitive_index} uses unsupported KHR_gaussian_splatting sortingMethod '{value}'; only 'cameraDistance' is currently supported"
+                "mesh {mesh_index} primitive {primitive_index} has an empty KHR_gaussian_splatting sortingMethod value"
             ),
-        )),
+        ));
+    }
+
+    match value {
+        "cameraDistance" => Ok(GaussianSortingMethod::CameraDistance),
+        _ => {
+            warn!(
+                "mesh {} primitive {} uses extension sortingMethod '{}'; falling back to 'cameraDistance'",
+                mesh_index, primitive_index, value
+            );
+            Ok(GaussianSortingMethod::CameraDistance)
+        }
     }
 }
 
@@ -580,9 +695,22 @@ fn collect_node_bundles(
     load_context: &mut LoadContext<'_>,
     bundle_index: &mut usize,
     bundles: &mut Vec<CloudBundle>,
+    cameras: &mut Vec<SceneCamera>,
 ) -> Result<(), std::io::Error> {
     let local_transform = Mat4::from_cols_array_2d(&node.transform().matrix());
     let world_transform = parent_transform * local_transform;
+    let node_name = raw_root
+        .nodes
+        .get(node.index())
+        .and_then(|raw_node| raw_node.name.as_deref())
+        .unwrap_or("gaussian_node");
+
+    if node.camera().is_some() {
+        cameras.push(SceneCamera {
+            name: node_name.to_owned(),
+            transform: Transform::from_matrix(world_transform),
+        });
+    }
 
     if let Some(mesh) = node.mesh() {
         for primitive in mesh.primitives() {
@@ -600,12 +728,6 @@ fn collect_node_bundles(
                 color_space: source.color_space,
                 ..default()
             };
-
-            let node_name = raw_root
-                .nodes
-                .get(node.index())
-                .and_then(|raw_node| raw_node.name.as_deref())
-                .unwrap_or("gaussian_node");
 
             bundles.push(CloudBundle {
                 cloud: cloud_handle,
@@ -633,10 +755,550 @@ fn collect_node_bundles(
             load_context,
             bundle_index,
             bundles,
+            cameras,
         )?;
     }
 
     Ok(())
+}
+
+pub fn encode_khr_gaussian_scene_gltf_bytes(
+    clouds: &[SceneExportCloud],
+    camera: Option<&SceneExportCamera>,
+) -> Result<Vec<u8>, std::io::Error> {
+    if clouds.is_empty() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "cannot export an empty KHR_gaussian_splatting scene",
+        ));
+    }
+
+    let mut binary = Vec::<u8>::new();
+    let mut buffer_views = Vec::<Value>::new();
+    let mut accessors = Vec::<Value>::new();
+    let mut meshes = Vec::<Value>::new();
+    let mut nodes = Vec::<Value>::new();
+    let mut scene_nodes = Vec::<usize>::new();
+    let mut cameras_json = Vec::<Value>::new();
+
+    let export_sh_degree = max_export_sh_degree().min(3);
+    let export_coeff_count = (export_sh_degree + 1) * (export_sh_degree + 1);
+
+    for cloud in clouds {
+        let source_gaussian_count = cloud.cloud.position_visibility.len();
+        if source_gaussian_count == 0 {
+            continue;
+        }
+
+        let mut positions = Vec::<f32>::with_capacity(source_gaussian_count * 3);
+        let mut rotations = Vec::<f32>::with_capacity(source_gaussian_count * 4);
+        let mut scales = Vec::<f32>::with_capacity(source_gaussian_count * 3);
+        let mut opacities = Vec::<f32>::with_capacity(source_gaussian_count);
+        let mut sh_channels = (0..export_coeff_count)
+            .map(|_| Vec::<f32>::with_capacity(source_gaussian_count * 3))
+            .collect::<Vec<_>>();
+
+        let mut position_min = [f32::INFINITY; 3];
+        let mut position_max = [f32::NEG_INFINITY; 3];
+        let mut dropped_gaussians = 0usize;
+
+        for gaussian in cloud.cloud.iter() {
+            let rotation = gaussian.rotation.rotation;
+            let rotation_length_sq = rotation
+                .iter()
+                .map(|component| component * component)
+                .sum::<f32>();
+            if rotation_length_sq <= f32::EPSILON || !rotation_length_sq.is_finite() {
+                dropped_gaussians += 1;
+                continue;
+            }
+            let inv_rotation_length = rotation_length_sq.sqrt().recip();
+            let normalized_rotation = [
+                rotation[0] * inv_rotation_length,
+                rotation[1] * inv_rotation_length,
+                rotation[2] * inv_rotation_length,
+                rotation[3] * inv_rotation_length,
+            ];
+
+            let position = gaussian.position_visibility.position;
+            positions.extend_from_slice(&position);
+            for axis in 0..3 {
+                position_min[axis] = position_min[axis].min(position[axis]);
+                position_max[axis] = position_max[axis].max(position[axis]);
+            }
+
+            rotations.extend_from_slice(&normalized_rotation);
+
+            scales.extend_from_slice(&[
+                gaussian.scale_opacity.scale[0].max(1e-6).ln(),
+                gaussian.scale_opacity.scale[1].max(1e-6).ln(),
+                gaussian.scale_opacity.scale[2].max(1e-6).ln(),
+            ]);
+            opacities.push(gaussian.scale_opacity.opacity.clamp(0.0, 1.0));
+
+            for (coefficient_index, channel) in sh_channels.iter_mut().enumerate() {
+                let base = coefficient_index * SH_CHANNELS;
+                channel.extend_from_slice(&[
+                    gaussian.spherical_harmonic.coefficients[base],
+                    gaussian.spherical_harmonic.coefficients[base + 1],
+                    gaussian.spherical_harmonic.coefficients[base + 2],
+                ]);
+            }
+        }
+
+        let gaussian_count = positions.len() / 3;
+        if gaussian_count == 0 {
+            warn!(
+                "skipping cloud '{}' during KHR export because all gaussians had invalid rotations",
+                cloud.name
+            );
+            continue;
+        }
+        if dropped_gaussians > 0 {
+            warn!(
+                "dropped {} gaussians with invalid rotations while exporting cloud '{}'",
+                dropped_gaussians, cloud.name
+            );
+        }
+
+        let position_accessor = push_f32_accessor(
+            &mut binary,
+            &mut buffer_views,
+            &mut accessors,
+            AccessorSpec {
+                values: &positions,
+                count: gaussian_count,
+                accessor_type: "VEC3",
+                min: Some(position_min.to_vec()),
+                max: Some(position_max.to_vec()),
+            },
+        );
+        let rotation_accessor = push_f32_accessor(
+            &mut binary,
+            &mut buffer_views,
+            &mut accessors,
+            AccessorSpec {
+                values: &rotations,
+                count: gaussian_count,
+                accessor_type: "VEC4",
+                min: None,
+                max: None,
+            },
+        );
+        let scale_accessor = push_f32_accessor(
+            &mut binary,
+            &mut buffer_views,
+            &mut accessors,
+            AccessorSpec {
+                values: &scales,
+                count: gaussian_count,
+                accessor_type: "VEC3",
+                min: None,
+                max: None,
+            },
+        );
+        let opacity_accessor = push_f32_accessor(
+            &mut binary,
+            &mut buffer_views,
+            &mut accessors,
+            AccessorSpec {
+                values: &opacities,
+                count: gaussian_count,
+                accessor_type: "SCALAR",
+                min: None,
+                max: None,
+            },
+        );
+
+        let mut attributes = serde_json::Map::new();
+        attributes.insert(ATTR_POSITION.to_owned(), json!(position_accessor));
+        attributes.insert(ATTR_ROTATION.to_owned(), json!(rotation_accessor));
+        attributes.insert(ATTR_SCALE.to_owned(), json!(scale_accessor));
+        attributes.insert(ATTR_OPACITY.to_owned(), json!(opacity_accessor));
+
+        for (coefficient_index, values) in sh_channels.iter().enumerate() {
+            let sh_accessor = push_f32_accessor(
+                &mut binary,
+                &mut buffer_views,
+                &mut accessors,
+                AccessorSpec {
+                    values,
+                    count: gaussian_count,
+                    accessor_type: "VEC3",
+                    min: None,
+                    max: None,
+                },
+            );
+            let (degree, coefficient) = sh_index_to_degree_coefficient(coefficient_index);
+            attributes.insert(
+                format!("{ATTR_SH_PREFIX}{degree}_COEF_{coefficient}"),
+                json!(sh_accessor),
+            );
+        }
+
+        let primitive_extension =
+            gaussian_extension_object(&cloud.metadata, cloud.settings.color_space);
+        meshes.push(json!({
+            "name": cloud.name,
+            "primitives": [{
+                "attributes": Value::Object(attributes),
+                "mode": 0,
+                "extensions": {
+                    KHR_GAUSSIAN_SPLATTING_EXTENSION: primitive_extension
+                }
+            }]
+        }));
+
+        let node_index = nodes.len();
+        scene_nodes.push(node_index);
+        nodes.push(json!({
+            "name": cloud.name,
+            "mesh": meshes.len() - 1,
+            "matrix": transform_matrix_values(cloud.transform),
+        }));
+    }
+
+    if scene_nodes.is_empty() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "cannot export a KHR_gaussian_splatting scene with zero gaussians",
+        ));
+    }
+
+    if let Some(camera) = camera {
+        let mut perspective = serde_json::Map::new();
+        perspective.insert("yfov".to_owned(), json!(camera.yfov_radians));
+        perspective.insert("znear".to_owned(), json!(camera.znear));
+        if let Some(zfar) = camera.zfar {
+            perspective.insert("zfar".to_owned(), json!(zfar));
+        }
+
+        cameras_json.push(json!({
+            "name": camera.name,
+            "type": "perspective",
+            "perspective": Value::Object(perspective),
+        }));
+
+        let camera_node_index = nodes.len();
+        scene_nodes.push(camera_node_index);
+        nodes.push(json!({
+            "name": camera.name,
+            "camera": cameras_json.len() - 1,
+            "matrix": transform_matrix_values(camera.transform),
+        }));
+    }
+
+    align_to_four_bytes(&mut binary);
+
+    let mut root = serde_json::Map::new();
+    root.insert("asset".to_owned(), json!({ "version": "2.0" }));
+    root.insert(
+        "extensionsUsed".to_owned(),
+        json!([KHR_GAUSSIAN_SPLATTING_EXTENSION]),
+    );
+    root.insert(
+        "extensionsRequired".to_owned(),
+        json!([KHR_GAUSSIAN_SPLATTING_EXTENSION]),
+    );
+    root.insert("scene".to_owned(), json!(0));
+    root.insert("scenes".to_owned(), json!([{ "nodes": scene_nodes }]));
+    root.insert("nodes".to_owned(), Value::Array(nodes));
+    root.insert("meshes".to_owned(), Value::Array(meshes));
+    root.insert(
+        "buffers".to_owned(),
+        json!([{
+            "byteLength": binary.len(),
+            "uri": format!(
+                "data:application/octet-stream;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(&binary)
+            ),
+        }]),
+    );
+    root.insert("bufferViews".to_owned(), Value::Array(buffer_views));
+    root.insert("accessors".to_owned(), Value::Array(accessors));
+    if !cameras_json.is_empty() {
+        root.insert("cameras".to_owned(), Value::Array(cameras_json));
+    }
+
+    serde_json::to_vec_pretty(&Value::Object(root)).map_err(|err| {
+        std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("failed to serialize KHR_gaussian_splatting scene: {err}"),
+        )
+    })
+}
+
+pub fn write_khr_gaussian_scene_gltf(
+    path: impl AsRef<Path>,
+    clouds: &[SceneExportCloud],
+    camera: Option<&SceneExportCamera>,
+) -> Result<(), std::io::Error> {
+    let bytes = encode_khr_gaussian_scene_gltf_bytes(clouds, camera)?;
+    std::fs::write(path, bytes)
+}
+
+pub fn encode_khr_gaussian_scene_glb_bytes(
+    clouds: &[SceneExportCloud],
+    camera: Option<&SceneExportCamera>,
+) -> Result<Vec<u8>, std::io::Error> {
+    let gltf_bytes = encode_khr_gaussian_scene_gltf_bytes(clouds, camera)?;
+    let mut root: Value = serde_json::from_slice(&gltf_bytes).map_err(|err| {
+        std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("failed to parse generated KHR_gaussian_splatting glTF JSON: {err}"),
+        )
+    })?;
+
+    let binary = extract_embedded_binary_buffer(&mut root)?;
+
+    let json = serde_json::to_vec(&root).map_err(|err| {
+        std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("failed to serialize KHR_gaussian_splatting GLB JSON chunk: {err}"),
+        )
+    })?;
+
+    let glb = gltf::binary::Glb {
+        header: gltf::binary::Header {
+            magic: *b"glTF",
+            version: 2,
+            length: 0,
+        },
+        json: Cow::Owned(json),
+        bin: Some(Cow::Owned(binary)),
+    };
+
+    glb.to_vec().map_err(|err| {
+        std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("failed to serialize KHR_gaussian_splatting GLB: {err}"),
+        )
+    })
+}
+
+pub fn write_khr_gaussian_scene_glb(
+    path: impl AsRef<Path>,
+    clouds: &[SceneExportCloud],
+    camera: Option<&SceneExportCamera>,
+) -> Result<(), std::io::Error> {
+    let bytes = encode_khr_gaussian_scene_glb_bytes(clouds, camera)?;
+    std::fs::write(path, bytes)
+}
+
+fn extract_embedded_binary_buffer(root: &mut Value) -> Result<Vec<u8>, std::io::Error> {
+    let buffers = root
+        .get_mut("buffers")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| std::io::Error::new(ErrorKind::InvalidData, "missing glTF buffers array"))?;
+
+    if buffers.len() != 1 {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "KHR_gaussian_splatting export expects exactly one buffer, found {}",
+                buffers.len()
+            ),
+        ));
+    }
+
+    let buffer = buffers[0].as_object_mut().ok_or_else(|| {
+        std::io::Error::new(ErrorKind::InvalidData, "buffer entry must be a JSON object")
+    })?;
+    let uri = buffer
+        .remove("uri")
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .ok_or_else(|| {
+            std::io::Error::new(
+                ErrorKind::InvalidData,
+                "buffer URI missing; expected embedded data URI for GLB conversion",
+            )
+        })?;
+
+    let binary = decode_data_uri(&uri).ok_or_else(|| {
+        std::io::Error::new(
+            ErrorKind::InvalidData,
+            "buffer URI must be an embedded data URI for GLB conversion",
+        )
+    })??;
+
+    buffer.insert("byteLength".to_owned(), json!(binary.len()));
+
+    Ok(binary)
+}
+
+fn align_to_four_bytes(bytes: &mut Vec<u8>) {
+    while !bytes.len().is_multiple_of(4) {
+        bytes.push(0);
+    }
+}
+
+struct AccessorSpec<'a> {
+    values: &'a [f32],
+    count: usize,
+    accessor_type: &'a str,
+    min: Option<Vec<f32>>,
+    max: Option<Vec<f32>>,
+}
+
+fn push_f32_accessor(
+    binary: &mut Vec<u8>,
+    buffer_views: &mut Vec<Value>,
+    accessors: &mut Vec<Value>,
+    spec: AccessorSpec<'_>,
+) -> usize {
+    align_to_four_bytes(binary);
+    let byte_offset = binary.len();
+    for value in spec.values {
+        binary.extend_from_slice(&value.to_le_bytes());
+    }
+    let byte_length = std::mem::size_of_val(spec.values);
+
+    let buffer_view_index = buffer_views.len();
+    buffer_views.push(json!({
+        "buffer": 0,
+        "byteOffset": byte_offset,
+        "byteLength": byte_length,
+    }));
+
+    let mut accessor = serde_json::Map::new();
+    accessor.insert("bufferView".to_owned(), json!(buffer_view_index));
+    accessor.insert("componentType".to_owned(), json!(5126u32));
+    accessor.insert("count".to_owned(), json!(spec.count));
+    accessor.insert("type".to_owned(), json!(spec.accessor_type));
+    if let Some(min) = spec.min {
+        accessor.insert("min".to_owned(), json!(min));
+    }
+    if let Some(max) = spec.max {
+        accessor.insert("max".to_owned(), json!(max));
+    }
+
+    let accessor_index = accessors.len();
+    accessors.push(Value::Object(accessor));
+    accessor_index
+}
+
+fn transform_matrix_values(transform: Transform) -> [f32; 16] {
+    transform.to_matrix().to_cols_array()
+}
+
+fn gaussian_extension_object(
+    metadata: &GaussianPrimitiveMetadata,
+    color_space: GaussianColorSpace,
+) -> Value {
+    let mut extension_object = metadata
+        .spec
+        .extension_object
+        .as_ref()
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+
+    extension_object.insert(
+        "kernel".to_owned(),
+        Value::String(kernel_extension_identifier(metadata)),
+    );
+    extension_object.insert(
+        "colorSpace".to_owned(),
+        Value::String(color_space_extension_identifier(metadata, color_space)),
+    );
+    extension_object.insert(
+        "projection".to_owned(),
+        Value::String(projection_extension_identifier(metadata)),
+    );
+    extension_object.insert(
+        "sortingMethod".to_owned(),
+        Value::String(sorting_method_extension_identifier(metadata)),
+    );
+
+    Value::Object(extension_object)
+}
+
+fn kernel_extension_identifier(metadata: &GaussianPrimitiveMetadata) -> String {
+    extension_identifier(
+        &metadata.spec.kernel,
+        kernel_to_extension_value(metadata.kernel),
+        &["ellipse"],
+    )
+}
+
+fn color_space_extension_identifier(
+    metadata: &GaussianPrimitiveMetadata,
+    color_space: GaussianColorSpace,
+) -> String {
+    extension_identifier(
+        &metadata.spec.color_space,
+        color_space_to_extension_value(color_space),
+        &["srgb_rec709_display", "lin_rec709_display"],
+    )
+}
+
+fn projection_extension_identifier(metadata: &GaussianPrimitiveMetadata) -> String {
+    extension_identifier(
+        &metadata.spec.projection,
+        projection_to_extension_value(metadata.projection),
+        &["perspective"],
+    )
+}
+
+fn sorting_method_extension_identifier(metadata: &GaussianPrimitiveMetadata) -> String {
+    extension_identifier(
+        &metadata.spec.sorting_method,
+        sorting_method_to_extension_value(metadata.sorting_method),
+        &["cameraDistance"],
+    )
+}
+
+fn extension_identifier(spec_value: &str, fallback_value: &str, known_values: &[&str]) -> String {
+    let spec_value = spec_value.trim();
+    if spec_value.is_empty() || known_values.contains(&spec_value) {
+        fallback_value.to_owned()
+    } else {
+        spec_value.to_owned()
+    }
+}
+
+fn kernel_to_extension_value(kernel: GaussianKernel) -> &'static str {
+    match kernel {
+        GaussianKernel::Ellipse => "ellipse",
+    }
+}
+
+fn projection_to_extension_value(projection: GaussianProjection) -> &'static str {
+    match projection {
+        GaussianProjection::Perspective => "perspective",
+    }
+}
+
+fn sorting_method_to_extension_value(method: GaussianSortingMethod) -> &'static str {
+    match method {
+        GaussianSortingMethod::CameraDistance => "cameraDistance",
+    }
+}
+
+fn color_space_to_extension_value(color_space: GaussianColorSpace) -> &'static str {
+    match color_space {
+        GaussianColorSpace::SrgbRec709Display => "srgb_rec709_display",
+        GaussianColorSpace::LinRec709Display => "lin_rec709_display",
+    }
+}
+
+fn sh_index_to_degree_coefficient(index: usize) -> (usize, usize) {
+    let mut degree = 0usize;
+    while (degree + 1) * (degree + 1) <= index {
+        degree += 1;
+    }
+
+    let coefficient = index - (degree * degree);
+    (degree, coefficient)
+}
+
+fn max_export_sh_degree() -> usize {
+    for degree in (0..=3).rev() {
+        if (degree + 1) * (degree + 1) <= SH_COEFF_COUNT_PER_CHANNEL {
+            return degree;
+        }
+    }
+    0
 }
 
 fn decode_gaussian_primitive(
@@ -659,6 +1321,17 @@ fn decode_gaussian_primitive(
     let rotations = read_rotation_attribute(&rotation_accessor, buffers)?;
     let scales = read_scale_attribute(&scale_accessor, buffers)?;
     let opacities = read_opacity_attribute(&opacity_accessor, buffers)?;
+    let color_fallback = if sh_accessors.is_empty() {
+        match optional_accessor(document, &source.attributes, ATTR_COLOR_0)? {
+            Some(color_accessor) => {
+                ensure_count(&color_accessor, count, ATTR_COLOR_0)?;
+                Some(read_color_attribute(&color_accessor, buffers)?)
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
 
     let mut sh_channels = Vec::with_capacity(sh_accessors.len());
     for (coefficient_index, accessor) in sh_accessors {
@@ -677,6 +1350,15 @@ fn decode_gaussian_primitive(
     for index in 0..count {
         let mut spherical_harmonic =
             crate::material::spherical_harmonics::SphericalHarmonicCoefficients::default();
+
+        if sh_channels.is_empty()
+            && let Some(color_values) = &color_fallback
+        {
+            let color = color_values[index];
+            spherical_harmonic.set(0, color[0] / SH_DEGREE_ZERO_BASIS);
+            spherical_harmonic.set(1, color[1] / SH_DEGREE_ZERO_BASIS);
+            spherical_harmonic.set(2, color[2] / SH_DEGREE_ZERO_BASIS);
+        }
 
         for (coefficient_index, values) in &sh_channels {
             let rgb = values[index];
@@ -731,6 +1413,25 @@ fn required_accessor<'a>(
     })
 }
 
+fn optional_accessor<'a>(
+    document: &'a gltf::Document,
+    attributes: &HashMap<String, usize>,
+    semantic: &str,
+) -> Result<Option<Accessor<'a>>, std::io::Error> {
+    let Some(index) = attributes.get(semantic) else {
+        return Ok(None);
+    };
+
+    let accessor = document.accessors().nth(*index).ok_or_else(|| {
+        std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("attribute semantic '{semantic}' references missing accessor index {index}"),
+        )
+    })?;
+
+    Ok(Some(accessor))
+}
+
 fn collect_sh_accessors<'a>(
     document: &'a gltf::Document,
     attributes: &HashMap<String, usize>,
@@ -766,6 +1467,10 @@ fn collect_sh_coefficient_map(
             .entry(degree)
             .or_default()
             .insert(coefficient, *accessor_index);
+    }
+
+    if degrees.is_empty() {
+        return Ok(Vec::new());
     }
 
     let Some(degree_zero) = degrees.get(&0) else {
@@ -907,7 +1612,21 @@ fn read_position_attribute(
         ));
     }
 
-    read_items::<[f32; 3]>(accessor, buffers, ATTR_POSITION)
+    let values = read_items::<[f32; 3]>(accessor, buffers, ATTR_POSITION)?;
+    if values
+        .iter()
+        .flatten()
+        .any(|component| !component.is_finite())
+    {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "attribute semantic '{ATTR_POSITION}' contains non-finite values, which are invalid"
+            ),
+        ));
+    }
+
+    Ok(values)
 }
 
 fn read_rotation_attribute(
@@ -959,8 +1678,30 @@ fn read_rotation_attribute(
         }
     };
 
+    let mut replaced_zero_length_quaternions = 0usize;
     for quaternion in &mut values {
-        normalize_quaternion(quaternion)?;
+        if normalize_quaternion(quaternion) {
+            replaced_zero_length_quaternions += 1;
+        }
+    }
+    if replaced_zero_length_quaternions > 0 {
+        warn!(
+            "attribute semantic '{}' contained {} zero-length quaternions; replacing them with identity rotations",
+            ATTR_ROTATION, replaced_zero_length_quaternions
+        );
+    }
+
+    if values
+        .iter()
+        .flatten()
+        .any(|component| !component.is_finite())
+    {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "attribute semantic '{ATTR_ROTATION}' contains non-finite values, which are invalid"
+            ),
+        ));
     }
 
     Ok(values)
@@ -1021,6 +1762,15 @@ fn read_scale_attribute(
         scale[0] = scale[0].exp();
         scale[1] = scale[1].exp();
         scale[2] = scale[2].exp();
+
+        if !scale[0].is_finite() || !scale[1].is_finite() || !scale[2].is_finite() {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "attribute semantic '{ATTR_SCALE}' produces non-finite scale after exp(scale), which is invalid"
+                ),
+            ));
+        }
     }
 
     Ok(values)
@@ -1076,6 +1826,104 @@ fn read_opacity_attribute(
     Ok(values)
 }
 
+fn read_color_attribute(
+    accessor: &Accessor<'_>,
+    buffers: &[Vec<u8>],
+) -> Result<Vec<[f32; 3]>, std::io::Error> {
+    let normalized = accessor.normalized();
+    match accessor.dimensions() {
+        Dimensions::Vec3 => {}
+        Dimensions::Vec4 => {}
+        _ => {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "attribute semantic '{ATTR_COLOR_0}' must use accessor type VEC3 or VEC4, got {:?}",
+                    accessor.dimensions()
+                ),
+            ));
+        }
+    }
+
+    match (accessor.dimensions(), accessor.data_type()) {
+        (Dimensions::Vec3, DataType::F32) => {
+            read_items::<[f32; 3]>(accessor, buffers, ATTR_COLOR_0)
+        }
+        (Dimensions::Vec4, DataType::F32) => {
+            Ok(read_items::<[f32; 4]>(accessor, buffers, ATTR_COLOR_0)?
+                .into_iter()
+                .map(|v| [v[0], v[1], v[2]])
+                .collect())
+        }
+        (Dimensions::Vec3, DataType::U8) => {
+            if !normalized {
+                warn!(
+                    "attribute semantic '{}' uses non-normalized U8 values; interpreting as normalized colors",
+                    ATTR_COLOR_0
+                );
+            }
+            Ok(read_items::<[u8; 3]>(accessor, buffers, ATTR_COLOR_0)?
+                .into_iter()
+                .map(|v| [normalize_u8(v[0]), normalize_u8(v[1]), normalize_u8(v[2])])
+                .collect())
+        }
+        (Dimensions::Vec4, DataType::U8) => {
+            if !normalized {
+                warn!(
+                    "attribute semantic '{}' uses non-normalized U8 values; interpreting as normalized colors",
+                    ATTR_COLOR_0
+                );
+            }
+            Ok(read_items::<[u8; 4]>(accessor, buffers, ATTR_COLOR_0)?
+                .into_iter()
+                .map(|v| [normalize_u8(v[0]), normalize_u8(v[1]), normalize_u8(v[2])])
+                .collect())
+        }
+        (Dimensions::Vec3, DataType::U16) => {
+            if !normalized {
+                warn!(
+                    "attribute semantic '{}' uses non-normalized U16 values; interpreting as normalized colors",
+                    ATTR_COLOR_0
+                );
+            }
+            Ok(read_items::<[u16; 3]>(accessor, buffers, ATTR_COLOR_0)?
+                .into_iter()
+                .map(|v| {
+                    [
+                        normalize_u16(v[0]),
+                        normalize_u16(v[1]),
+                        normalize_u16(v[2]),
+                    ]
+                })
+                .collect())
+        }
+        (Dimensions::Vec4, DataType::U16) => {
+            if !normalized {
+                warn!(
+                    "attribute semantic '{}' uses non-normalized U16 values; interpreting as normalized colors",
+                    ATTR_COLOR_0
+                );
+            }
+            Ok(read_items::<[u16; 4]>(accessor, buffers, ATTR_COLOR_0)?
+                .into_iter()
+                .map(|v| {
+                    [
+                        normalize_u16(v[0]),
+                        normalize_u16(v[1]),
+                        normalize_u16(v[2]),
+                    ]
+                })
+                .collect())
+        }
+        _ => Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "attribute semantic '{ATTR_COLOR_0}' must use float, normalized unsigned byte, or normalized unsigned short components"
+            ),
+        )),
+    }
+}
+
 fn read_sh_coefficient_attribute(
     accessor: &Accessor<'_>,
     buffers: &[Vec<u8>],
@@ -1094,7 +1942,18 @@ fn read_sh_coefficient_attribute(
         ));
     }
 
-    read_items::<[f32; 3]>(accessor, buffers, "KHR_gaussian_splatting:SH")
+    let values = read_items::<[f32; 3]>(accessor, buffers, "KHR_gaussian_splatting:SH")?;
+    if values
+        .iter()
+        .flatten()
+        .any(|component| !component.is_finite())
+    {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            "spherical harmonics attributes contain non-finite values, which are invalid",
+        ));
+    }
+    Ok(values)
 }
 
 fn read_items<T: Item + Copy>(
@@ -1118,18 +1977,17 @@ fn read_items<T: Item + Copy>(
     Ok(iter.collect())
 }
 
-fn normalize_quaternion(quaternion: &mut [f32; 4]) -> Result<(), std::io::Error> {
+fn normalize_quaternion(quaternion: &mut [f32; 4]) -> bool {
     let length_sq = quaternion
         .iter()
         .map(|component| component * component)
         .sum::<f32>();
     if length_sq <= f32::EPSILON {
-        return Err(std::io::Error::new(
-            ErrorKind::InvalidData,
-            format!(
-                "attribute semantic '{ATTR_ROTATION}' contains a zero-length quaternion, which is invalid"
-            ),
-        ));
+        quaternion[0] = 1.0;
+        quaternion[1] = 0.0;
+        quaternion[2] = 0.0;
+        quaternion[3] = 0.0;
+        return true;
     }
 
     let inv_length = length_sq.sqrt().recip();
@@ -1138,7 +1996,7 @@ fn normalize_quaternion(quaternion: &mut [f32; 4]) -> Result<(), std::io::Error>
     quaternion[2] *= inv_length;
     quaternion[3] *= inv_length;
 
-    Ok(())
+    false
 }
 
 fn normalize_i8(value: i8) -> f32 {
@@ -1191,6 +2049,13 @@ mod tests {
     }
 
     #[test]
+    fn allows_no_sh_coefficients_for_extension_defined_lighting() {
+        let attributes = HashMap::new();
+        let result = collect_sh_coefficient_map(&attributes).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
     fn rejects_partial_sh_degree() {
         let mut attributes = HashMap::new();
         attributes.insert(
@@ -1216,6 +2081,41 @@ mod tests {
     }
 
     #[test]
+    fn preserves_unknown_extension_identifiers_on_export() {
+        let mut metadata = GaussianPrimitiveMetadata::default();
+        metadata.spec.kernel = "customShape".to_owned();
+        metadata.spec.color_space = "custom_space_display".to_owned();
+        metadata.spec.projection = "customProjection".to_owned();
+        metadata.spec.sorting_method = "customSort".to_owned();
+
+        assert_eq!(kernel_extension_identifier(&metadata), "customShape");
+        assert_eq!(
+            color_space_extension_identifier(&metadata, GaussianColorSpace::SrgbRec709Display),
+            "custom_space_display"
+        );
+        assert_eq!(
+            projection_extension_identifier(&metadata),
+            "customProjection"
+        );
+        assert_eq!(sorting_method_extension_identifier(&metadata), "customSort");
+    }
+
+    #[test]
+    fn uses_runtime_color_space_for_known_identifiers() {
+        let mut metadata = GaussianPrimitiveMetadata::default();
+        metadata.spec.color_space = "lin_rec709_display".to_owned();
+
+        assert_eq!(
+            color_space_extension_identifier(&metadata, GaussianColorSpace::SrgbRec709Display),
+            "srgb_rec709_display"
+        );
+        assert_eq!(
+            color_space_extension_identifier(&metadata, GaussianColorSpace::LinRec709Display),
+            "lin_rec709_display"
+        );
+    }
+
+    #[test]
     fn decodes_base64_data_uri() {
         let uri = "data:application/octet-stream;base64,AAECAwQF";
         let data = decode_data_uri(uri).unwrap().unwrap();
@@ -1235,5 +2135,146 @@ mod tests {
         assert!(err.to_string().contains("extensionsUsed"));
 
         ensure_gaussian_extension_used(&[KHR_GAUSSIAN_SPLATTING_EXTENSION.to_owned()]).unwrap();
+    }
+
+    #[test]
+    fn encodes_khr_scene_with_camera_node() {
+        let cloud: PlanarGaussian3d = vec![Gaussian3d {
+            position_visibility: [1.0, 2.0, 3.0, 1.0].into(),
+            spherical_harmonic:
+                crate::material::spherical_harmonics::SphericalHarmonicCoefficients::default(),
+            rotation: [1.0, 0.0, 0.0, 0.0].into(),
+            scale_opacity: [1.0, 1.0, 1.0, 0.5].into(),
+        }]
+        .into();
+
+        let export_cloud = SceneExportCloud {
+            cloud,
+            name: "cloud".to_owned(),
+            settings: CloudSettings::default(),
+            transform: Transform::default(),
+            metadata: GaussianPrimitiveMetadata::default(),
+        };
+        let export_camera = SceneExportCamera {
+            name: "camera".to_owned(),
+            transform: Transform::from_xyz(4.0, 5.0, 6.0),
+            ..default()
+        };
+
+        let bytes =
+            encode_khr_gaussian_scene_gltf_bytes(&[export_cloud], Some(&export_camera)).unwrap();
+        let root: Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(
+            root["extensionsUsed"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Value::as_str)
+                .next(),
+            Some(KHR_GAUSSIAN_SPLATTING_EXTENSION)
+        );
+        assert_eq!(root["meshes"].as_array().unwrap().len(), 1);
+        assert_eq!(root["cameras"].as_array().unwrap().len(), 1);
+        assert_eq!(root["nodes"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn encodes_khr_scene_as_glb_with_bin_chunk() {
+        let cloud: PlanarGaussian3d = vec![Gaussian3d {
+            position_visibility: [1.0, 2.0, 3.0, 1.0].into(),
+            spherical_harmonic:
+                crate::material::spherical_harmonics::SphericalHarmonicCoefficients::default(),
+            rotation: [1.0, 0.0, 0.0, 0.0].into(),
+            scale_opacity: [1.0, 1.0, 1.0, 0.5].into(),
+        }]
+        .into();
+
+        let export_cloud = SceneExportCloud {
+            cloud,
+            name: "cloud".to_owned(),
+            settings: CloudSettings::default(),
+            transform: Transform::default(),
+            metadata: GaussianPrimitiveMetadata::default(),
+        };
+        let export_camera = SceneExportCamera {
+            name: "camera".to_owned(),
+            transform: Transform::from_xyz(4.0, 5.0, 6.0),
+            ..default()
+        };
+
+        let glb_bytes =
+            encode_khr_gaussian_scene_glb_bytes(&[export_cloud], Some(&export_camera)).unwrap();
+        let glb = gltf::binary::Glb::from_slice(&glb_bytes).unwrap();
+
+        assert!(glb.bin.is_some());
+
+        let root: Value = serde_json::from_slice(glb.json.as_ref()).unwrap();
+        assert_eq!(root["meshes"].as_array().unwrap().len(), 1);
+        assert_eq!(root["cameras"].as_array().unwrap().len(), 1);
+        assert_eq!(root["nodes"].as_array().unwrap().len(), 2);
+
+        let buffer = root["buffers"][0].as_object().unwrap();
+        assert!(buffer.get("uri").is_none());
+        assert!(buffer.get("byteLength").and_then(Value::as_u64).unwrap() > 0);
+    }
+
+    #[test]
+    fn normalizes_zero_length_quaternion_to_identity() {
+        let mut quaternion = [0.0, 0.0, 0.0, 0.0];
+        let replaced = normalize_quaternion(&mut quaternion);
+        assert!(replaced);
+        assert_eq!(quaternion, [1.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn skips_invalid_rotation_gaussians_during_export() {
+        let invalid = Gaussian3d {
+            position_visibility: [0.0, 0.0, 0.0, 1.0].into(),
+            spherical_harmonic:
+                crate::material::spherical_harmonics::SphericalHarmonicCoefficients::default(),
+            rotation: [0.0, 0.0, 0.0, 0.0].into(),
+            scale_opacity: [1.0, 1.0, 1.0, 1.0].into(),
+        };
+        let valid = Gaussian3d {
+            position_visibility: [1.0, 2.0, 3.0, 1.0].into(),
+            spherical_harmonic:
+                crate::material::spherical_harmonics::SphericalHarmonicCoefficients::default(),
+            rotation: [1.0, 0.0, 0.0, 0.0].into(),
+            scale_opacity: [1.0, 1.0, 1.0, 1.0].into(),
+        };
+        let cloud: PlanarGaussian3d = vec![invalid, valid].into();
+
+        let export_cloud = SceneExportCloud {
+            cloud,
+            name: "cloud".to_owned(),
+            settings: CloudSettings::default(),
+            transform: Transform::default(),
+            metadata: GaussianPrimitiveMetadata::default(),
+        };
+
+        let bytes = encode_khr_gaussian_scene_gltf_bytes(&[export_cloud], None).unwrap();
+        let root: Value = serde_json::from_slice(&bytes).unwrap();
+        let rotation_accessor_index = root["meshes"][0]["primitives"][0]["attributes"]
+            [ATTR_ROTATION]
+            .as_u64()
+            .unwrap() as usize;
+        let position_accessor_index = root["meshes"][0]["primitives"][0]["attributes"]
+            [ATTR_POSITION]
+            .as_u64()
+            .unwrap() as usize;
+
+        assert_eq!(
+            root["accessors"][rotation_accessor_index]["count"]
+                .as_u64()
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            root["accessors"][position_accessor_index]["count"]
+                .as_u64()
+                .unwrap(),
+            1
+        );
     }
 }

@@ -273,6 +273,11 @@ name = "surfel_plane"
 path = "tools/surfel_plane.rs"
 required-features = ["debug_tooling"]
 
+[[bin]]
+name = "render_trellis_thumbnails"
+path = "tools/render_trellis_thumbnails.rs"
+required-features = ["io_ply"]
+
 
 [[bin]]
 name = "test_gaussian"

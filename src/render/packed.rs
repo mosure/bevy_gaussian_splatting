@@ -6,21 +6,23 @@ use bevy::render::{
     },
     renderer::RenderDevice,
 };
+use bevy_interleave::prelude::PlanarSync;
 
 use crate::{
-    gaussian::{cloud::Cloud, packed::Gaussian},
-    render::{CloudPipeline, GpuCloud},
+    gaussian::formats::planar_3d::{Gaussian3d, PlanarGaussian3d},
+    render::CloudPipeline,
 };
 
 #[derive(Debug, Clone)]
 pub struct PackedBuffers {
-    gaussians: Buffer,
+    pub gaussians: Buffer,
 }
 
-pub fn prepare_cloud(render_device: &RenderDevice, cloud: &Cloud) -> PackedBuffers {
+pub fn prepare_cloud(render_device: &RenderDevice, cloud: &PlanarGaussian3d) -> PackedBuffers {
+    let packed: Vec<Gaussian3d> = cloud.iter().collect();
     let gaussians = render_device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("packed_gaussian_cloud_buffer"),
-        contents: bytemuck::cast_slice(cloud.gaussian_iter().collect::<Vec<Gaussian>>().as_slice()),
+        contents: bytemuck::cast_slice(packed.as_slice()),
         usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::STORAGE,
     });
 
@@ -36,7 +38,7 @@ pub fn get_bind_group_layout(render_device: &RenderDevice, read_only: bool) -> B
             ty: BindingType::Buffer {
                 ty: BufferBindingType::Storage { read_only },
                 has_dynamic_offset: false,
-                min_binding_size: BufferSize::new(std::mem::size_of::<Gaussian>() as u64),
+                min_binding_size: BufferSize::new(std::mem::size_of::<Gaussian3d>() as u64),
             },
             count: None,
         }],
@@ -44,10 +46,10 @@ pub fn get_bind_group_layout(render_device: &RenderDevice, read_only: bool) -> B
 }
 
 #[cfg(feature = "packed")]
-pub fn get_bind_group(
+pub fn get_bind_group<R: PlanarSync>(
     render_device: &RenderDevice,
-    gaussian_cloud_pipeline: &CloudPipeline,
-    cloud: &GpuCloud,
+    gaussian_cloud_pipeline: &CloudPipeline<R>,
+    cloud: &PackedBuffers,
 ) -> BindGroup {
     render_device.create_bind_group(
         "packed_gaussian_cloud_bind_group",
@@ -55,9 +57,9 @@ pub fn get_bind_group(
         &[BindGroupEntry {
             binding: 0,
             resource: BindingResource::Buffer(BufferBinding {
-                buffer: &cloud.packed.gaussians,
+                buffer: &cloud.gaussians,
                 offset: 0,
-                size: BufferSize::new(cloud.packed.gaussians.size()),
+                size: BufferSize::new(cloud.gaussians.size()),
             }),
         }],
     )

@@ -1,17 +1,24 @@
-use bevy::{asset::LoadState, prelude::*};
+use bevy::prelude::*;
+use bevy_interleave::prelude::PlanarHandle;
 use kd_tree::{KdPoint, KdTree};
-use static_assertions::assert_cfg;
 use typenum::consts::U3;
 
-use crate::{Gaussian3d, PlanarGaussian3d, PlanarGaussian3dHandle, query::select::Select};
+use crate::{
+    PlanarGaussian3d, PlanarGaussian3dHandle, gaussian::interface::CommonCloud,
+    query::select::Select,
+};
 
-assert_cfg!(
-    all(
-        feature = "query_sparse",
-        not(feature = "precompute_covariance_3d"),
-    ),
-    "sparse queries and precomputed covariance are not implemented",
-);
+#[derive(Clone, Copy)]
+struct PositionPoint([f32; 3]);
+
+impl KdPoint for PositionPoint {
+    type Scalar = f32;
+    type Dim = U3;
+
+    fn at(&self, i: usize) -> Self::Scalar {
+        self.0[i]
+    }
+}
 
 #[derive(Component, Debug, Reflect)]
 pub struct SparseSelect {
@@ -32,17 +39,16 @@ impl Default for SparseSelect {
 
 impl SparseSelect {
     pub fn select(&self, cloud: &PlanarGaussian3d) -> Select {
-        let tree = KdTree::build_by_ordered_float(cloud.gaussian_iter().collect());
+        let points = collect_points(cloud);
+        let tree = KdTree::build_by_ordered_float(points.clone());
 
-        cloud
-            .gaussian_iter()
+        points
+            .iter()
             .enumerate()
-            .filter(|(_idx, gaussian)| {
-                let neighbors = tree.within_radius(gaussian, self.radius);
-
-                neighbors.len() < self.neighbor_threshold
+            .filter(|(_idx, point)| {
+                tree.within_radius(*point, self.radius).len() < self.neighbor_threshold
             })
-            .map(|(idx, _gaussian)| idx)
+            .map(|(idx, _point)| idx)
             .collect::<Select>()
     }
 }
@@ -53,18 +59,15 @@ pub struct SparsePlugin;
 impl Plugin for SparsePlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<SparseSelect>();
-
         app.add_systems(Update, select_sparse_handler);
     }
 }
 
-impl KdPoint for Gaussian {
-    type Scalar = f32;
-    type Dim = U3;
-
-    fn at(&self, i: usize) -> Self::Scalar {
-        self.position_visibility.position[i]
-    }
+fn collect_points(cloud: &PlanarGaussian3d) -> Vec<PositionPoint> {
+    cloud
+        .position_iter()
+        .map(|position| PositionPoint([position[0], position[1], position[2]]))
+        .collect()
 }
 
 fn select_sparse_handler(
@@ -74,11 +77,9 @@ fn select_sparse_handler(
     mut selections: Query<(Entity, &PlanarGaussian3dHandle, &mut SparseSelect)>,
 ) {
     for (entity, cloud_handle, mut select) in selections.iter_mut() {
-        if Some(LoadState::Loading) == asset_server.get_load_state(cloud_handle) {
-            continue;
-        }
-
-        if Some(LoadState::Loading) == asset_server.get_load_state(cloud_handle) {
+        if let Some(load_state) = asset_server.get_load_state(cloud_handle.handle())
+            && load_state.is_loading()
+        {
             continue;
         }
 
@@ -87,18 +88,20 @@ fn select_sparse_handler(
         }
         select.completed = true;
 
-        let cloud = gaussian_clouds_res.get(cloud_handle).unwrap();
-        let tree = KdTree::build_by_ordered_float(cloud.gaussian_iter().collect());
+        let Some(cloud) = gaussian_clouds_res.get(cloud_handle.handle()) else {
+            continue;
+        };
 
-        let new_selection = cloud
-            .gaussian_iter()
+        let points = collect_points(cloud);
+        let tree = KdTree::build_by_ordered_float(points.clone());
+
+        let new_selection = points
+            .iter()
             .enumerate()
-            .filter(|(_idx, gaussian)| {
-                let neighbors = tree.within_radius(gaussian, select.radius);
-
-                neighbors.len() < select.neighbor_threshold
+            .filter(|(_idx, point)| {
+                tree.within_radius(*point, select.radius).len() < select.neighbor_threshold
             })
-            .map(|(idx, _gaussian)| idx)
+            .map(|(idx, _point)| idx)
             .collect::<Select>();
 
         commands

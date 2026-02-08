@@ -9,13 +9,18 @@ out/
 
 *.gc4d
 *.gcloud
+*.glb
 *.ply
 *.ply4d
 *.json
 
 .DS_Store
 
+exports/
 screenshots/
 headless_output/
 www/assets/
 www/examples/thumbnails/
+
+# Keep generated GLBs out of git while allowing conformance fixtures.
+!tests/fixtures/**/*.glb

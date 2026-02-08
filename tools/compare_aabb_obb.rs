@@ -86,7 +86,10 @@ fn compare_aabb_obb_app() {
                     mode: bevy::window::WindowMode::Windowed,
                     present_mode: bevy::window::PresentMode::AutoVsync,
                     prevent_default_event_handling: false,
-                    resolution: (config.width, config.height).into(),
+                    resolution: bevy::window::WindowResolution::new(
+                        config.width as u32,
+                        config.height as u32,
+                    ),
                     title: config.name.clone(),
                     ..default()
                 }),
@@ -112,7 +115,7 @@ fn compare_aabb_obb_app() {
     app.run();
 }
 
-pub fn esc_close(keys: Res<ButtonInput<KeyCode>>, mut exit: EventWriter<AppExit>) {
+pub fn esc_close(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>) {
     if keys.just_pressed(KeyCode::Escape) {
         exit.write(AppExit::Success);
     }

@@ -38,6 +38,8 @@ use bevy::{
 };
 use bevy_interleave::prelude::*;
 
+#[cfg(feature = "buffer_storage")]
+use crate::sort::SortEntry;
 use crate::{
     camera::GaussianCamera,
     gaussian::{
@@ -50,7 +52,7 @@ use crate::{
         spherindrical_harmonics::{SH_4D_COEFF_COUNT, SH_4D_DEGREE_TIME},
     },
     morph::MorphPlugin,
-    sort::{GpuSortedEntry, SortEntry, SortPlugin, SortTrigger, SortedEntriesHandle},
+    sort::{GpuSortedEntry, SortPlugin, SortTrigger, SortedEntriesHandle},
 };
 
 #[cfg(feature = "packed")]
@@ -59,7 +61,7 @@ mod packed;
 #[cfg(feature = "buffer_storage")]
 mod planar;
 
-#[cfg(feature = "buffer_texture")]
+#[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
 mod texture;
 
 const BINDINGS_SHADER_HANDLE: Handle<Shader> = uuid_handle!("cfd9a3d9-a0cb-40c8-ab0b-073110a02474");
@@ -200,7 +202,7 @@ where
 
         app.add_plugins(UniformComponentPlugin::<CloudUniform>::default());
 
-        #[cfg(feature = "buffer_texture")]
+        #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
         app.add_plugins(texture::BufferTexturePlugin);
     }
 
@@ -317,7 +319,6 @@ pub struct GpuCloudBundle<R: PlanarSync> {
     pub transform: GlobalTransform,
 }
 
-#[cfg(feature = "buffer_storage")]
 #[allow(type_alias_bounds)]
 type GpuCloudBundleQuery<R: bevy_interleave::prelude::PlanarSync> = (
     Entity,
@@ -326,38 +327,14 @@ type GpuCloudBundleQuery<R: bevy_interleave::prelude::PlanarSync> = (
     &'static SortedEntriesHandle,
     &'static CloudSettings,
     &'static GlobalTransform,
-    (),
 );
 
-#[cfg(feature = "buffer_texture")]
-#[allow(type_alias_bounds)]
-type GpuCloudBundleQuery<R: bevy_interleave::prelude::PlanarSync> = (
-    Entity,
-    &'static <R as bevy_interleave::prelude::PlanarSync>::PlanarTypeHandle,
-    &'static Aabb,
-    &'static SortedEntriesHandle,
-    &'static CloudSettings,
-    &'static GlobalTransform,
-    &'static texture::GpuTextureBuffers,
-);
-
-#[cfg(feature = "buffer_storage")]
 #[allow(type_alias_bounds)]
 type GpuCloudBindGroupQuery<R: bevy_interleave::prelude::PlanarSync> = (
     Entity,
     &'static <R as bevy_interleave::prelude::PlanarSync>::PlanarTypeHandle,
     &'static SortedEntriesHandle,
     Option<&'static SortBindGroup>,
-);
-
-#[cfg(feature = "buffer_texture")]
-#[allow(type_alias_bounds)]
-type GpuCloudBindGroupQuery<R: bevy_interleave::prelude::PlanarSync> = (
-    Entity,
-    &'static <R as bevy_interleave::prelude::PlanarSync>::PlanarTypeHandle,
-    &'static SortedEntriesHandle,
-    Option<&'static SortBindGroup>,
-    &'static texture::GpuTextureBuffers,
 );
 
 #[allow(clippy::too_many_arguments)]
@@ -411,7 +388,7 @@ fn queue_gaussians<R: PlanarSync>(
                 continue;
             }
 
-            let (_entity, cloud_handle, aabb, sorted_entries_handle, settings, transform, _) =
+            let (_entity, cloud_handle, aabb, sorted_entries_handle, settings, transform) =
                 gaussian_splatting_bundles.get(*render_entity).unwrap();
 
             debug!("queue gaussians clouds");
@@ -651,7 +628,7 @@ where
             <R::GpuPlanarType as GpuPlanar>::PackedType,
         >("gaussian_cloud_layout", read_only);
 
-        #[cfg(all(feature = "buffer_storage", not(feature = "buffer_texture")))]
+        #[cfg(feature = "buffer_storage")]
         let sorted_layout_entries = [BindGroupLayoutEntry {
             binding: 0,
             visibility: ShaderStages::VERTEX_FRAGMENT,
@@ -662,15 +639,15 @@ where
             },
             count: None,
         }];
-        #[cfg(all(feature = "buffer_storage", not(feature = "buffer_texture")))]
+        #[cfg(feature = "buffer_storage")]
         let sorted_layout_desc =
             BindGroupLayoutDescriptor::new("sorted_layout", &sorted_layout_entries);
-        #[cfg(all(feature = "buffer_storage", not(feature = "buffer_texture")))]
+        #[cfg(feature = "buffer_storage")]
         let sorted_layout =
             render_device.create_bind_group_layout(Some("sorted_layout"), &sorted_layout_entries);
-        #[cfg(feature = "buffer_texture")]
+        #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
         let sorted_layout = texture::get_sorted_bind_group_layout(render_device);
-        #[cfg(feature = "buffer_texture")]
+        #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
         let sorted_layout_desc = BindGroupLayoutDescriptor::new(
             "texture_sorted_layout",
             &[BindGroupLayoutEntry {
@@ -827,7 +804,7 @@ pub fn shader_defs(key: CloudPipelineKey) -> Vec<ShaderDefVal> {
     #[cfg(feature = "buffer_storage")]
     shader_defs.push("BUFFER_STORAGE".into());
 
-    #[cfg(feature = "buffer_texture")]
+    #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
     shader_defs.push("BUFFER_TEXTURE".into());
 
     // #[cfg(feature = "f16")]
@@ -847,7 +824,7 @@ pub fn shader_defs(key: CloudPipelineKey) -> Vec<ShaderDefVal> {
     // #[cfg(all(feature = "f16", feature = "buffer_texture"))]
     // shader_defs.push("PLANAR_TEXTURE_F16".into());
 
-    #[cfg(feature = "buffer_texture")]
+    #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
     shader_defs.push("PLANAR_TEXTURE_F32".into());
 
     #[cfg(feature = "precompute_covariance_3d")]
@@ -1101,7 +1078,7 @@ fn queue_gaussian_bind_group<R: PlanarSync>(
     gaussian_cloud_res: Res<RenderAssets<R::GpuPlanarType>>,
     sorted_entries_res: Res<RenderAssets<GpuSortedEntry>>,
     gaussian_clouds: Query<GpuCloudBindGroupQuery<R>>,
-    #[cfg(feature = "buffer_texture")] gpu_images: Res<
+    #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))] gpu_images: Res<
         RenderAssets<bevy::render::texture::GpuImage>,
     >,
 ) {
@@ -1123,20 +1100,20 @@ fn queue_gaussian_bind_group<R: PlanarSync>(
 
     let gaussian_assets_changed = gaussian_cloud_res.is_changed();
     let sorted_assets_changed = sorted_entries_res.is_changed();
+    #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
+    let mut should_refresh_for_assets =
+        pipeline_changed || gaussian_assets_changed || sorted_assets_changed;
+    #[cfg(not(all(feature = "buffer_texture", not(feature = "buffer_storage"))))]
     let should_refresh_for_assets =
         pipeline_changed || gaussian_assets_changed || sorted_assets_changed;
 
-    #[cfg(feature = "buffer_texture")]
+    #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
     {
         let textures_changed = gpu_images.is_changed();
         should_refresh_for_assets |= textures_changed;
     }
 
     for query in gaussian_clouds.iter() {
-        #[cfg(feature = "buffer_texture")]
-        let (entity, cloud_handle, sorted_entries_handle, existing_bind_group, _texture_buffers) =
-            query;
-        #[cfg(not(feature = "buffer_texture"))]
         let (entity, cloud_handle, sorted_entries_handle, existing_bind_group) = query;
 
         if !should_refresh_for_assets && existing_bind_group.is_some() {
@@ -1167,7 +1144,7 @@ fn queue_gaussian_bind_group<R: PlanarSync>(
             continue;
         }
 
-        #[cfg(not(feature = "buffer_texture"))]
+        #[cfg(feature = "buffer_storage")]
         let cloud = gaussian_cloud_res.get(cloud_handle.handle()).unwrap();
 
         let sorted_entries = sorted_entries_res.get(&sorted_entries_handle.0).unwrap();
@@ -1185,7 +1162,7 @@ fn queue_gaussian_bind_group<R: PlanarSync>(
                 }),
             }],
         );
-        #[cfg(feature = "buffer_texture")]
+        #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
         let sorted_bind_group = render_device.create_bind_group(
             Some("render_sorted_bind_group"),
             &gaussian_cloud_pipeline.sorted_layout,
@@ -1517,6 +1494,9 @@ where
     ) -> RenderCommandResult {
         debug!("render call");
 
+        #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
+        let _ = view;
+
         let (handle, planar_bind_groups, sort_bind_groups) =
             entity.expect("gaussian cloud entity not found");
 
@@ -1532,17 +1512,25 @@ where
 
         pass.set_bind_group(2, &planar_bind_groups.bind_group, &[]);
 
-        // TODO: align dynamic offset to `min_storage_buffer_offset_alignment`
-        pass.set_bind_group(
-            3,
-            &sort_bind_groups.sorted_bind_group,
-            &[view.camera_index as u32
-                * std::mem::size_of::<SortEntry>() as u32
-                * gpu_gaussian_cloud.len() as u32],
-        );
+        #[cfg(feature = "buffer_storage")]
+        {
+            // TODO: align dynamic offset to `min_storage_buffer_offset_alignment`
+            pass.set_bind_group(
+                3,
+                &sort_bind_groups.sorted_bind_group,
+                &[view.camera_index as u32
+                    * std::mem::size_of::<SortEntry>() as u32
+                    * gpu_gaussian_cloud.len() as u32],
+            );
+        }
+
+        #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
+        {
+            pass.set_bind_group(3, &sort_bind_groups.sorted_bind_group, &[]);
+        }
 
         #[cfg(feature = "webgl2")]
-        pass.draw(0..4, 0..gpu_gaussian_cloud.count as u32);
+        pass.draw(0..4, 0..gpu_gaussian_cloud.len() as u32);
 
         #[cfg(not(feature = "webgl2"))]
         pass.draw_indirect(gpu_gaussian_cloud.draw_indirect_buffer(), 0);

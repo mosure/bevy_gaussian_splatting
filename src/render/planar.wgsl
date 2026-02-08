@@ -1,5 +1,7 @@
 #define_import_path bevy_gaussian_splatting::planar
 
+#import bevy_gaussian_splatting::bindings::gaussian_uniforms
+
 #ifdef GAUSSIAN_3D_STRUCTURE
     #ifdef PRECOMPUTE_COVARIANCE_3D
         #import bevy_gaussian_splatting::bindings::{

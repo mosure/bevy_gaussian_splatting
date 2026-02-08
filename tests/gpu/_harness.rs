@@ -1,5 +1,3 @@
-use std::sync::{Arc, Mutex};
-
 use bevy::prelude::*;
 
 use bevy_gaussian_splatting::GaussianSplattingPlugin;
@@ -10,13 +8,13 @@ use bevy_gaussian_splatting::GaussianSplattingPlugin;
 
 #[derive(Resource)]
 pub struct TestHarness {
-    pub resolution: (f32, f32),
+    pub resolution: (u32, u32),
 }
 
 pub fn test_harness_app(harness: TestHarness) -> App {
     let mut app = App::new();
 
-    app.insert_resource(ClearColor(Color::rgb_u8(0, 0, 0)));
+    app.insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)));
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             mode: bevy::window::WindowMode::Windowed,
@@ -35,11 +33,3 @@ pub fn test_harness_app(harness: TestHarness) -> App {
 
     app
 }
-
-#[derive(Default)]
-pub struct TestState {
-    pub test_loaded: bool,
-    pub test_completed: bool,
-}
-
-pub type TestStateArc = Arc<Mutex<TestState>>;

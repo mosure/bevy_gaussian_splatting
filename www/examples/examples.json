@@ -3,57 +3,67 @@
   "base_viewer": "../index.html",
   "examples": [
     {
-      "id": "seeded-scoop",
-      "title": "Seeded Scoop",
-      "description": "Deterministic cloud (seed 7) tuned for color splats.",
-      "tags": ["generated", "color", "3d"],
-      "thumbnail": "thumbnails/seeded-scoop.png",
+      "id": "seeded-color",
+      "title": "Trellis Color",
+      "description": "Trellis scene rendered with color shading.",
+      "tags": ["trellis", "color", "3d"],
+      "thumbnail": "thumbnails/seeded-color.png",
+      "thumbnail_input_scene": "https://mitchell.mosure.me/trellis.glb",
+      "input_scene": "https://mitchell.mosure.me/trellis.glb",
       "args": {
-        "name": "Seeded Scoop",
-        "gaussian_count": 4000,
-        "gaussian_seed": 7,
+        "name": "Trellis Color",
         "gaussian_mode": "Gaussian3d",
         "rasterization_mode": "Color",
         "show_axes": false,
-        "show_fps": true,
-        "cloud_rotation": "0,25,0",
-        "cloud_scale": "1.2"
+        "show_fps": true
+      }
+    },
+    {
+      "id": "seeded-scoop",
+      "title": "Trellis Position",
+      "description": "Trellis scene rendered with position shading.",
+      "tags": ["trellis", "position", "3d"],
+      "thumbnail": "thumbnails/seeded-scoop.png",
+      "thumbnail_input_scene": "https://mitchell.mosure.me/trellis.glb",
+      "input_scene": "https://mitchell.mosure.me/trellis.glb",
+      "args": {
+        "name": "Trellis Position",
+        "gaussian_mode": "Gaussian3d",
+        "rasterization_mode": "Position",
+        "show_axes": false,
+        "show_fps": true
       }
     },
     {
       "id": "seeded-depth",
-      "title": "Seeded Depth",
-      "description": "Seeded cloud (42) with depth shading.",
-      "tags": ["generated", "depth", "3d"],
+      "title": "Trellis Depth",
+      "description": "Trellis scene rendered with depth shading.",
+      "tags": ["trellis", "depth", "3d"],
       "thumbnail": "thumbnails/seeded-depth.png",
+      "thumbnail_input_scene": "https://mitchell.mosure.me/trellis.glb",
+      "input_scene": "https://mitchell.mosure.me/trellis.glb",
       "args": {
-        "name": "Seeded Depth",
-        "gaussian_count": 4000,
-        "gaussian_seed": 42,
+        "name": "Trellis Depth",
         "gaussian_mode": "Gaussian3d",
         "rasterization_mode": "Depth",
         "show_axes": false,
-        "show_fps": true,
-        "cloud_rotation": "0,-12,0",
-        "cloud_scale": "1.2"
+        "show_fps": true
       }
     },
     {
       "id": "seeded-normal",
-      "title": "Seeded Normals",
-      "description": "Normal visualization with seed 1337.",
-      "tags": ["generated", "normal", "3d"],
+      "title": "Trellis Normals",
+      "description": "Trellis scene rendered with normal shading.",
+      "tags": ["trellis", "normal", "3d"],
       "thumbnail": "thumbnails/seeded-normal.png",
+      "thumbnail_input_scene": "https://mitchell.mosure.me/trellis.glb",
+      "input_scene": "https://mitchell.mosure.me/trellis.glb",
       "args": {
-        "name": "Seeded Normals",
-        "gaussian_count": 4000,
-        "gaussian_seed": 1337,
+        "name": "Trellis Normals",
         "gaussian_mode": "Gaussian3d",
         "rasterization_mode": "Normal",
         "show_axes": false,
-        "show_fps": true,
-        "cloud_rotation": "0,35,0",
-        "cloud_scale": "1.2"
+        "show_fps": true
       }
     }
   ]

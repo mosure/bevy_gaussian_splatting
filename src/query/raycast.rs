@@ -1,72 +1,95 @@
-use bevy::{prelude::*, render::mesh::PrimitiveTopology};
-use std::collections::BTreeMap;
+use bevy::{
+    mesh::{Indices, Mesh3d, PrimitiveTopology},
+    prelude::*,
+};
+
+#[derive(Component, Clone, Copy, Debug, Default, Reflect)]
+#[reflect(Component)]
+pub struct Point {
+    pub position: Vec3,
+}
+
+#[derive(Component, Clone, Copy, Debug, Default, Reflect)]
+#[reflect(Component)]
+pub struct InsideMesh;
+
+#[derive(Default)]
+pub struct RaycastSelectionPlugin;
+
+impl Plugin for RaycastSelectionPlugin {
+    fn build(&self, app: &mut App) {
+        app.register_type::<Point>();
+        app.register_type::<InsideMesh>();
+        app.add_systems(Update, point_in_mesh_system);
+    }
+}
 
 struct Triangle {
     vertices: [Vec3; 3],
 }
 
-// TODO: update Handle<Mesh>
 fn point_in_mesh_system(
-    mesh_query: Query<(&Handle<Mesh>, &Transform)>,
-    point_query: Query<(&Point, Entity)>,
+    mesh_query: Query<(&Mesh3d, &GlobalTransform)>,
+    point_query: Query<(Entity, &Point), Without<InsideMesh>>,
     meshes: Res<Assets<Mesh>>,
     mut commands: Commands,
 ) {
     for (mesh_handle, transform) in mesh_query.iter() {
-        if let Some(mesh) = meshes.get(mesh_handle) {
-            for (point, entity) in point_query.iter() {
-                let local_point = transform
-                    .compute_matrix()
-                    .inverse()
-                    .transform_point3(point.position);
+        let Some(mesh) = meshes.get(&mesh_handle.0) else {
+            continue;
+        };
 
-                if is_point_in_mesh(&local_point, mesh) {
-                    commands.entity(entity).insert(InsideMesh);
-                }
+        for (entity, point) in point_query.iter() {
+            let local_point = transform
+                .to_matrix()
+                .inverse()
+                .transform_point3(point.position);
+            if is_point_in_mesh(local_point, mesh) {
+                commands.entity(entity).insert(InsideMesh);
             }
         }
     }
 }
 
-fn is_point_in_mesh(point: &Vec3, mesh: &Mesh) -> bool {
+fn is_point_in_mesh(point: Vec3, mesh: &Mesh) -> bool {
     if mesh.primitive_topology() != PrimitiveTopology::TriangleList {
-        panic!("Mesh must be a triangle list");
+        return false;
     }
 
-    let vertices = if let Some(vertex_attribute) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
-        vertex_attribute
-            .as_float3()
-            .expect("Expected vertex positions as Vec3")
-    } else {
-        panic!("Mesh does not contain vertex positions");
+    let Some(vertex_attribute) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else {
+        return false;
+    };
+    let Some(vertices) = vertex_attribute.as_float3() else {
+        return false;
     };
 
-    let indices = if let Some(Indices::U32(indices)) = &mesh.indices() {
-        indices
-    } else {
-        panic!("Mesh indices must be of type U32");
+    let Some(indices) = mesh.indices() else {
+        return false;
+    };
+    let Indices::U32(indices) = indices else {
+        return false;
     };
 
-    let mut intersections = 0;
+    let mut intersections = 0usize;
     for chunk in indices.chunks_exact(3) {
         let triangle = Triangle {
             vertices: [
-                vertices[chunk[0] as usize],
-                vertices[chunk[1] as usize],
-                vertices[chunk[2] as usize],
+                Vec3::from(vertices[chunk[0] as usize]),
+                Vec3::from(vertices[chunk[1] as usize]),
+                Vec3::from(vertices[chunk[2] as usize]),
             ],
         };
 
         let ray_direction = Vec3::new(1.0, 0.0, 0.0);
-        if ray_intersects_triangle(point, &ray_direction, &triangle) {
+        if ray_intersects_triangle(point, ray_direction, &triangle) {
             intersections += 1;
         }
     }
 
-    intersections % 2 != 0
+    intersections % 2 == 1
 }
 
-fn ray_intersects_triangle(ray_origin: &Vec3, ray_direction: &Vec3, triangle: &Triangle) -> bool {
+fn ray_intersects_triangle(ray_origin: Vec3, ray_direction: Vec3, triangle: &Triangle) -> bool {
     let epsilon = 0.000_001;
     let vertex0 = triangle.vertices[0];
     let vertex1 = triangle.vertices[1];
@@ -82,21 +105,20 @@ fn ray_intersects_triangle(ray_origin: &Vec3, ray_direction: &Vec3, triangle: &T
     }
 
     let f = 1.0 / a;
-    let s = *ray_origin - vertex0;
+    let s = ray_origin - vertex0;
     let u = f * s.dot(h);
 
-    if u < 0.0 || u > 1.0 {
+    if !(0.0..=1.0).contains(&u) {
         return false;
     }
 
     let q = s.cross(edge1);
     let v = f * ray_direction.dot(q);
 
-    if v < 0.0 || u + v > 1.0 {
+    if v < 0.0 || (u + v) > 1.0 {
         return false;
     }
 
     let t = f * edge2.dot(q);
-
     t > epsilon
 }

@@ -21,8 +21,9 @@ pub use gaussian::{
 };
 
 pub use io::scene::{
-    GaussianKernel, GaussianPrimitiveMetadata, GaussianProjection, GaussianScene,
-    GaussianSceneHandle, GaussianSortingMethod,
+    GaussianKernel, GaussianPrimitiveMetadata, GaussianPrimitiveSpec, GaussianProjection,
+    GaussianScene, GaussianSceneHandle, GaussianSortingMethod, SceneCamera, SceneExportCamera,
+    SceneExportCloud, write_khr_gaussian_scene_glb, write_khr_gaussian_scene_gltf,
 };
 
 pub use material::spherical_harmonics::SphericalHarmonicCoefficients;

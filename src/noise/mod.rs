@@ -1,6 +1,9 @@
-use bevy::{asset::load_internal_asset, prelude::*};
+use bevy::{
+    asset::{load_internal_asset, uuid_handle},
+    prelude::*,
+};
 
-const NOISE_SHADER_HANDLE: Handle<Shader> = weak_handle!(125722721);
+const NOISE_SHADER_HANDLE: Handle<Shader> = uuid_handle!("4f73e89b-30f9-48de-b2b3-3d0f09f09f6f");
 
 #[derive(Default)]
 pub struct NoisePlugin;
