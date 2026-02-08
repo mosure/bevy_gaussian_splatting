@@ -34,4 +34,4 @@ jobs:
         enable-sccache: "false"
 
     - name: lint
-      run: cargo clippy -- -Dwarnings
+      run: cargo clippy --all-features --all-targets -- -D warnings

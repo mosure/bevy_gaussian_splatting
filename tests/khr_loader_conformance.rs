@@ -1,7 +1,15 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    thread,
+    time::{Duration, Instant},
+};
 
 use bevy::{
-    asset::{AssetMetaCheck, AssetPlugin, UnapprovedPathMode},
+    asset::{
+        AssetMetaCheck, AssetPlugin, DependencyLoadState, LoadState, RecursiveDependencyLoadState,
+        UnapprovedPathMode,
+    },
     prelude::*,
 };
 use bevy_gaussian_splatting::{
@@ -30,12 +38,34 @@ fn approx_eq(actual: f32, expected: f32, epsilon: f32) {
     );
 }
 
-fn load_fixture_scene(path: &str) -> (GaussianScene, HashMap<String, PlanarGaussian3d>) {
+fn max_supported_test_sh_degree() -> usize {
+    if cfg!(feature = "sh4") {
+        4
+    } else if cfg!(feature = "sh3") {
+        3
+    } else if cfg!(feature = "sh2") {
+        2
+    } else if cfg!(feature = "sh1") {
+        1
+    } else {
+        0
+    }
+}
+
+fn try_load_fixture_scene(path: &str) -> Result<(GaussianScene, HashMap<String, PlanarGaussian3d>), String> {
+    let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(FIXTURE_ROOT);
+    if !fixture_root.exists() {
+        return Err(format!(
+            "fixture root does not exist: {}",
+            fixture_root.display()
+        ));
+    }
+
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
     app.add_plugins(AssetPlugin {
-        file_path: FIXTURE_ROOT.to_owned(),
-        processed_file_path: FIXTURE_ROOT.to_owned(),
+        file_path: fixture_root.display().to_string(),
+        processed_file_path: fixture_root.display().to_string(),
         meta_check: AssetMetaCheck::Never,
         unapproved_path_mode: UnapprovedPathMode::Allow,
         ..default()
@@ -49,28 +79,52 @@ fn load_fixture_scene(path: &str) -> (GaussianScene, HashMap<String, PlanarGauss
     };
 
     let mut loaded_scene = None;
-    for _ in 0..600 {
+    let mut last_states = (
+        LoadState::NotLoaded,
+        DependencyLoadState::NotLoaded,
+        RecursiveDependencyLoadState::NotLoaded,
+    );
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
         app.update();
 
-        if let Some(load_state) = app
+        if let Some((load_state, dep_state, rec_dep_state)) = app
             .world()
             .resource::<AssetServer>()
-            .get_load_state(&scene_handle)
-            && load_state.is_loaded()
+            .get_load_states(&scene_handle)
         {
-            loaded_scene = app
-                .world()
-                .resource::<Assets<GaussianScene>>()
-                .get(&scene_handle)
-                .cloned();
+            last_states = (load_state.clone(), dep_state.clone(), rec_dep_state.clone());
 
-            if loaded_scene.is_some() {
-                break;
+            match (&load_state, &dep_state, &rec_dep_state) {
+                (LoadState::Failed(err), _, _)
+                | (_, DependencyLoadState::Failed(err), _)
+                | (_, _, RecursiveDependencyLoadState::Failed(err)) => {
+                    return Err(format!("fixture '{path}' failed to load: {err}"));
+                }
+                (LoadState::Loaded, _, RecursiveDependencyLoadState::Loaded) => {
+                    loaded_scene = app
+                        .world()
+                        .resource::<Assets<GaussianScene>>()
+                        .get(&scene_handle)
+                        .cloned();
+                    if loaded_scene.is_some() {
+                        break;
+                    }
+                }
+                _ => {}
             }
         }
+
+        thread::sleep(Duration::from_millis(1));
     }
 
-    let scene = loaded_scene.expect("fixture scene failed to load");
+    let scene = loaded_scene.ok_or_else(|| {
+        format!(
+            "fixture scene '{path}' failed to load (load_state={:?}, dependency_state={:?}, recursive_dependency_state={:?})",
+            last_states.0, last_states.1, last_states.2
+        )
+    });
+    let scene = scene?;
     let mut clouds_by_case = HashMap::new();
 
     for bundle in &scene.bundles {
@@ -86,11 +140,15 @@ fn load_fixture_scene(path: &str) -> (GaussianScene, HashMap<String, PlanarGauss
             .resource::<Assets<PlanarGaussian3d>>()
             .get(&bundle.cloud)
             .cloned()
-            .unwrap_or_else(|| panic!("cloud asset for case '{case_name}' missing"));
+            .ok_or_else(|| format!("cloud asset for case '{case_name}' missing"))?;
         clouds_by_case.insert(case_name, cloud);
     }
 
-    (scene, clouds_by_case)
+    Ok((scene, clouds_by_case))
+}
+
+fn load_fixture_scene(path: &str) -> (GaussianScene, HashMap<String, PlanarGaussian3d>) {
+    try_load_fixture_scene(path).unwrap_or_else(|err| panic!("{err}"))
 }
 
 fn expected_cases() -> HashMap<&'static str, ExpectedCase> {
@@ -293,9 +351,19 @@ fn assert_scene_cases(scene: &GaussianScene, clouds: &HashMap<String, PlanarGaus
 
 #[test]
 fn khr_loader_conformance_matrix_gltf_and_glb() {
+    let supported_sh_degree = max_supported_test_sh_degree();
     for fixture in ["khr_conformance_matrix.gltf", "khr_conformance_matrix.glb"] {
-        let (scene, clouds) = load_fixture_scene(fixture);
-        assert_scene_cases(&scene, &clouds);
+        if supported_sh_degree >= 3 {
+            let (scene, clouds) = load_fixture_scene(fixture);
+            assert_scene_cases(&scene, &clouds);
+            continue;
+        }
+
+        let err = try_load_fixture_scene(fixture).unwrap_err();
+        assert!(
+            err.contains("supports up to degree"),
+            "expected unsupported SH degree error for fixture '{fixture}', got: {err}"
+        );
     }
 }
 

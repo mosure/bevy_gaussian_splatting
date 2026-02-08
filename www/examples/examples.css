@@ -1,17 +1,21 @@
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;600&display=swap');
 
 :root {
-  --ink: #12151b;
-  --ink-soft: #323a46;
-  --fog: #f3f4f7;
-  --paper: #faf8f3;
-  --card: #ffffff;
-  --accent: #0f766e;
-  --accent-bright: #14b8a6;
-  --sun: #f5b86a;
-  --stroke: #d7dde5;
-  --shadow: 0 22px 55px rgba(19, 24, 35, 0.12);
-  --radius: 20px;
+  --bg-0: #070c14;
+  --bg-1: #0d1420;
+  --bg-2: #151f30;
+  --panel: #121b2a;
+  --panel-2: #162335;
+  --card: #1b283c;
+  --card-hover: #22334b;
+  --ink: #ecf2fb;
+  --ink-soft: #9fafc7;
+  --accent: #66a9ff;
+  --accent-bright: #8cc2ff;
+  --accent-warm: #ff9966;
+  --stroke: rgba(164, 186, 219, 0.2);
+  --shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+  --radius: 18px;
   --radius-sm: 12px;
   --grid-gap: 24px;
 }
@@ -20,29 +24,35 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  min-height: 100vh;
+}
+
 body {
   margin: 0;
   font-family: 'Space Grotesk', 'IBM Plex Sans', sans-serif;
   color: var(--ink);
   background:
-    radial-gradient(circle at top left, rgba(15, 118, 110, 0.15), transparent 40%),
-    radial-gradient(circle at 20% 20%, rgba(245, 184, 106, 0.2), transparent 45%),
-    linear-gradient(180deg, #f7f2ea 0%, #f5f6fa 50%, #eef1f6 100%);
-  min-height: 100vh;
+    radial-gradient(circle at 18% -6%, rgba(102, 169, 255, 0.2), transparent 34%),
+    radial-gradient(circle at 94% 4%, rgba(255, 153, 102, 0.14), transparent 35%),
+    linear-gradient(180deg, var(--bg-0) 0%, var(--bg-1) 48%, var(--bg-2) 100%);
 }
 
 .page {
-  max-width: 1200px;
+  max-width: 1220px;
   margin: 0 auto;
   padding: 36px 24px 64px;
 }
 
 .hero {
-  background: var(--card);
+  background:
+    linear-gradient(180deg, rgba(33, 49, 75, 0.7) 0%, rgba(18, 27, 42, 0.88) 100%),
+    linear-gradient(120deg, rgba(102, 169, 255, 0.11), rgba(255, 153, 102, 0.09));
   border-radius: var(--radius);
   padding: 32px;
   box-shadow: var(--shadow);
-  border: 1px solid rgba(18, 21, 27, 0.06);
+  border: 1px solid var(--stroke);
 }
 
 .hero-top {
@@ -63,9 +73,9 @@ body {
 .nav {
   display: flex;
   gap: 18px;
-  font-size: 14px;
+  font-size: 13px;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.11em;
 }
 
 .nav a {
@@ -74,7 +84,7 @@ body {
 }
 
 .nav a:hover {
-  color: var(--accent);
+  color: var(--accent-bright);
 }
 
 .hero-body {
@@ -89,13 +99,15 @@ body {
 .hero-text h1 {
   font-size: clamp(28px, 4vw, 46px);
   margin: 0 0 12px;
+  letter-spacing: 0.01em;
 }
 
 .subtitle {
-  max-width: 520px;
+  max-width: 560px;
   font-size: 16px;
   color: var(--ink-soft);
   margin: 0;
+  line-height: 1.5;
 }
 
 .hero-actions {
@@ -108,17 +120,18 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 12px 18px;
+  padding: 11px 18px;
   border-radius: 999px;
-  background: var(--ink);
-  color: #ffffff;
+  background: linear-gradient(180deg, var(--accent) 0%, #4e95ef 100%);
+  color: #0a111b;
   text-decoration: none;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 0.03em;
+  border: 1px solid rgba(140, 194, 255, 0.55);
 }
 
 .button.ghost {
-  background: transparent;
+  background: rgba(29, 43, 65, 0.65);
   color: var(--ink);
   border: 1px solid var(--stroke);
 }
@@ -149,16 +162,21 @@ body {
   width: min(420px, 70vw);
   border-radius: 999px;
   border: 1px solid var(--stroke);
-  padding: 10px 16px;
+  padding: 11px 16px;
   font-size: 15px;
+  color: var(--ink);
   font-family: 'Space Grotesk', 'IBM Plex Sans', sans-serif;
   outline: none;
-  background: #ffffff;
+  background: rgba(20, 31, 48, 0.95);
+}
+
+.search input::placeholder {
+  color: #8192ac;
 }
 
 .search input:focus {
-  border-color: var(--accent-bright);
-  box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.2);
+  border-color: rgba(140, 194, 255, 0.8);
+  box-shadow: 0 0 0 3px rgba(102, 169, 255, 0.22);
 }
 
 .meta {
@@ -174,17 +192,21 @@ body {
 }
 
 .card {
-  background: var(--card);
-  border-radius: var(--radius);
+  background: linear-gradient(180deg, rgba(32, 48, 72, 0.98), rgba(23, 34, 52, 0.98));
+  border-radius: var(--radius-sm);
   overflow: hidden;
-  border: 1px solid rgba(18, 21, 27, 0.08);
-  box-shadow: 0 18px 40px rgba(19, 24, 35, 0.08);
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  border: 1px solid rgba(144, 170, 208, 0.26);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.36);
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    background-color 0.2s ease;
 }
 
 .card:hover {
   transform: translateY(-4px);
-  box-shadow: 0 26px 60px rgba(19, 24, 35, 0.16);
+  box-shadow: 0 20px 44px rgba(0, 0, 0, 0.5);
+  background: linear-gradient(180deg, rgba(35, 53, 80, 0.98), rgba(27, 41, 61, 0.98));
 }
 
 .card-link {
@@ -194,10 +216,11 @@ body {
 
 .thumb {
   aspect-ratio: 16 / 9;
-  background: linear-gradient(135deg, rgba(15, 118, 110, 0.1), rgba(245, 184, 106, 0.25));
+  background: linear-gradient(135deg, rgba(102, 169, 255, 0.12), rgba(255, 153, 102, 0.13));
   display: flex;
   align-items: center;
   justify-content: center;
+  border-bottom: 1px solid rgba(144, 170, 208, 0.18);
 }
 
 .thumb img {
@@ -208,7 +231,7 @@ body {
 }
 
 .card-body {
-  padding: 18px 20px 20px;
+  padding: 16px 18px 18px;
 }
 
 .card-header {
@@ -221,6 +244,7 @@ body {
 .example-title {
   margin: 0;
   font-size: 18px;
+  color: #f1f6ff;
 }
 
 .card-id {
@@ -228,13 +252,13 @@ body {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: var(--ink-soft);
+  color: #95a8c4;
 }
 
 .example-description {
   margin: 12px 0 16px;
-  color: var(--ink-soft);
-  line-height: 1.4;
+  color: #a7b6cd;
+  line-height: 1.45;
 }
 
 .tag-row {
@@ -249,17 +273,25 @@ body {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  background: rgba(15, 118, 110, 0.12);
-  color: var(--accent);
-  border: 1px solid rgba(15, 118, 110, 0.18);
+  background: rgba(102, 169, 255, 0.14);
+  color: #8fc3ff;
+  border: 1px solid rgba(116, 177, 255, 0.3);
 }
 
 .empty {
   text-align: center;
   padding: 40px 20px;
-  background: rgba(255, 255, 255, 0.8);
+  background: rgba(18, 27, 42, 0.88);
   border-radius: var(--radius);
   border: 1px dashed var(--stroke);
+}
+
+.empty h2 {
+  color: #f0f6ff;
+}
+
+.empty p {
+  color: var(--ink-soft);
 }
 
 .footer {

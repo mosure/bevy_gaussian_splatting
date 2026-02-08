@@ -33,19 +33,17 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
 
       - name: install wasm-bindgen-cli
-        run: cargo install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --version 0.2.108 --locked --force
 
-      - name: build wasm artifacts
-        run: cargo build --target wasm32-unknown-unknown --release --no-default-features --features "web"
-
-      - name: generate bindings with wasm-bindgen
-        run: wasm-bindgen --out-dir ./www/out/ --target web ./target/wasm32-unknown-unknown/release/bevy_gaussian_splatting.wasm
-
-      - name: render example thumbnails
-        run: RENDER_EXAMPLE_THUMBNAILS=1 cargo test --test headless_examples render_example_thumbnails -- --nocapture
+      - name: build web output and thumbnails
+        env:
+          RUSTFLAGS: ""
+          CARGO_ENCODED_RUSTFLAGS: ""
+          RUSTDOCFLAGS: ""
+        run: bash ./tools/build_www.sh
 
       - name: copy assets
-        run: mkdir -p ./www/assets && cp -r ./assets/* ./www/assets/
+        run: mkdir -p ./www/assets && cp -R ./assets/. ./www/assets/
 
       - name: deploy to github pages
         uses: JamesIves/github-pages-deploy-action@v4

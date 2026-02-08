@@ -12,7 +12,8 @@ to generate bindings:
 > `wasm-bindgen --out-dir ./www/out/ --target web ./target/wasm32-unknown-unknown/release/bevy_gaussian_splatting.wasm`
 
 to build the web output (wasm + bindings + thumbnails):
-> from repo root: `pwsh ./tools/build_www.ps1`
+> macOS/Linux/CI: `bash ./tools/build_www.sh`
+> Windows: `pwsh ./tools/build_www.ps1`
 
 examples page:
 - `www/examples/index.html`

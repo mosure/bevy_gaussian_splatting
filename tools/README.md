@@ -21,5 +21,11 @@ cargo run --bin render_trellis_thumbnails --features io_ply
 build wasm, generate wasm-bindgen output, and regenerate `www/examples/thumbnails/*`.
 
 ```bash
+bash ./tools/build_www.sh
+```
+
+on Windows:
+
+```powershell
 pwsh ./tools/build_www.ps1
 ```
