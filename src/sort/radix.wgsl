@@ -39,8 +39,7 @@ struct SortingGlobal {
 
 @group(3) @binding(0) var<uniform> sorting_pass_index: u32;
 @group(3) @binding(1) var<storage, read_write> sorting: SortingGlobal;
-// NOTE: status_counters at binding(2) is NO LONGER USED by the corrected shader.
-// It can be removed from the Rust host code.
+// Per-tile temporary storage for radix pass C.
 @group(3) @binding(2) var<storage, read_write> status_counters: array<array<atomic<u32>, #{RADIX_BASE}>>;
 @group(3) @binding(3) var<storage, read_write> draw_indirect: DrawIndirect;
 @group(3) @binding(4) var<storage, read_write> input_entries: array<Entry>;
@@ -118,20 +117,17 @@ fn radix_sort_b(
     }
 }
 
-// --- SHARED MEMORY for the final, stable `radix_sort_c` ---
+// --- SHARED MEMORY for radix pass C ---
 var<workgroup> tile_input_entries: array<Entry, #{WORKGROUP_ENTRIES_C}>;
 var<workgroup> sorted_tile_entries: array<Entry, #{WORKGROUP_ENTRIES_C}>;
+var<workgroup> tile_digit_counts: array<atomic<u32>, #{RADIX_BASE}>;
 var<workgroup> local_digit_counts: array<u32, #{RADIX_BASE}>;
 var<workgroup> local_digit_offsets: array<u32, #{RADIX_BASE}>;
-var<workgroup> digit_global_base_ws: array<u32, #{RADIX_BASE}>;
 var<workgroup> tile_entry_count_ws: u32;
 const INVALID_KEY: u32 = 0xFFFFFFFFu;
 
-//
-// Pass C (REWRITTEN): A fully stable implementation that discards the faulty spin-lock.
-//
 @compute @workgroup_size(#{WORKGROUP_INVOCATIONS_C})
-fn radix_sort_c(
+fn radix_sort_c_count_tiles(
     @builtin(local_invocation_id) local_id: vec3<u32>,
     @builtin(workgroup_id) workgroup_id: vec3<u32>,
 ) {
@@ -140,13 +136,60 @@ fn radix_sort_c(
     let threads = #{WORKGROUP_INVOCATIONS_C}u;
     let global_entry_offset = workgroup_id.y * tile_size;
 
-    // Clear per-digit base cache so stale values are never reused across tiles.
     if (tid < #{RADIX_BASE}u) {
-        digit_global_base_ws[tid] = 0u;
+        atomicStore(&tile_digit_counts[tid], 0u);
     }
     workgroupBarrier();
 
-    // --- Step 1: Parallel load ---
+    for (var i = tid; i < tile_size; i += threads) {
+        let idx = global_entry_offset + i;
+        if (idx >= gaussian_uniforms.count) {
+            continue;
+        }
+
+        let entry = input_entries[idx];
+        let digit = (entry.key >> (sorting_pass_index * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
+        atomicAdd(&tile_digit_counts[digit], 1u);
+    }
+    workgroupBarrier();
+
+    if (tid < #{RADIX_BASE}u) {
+        let count = atomicLoad(&tile_digit_counts[tid]);
+        atomicStore(&status_counters[workgroup_id.y][tid], count);
+    }
+}
+
+@compute @workgroup_size(1)
+fn radix_sort_c_scan_tiles(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+) {
+    let digit = global_id.y;
+    if (digit >= #{RADIX_BASE}u) {
+        return;
+    }
+
+    let tile_size = #{WORKGROUP_ENTRIES_C}u;
+    let tile_count = (gaussian_uniforms.count + tile_size - 1u) / tile_size;
+
+    var sum = atomicLoad(&sorting.digit_histogram[sorting_pass_index][digit]);
+    for (var tile = 0u; tile < tile_count; tile += 1u) {
+        let count = atomicLoad(&status_counters[tile][digit]);
+        atomicStore(&status_counters[tile][digit], sum);
+        sum += count;
+    }
+}
+
+@compute @workgroup_size(#{WORKGROUP_INVOCATIONS_C})
+fn radix_sort_c_scatter(
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id) workgroup_id: vec3<u32>,
+) {
+    let tid = local_id.x;
+    let tile_size = #{WORKGROUP_ENTRIES_C}u;
+    let threads = #{WORKGROUP_INVOCATIONS_C}u;
+    let global_entry_offset = workgroup_id.y * tile_size;
+
+    // Step 1: Parallel load.
     for (var i = tid; i < tile_size; i += threads) {
         let idx = global_entry_offset + i;
         if (idx < gaussian_uniforms.count) {
@@ -157,7 +200,7 @@ fn radix_sort_c(
     }
     workgroupBarrier();
 
-    // --- Step 2: Serial, stable sort within the tile by a single thread ---
+    // Step 2: Serial, stable sort within the tile.
     if (tid == 0u) {
         for (var i = 0u; i < #{RADIX_BASE}u; i+=1u) { local_digit_counts[i] = 0u; }
 
@@ -190,30 +233,7 @@ fn radix_sort_c(
     }
     workgroupBarrier();
 
-    // --- Step 3: Determine deterministic global base for each digit ---
-    let tile_count = max((gaussian_uniforms.count + tile_size - 1u) / tile_size, 1u);
-    let expected_ticket = sorting_pass_index * tile_count + workgroup_id.y;
-
-    // Acquire a per-tile ticket so we only serialize once per tile instead of once per digit.
-    if (tid == 0u) {
-        loop {
-            let head = atomicLoad(&sorting.assignment_counter);
-            if (head == expected_ticket) {
-                let exchange = atomicCompareExchangeWeak(&sorting.assignment_counter, expected_ticket, expected_ticket + 1u);
-                if (exchange.exchanged) { break; }
-            }
-        }
-    }
-    workgroupBarrier();
-
-    if (tid < #{RADIX_BASE}u) {
-        let count = local_digit_counts[tid];
-        let base = atomicAdd(&sorting.digit_histogram[sorting_pass_index][tid], count);
-        digit_global_base_ws[tid] = base;
-    }
-    workgroupBarrier();
-
-    // --- Step 4: Parallel write from the locally-sorted tile to global memory ---
+    // Step 3: Parallel write from the locally-sorted tile to global memory.
     if (tid == 0u) {
         var sum = 0u;
         for (var i = 0u; i < #{RADIX_BASE}u; i += 1u) {
@@ -230,7 +250,7 @@ fn radix_sort_c(
 
             let bin_start_offset = local_digit_offsets[digit];
             let rank_in_bin = i - bin_start_offset;
-            let global_base = digit_global_base_ws[digit];
+            let global_base = atomicLoad(&status_counters[workgroup_id.y][digit]);
             let dst = global_base + rank_in_bin;
 
             if (dst < gaussian_uniforms.count) {
