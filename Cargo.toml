@@ -133,7 +133,9 @@ viewer = [
   "dep:bevy_panorbit_camera",
   # "bevy_transform_gizmo",
   "bevy/bevy_gizmos",
+  "bevy/bevy_text",
   "bevy/bevy_ui",
+  "bevy/bevy_ui_render",
   "bevy/multi_threaded",  # bevy screenshot functionality requires bevy/multi_threaded as of 0.12.1
   "bevy/png",
 ]
