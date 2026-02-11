@@ -22,9 +22,9 @@ bevy_gaussian_splatting --input-scene [file://scene.glb | https://mitchell.mosur
 
 ## viewer hotkeys
 
-- `Esc`: close viewer
-- `S`: save screenshot to `screenshots/`
-- `G`: export the loaded gaussian scene to `exports/gaussian_scene_<frame>.glb` (cloud transforms + active camera)
+- `esc`: close viewer
+- `s`: save screenshot to `screenshots/`
+- `g`: export the loaded gaussian scene to `exports/gaussian_scene_<frame>.glb` (cloud transforms + active camera)
 
 
 ## capabilities
