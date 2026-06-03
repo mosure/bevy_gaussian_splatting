@@ -11,6 +11,7 @@ use bevy::{
     prelude::*,
     render::{
         Render, RenderApp, RenderSystems,
+        extract_component::DynamicUniformIndex,
         render_asset::RenderAssets,
         render_graph::{Node, NodeRunError, RenderGraphContext, RenderGraphExt, RenderLabel},
         render_resource::{
@@ -33,7 +34,8 @@ use crate::{gaussian::formats::planar_3d::PlanarGaussian3d, morph::interpolate::
 use crate::{
     CloudSettings, GaussianCamera,
     render::{
-        CloudPipeline, CloudPipelineKey, GaussianUniformBindGroups, ShaderDefines, shader_defs,
+        CloudPipeline, CloudPipelineKey, CloudUniform, GaussianUniformBindGroups, ShaderDefines,
+        shader_defs,
     },
     sort::{GpuSortedEntry, SortEntry, SortMode, SortPluginFlag, SortedEntriesHandle},
 };
@@ -532,6 +534,7 @@ pub struct RadixSortNode<R: PlanarSync> {
         &'static R::PlanarTypeHandle,
         &'static PlanarStorageBindGroup<R>,
         &'static RadixBindGroup,
+        &'static DynamicUniformIndex<CloudUniform>,
     )>,
     initialized: bool,
     view_bind_group: QueryState<(
@@ -601,7 +604,7 @@ where
         for (_camera, view_bind_group, view_uniform_offset, previous_view_uniform_offset) in
             self.view_bind_group.iter_manual(world)
         {
-            for (cloud_handle, cloud_bind_group, radix_bind_group) in
+            for (cloud_handle, cloud_bind_group, radix_bind_group, cloud_uniform_index) in
                 self.gaussian_clouds.iter_manual(world)
             {
                 let cloud = world
@@ -664,7 +667,7 @@ where
                         pass.set_bind_group(
                             1,
                             gaussian_uniforms.base_bind_group.as_ref().unwrap(),
-                            &[0],
+                            &[cloud_uniform_index.index()],
                         );
                         pass.set_bind_group(2, &cloud_bind_group.bind_group, &[]);
                         pass.set_bind_group(3, &radix_bind_group.radix_sort_bind_groups[0], &[]);
@@ -706,7 +709,7 @@ where
                         pass.set_bind_group(
                             1,
                             gaussian_uniforms.base_bind_group.as_ref().unwrap(),
-                            &[0],
+                            &[cloud_uniform_index.index()],
                         );
                         pass.set_bind_group(2, &cloud_bind_group.bind_group, &[]);
 
