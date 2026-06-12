@@ -96,6 +96,11 @@ fn radix_sort_a(
         if (in_frustum(clip_space_pos.xyz)) {
             key = key_distance;
         }
+        // Keep only the top 16 bits of the 32-bit depth key: RADIX_DIGIT_PLACES is now 2,
+        // so the 2 byte-passes must sort the MOST-significant bits (coarse depth), not the
+        // low/irrelevant ones. 65536 buckets is ample for splat ordering. (Out-of-frustum
+        // INVALID 0xFFFFFFFF -> 0xFFFF, still sorts last.)
+        key = key >> 16u;
         input_entries[entry_index].key = key;
         input_entries[entry_index].value = entry_index;
         for(var shift = 0u; shift < #{RADIX_DIGIT_PLACES}u; shift += 1u) {
@@ -159,11 +164,14 @@ fn radix_sort_c_count_tiles(
     }
 }
 
-@compute @workgroup_size(1)
+// One workgroup of RADIX_BASE lanes, lane = digit. Each digit's tile-prefix is
+// independent (no cross-lane data), so this packs 256 lanes into ~4 full waves instead
+// of dispatching 256 single-lane workgroups (1/64 wave occupancy on RDNA).
+@compute @workgroup_size(#{RADIX_BASE})
 fn radix_sort_c_scan_tiles(
-    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>,
 ) {
-    let digit = global_id.y;
+    let digit = local_id.x;
     if (digit >= #{RADIX_BASE}u) {
         return;
     }
@@ -200,18 +208,29 @@ fn radix_sort_c_scatter(
     }
     workgroupBarrier();
 
-    // Step 2: Serial, stable sort within the tile.
-    if (tid == 0u) {
-        for (var i = 0u; i < #{RADIX_BASE}u; i+=1u) { local_digit_counts[i] = 0u; }
-
-        var entries_in_tile = 0u;
-        for (var i = 0u; i < tile_size; i+=1u) {
-            let entry = tile_input_entries[i];
-            if (entry.value == INVALID_KEY) { continue; } // value sentinel marks padding
-
+    // Step 2a: PARALLEL per-digit count of this tile (all lanes, atomic into LDS).
+    if (tid < #{RADIX_BASE}u) {
+        atomicStore(&tile_digit_counts[tid], 0u);
+    }
+    workgroupBarrier();
+    for (var i = tid; i < tile_size; i += threads) {
+        let entry = tile_input_entries[i];
+        if (entry.value != INVALID_KEY) { // value sentinel marks padding
             let digit = (entry.key >> (sorting_pass_index * #{RADIX_BITS_PER_DIGIT}u)) & (#{RADIX_BASE}u - 1u);
-            local_digit_counts[digit] += 1u;
-            entries_in_tile += 1u;
+            atomicAdd(&tile_digit_counts[digit], 1u);
+        }
+    }
+    workgroupBarrier();
+
+    // Step 2b: STABLE per-tile placement — must run in input order, so kept on one lane
+    // (LSD radix requires per-pass stability). The expensive O(tile_size) COUNT above is
+    // now parallel; this lane only does the 256-wide prefix + the ordered placement.
+    if (tid == 0u) {
+        var entries_in_tile = 0u;
+        for (var i = 0u; i < #{RADIX_BASE}u; i+=1u) {
+            let c = atomicLoad(&tile_digit_counts[i]);
+            local_digit_counts[i] = c;
+            entries_in_tile += c;
         }
         tile_entry_count_ws = entries_in_tile;
 
