@@ -107,6 +107,7 @@ fn setup_gaussian_cloud(
         gaussian_mode: args.gaussian_mode,
         playback_mode: args.playback_mode,
         rasterize_mode: args.rasterization_mode,
+        radix_sort_depth_bits: args.radix_sort_depth_bits,
         ..default()
     };
 

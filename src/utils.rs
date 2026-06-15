@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_args::{Deserialize, Parser, Serialize};
 
-use crate::gaussian::settings::{GaussianMode, PlaybackMode, RasterizeMode};
+use crate::gaussian::settings::{GaussianMode, PlaybackMode, RadixSortDepthBits, RasterizeMode};
 
 #[derive(Debug, Resource, Serialize, Deserialize, Parser)]
 #[command(about = "bevy_gaussian_splatting viewer", version, long_about = None)]
@@ -70,6 +70,9 @@ pub struct GaussianSplattingViewer {
     #[arg(long, value_enum, default_value_t = RasterizeMode::Color)]
     pub rasterization_mode: RasterizeMode,
 
+    #[arg(long, value_enum, default_value_t = RadixSortDepthBits::Bits32)]
+    pub radix_sort_depth_bits: RadixSortDepthBits,
+
     #[arg(long, default_value = "0")]
     pub particle_count: usize,
 }
@@ -97,6 +100,7 @@ impl Default for GaussianSplattingViewer {
             gaussian_mode: GaussianMode::Gaussian3d,
             playback_mode: PlaybackMode::Still,
             rasterization_mode: RasterizeMode::Color,
+            radix_sort_depth_bits: RadixSortDepthBits::Bits32,
             particle_count: 0,
         }
     }

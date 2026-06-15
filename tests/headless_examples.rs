@@ -415,6 +415,7 @@ fn setup_gaussian_cloud(
         gaussian_mode: args.gaussian_mode,
         playback_mode: args.playback_mode,
         rasterize_mode: args.rasterization_mode,
+        radix_sort_depth_bits: args.radix_sort_depth_bits,
         sort_mode: render_config.sort_mode.clone(),
         global_scale: 8.0,
         global_opacity: 2.0,
@@ -552,6 +553,7 @@ fn apply_scene_render_mode_override(
             let child: Entity = child;
             if let Ok(mut settings) = cloud_settings.get_mut(child) {
                 settings.rasterize_mode = args.rasterization_mode;
+                settings.radix_sort_depth_bits = args.radix_sort_depth_bits;
                 settings.sort_mode = render_config.sort_mode.clone();
             }
         }

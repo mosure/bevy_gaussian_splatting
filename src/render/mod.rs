@@ -45,7 +45,10 @@ use crate::{
     gaussian::{
         cloud::CloudVisibilityClass,
         interface::CommonCloud,
-        settings::{CloudSettings, DrawMode, GaussianColorSpace, GaussianMode, RasterizeMode},
+        settings::{
+            CloudSettings, DrawMode, GaussianColorSpace, GaussianMode, RadixSortDepthBits,
+            RasterizeMode,
+        },
     },
     material::{
         spherical_harmonics::{HALF_SH_COEFF_COUNT, SH_COEFF_COUNT, SH_DEGREE, SH_VEC4_PLANES},
@@ -683,9 +686,11 @@ where
 
 // TODO: allow setting shader defines via API
 // TODO: separate shader defines for each pipeline
+#[derive(Clone, Copy, Debug)]
 pub struct ShaderDefines {
     pub radix_bits_per_digit: u32,
     pub radix_digit_places: u32,
+    pub radix_key_shift: u32,
     pub radix_base: u32,
     pub entries_per_invocation_a: u32,
     pub entries_per_invocation_c: u32,
@@ -699,22 +704,10 @@ pub struct ShaderDefines {
 }
 
 impl ShaderDefines {
-    pub fn max_tile_count(&self, count: usize) -> u32 {
-        (count as u32).div_ceil(self.workgroup_entries_c)
-    }
-
-    pub fn sorting_status_counters_buffer_size(&self, count: usize) -> usize {
-        self.radix_base as usize * self.max_tile_count(count) as usize * std::mem::size_of::<u32>()
-    }
-}
-
-impl Default for ShaderDefines {
-    fn default() -> Self {
+    pub fn for_radix_depth_bits(radix_sort_depth_bits: RadixSortDepthBits) -> Self {
         let radix_bits_per_digit = 8;
-        // Sort only the TOP 16 bits of the 32-bit depth key (2 byte-passes, not 4): 65536 buckets is
-        // ample for splat depth ordering, and halving the passes ~halves the radix C-pass cost. The
-        // shader masks the key to its high 16 bits to match (see radix.wgsl `key = key >> 16u`).
-        let radix_digit_places = 2;
+        let radix_digit_places = radix_sort_depth_bits.bits() / radix_bits_per_digit;
+        let radix_key_shift = 32 - radix_sort_depth_bits.bits();
         let radix_base = 1 << radix_bits_per_digit;
         let entries_per_invocation_a = 4;
         let entries_per_invocation_c = 4;
@@ -729,6 +722,7 @@ impl Default for ShaderDefines {
         Self {
             radix_bits_per_digit,
             radix_digit_places,
+            radix_key_shift,
             radix_base,
             entries_per_invocation_a,
             entries_per_invocation_c,
@@ -741,10 +735,34 @@ impl Default for ShaderDefines {
             temporal_sort_window_size: 16,
         }
     }
+
+    pub fn max_tile_count(&self, count: usize) -> u32 {
+        (count as u32).div_ceil(self.workgroup_entries_c)
+    }
+
+    pub fn sorting_status_counters_buffer_size(&self, count: usize) -> usize {
+        self.radix_base as usize * self.max_tile_count(count) as usize * std::mem::size_of::<u32>()
+    }
+
+    pub fn radix_initial_parity(&self) -> usize {
+        (self.radix_digit_places % 2) as usize
+    }
+}
+
+impl Default for ShaderDefines {
+    fn default() -> Self {
+        Self::for_radix_depth_bits(RadixSortDepthBits::default())
+    }
 }
 
 pub fn shader_defs(key: CloudPipelineKey) -> Vec<ShaderDefVal> {
-    let defines = ShaderDefines::default();
+    shader_defs_with_defines(key, ShaderDefines::default())
+}
+
+pub fn shader_defs_with_defines(
+    key: CloudPipelineKey,
+    defines: ShaderDefines,
+) -> Vec<ShaderDefVal> {
     let mut shader_defs = vec![
         ShaderDefVal::UInt("SH_COEFF_COUNT".into(), SH_COEFF_COUNT as u32),
         ShaderDefVal::UInt("SH_4D_COEFF_COUNT".into(), SH_4D_COEFF_COUNT as u32),
@@ -755,6 +773,7 @@ pub fn shader_defs(key: CloudPipelineKey) -> Vec<ShaderDefVal> {
         ShaderDefVal::UInt("RADIX_BASE".into(), defines.radix_base),
         ShaderDefVal::UInt("RADIX_BITS_PER_DIGIT".into(), defines.radix_bits_per_digit),
         ShaderDefVal::UInt("RADIX_DIGIT_PLACES".into(), defines.radix_digit_places),
+        ShaderDefVal::UInt("RADIX_KEY_SHIFT".into(), defines.radix_key_shift),
         ShaderDefVal::UInt(
             "ENTRIES_PER_INVOCATION_A".into(),
             defines.entries_per_invocation_a,

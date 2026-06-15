@@ -96,11 +96,7 @@ fn radix_sort_a(
         if (in_frustum(clip_space_pos.xyz)) {
             key = key_distance;
         }
-        // Keep only the top 16 bits of the 32-bit depth key: RADIX_DIGIT_PLACES is now 2,
-        // so the 2 byte-passes must sort the MOST-significant bits (coarse depth), not the
-        // low/irrelevant ones. 65536 buckets is ample for splat ordering. (Out-of-frustum
-        // INVALID 0xFFFFFFFF -> 0xFFFF, still sorts last.)
-        key = key >> 16u;
+        key = key >> #{RADIX_KEY_SHIFT}u;
         input_entries[entry_index].key = key;
         input_entries[entry_index].value = entry_index;
         for(var shift = 0u; shift < #{RADIX_DIGIT_PLACES}u; shift += 1u) {
