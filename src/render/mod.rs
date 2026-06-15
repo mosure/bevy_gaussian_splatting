@@ -711,7 +711,10 @@ impl ShaderDefines {
 impl Default for ShaderDefines {
     fn default() -> Self {
         let radix_bits_per_digit = 8;
-        let radix_digit_places = 32 / radix_bits_per_digit;
+        // Sort only the TOP 16 bits of the 32-bit depth key (2 byte-passes, not 4): 65536 buckets is
+        // ample for splat depth ordering, and halving the passes ~halves the radix C-pass cost. The
+        // shader masks the key to its high 16 bits to match (see radix.wgsl `key = key >> 16u`).
+        let radix_digit_places = 2;
         let radix_base = 1 << radix_bits_per_digit;
         let entries_per_invocation_a = 4;
         let entries_per_invocation_c = 4;
