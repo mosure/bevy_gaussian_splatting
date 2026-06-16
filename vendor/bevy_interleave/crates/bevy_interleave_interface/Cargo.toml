@@ -1,0 +1,19 @@
+[package]
+name = "bevy_interleave_interface"
+version = "0.9.0"
+edition = "2024"
+description = "interface for e2e packed to planar bind groups"
+homepage = "https://github.com/mosure/bevy_interleave"
+repository = "https://github.com/mosure/bevy_interleave"
+license = "MIT"
+keywords = [
+  "bevy",
+  "shader-types",
+]
+
+
+[dependencies.bevy]
+git = "https://github.com/bevyengine/bevy.git"
+rev = "ae2fcc0353d95e887470f0f6fc8a7e434e5549ce"
+default-features = false
+features = ["bevy_asset", "bevy_render", "png", "reflect_documentation", "reflect_functions"]

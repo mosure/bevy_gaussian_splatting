@@ -1,0 +1,39 @@
+[package]
+name = "bevy_panorbit_camera"
+version = "0.34.0"
+authors = ["Plonq"]
+edition = "2021"
+description = "A basic pan and orbit camera in Bevy"
+keywords = ["gamedev", "bevy", "orbit", "camera"]
+categories = ["game-development"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Plonq/bevy_panorbit_camera"
+homepage = "https://github.com/Plonq/bevy_panorbit_camera"
+readme = "README.md"
+
+[features]
+bevy_egui = ["dep:bevy_egui"]
+
+[dependencies]
+bevy = { git = "https://github.com/bevyengine/bevy.git", rev = "ae2fcc0353d95e887470f0f6fc8a7e434e5549ce", default-features = false, features = [
+    "bevy_core_pipeline",
+    "bevy_camera",
+    "bevy_window",
+] }
+bevy_egui = { version = "0.40.0-rc.1", optional = true, default-features = false }
+
+[dev-dependencies]
+bevy = { git = "https://github.com/bevyengine/bevy.git", rev = "ae2fcc0353d95e887470f0f6fc8a7e434e5549ce", default-features = false, features = ["3d"] }
+float-cmp = "0.10.0"
+bevy_egui = { version = "0.40.0-rc.1", default-features = false, features = [
+    "render",
+    "default_fonts",
+] }
+
+[[example]]
+name = "egui"
+required-features = ["bevy_egui"]
+
+[[example]]
+name = "egui_multiple_windows"
+required-features = ["bevy_egui"]

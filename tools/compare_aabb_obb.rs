@@ -1,6 +1,5 @@
 use bevy::{app::AppExit, core_pipeline::tonemapping::Tonemapping, prelude::*};
 use bevy_args::{BevyArgsPlugin, parse_args};
-use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 use bevy_interleave::prelude::Planar;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 
@@ -98,11 +97,6 @@ fn compare_aabb_obb_app() {
     );
     app.add_plugins(BevyArgsPlugin::<GaussianSplattingViewer>::default());
     app.add_plugins(PanOrbitCameraPlugin);
-
-    if config.editor {
-        app.add_plugins(EguiPlugin::default());
-        app.add_plugins(WorldInspectorPlugin::new());
-    }
 
     if config.press_esc_close {
         app.add_systems(Update, esc_close);

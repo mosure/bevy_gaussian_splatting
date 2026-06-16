@@ -8,13 +8,12 @@ use std::marker::Copy;
 #[allow(unused_imports)]
 use bevy::{
     asset::{LoadState, RenderAssetUsages, load_internal_asset, uuid_handle},
-    core_pipeline::core_3d::graph::{Core3d, Node3d},
+    core_pipeline::{Core3d, Core3dSystems},
     ecs::system::{SystemParamItem, lifetimeless::SRes},
     prelude::*,
     render::{
         Extract, Render, RenderApp, RenderSystems,
         render_asset::{PrepareAssetError, RenderAsset, RenderAssetPlugin, RenderAssets},
-        render_graph::{Node, NodeRunError, RenderGraphContext, RenderGraphExt, RenderLabel},
         render_resource::{
             BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
             BindGroupLayoutEntry, BindingResource, BindingType, Buffer, BufferBinding,
@@ -23,7 +22,7 @@ use bevy::{
             ComputePipelineDescriptor, Extent3d, PipelineCache, ShaderStages, ShaderType,
             TextureDimension, TextureFormat,
         },
-        renderer::{RenderContext, RenderDevice},
+        renderer::{RenderContext, RenderDevice, ViewQuery},
         view::ViewUniformOffset,
     },
 };
@@ -41,7 +40,7 @@ use crate::{
 
 const PARTICLE_SHADER_HANDLE: Handle<Shader> = uuid_handle!("00000000-0000-0000-0000-00369c79ab8f");
 
-#[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
+#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemSet)]
 pub struct MorphLabel;
 
 pub struct ParticleBehaviorPlugin<R: PlanarSync> {
@@ -55,24 +54,28 @@ impl<R: PlanarSync> Default for ParticleBehaviorPlugin<R> {
     }
 }
 
-impl<R: PlanarSync> Plugin for ParticleBehaviorPlugin<R> {
+impl<R> Plugin for ParticleBehaviorPlugin<R>
+where
+    R: PlanarSync + Send + Sync + 'static,
+    R::GpuPlanarType: GpuPlanarStorage,
+{
     fn build(&self, app: &mut App) {
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app.add_render_graph_node::<ParticleBehaviorNode<R>>(Core3d, MorphLabel);
-
-            // TODO: avoid duplicating the extract system
-            render_app.add_systems(
-                Render,
-                (queue_particle_behavior_bind_group::<R>.in_set(RenderSystems::Queue),),
-            );
+            render_app
+                .add_systems(
+                    Render,
+                    (queue_particle_behavior_bind_group::<R>.in_set(RenderSystems::Queue),),
+                )
+                .add_systems(
+                    Core3d,
+                    run_particle_behaviors::<R>
+                        .in_set(MorphLabel)
+                        .before(Core3dSystems::Prepass),
+                );
         }
 
         if app.is_plugin_added::<RenderAssetPlugin<GpuParticleBehaviorBuffers>>() {
             return;
-        }
-
-        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app.add_render_graph_edge(Core3d, MorphLabel, Node3d::LatePrepass);
         }
 
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
@@ -194,7 +197,7 @@ impl<R: PlanarSync> FromWorld for ParticleBehaviorPipeline<R> {
                     gaussian_cloud_pipeline.gaussian_cloud_layout_desc.clone(),
                     particle_behavior_layout_desc,
                 ],
-                push_constant_ranges: vec![],
+                immediate_size: 0,
                 shader: PARTICLE_SHADER_HANDLE,
                 shader_defs: shader_defs.clone(),
                 entry_point: Some("apply_particle_behaviors".into()),
@@ -254,108 +257,69 @@ pub fn queue_particle_behavior_bind_group<R: PlanarSync>(
     }
 }
 
-pub struct ParticleBehaviorNode<R: PlanarSync> {
-    gaussian_clouds: QueryState<(
-        &'static PlanarStorageBindGroup<R>,
-        &'static ParticleBehaviorsHandle,
-        &'static ParticleBehaviorBindGroup,
-    )>,
-    initialized: bool,
-    view_bind_group: QueryState<(
-        &'static GaussianCamera,
-        &'static GaussianViewBindGroup,
-        &'static ViewUniformOffset,
-    )>,
-    phantom: std::marker::PhantomData<R>,
-}
+type ParticleBehaviorViewQueryItem = (
+    &'static GaussianCamera,
+    &'static GaussianViewBindGroup,
+    &'static ViewUniformOffset,
+);
 
-impl<R: PlanarSync> FromWorld for ParticleBehaviorNode<R> {
-    fn from_world(world: &mut World) -> Self {
-        Self {
-            gaussian_clouds: world.query(),
-            initialized: false,
-            view_bind_group: world.query(),
-            phantom: std::marker::PhantomData,
-        }
-    }
-}
+type ParticleBehaviorCloudQueryItem<R: PlanarSync> = (
+    &'static PlanarStorageBindGroup<R>,
+    &'static ParticleBehaviorsHandle,
+    &'static ParticleBehaviorBindGroup,
+);
 
-impl<R: PlanarSync> Node for ParticleBehaviorNode<R> {
-    fn update(&mut self, world: &mut World) {
-        let pipeline = world.resource::<ParticleBehaviorPipeline<R>>();
-        let pipeline_cache = world.resource::<PipelineCache>();
-
-        if !self.initialized {
-            if let CachedPipelineState::Ok(_) =
-                pipeline_cache.get_compute_pipeline_state(pipeline.particle_behavior_pipeline)
-            {
-                self.initialized = true;
-            }
-
-            if !self.initialized {
-                return;
-            }
-        }
-
-        self.gaussian_clouds.update_archetypes(world);
-        self.view_bind_group.update_archetypes(world);
+fn run_particle_behaviors<R: PlanarSync>(
+    mut render_context: RenderContext,
+    pipeline_cache: Res<PipelineCache>,
+    pipeline: Res<ParticleBehaviorPipeline<R>>,
+    gaussian_uniforms: Res<GaussianUniformBindGroups>,
+    particle_behaviors: Res<RenderAssets<GpuParticleBehaviorBuffers>>,
+    view_bind_group: ViewQuery<ParticleBehaviorViewQueryItem>,
+    gaussian_clouds: Query<ParticleBehaviorCloudQueryItem<R>>,
+) {
+    if !matches!(
+        pipeline_cache.get_compute_pipeline_state(pipeline.particle_behavior_pipeline),
+        CachedPipelineState::Ok(_)
+    ) {
+        return;
     }
 
-    fn run(
-        &self,
-        _graph: &mut RenderGraphContext,
-        render_context: &mut RenderContext,
-        world: &World,
-    ) -> Result<(), NodeRunError> {
-        if !self.initialized {
-            return Ok(());
-        }
+    let Some(particle_behavior_pipeline) =
+        pipeline_cache.get_compute_pipeline(pipeline.particle_behavior_pipeline)
+    else {
+        return;
+    };
 
-        let pipeline_cache = world.resource::<PipelineCache>();
-        let pipeline = world.resource::<ParticleBehaviorPipeline<R>>();
+    let Some(uniform_bind_group) = gaussian_uniforms.base_bind_group.as_ref() else {
+        debug!("Particle behavior run skipped: GaussianUniform base bind group missing");
+        return;
+    };
 
-        let command_encoder = render_context.command_encoder();
+    let (_gaussian_camera, view_bind_group, view_uniform_offset) = view_bind_group.into_inner();
 
-        for (_gaussian_camera, view_bind_group, view_uniform_offset) in
-            self.view_bind_group.iter_manual(world)
-        {
-            for (planar_storage_bind_group, behaviors_handle, particle_behavior_bind_group) in
-                self.gaussian_clouds.iter_manual(world)
-            {
-                let behaviors = world
-                    .get_resource::<RenderAssets<GpuParticleBehaviorBuffers>>()
-                    .unwrap()
-                    .get(behaviors_handle.0.id())
-                    .unwrap();
-                let gaussian_uniforms = world.resource::<GaussianUniformBindGroups>();
+    let command_encoder = render_context.command_encoder();
 
-                {
-                    let mut pass =
-                        command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
+    for (planar_storage_bind_group, behaviors_handle, particle_behavior_bind_group) in
+        &gaussian_clouds
+    {
+        let Some(behaviors) = particle_behaviors.get(behaviors_handle.0.id()) else {
+            continue;
+        };
 
-                    pass.set_bind_group(0, &view_bind_group.value, &[view_uniform_offset.offset]);
-                    pass.set_bind_group(
-                        1,
-                        gaussian_uniforms.base_bind_group.as_ref().unwrap(),
-                        &[0],
-                    );
-                    pass.set_bind_group(2, &planar_storage_bind_group.bind_group, &[]);
-                    pass.set_bind_group(
-                        3,
-                        &particle_behavior_bind_group.particle_behavior_bindgroup,
-                        &[],
-                    );
+        let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
 
-                    let particle_behavior = pipeline_cache
-                        .get_compute_pipeline(pipeline.particle_behavior_pipeline)
-                        .unwrap();
-                    pass.set_pipeline(particle_behavior);
-                    pass.dispatch_workgroups(behaviors.particle_behavior_count / 32, 32, 1);
-                }
-            }
-        }
+        pass.set_bind_group(0, &view_bind_group.value, &[view_uniform_offset.offset]);
+        pass.set_bind_group(1, uniform_bind_group, &[0]);
+        pass.set_bind_group(2, &planar_storage_bind_group.bind_group, &[]);
+        pass.set_bind_group(
+            3,
+            &particle_behavior_bind_group.particle_behavior_bindgroup,
+            &[],
+        );
 
-        Ok(())
+        pass.set_pipeline(particle_behavior_pipeline);
+        pass.dispatch_workgroups(behaviors.particle_behavior_count.div_ceil(32), 1, 1);
     }
 }
 

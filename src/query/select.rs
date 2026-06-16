@@ -96,7 +96,7 @@ fn apply_selection<R: PlanarSync>(
             continue;
         }
 
-        let cloud = gaussian_clouds_res.get_mut(cloud_handle.handle()).unwrap();
+        let mut cloud = gaussian_clouds_res.get_mut(cloud_handle.handle()).unwrap();
 
         (0..cloud.len()).for_each(|index| {
             *cloud.visibility_mut(index) = 0.0;
@@ -130,7 +130,7 @@ fn invert_selection<R: PlanarSync>(
             continue;
         }
 
-        let cloud = gaussian_clouds_res.get_mut(cloud_handle.handle()).unwrap();
+        let mut cloud = gaussian_clouds_res.get_mut(cloud_handle.handle()).unwrap();
 
         let mut new_indicies = Vec::with_capacity(cloud.len() - select.indicies.len());
 

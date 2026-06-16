@@ -30,7 +30,7 @@ fn apply_noise_cpu(
     selections: Query<(&PlanarGaussian3dHandle, &NoiseMaterial), Changed<NoiseMaterial>>,
 ) {
     for (cloud_handle, noise_material) in selections.iter() {
-        let Some(cloud) = gaussian_clouds_res.get_mut(cloud_handle.handle()) else {
+        let Some(mut cloud) = gaussian_clouds_res.get_mut(cloud_handle.handle()) else {
             continue;
         };
 

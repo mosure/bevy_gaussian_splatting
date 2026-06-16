@@ -203,7 +203,7 @@ fn update_textures_on_change(
         match ev {
             AssetEvent::Modified { id } => {
                 let sorted_entries = sorted_entries_res.get(*id).unwrap();
-                let image = images.get_mut(&sorted_entries.texture).unwrap();
+                let mut image = images.get_mut(&sorted_entries.texture).unwrap();
 
                 image.data = Some(bytemuck::cast_slice(sorted_entries.sorted.as_slice()).to_vec());
             }

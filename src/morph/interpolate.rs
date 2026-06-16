@@ -2,21 +2,17 @@ use std::{any::TypeId, marker::PhantomData};
 
 use bevy::{
     asset::{Assets, LoadState, load_internal_asset, uuid_handle},
-    core_pipeline::{
-        core_3d::graph::{Core3d, Node3d},
-        prepass::PreviousViewUniformOffset,
-    },
+    core_pipeline::{Core3d, Core3dSystems, prepass::PreviousViewUniformOffset},
     prelude::*,
     render::{
         Extract, ExtractSchedule, Render, RenderApp, RenderSystems,
         extract_component::DynamicUniformIndex,
         render_asset::RenderAssets,
-        render_graph::{Node, NodeRunError, RenderGraphContext, RenderGraphExt, RenderLabel},
         render_resource::{
             BindGroup, BindGroupLayout, CachedComputePipelineId, CachedPipelineState,
             ComputePassDescriptor, ComputePipelineDescriptor, PipelineCache,
         },
-        renderer::{RenderContext, RenderDevice},
+        renderer::{RenderContext, RenderDevice, ViewQuery},
         sync_world::{RenderEntity, SyncToRenderWorld},
         view::ViewUniformOffset,
     },
@@ -37,7 +33,7 @@ const INTERPOLATE_SHADER_HANDLE: Handle<Shader> =
     uuid_handle!("b0b03f7e-9ec2-4e7d-bc96-3ddc1a8c5942");
 const WORKGROUP_SIZE: u32 = 256;
 
-#[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
+#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemSet)]
 pub struct InterpolateLabel;
 
 pub struct InterpolatePlugin<R: PlanarSync> {
@@ -72,12 +68,16 @@ where
 
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
-                .add_render_graph_node::<GaussianInterpolateNode<R>>(Core3d, InterpolateLabel)
-                .add_render_graph_edge(Core3d, InterpolateLabel, Node3d::LatePrepass)
                 .add_systems(ExtractSchedule, extract_gaussian_interpolate::<R>)
                 .add_systems(
                     Render,
                     (queue_gaussian_interpolate_bind_groups::<R>.in_set(RenderSystems::Queue),),
+                )
+                .add_systems(
+                    Core3d,
+                    run_gaussian_interpolate::<R>
+                        .in_set(InterpolateLabel)
+                        .before(Core3dSystems::Prepass),
                 );
         }
 
@@ -208,7 +208,7 @@ where
                     gaussian_cloud_pipeline.gaussian_cloud_layout_desc.clone(),
                     output_layout_desc,
                 ],
-                push_constant_ranges: vec![],
+                immediate_size: 0,
                 shader: INTERPOLATE_SHADER_HANDLE,
                 shader_defs,
                 entry_point: Some("interpolate_gaussians".into()),
@@ -384,142 +384,94 @@ pub fn queue_gaussian_interpolate_bind_groups<R: PlanarSync>(
     }
 }
 
-#[allow(clippy::type_complexity)]
-pub struct GaussianInterpolateNode<R: PlanarSync> {
-    gaussian_clouds: QueryState<(
-        &'static GaussianInterpolate<R>,
-        &'static GaussianInterpolateBindGroups<R>,
-        &'static DynamicUniformIndex<CloudUniform>,
-        &'static R::PlanarTypeHandle,
-    )>,
-    view_bind_group: QueryState<(
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn run_gaussian_interpolate<R: PlanarSync>(
+    mut render_context: RenderContext,
+    pipeline_cache: Res<PipelineCache>,
+    pipeline: Res<GaussianInterpolatePipeline<R>>,
+    gaussian_uniforms: Res<GaussianUniformBindGroups>,
+    gpu_planars: Res<RenderAssets<R::GpuPlanarType>>,
+    view_bind_group: ViewQuery<(
         &'static GaussianCamera,
         &'static GaussianComputeViewBindGroup,
         &'static ViewUniformOffset,
         &'static PreviousViewUniformOffset,
     )>,
-    initialized: bool,
-    phantom: PhantomData<fn() -> R>,
-}
-
-impl<R: PlanarSync> FromWorld for GaussianInterpolateNode<R> {
-    fn from_world(world: &mut World) -> Self {
-        Self {
-            gaussian_clouds: world.query(),
-            view_bind_group: world.query(),
-            initialized: false,
-            phantom: PhantomData,
-        }
-    }
-}
-
-impl<R: PlanarSync> Node for GaussianInterpolateNode<R>
-where
+    gaussian_clouds: Query<(
+        &'static GaussianInterpolate<R>,
+        &'static GaussianInterpolateBindGroups<R>,
+        &'static DynamicUniformIndex<CloudUniform>,
+        &'static R::PlanarTypeHandle,
+    )>,
+) where
     R::GpuPlanarType: GpuPlanarStorage,
 {
-    fn update(&mut self, world: &mut World) {
-        let pipeline = world.resource::<GaussianInterpolatePipeline<R>>();
-        let pipeline_cache = world.resource::<PipelineCache>();
-
-        if !self.initialized {
-            match pipeline_cache.get_compute_pipeline_state(pipeline.interpolate_pipeline) {
-                CachedPipelineState::Ok(_) => {
-                    self.initialized = true;
-                    debug!("GaussianInterpolate pipeline ready");
-                }
-                state => {
-                    debug!(
-                        ?state,
-                        "GaussianInterpolate pipeline not ready; skipping update"
-                    );
-                    return;
-                }
-            }
+    match pipeline_cache.get_compute_pipeline_state(pipeline.interpolate_pipeline) {
+        CachedPipelineState::Ok(_) => {}
+        state => {
+            debug!(
+                ?state,
+                "GaussianInterpolate pipeline not ready; skipping dispatch"
+            );
+            return;
         }
-
-        debug!("updating GaussianInterpolate query archetypes");
-        self.gaussian_clouds.update_archetypes(world);
-        self.view_bind_group.update_archetypes(world);
     }
 
-    fn run(
-        &self,
-        _graph: &mut RenderGraphContext,
-        render_context: &mut RenderContext,
-        world: &World,
-    ) -> Result<(), NodeRunError> {
-        if !self.initialized {
-            debug!("GaussianInterpolateNode run skipped: pipeline not initialized");
-            return Ok(());
-        }
+    let Some(uniform_bind_group) = gaussian_uniforms.base_bind_group.as_ref() else {
+        debug!("GaussianInterpolate run skipped: GaussianUniform base bind group missing");
+        return;
+    };
 
-        let pipeline_cache = world.resource::<PipelineCache>();
-        let pipeline = world.resource::<GaussianInterpolatePipeline<R>>();
-        let gaussian_uniforms = world.resource::<GaussianUniformBindGroups>();
-        let Some(uniform_bind_group) = gaussian_uniforms.base_bind_group.as_ref() else {
-            debug!("GaussianInterpolateNode run skipped: GaussianUniform base bind group missing");
-            return Ok(());
+    let (_camera, view_bind_group, view_uniform_offset, previous_view_uniform_offset) =
+        view_bind_group.into_inner();
+    let command_encoder = render_context.command_encoder();
+
+    debug!("GaussianInterpolate run starting");
+
+    for (_interpolate, bind_groups, cloud_uniform_index, output_handle) in &gaussian_clouds {
+        let output_asset_id = output_handle.handle().id();
+        let Some(output_gpu) = gpu_planars.get(output_handle.handle()) else {
+            debug!(output_asset_id = ?output_asset_id, "GaussianInterpolate output GPU asset missing");
+            continue;
         };
 
-        let gpu_planars = world.resource::<RenderAssets<R::GpuPlanarType>>();
-
-        let command_encoder = render_context.command_encoder();
-
-        debug!("GaussianInterpolateNode run starting");
-
-        for (_camera, view_bind_group, view_uniform_offset, previous_view_uniform_offset) in
-            self.view_bind_group.iter_manual(world)
-        {
-            for (_interpolate, bind_groups, cloud_uniform_index, output_handle) in
-                self.gaussian_clouds.iter_manual(world)
-            {
-                let output_asset_id = output_handle.handle().id();
-                let Some(output_gpu) = gpu_planars.get(output_handle.handle()) else {
-                    debug!(output_asset_id = ?output_asset_id, "GaussianInterpolate output GPU asset missing");
-                    continue;
-                };
-
-                let gaussian_count = output_gpu.len() as u32;
-                if gaussian_count == 0 {
-                    debug!(output_asset_id = ?output_asset_id, "GaussianInterpolate output has no gaussians; skipping dispatch");
-                    continue;
-                }
-
-                let workgroups = gaussian_count.div_ceil(WORKGROUP_SIZE);
-                let pipeline_id = pipeline_cache
-                    .get_compute_pipeline(pipeline.interpolate_pipeline)
-                    .unwrap();
-
-                let mut pass =
-                    command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
-
-                pass.set_pipeline(pipeline_id);
-                pass.set_bind_group(
-                    0,
-                    &view_bind_group.value,
-                    &[
-                        view_uniform_offset.offset,
-                        previous_view_uniform_offset.offset,
-                    ],
-                );
-                pass.set_bind_group(1, uniform_bind_group, &[cloud_uniform_index.index()]);
-                pass.set_bind_group(2, &bind_groups.lhs, &[]);
-                pass.set_bind_group(3, &bind_groups.rhs, &[]);
-                pass.set_bind_group(4, &bind_groups.output, &[]);
-
-                debug!(
-                    output_asset_id = ?output_asset_id,
-                    gaussian_count,
-                    workgroups,
-                    uniform_index = cloud_uniform_index.index(),
-                    "dispatched GaussianInterpolate compute pass"
-                );
-
-                pass.dispatch_workgroups(workgroups, 1, 1);
-            }
+        let gaussian_count = output_gpu.len() as u32;
+        if gaussian_count == 0 {
+            debug!(output_asset_id = ?output_asset_id, "GaussianInterpolate output has no gaussians; skipping dispatch");
+            continue;
         }
 
-        debug!("GaussianInterpolateNode run completed");
-        Ok(())
+        let workgroups = gaussian_count.div_ceil(WORKGROUP_SIZE);
+        let pipeline_id = pipeline_cache
+            .get_compute_pipeline(pipeline.interpolate_pipeline)
+            .unwrap();
+
+        let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
+
+        pass.set_pipeline(pipeline_id);
+        pass.set_bind_group(
+            0,
+            &view_bind_group.value,
+            &[
+                view_uniform_offset.offset,
+                previous_view_uniform_offset.offset,
+            ],
+        );
+        pass.set_bind_group(1, uniform_bind_group, &[cloud_uniform_index.index()]);
+        pass.set_bind_group(2, &bind_groups.lhs, &[]);
+        pass.set_bind_group(3, &bind_groups.rhs, &[]);
+        pass.set_bind_group(4, &bind_groups.output, &[]);
+
+        debug!(
+            output_asset_id = ?output_asset_id,
+            gaussian_count,
+            workgroups,
+            uniform_index = cloud_uniform_index.index(),
+            "dispatched GaussianInterpolate compute pass"
+        );
+
+        pass.dispatch_workgroups(workgroups, 1, 1);
     }
+
+    debug!("GaussianInterpolate run completed");
 }

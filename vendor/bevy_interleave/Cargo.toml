@@ -1,0 +1,99 @@
+[package]
+name = "bevy_interleave"
+description = "bevy support for e2e packed to planar bind groups"
+version = "0.9.0"
+edition = "2024"
+authors = ["mosure <mitchell@mosure.me>"]
+license = "MIT"
+keywords = [
+  "bevy",
+  "shader-types",
+]
+homepage = "https://github.com/mosure/bevy_interleave"
+repository = "https://github.com/mosure/bevy_interleave"
+readme = "README.md"
+
+[workspace]
+exclude = [
+  ".devcontainer",
+  ".github",
+  "docs",
+  "dist",
+  "build",
+  "assets",
+  "credits",
+]
+members = [
+  "crates/*",
+]
+
+
+[dependencies]
+bevy_interleave_interface = { path = "crates/bevy_interleave_interface", version = "0.9.0" }
+bevy_interleave_macros = { path = "crates/bevy_interleave_macros", version = "0.9.0" }
+bytemuck = "1.24"
+serde = "1.0"
+wgpu = "29"
+
+[dependencies.bevy]
+git = "https://github.com/bevyengine/bevy.git"
+rev = "ae2fcc0353d95e887470f0f6fc8a7e434e5549ce"
+default-features = false
+features = ["bevy_asset", "bevy_render", "png", "reflect_documentation", "reflect_functions"]
+
+
+[dev-dependencies.bevy]
+git = "https://github.com/bevyengine/bevy.git"
+rev = "ae2fcc0353d95e887470f0f6fc8a7e434e5549ce"
+default-features = false
+features = [
+  "bevy_asset",
+  "bevy_render",
+  "bevy_winit",
+  "png",
+  "reflect_documentation",
+  "reflect_functions",
+]
+
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+wasm-bindgen = "0.2"
+
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+  'Document',
+  'Element',
+  'HtmlElement',
+  'Location',
+  'Node',
+  'Window',
+]
+
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+
+
+[lib]
+path = "src/lib.rs"
+
+[[test]]
+name = "lib"
+path = "test/lib.rs"
