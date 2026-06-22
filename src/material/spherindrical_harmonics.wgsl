@@ -103,7 +103,7 @@ fn spherindrical_harmonics_lookup(
     #if SH_DEGREE_TIME > 1
         let t2 = cos(4.0 * PI * theta);
 
-        color += t1 * (
+        color += t2 * (
             l0m0 * vec3<f32>(sh[ 96], sh[ 97], sh[ 98]) +
             l1m1 * vec3<f32>(sh[ 99], sh[100], sh[101]) +
             l1m0 * vec3<f32>(sh[102], sh[103], sh[104]) +
