@@ -13,8 +13,6 @@ fn spherindrical_harmonics_lookup(
     dir_t: f32,
     sh: array<f32, #{SH_4D_COEFF_COUNT}>,
 ) -> vec3<f32> {
-    let rds = ray_direction * ray_direction;
-
     var color = vec3<f32>(0.5);
 
     // TODO: reinterpret sh as vec3<f32>
