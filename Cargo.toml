@@ -166,7 +166,7 @@ webgpu = ["bevy/webgpu"]
 base64 = "0.22"
 bevy_args = "4.0.0"
 bevy_interleave = "0.10.0"
-bevy_panorbit_camera = { path = "vendor/bevy_panorbit_camera", optional = true }
+bevy_panorbit_camera = { version = "0.35.0", optional = true }
 bincode2 = { version = "2.0", optional = true }
 byte-unit = { version = "5.2", optional = true }
 bytemuck = "1.23"
