@@ -434,7 +434,7 @@ fn queue_gaussians<R: PlanarSync>(
                 );
             let distance = rangefinder.distance(&center.translation());
 
-            transparent_phase.add(Transparent3d {
+            transparent_phase.add_retained(Transparent3d {
                 sorting_info: TransparentSortingInfo3d::Sorted {
                     mesh_center: center.translation(),
                     depth_bias: 0.0,

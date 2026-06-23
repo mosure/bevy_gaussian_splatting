@@ -15,7 +15,7 @@ readme = "README.md"
 bevy_egui = ["dep:bevy_egui"]
 
 [dependencies]
-bevy = { git = "https://github.com/bevyengine/bevy.git", rev = "ae2fcc0353d95e887470f0f6fc8a7e434e5549ce", default-features = false, features = [
+bevy = { version = "0.19.0", default-features = false, features = [
     "bevy_core_pipeline",
     "bevy_camera",
     "bevy_window",
@@ -23,7 +23,7 @@ bevy = { git = "https://github.com/bevyengine/bevy.git", rev = "ae2fcc0353d95e88
 bevy_egui = { version = "0.40.0-rc.1", optional = true, default-features = false }
 
 [dev-dependencies]
-bevy = { git = "https://github.com/bevyengine/bevy.git", rev = "ae2fcc0353d95e887470f0f6fc8a7e434e5549ce", default-features = false, features = ["3d"] }
+bevy = { version = "0.19.0", default-features = false, features = ["3d"] }
 float-cmp = "0.10.0"
 bevy_egui = { version = "0.40.0-rc.1", default-features = false, features = [
     "render",
