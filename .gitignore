@@ -1,13 +1,6 @@
 debug/
 target/
-vendor/*
-!vendor/
-!vendor/bevy_args/
-!vendor/bevy_args/**
-!vendor/bevy_interleave/
-!vendor/bevy_interleave/**
-!vendor/bevy_panorbit_camera/
-!vendor/bevy_panorbit_camera/**
+vendor/
 out/
 **/*.rs.bk
 *.pdb
