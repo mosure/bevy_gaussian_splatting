@@ -51,7 +51,7 @@ fn get_bounding_box_cov2d(
     direction: vec2<f32>,
     cutoff: f32,
 ) -> vec4<f32> {
-    let fitler_size = 0.707106;
+    let filter_size = 0.707106;
 
     if extent.x < 1.e-4 || extent.y < 1.e-4 {
         return vec4<f32>(0.0);
@@ -60,7 +60,7 @@ fn get_bounding_box_cov2d(
     let radius = sqrt(extent);
     let max_radius = vec2<f32>(max(
         max(radius.x, radius.y),
-        cutoff * fitler_size,
+        cutoff * filter_size,
     ));
 
     // TODO: verify OBB capability
