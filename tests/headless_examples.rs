@@ -12,7 +12,6 @@ use bevy::{
     render::{
         Extract, Render, RenderApp, RenderSystems,
         render_asset::RenderAssets,
-        render_graph::{self, NodeRunError, RenderGraph, RenderGraphContext, RenderLabel},
         render_resource::{
             Buffer, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d, MapMode,
             PollType, TexelCopyBufferInfo, TexelCopyBufferLayout, TextureFormat, TextureUsages,
@@ -431,7 +430,7 @@ fn setup_gaussian_cloud(
     let render_target_handle = images.add(Image::new_target_texture(
         size.width,
         size.height,
-        TextureFormat::bevy_default(),
+        TextureFormat::Rgba8UnormSrgb,
         None,
     ));
     commands.insert_resource(CaptureRenderTarget(render_target_handle.clone()));
@@ -844,16 +843,14 @@ impl Plugin for ImageCopyPlugin {
             .insert_resource(MainWorldReceiver(receiver))
             .sub_app_mut(RenderApp);
 
-        let mut graph = render_app.world_mut().resource_mut::<RenderGraph>();
-        graph.add_node(ImageCopy, ImageCopyDriver);
-        graph.add_node_edge(bevy::render::graph::CameraDriverLabel, ImageCopy);
-
         render_app
             .insert_resource(RenderWorldSender(sender))
             .add_systems(ExtractSchedule, extract_image_copiers)
             .add_systems(
                 Render,
-                receive_image_from_buffer.after(RenderSystems::Render),
+                (copy_images_to_buffer, receive_image_from_buffer)
+                    .chain()
+                    .after(RenderSystems::Render),
             );
     }
 }
@@ -903,64 +900,59 @@ fn extract_image_copiers(mut commands: Commands, image_copiers: Extract<Query<&I
     commands.insert_resource(ImageCopiers(image_copiers.iter().cloned().collect()));
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Hash, RenderLabel)]
-struct ImageCopy;
+fn copy_images_to_buffer(
+    render_context: RenderContext,
+    image_copiers: Option<Res<ImageCopiers>>,
+    gpu_images: Res<RenderAssets<GpuImage>>,
+    render_queue: Res<RenderQueue>,
+) {
+    let Some(image_copiers) = image_copiers else {
+        return;
+    };
 
-#[derive(Default)]
-struct ImageCopyDriver;
-
-impl render_graph::Node for ImageCopyDriver {
-    fn run(
-        &self,
-        _graph: &mut RenderGraphContext,
-        render_context: &mut RenderContext,
-        world: &World,
-    ) -> Result<(), NodeRunError> {
-        let image_copiers = world.get_resource::<ImageCopiers>().unwrap();
-        let gpu_images = world.get_resource::<RenderAssets<GpuImage>>().unwrap();
-
-        for image_copier in image_copiers.iter() {
-            if !image_copier.enabled() {
-                continue;
-            }
-
-            let Some(src_image) = gpu_images.get(&image_copier.src_image) else {
-                continue;
-            };
-
-            let mut encoder = render_context
-                .render_device()
-                .create_command_encoder(&CommandEncoderDescriptor::default());
-
-            let block_dimensions = src_image.texture_format.block_dimensions();
-            let block_size = src_image.texture_format.block_copy_size(None).unwrap();
-
-            let padded_bytes_per_row = RenderDevice::align_copy_bytes_per_row(
-                (src_image.size.width as usize / block_dimensions.0 as usize) * block_size as usize,
-            );
-
-            encoder.copy_texture_to_buffer(
-                src_image.texture.as_image_copy(),
-                TexelCopyBufferInfo {
-                    buffer: &image_copier.buffer,
-                    layout: TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(
-                            std::num::NonZero::<u32>::new(padded_bytes_per_row as u32)
-                                .unwrap()
-                                .into(),
-                        ),
-                        rows_per_image: None,
-                    },
-                },
-                src_image.size,
-            );
-
-            let render_queue = world.get_resource::<RenderQueue>().unwrap();
-            render_queue.submit(std::iter::once(encoder.finish()));
+    for image_copier in image_copiers.iter() {
+        if !image_copier.enabled() {
+            continue;
         }
 
-        Ok(())
+        let Some(src_image) = gpu_images.get(&image_copier.src_image) else {
+            continue;
+        };
+
+        let mut encoder = render_context
+            .render_device()
+            .create_command_encoder(&CommandEncoderDescriptor::default());
+
+        let block_dimensions = src_image.texture_descriptor.format.block_dimensions();
+        let block_size = src_image
+            .texture_descriptor
+            .format
+            .block_copy_size(None)
+            .unwrap();
+
+        let padded_bytes_per_row = RenderDevice::align_copy_bytes_per_row(
+            (src_image.texture_descriptor.size.width as usize / block_dimensions.0 as usize)
+                * block_size as usize,
+        );
+
+        encoder.copy_texture_to_buffer(
+            src_image.texture.as_image_copy(),
+            TexelCopyBufferInfo {
+                buffer: &image_copier.buffer,
+                layout: TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(
+                        std::num::NonZero::<u32>::new(padded_bytes_per_row as u32)
+                            .unwrap()
+                            .into(),
+                    ),
+                    rows_per_image: None,
+                },
+            },
+            src_image.texture_descriptor.size,
+        );
+
+        render_queue.submit(std::iter::once(encoder.finish()));
     }
 }
 

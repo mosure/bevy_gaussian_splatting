@@ -6,7 +6,7 @@ use std::path::Path;
 use base64::Engine as _;
 use bevy::reflect::TypePath;
 use bevy::{
-    asset::{AssetLoader, LoadContext, io::Reader},
+    asset::{AssetLoader, AssetPath, LoadContext, io::Reader},
     prelude::*,
 };
 use gltf::{
@@ -572,12 +572,13 @@ async fn load_buffers(
                 if let Some(decoded) = decode_data_uri(uri) {
                     decoded?
                 } else {
-                    let path = load_context.path().resolve_embed(uri).map_err(|err| {
+                    let uri_path = AssetPath::try_parse(uri).map_err(|err| {
                         std::io::Error::new(
                             ErrorKind::InvalidData,
                             format!("failed to resolve external buffer URI '{uri}': {err}"),
                         )
                     })?;
+                    let path = load_context.path().resolve_embed(&uri_path);
 
                     load_context.read_asset_bytes(path).await.map_err(|err| {
                         std::io::Error::new(
@@ -2103,9 +2104,11 @@ mod tests {
             result.len(),
             (supported_degree + 1) * (supported_degree + 1)
         );
-        assert!(result
-            .iter()
-            .all(|(index, _)| *index < (supported_degree + 1) * (supported_degree + 1)));
+        assert!(
+            result
+                .iter()
+                .all(|(index, _)| *index < (supported_degree + 1) * (supported_degree + 1))
+        );
     }
 
     #[test]
@@ -2281,8 +2284,7 @@ mod tests {
         });
 
         let bytes = serde_json::to_vec(&root).expect("failed to serialize glTF");
-        let gltf = gltf::Gltf::from_slice_without_validation(&bytes)
-            .expect("failed to parse glTF");
+        let gltf = gltf::Gltf::from_slice_without_validation(&bytes).expect("failed to parse glTF");
 
         assert!(gltf.blob.is_none());
         gltf

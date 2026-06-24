@@ -7,7 +7,7 @@ use bevy::{
     asset::{AssetEvent, AssetId, load_internal_asset, uuid_handle},
     camera::primitives::Aabb,
     core_pipeline::{
-        core_3d::Transparent3d,
+        core_3d::{Transparent3d, TransparentSortingInfo3d},
         prepass::{
             MotionVectorPrepass, PreviousViewData, PreviousViewUniformOffset, PreviousViewUniforms,
         },
@@ -385,7 +385,11 @@ fn queue_gaussians<R: PlanarSync>(
         };
 
         debug!("visible entities...");
-        for (render_entity, visible_entity) in visible_entities.iter::<CloudVisibilityClass>() {
+        let Some(visible_class) = visible_entities.get::<CloudVisibilityClass>() else {
+            continue;
+        };
+
+        for (render_entity, visible_entity) in &visible_class.entities_cpu_culling {
             if gaussian_splatting_bundles.get(*render_entity).is_err() {
                 debug!("gaussian splatting bundle not found");
                 continue;
@@ -416,7 +420,7 @@ fn queue_gaussians<R: PlanarSync>(
                 gaussian_mode: settings.gaussian_mode,
                 rasterize_mode: settings.rasterize_mode,
                 sample_count: msaa.samples(),
-                hdr: view.hdr,
+                hdr: view.target_format == TextureFormat::Rgba16Float,
             };
 
             let pipeline = pipelines.specialize(&pipeline_cache, &custom_pipeline, key);
@@ -430,7 +434,11 @@ fn queue_gaussians<R: PlanarSync>(
                 );
             let distance = rangefinder.distance(&center.translation());
 
-            transparent_phase.add(Transparent3d {
+            transparent_phase.add_retained(Transparent3d {
+                sorting_info: TransparentSortingInfo3d::Sorted {
+                    mesh_center: center.translation(),
+                    depth_bias: 0.0,
+                },
                 entity: (*render_entity, *visible_entity),
                 draw_function: draw_custom,
                 distance,
@@ -922,6 +930,7 @@ impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
                 self.gaussian_cloud_layout_desc.clone(),
                 self.sorted_layout_desc.clone(),
             ],
+            immediate_size: 0,
             vertex: VertexState {
                 shader: self.shader.clone(),
                 shader_defs: shader_defs.clone(),
@@ -949,8 +958,8 @@ impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
             },
             depth_stencil: Some(DepthStencilState {
                 format: TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: CompareFunction::GreaterEqual,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(CompareFunction::GreaterEqual),
                 stencil: StencilState {
                     front: StencilFaceState::IGNORE,
                     back: StencilFaceState::IGNORE,
@@ -968,7 +977,6 @@ impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
-            push_constant_ranges: Vec::new(),
             zero_initialize_workgroup_memory: true,
         }
     }

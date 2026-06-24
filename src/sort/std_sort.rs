@@ -77,7 +77,7 @@ pub fn std_sort<R: PlanarSync>(
             }
 
             if let Some(gaussian_cloud) = gaussian_clouds_res.get(gaussian_cloud_handle.handle())
-                && let Some(sorted_entries) = sorted_entries_res.get_mut(sorted_entries_handle)
+                && let Some(mut sorted_entries) = sorted_entries_res.get_mut(sorted_entries_handle)
             {
                 let gaussians = gaussian_cloud.len();
                 let mut chunks = sorted_entries.sorted.chunks_mut(gaussians);

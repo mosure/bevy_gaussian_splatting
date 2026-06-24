@@ -52,7 +52,9 @@ fn max_supported_test_sh_degree() -> usize {
     }
 }
 
-fn try_load_fixture_scene(path: &str) -> Result<(GaussianScene, HashMap<String, PlanarGaussian3d>), String> {
+fn try_load_fixture_scene(
+    path: &str,
+) -> Result<(GaussianScene, HashMap<String, PlanarGaussian3d>), String> {
     let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(FIXTURE_ROOT);
     if !fixture_root.exists() {
         return Err(format!(

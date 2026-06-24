@@ -21,9 +21,6 @@ use bevy::asset::{
 #[cfg(feature = "web_asset")]
 use bevy::asset::io::web::WebAssetPlugin;
 use bevy_args::{BevyArgsPlugin, parse_args};
-use bevy_inspector_egui::{
-    DefaultInspectorConfigPlugin, bevy_egui::EguiPlugin, quick::WorldInspectorPlugin,
-};
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 
 #[cfg(feature = "web_asset")]
@@ -551,12 +548,6 @@ fn viewer_app() {
     app.add_plugins(BevyArgsPlugin::<GaussianSplattingViewer>::default());
     app.add_plugins(PanOrbitCameraPlugin);
 
-    if config.editor {
-        app.add_plugins(EguiPlugin::default());
-        app.add_plugins(DefaultInspectorConfigPlugin);
-        app.add_plugins(WorldInspectorPlugin::new());
-    }
-
     if config.press_esc_close {
         app.add_systems(Update, press_esc_close);
     }
@@ -735,8 +726,8 @@ fn fps_display_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         .spawn((
             Text("fps: ".to_string()),
             TextFont {
-                font: asset_server.load("fonts/Caveat-Bold.ttf"),
-                font_size: 60.0,
+                font: FontSource::Handle(asset_server.load("fonts/Caveat-Bold.ttf")),
+                font_size: FontSize::Px(60.0),
                 ..Default::default()
             },
             TextColor(Color::WHITE),
@@ -752,8 +743,8 @@ fn fps_display_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             FpsText,
             TextColor(Color::Srgba(GOLD)),
             TextFont {
-                font: asset_server.load("fonts/Caveat-Bold.ttf"),
-                font_size: 60.0,
+                font: FontSource::Handle(asset_server.load("fonts/Caveat-Bold.ttf")),
+                font_size: FontSize::Px(60.0),
                 ..Default::default()
             },
             TextSpan::default(),

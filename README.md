@@ -123,6 +123,7 @@ the following tools are compatible with `bevy_gaussian_splatting`:
 
 | `bevy_gaussian_splatting` | `bevy` |
 | :--                       | :--    |
+| `8.0`                     | `0.19` |
 | `7.0`                     | `0.18` |
 | `6.0`                     | `0.17` |
 | `5.0`                     | `0.16` |
