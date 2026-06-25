@@ -451,14 +451,6 @@ pub struct RadixBindGroup {
     pub radix_sort_bind_groups: [BindGroup; 8],
 }
 
-type RadixCloudQueryItem<R: PlanarSync> = (
-    &'static <R as PlanarSync>::PlanarTypeHandle,
-    &'static PlanarStorageBindGroup<R>,
-    &'static RadixBindGroup,
-    &'static DynamicUniformIndex<CloudUniform>,
-    &'static CloudSettings,
-);
-
 type RadixViewQueryItem = (
     &'static GaussianCamera,
     &'static crate::render::GaussianComputeViewBindGroup,
@@ -629,7 +621,13 @@ fn run_radix_sort<R: PlanarSync>(
     sort_buffers: Res<RadixSortBuffers<R>>,
     gpu_planars: Res<RenderAssets<R::GpuPlanarType>>,
     view_bind_group: ViewQuery<RadixViewQueryItem>,
-    gaussian_clouds: Query<RadixCloudQueryItem<R>>,
+    gaussian_clouds: Query<(
+        &'static <R as PlanarSync>::PlanarTypeHandle,
+        &'static PlanarStorageBindGroup<R>,
+        &'static RadixBindGroup,
+        &'static DynamicUniformIndex<CloudUniform>,
+        &'static CloudSettings,
+    )>,
 ) where
     R::GpuPlanarType: GpuPlanarStorage,
 {

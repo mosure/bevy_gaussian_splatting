@@ -9,6 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  RUST_TOOLCHAIN: nightly-2026-06-20
 
 jobs:
   build:
@@ -16,8 +17,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest, macos-14]
-        rust-toolchain:
-          - nightly
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
@@ -25,10 +24,10 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Setup ${{ matrix.rust-toolchain }} rust toolchain with caching
+    - name: Setup Rust toolchain with caching
       uses: brndnmtthws/rust-action@v1
       with:
-        toolchain: ${{ matrix.rust-toolchain }}
+        toolchain: ${{ env.RUST_TOOLCHAIN }}
         components: rustfmt, clippy
         enable-sccache: "false"
 
@@ -41,8 +40,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest, macos-14]
-        rust-toolchain:
-          - nightly
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
@@ -50,10 +47,10 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Setup ${{ matrix.rust-toolchain }} rust toolchain with caching
+    - name: Setup Rust toolchain with caching
       uses: brndnmtthws/rust-action@v1
       with:
-        toolchain: ${{ matrix.rust-toolchain }}
+        toolchain: ${{ env.RUST_TOOLCHAIN }}
         components: rustfmt, clippy
         enable-sccache: "false"
 

@@ -34,6 +34,26 @@ wasm_bindgen_cmd="$(resolve_cmd wasm-bindgen)" || {
   echo "wasm-bindgen not found on PATH" >&2
   exit 1
 }
+wasm_bindgen_lock_version="$(
+  awk '
+    $0 == "name = \"wasm-bindgen\"" { in_wasm_bindgen = 1; next }
+    in_wasm_bindgen && $1 == "version" {
+      gsub(/"/, "", $3)
+      print $3
+      exit
+    }
+  ' Cargo.lock
+)"
+if [[ -z "${wasm_bindgen_lock_version}" ]]; then
+  echo "failed to resolve wasm-bindgen version from Cargo.lock" >&2
+  exit 1
+fi
+wasm_bindgen_cli_version="$("${wasm_bindgen_cmd}" --version | awk '{ print $2 }')"
+if [[ "${wasm_bindgen_cli_version}" != "${wasm_bindgen_lock_version}" ]]; then
+  echo "wasm-bindgen CLI version ${wasm_bindgen_cli_version} does not match Cargo.lock wasm-bindgen ${wasm_bindgen_lock_version}" >&2
+  echo "install the matching CLI with: cargo install wasm-bindgen-cli --version ${wasm_bindgen_lock_version} --locked --force" >&2
+  exit 1
+fi
 
 # Ensure wasm builds ignore host-specific rust flag overrides from outer env.
 unset RUSTFLAGS || true

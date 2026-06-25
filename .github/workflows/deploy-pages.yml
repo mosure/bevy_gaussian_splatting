@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -12,6 +15,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  RUST_TOOLCHAIN: nightly-2026-06-20
 
 
 jobs:
@@ -25,15 +29,29 @@ jobs:
       - name: setup nightly rust toolchain with caching
         uses: brndnmtthws/rust-action@v1
         with:
-          toolchain: nightly
-          components: rustfmt, clippy
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           enable-sccache: "false"
 
       - name: install wasm32-unknown-unknown
         run: rustup target add wasm32-unknown-unknown
 
       - name: install wasm-bindgen-cli
-        run: cargo install wasm-bindgen-cli --version 0.2.108 --locked --force
+        run: |
+          version="$(
+            awk '
+              $0 == "name = \"wasm-bindgen\"" { in_wasm_bindgen = 1; next }
+              in_wasm_bindgen && $1 == "version" {
+                gsub(/"/, "", $3)
+                print $3
+                exit
+              }
+            ' Cargo.lock
+          )"
+          if [[ -z "${version}" ]]; then
+            echo "failed to resolve wasm-bindgen version from Cargo.lock" >&2
+            exit 1
+          fi
+          cargo install wasm-bindgen-cli --version "${version}" --locked --force
 
       - name: build web output and thumbnails
         env:
@@ -49,6 +67,7 @@ jobs:
           rsync -a --exclude '.thumbnail_cache' ./assets/ ./www/assets/
 
       - name: deploy to github pages
+        if: github.event_name != 'pull_request'
         uses: JamesIves/github-pages-deploy-action@v4
         with:
           folder: ./www
