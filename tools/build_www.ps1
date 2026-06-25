@@ -34,6 +34,29 @@ if (-not (Get-Command wasm-bindgen -ErrorAction SilentlyContinue)) {
   throw 'wasm-bindgen not found on PATH'
 }
 
+$wasmBindgenLockVersion = $null
+$sawWasmBindgen = $false
+foreach ($line in Get-Content 'Cargo.lock') {
+  if ($line -eq 'name = "wasm-bindgen"') {
+    $sawWasmBindgen = $true
+    continue
+  }
+
+  if ($sawWasmBindgen -and $line -match '^version = "([^"]+)"$') {
+    $wasmBindgenLockVersion = $Matches[1]
+    break
+  }
+}
+
+if (-not $wasmBindgenLockVersion) {
+  throw 'failed to resolve wasm-bindgen version from Cargo.lock'
+}
+
+$wasmBindgenCliVersion = (& wasm-bindgen --version).Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)[1]
+if ($wasmBindgenCliVersion -ne $wasmBindgenLockVersion) {
+  throw "wasm-bindgen CLI version $wasmBindgenCliVersion does not match Cargo.lock wasm-bindgen $wasmBindgenLockVersion. Install the matching CLI with: cargo install wasm-bindgen-cli --version $wasmBindgenLockVersion --locked --force"
+}
+
 Write-Host 'Generating wasm bindings...'
 Invoke-Step wasm-bindgen --out-dir ./www/out --target web $wasmPath
 
