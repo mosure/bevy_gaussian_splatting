@@ -282,7 +282,7 @@ mod headless {
         let mut non_black_pixels = 0;
         let mut max_channel = 0;
 
-        for pixel in rgba.chunks_exact(4) {
+        for pixel in rgba.as_chunks::<4>().0 {
             let rgb_max = pixel[0].max(pixel[1]).max(pixel[2]);
             max_channel = max_channel.max(rgb_max);
             if rgb_max > 8 {

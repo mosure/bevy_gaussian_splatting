@@ -163,7 +163,7 @@ fn render_and_save(
 ) {
     let background = [10u8, 12u8, 16u8, 255u8];
     let mut pixels = vec![0u8; (WIDTH * HEIGHT * 4) as usize];
-    for px in pixels.chunks_exact_mut(4) {
+    for px in pixels.as_chunks_mut::<4>().0 {
         px.copy_from_slice(&background);
     }
 
@@ -200,7 +200,9 @@ fn render_and_save(
     }
 
     let non_background = pixels
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|px| px[0] != background[0] || px[1] != background[1] || px[2] != background[2])
         .count();
     if non_background == 0 {
