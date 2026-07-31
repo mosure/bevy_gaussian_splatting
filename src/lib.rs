@@ -1,5 +1,5 @@
 #![allow(incomplete_features)]
-#![cfg_attr(feature = "nightly_generic_alias", feature(lazy_type_alias))]
+#![cfg_attr(feature = "nightly_generic_alias", feature(checked_type_aliases))]
 
 use bevy::prelude::*;
 pub use bevy_interleave::prelude::*;
