@@ -71,7 +71,7 @@ fn is_point_in_mesh(point: Vec3, mesh: &Mesh) -> bool {
     };
 
     let mut intersections = 0usize;
-    for chunk in indices.chunks_exact(3) {
+    for chunk in indices.as_chunks::<3>().0 {
         let triangle = Triangle {
             vertices: [
                 Vec3::from(vertices[chunk[0] as usize]),
