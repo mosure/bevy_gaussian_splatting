@@ -12,7 +12,7 @@ use bevy::{
     ecs::system::{SystemParamItem, lifetimeless::SRes},
     prelude::*,
     render::{
-        Extract, Render, RenderApp, RenderSystems,
+        Extract, Render, RenderApp, RenderStartup, RenderSystems, init_gpu_resource,
         render_asset::{PrepareAssetError, RenderAsset, RenderAssetPlugin, RenderAssets},
         render_resource::{
             BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
@@ -33,8 +33,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     camera::GaussianCamera,
     render::{
-        CloudPipeline, CloudPipelineKey, GaussianUniformBindGroups, GaussianViewBindGroup,
-        shader_defs,
+        CloudPipeline, CloudPipelineKey, CloudPipelineReady, GaussianUniformBindGroups,
+        GaussianViewBindGroup, shader_defs,
     },
 };
 
@@ -99,7 +99,12 @@ where
 
     fn finish(&self, app: &mut App) {
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app.init_resource::<ParticleBehaviorPipeline<R>>();
+            render_app.add_systems(
+                RenderStartup,
+                init_gpu_resource::<ParticleBehaviorPipeline<R>>
+                    .after(CloudPipelineReady)
+                    .ambiguous_with_all(),
+            );
         }
     }
 }

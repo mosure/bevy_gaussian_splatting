@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -13,13 +16,9 @@ env:
 
 jobs:
   clippy:
-
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest, macos-14]
-
-    runs-on: ${{ matrix.os }}
+    # Feature semantics are target-independent; run the expensive all-targets
+    # lint once, while build/test workflows retain cross-platform coverage.
+    runs-on: ubuntu-latest
     timeout-minutes: 120
 
     steps:
@@ -33,4 +32,15 @@ jobs:
         enable-sccache: "false"
 
     - name: lint
-      run: cargo clippy --all-features --all-targets -- -D warnings
+      run: cargo clippy --locked --all-targets --features="lod_build testing" -- -D warnings
+
+    - name: lint supported LoD profiles
+      shell: bash
+      run: |
+        cargo clippy --locked --lib --tests --no-default-features \
+          --features="planar lod_render sh0 testing io_flexbuffers" -- -D warnings
+        cargo clippy --locked --lib --tests --no-default-features \
+          --features="planar lod_render sh0 testing io_flexbuffers precompute_covariance_3d" \
+          -- -D warnings
+        cargo clippy --locked --lib --no-default-features \
+          --features="planar buffer_storage lod sh0 sort_std io_flexbuffers" -- -D warnings

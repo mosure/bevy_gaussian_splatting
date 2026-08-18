@@ -1,39 +1,55 @@
-#[cfg(feature = "morph_interpolate")]
-use std::any::TypeId;
-use std::collections::HashMap;
+use std::{
+    any::TypeId,
+    collections::{HashMap, HashSet},
+    hash::{DefaultHasher, Hash, Hasher},
+    marker::PhantomData,
+};
 
 use bevy::{
-    asset::{load_internal_asset, uuid_handle},
+    asset::{UntypedAssetId, load_internal_asset, uuid_handle},
     core_pipeline::{Core3d, Core3dSystems, prepass::PreviousViewUniformOffset},
     prelude::*,
     render::{
-        Render, RenderApp, RenderSystems,
+        GpuResourceAppExt, Render, RenderApp, RenderStartup, RenderSystems,
         extract_component::DynamicUniformIndex,
+        init_gpu_resource,
         render_asset::RenderAssets,
         render_resource::{
             BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
             BindGroupLayoutEntry, BindingResource, BindingType, Buffer, BufferBinding,
-            BufferBindingType, BufferDescriptor, BufferInitDescriptor, BufferSize, BufferUsages,
-            CachedComputePipelineId, CachedPipelineState, ComputePassDescriptor,
+            BufferBindingType, BufferDescriptor, BufferId, BufferInitDescriptor, BufferSize,
+            BufferUsages, CachedComputePipelineId, CachedPipelineState, ComputePassDescriptor,
             ComputePipelineDescriptor, PipelineCache, ShaderStages,
         },
         renderer::{RenderContext, RenderDevice, ViewQuery},
-        view::ViewUniformOffset,
+        view::{ExtractedView, RenderVisibleEntities, ViewUniformOffset},
     },
 };
 use bevy_interleave::{interface::storage::PlanarStorageBindGroup, prelude::*};
 use static_assertions::assert_cfg;
+
+use bevy::render::view::RetainedViewEntity;
 
 #[cfg(feature = "morph_interpolate")]
 use crate::{gaussian::formats::planar_3d::PlanarGaussian3d, morph::interpolate::InterpolateLabel};
 
 use crate::{
     CloudSettings, GaussianCamera, RadixSortDepthBits,
+    gaussian::cloud::CloudVisibilityClass,
     render::{
-        CloudPipeline, CloudPipelineKey, CloudUniform, GaussianUniformBindGroups, ShaderDefines,
-        shader_defs_with_defines,
+        CloudPipeline, CloudPipelineKey, CloudPipelineReady, CloudUniform,
+        GaussianUniformBindGroups, ShaderDefines, shader_defs_with_defines,
     },
-    sort::{GpuSortedEntry, SortEntry, SortMode, SortPluginFlag, SortedEntriesHandle},
+    sort::{
+        GpuSortedEntry, SortEntry, SortMode, SortPluginFlag, SortedEntriesHandle,
+        sort_entry_binding_size,
+    },
+};
+
+#[cfg(lod_render_path)]
+use crate::render::lod::{
+    DISPATCH_A_INDIRECT_OFFSET, DISPATCH_C_INDIRECT_OFFSET, LodCompactionBuffers,
+    LodCompactionLabel, lod_view_cloud_key,
 };
 
 assert_cfg!(
@@ -50,6 +66,11 @@ const RADIX_PIPELINE_B: usize = 2;
 const RADIX_PIPELINE_C_COUNT: usize = 3;
 const RADIX_PIPELINE_C_SCAN: usize = 4;
 const RADIX_PIPELINE_C_SCATTER: usize = 5;
+#[cfg(lod_render_path)]
+const RADIX_PIPELINE_ACTIVE_A: usize = 6;
+#[cfg(lod_render_path)]
+const RADIX_PIPELINE_COUNT: usize = 7;
+#[cfg(not(lod_render_path))]
 const RADIX_PIPELINE_COUNT: usize = 6;
 const RADIX_DEPTH_BITS_VARIANT_COUNT: usize = 3;
 
@@ -70,28 +91,29 @@ where
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app.add_systems(
                 Render,
-                (queue_radix_bind_group::<R>.in_set(RenderSystems::Queue),),
+                (
+                    queue_radix_bind_group::<R>.in_set(RenderSystems::Queue),
+                    #[cfg(lod_render_path)]
+                    queue_lod_radix_bind_groups::<R>.in_set(RenderSystems::Queue),
+                ),
             );
 
-            render_app.init_resource::<RadixSortBuffers<R>>();
-            render_app.add_systems(ExtractSchedule, update_sort_buffers::<R>);
-        }
+            render_app.init_gpu_resource::<RadixSortBuffers<R>>();
+            render_app.init_resource::<RadixSortWorkCache<R>>();
+            render_app.init_resource::<PendingRadixBufferChanges<R>>();
+            render_app.add_systems(
+                ExtractSchedule,
+                (
+                    invalidate_stale_radix_bind_groups::<R>,
+                    flush_radix_buffer_changes::<R>,
+                )
+                    .chain(),
+            );
 
-        if app.is_plugin_added::<SortPluginFlag>() {
-            debug!("sort plugin already added");
-            return;
-        }
-
-        load_internal_asset!(app, RADIX_SHADER_HANDLE, "radix.wgsl", Shader::from_wgsl);
-
-        load_internal_asset!(
-            app,
-            TEMPORAL_SORT_SHADER_HANDLE,
-            "temporal.wgsl",
-            Shader::from_wgsl
-        );
-
-        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+            #[cfg(lod_render_path)]
+            render_app
+                .init_gpu_resource::<LodRadixBindGroups<R>>()
+                .configure_sets(Core3d, RadixSortLabel.after(LodCompactionLabel));
             #[cfg(feature = "morph_interpolate")]
             if TypeId::of::<R::PlanarType>() == TypeId::of::<PlanarGaussian3d>() {
                 render_app.add_systems(
@@ -118,25 +140,92 @@ where
                     .before(Core3dSystems::Prepass),
             );
         }
+
+        if app.is_plugin_added::<SortPluginFlag>() {
+            debug!("sort plugin already added");
+            return;
+        }
+
+        load_internal_asset!(app, RADIX_SHADER_HANDLE, "radix.wgsl", Shader::from_wgsl);
+
+        load_internal_asset!(
+            app,
+            TEMPORAL_SORT_SHADER_HANDLE,
+            "temporal.wgsl",
+            Shader::from_wgsl
+        );
     }
 
     fn finish(&self, app: &mut App) {
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app.init_resource::<RadixSortPipeline<R>>();
+            render_app.add_systems(
+                RenderStartup,
+                init_gpu_resource::<RadixSortPipeline<R>>
+                    .after(CloudPipelineReady)
+                    .ambiguous_with_all(),
+            );
         }
     }
+}
+
+#[derive(Resource)]
+struct RadixSortWorkCache<R: PlanarSync> {
+    signatures: HashMap<(RetainedViewEntity, Entity, AssetId<R::PlanarType>), u64>,
+    marker: PhantomData<fn() -> R>,
+}
+
+impl<R: PlanarSync> Default for RadixSortWorkCache<R> {
+    fn default() -> Self {
+        Self {
+            signatures: HashMap::new(),
+            marker: PhantomData,
+        }
+    }
+}
+
+fn legacy_sort_signature(
+    view: &ExtractedView,
+    transform: &GlobalTransform,
+    settings: &CloudSettings,
+    buffer_generation: u64,
+    sorted_entry_buffer_id: BufferId,
+    cloud_len: usize,
+    storage_changed_frame: Option<u32>,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for value in view.clip_from_view.to_cols_array() {
+        value.to_bits().hash(&mut hasher);
+    }
+    for value in view.world_from_view.to_matrix().to_cols_array() {
+        value.to_bits().hash(&mut hasher);
+    }
+    view.viewport.to_array().hash(&mut hasher);
+    for value in transform.to_matrix().to_cols_array() {
+        value.to_bits().hash(&mut hasher);
+    }
+    settings.global_opacity.to_bits().hash(&mut hasher);
+    settings.global_scale.to_bits().hash(&mut hasher);
+    settings.time.to_bits().hash(&mut hasher);
+    settings.radix_sort_depth_bits.hash(&mut hasher);
+    buffer_generation.hash(&mut hasher);
+    sorted_entry_buffer_id.hash(&mut hasher);
+    cloud_len.hash(&mut hasher);
+    storage_changed_frame.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[derive(Resource)]
 pub struct RadixSortBuffers<R: PlanarSync> {
     // TODO: use a more ECS-friendly approach
     pub asset_map: HashMap<AssetId<R::PlanarType>, GpuRadixBuffers>,
+    next_generation: u64,
 }
 
 impl<R: PlanarSync> Default for RadixSortBuffers<R> {
     fn default() -> Self {
         RadixSortBuffers {
             asset_map: HashMap::new(),
+            next_generation: 1,
         }
     }
 }
@@ -147,10 +236,13 @@ pub struct GpuRadixBuffers {
     pub sorting_status_counter_buffer: Buffer,
     pub sorting_pass_buffers: [Buffer; 4],
     pub entry_buffer_b: Buffer,
+    pub capacity: usize,
+    pub generation: u64,
 }
 
 impl GpuRadixBuffers {
-    pub fn new(count: usize, render_device: &RenderDevice) -> Self {
+    pub fn new(count: usize, generation: u64, render_device: &RenderDevice) -> Self {
+        let allocation_count = count.max(1);
         let sorting_global_buffer = render_device.create_buffer(&BufferDescriptor {
             label: Some("sorting global buffer"),
             size: ShaderDefines::default().sorting_buffer_size as u64,
@@ -160,7 +252,8 @@ impl GpuRadixBuffers {
 
         let sorting_status_counter_buffer = render_device.create_buffer(&BufferDescriptor {
             label: Some("status counters buffer"),
-            size: ShaderDefines::default().sorting_status_counters_buffer_size(count) as u64,
+            size: ShaderDefines::default().sorting_status_counters_buffer_size(allocation_count)
+                as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -179,7 +272,7 @@ impl GpuRadixBuffers {
 
         let entry_buffer_b = render_device.create_buffer(&BufferDescriptor {
             label: Some("entry buffer b"),
-            size: (count * std::mem::size_of::<SortEntry>()) as u64,
+            size: (allocation_count * std::mem::size_of::<SortEntry>()) as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -189,22 +282,128 @@ impl GpuRadixBuffers {
             sorting_status_counter_buffer,
             sorting_pass_buffers,
             entry_buffer_b,
+            capacity: count,
+            generation,
         }
     }
 }
 
-fn update_sort_buffers<R: PlanarSync>(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RadixAllocationDecision {
+    Remove,
+    Reuse,
+    Replace,
+}
+
+fn radix_allocation_decision(
+    current_capacity: Option<usize>,
+    live_capacity: Option<usize>,
+) -> RadixAllocationDecision {
+    match (current_capacity, live_capacity) {
+        (_, None) => RadixAllocationDecision::Remove,
+        (Some(current), Some(live)) if current == live => RadixAllocationDecision::Reuse,
+        (_, Some(_)) => RadixAllocationDecision::Replace,
+    }
+}
+
+#[derive(Resource)]
+struct PendingRadixBufferChanges<R: PlanarSync> {
+    invalidated_assets: HashSet<UntypedAssetId>,
+    marker: PhantomData<fn() -> R>,
+}
+
+impl<R: PlanarSync> Default for PendingRadixBufferChanges<R> {
+    fn default() -> Self {
+        Self {
+            invalidated_assets: HashSet::new(),
+            marker: PhantomData,
+        }
+    }
+}
+
+/// Phase one of a resize/removal transaction. Commands are deliberately
+/// deferred: chaining this system before `flush_radix_buffer_changes` inserts
+/// an ApplyDeferred edge, dropping every dependent bind group before any old
+/// backing buffer is released or any replacement is allocated.
+fn invalidate_stale_radix_bind_groups<R: PlanarSync>(
+    mut commands: Commands,
     gpu_gaussian_clouds: Res<RenderAssets<R::GpuPlanarType>>,
-    mut sort_buffers: ResMut<RadixSortBuffers<R>>,
-    render_device: Res<RenderDevice>,
+    sort_buffers: Res<RadixSortBuffers<R>>,
+    mut pending: ResMut<PendingRadixBufferChanges<R>>,
+    mut work_cache: ResMut<RadixSortWorkCache<R>>,
+    clouds: Query<(Entity, &RadixBindGroup, Option<&R::PlanarTypeHandle>)>,
 ) {
-    for (asset_id, cloud) in gpu_gaussian_clouds.iter() {
-        // TODO: handle cloud resize operations and resolve leaked stale buffers
-        if sort_buffers.asset_map.contains_key(&asset_id) {
+    let live_assets = gpu_gaussian_clouds
+        .iter()
+        .map(|(asset_id, cloud)| (asset_id, cloud.len()))
+        .collect::<HashMap<_, _>>();
+    pending.invalidated_assets.clear();
+    for (asset_id, buffers) in &sort_buffers.asset_map {
+        if radix_allocation_decision(Some(buffers.capacity), live_assets.get(asset_id).copied())
+            != RadixAllocationDecision::Reuse
+        {
+            pending.invalidated_assets.insert(asset_id.untyped());
+        }
+    }
+
+    for (entity, bind_group, handle) in &clouds {
+        if bind_group.cloud_asset.type_id() != TypeId::of::<R::PlanarType>() {
             continue;
         }
+        let current_asset = handle.map(|handle| handle.handle().id().untyped());
+        if Some(bind_group.cloud_asset) != current_asset
+            || pending.invalidated_assets.contains(&bind_group.cloud_asset)
+        {
+            commands.entity(entity).remove::<RadixBindGroup>();
+        }
+    }
 
-        let gpu_radix_buffers = GpuRadixBuffers::new(cloud.len(), &render_device);
+    work_cache.signatures.retain(|(_, _, asset_id), _| {
+        live_assets.contains_key(asset_id)
+            && !pending.invalidated_assets.contains(&asset_id.untyped())
+    });
+}
+
+/// Phase two runs only after the chain's ApplyDeferred sync point. It first
+/// drops every invalidated old buffer set, then allocates all replacements, so
+/// a cross-asset resize cannot transiently retain both generations.
+fn flush_radix_buffer_changes<R: PlanarSync>(
+    gpu_gaussian_clouds: Res<RenderAssets<R::GpuPlanarType>>,
+    mut sort_buffers: ResMut<RadixSortBuffers<R>>,
+    mut pending: ResMut<PendingRadixBufferChanges<R>>,
+    render_device: Res<RenderDevice>,
+) {
+    let invalidated_assets = std::mem::take(&mut pending.invalidated_assets);
+    sort_buffers
+        .asset_map
+        .retain(|asset_id, _| !invalidated_assets.contains(&asset_id.untyped()));
+
+    // Defensive removal for a first-frame disappearance that had no dependent
+    // component. This still precedes the allocation loop below.
+    let live_assets = gpu_gaussian_clouds
+        .iter()
+        .map(|(asset_id, cloud)| (asset_id, cloud.len()))
+        .collect::<HashMap<_, _>>();
+    sort_buffers
+        .asset_map
+        .retain(|asset_id, _| live_assets.contains_key(asset_id));
+
+    for (asset_id, cloud) in gpu_gaussian_clouds.iter() {
+        let decision = radix_allocation_decision(
+            sort_buffers
+                .asset_map
+                .get(&asset_id)
+                .map(|buffers| buffers.capacity),
+            Some(cloud.len()),
+        );
+        if decision == RadixAllocationDecision::Reuse {
+            continue;
+        }
+        debug_assert_eq!(decision, RadixAllocationDecision::Replace);
+
+        let generation = sort_buffers.next_generation;
+        sort_buffers.next_generation = sort_buffers.next_generation.wrapping_add(1).max(1);
+        let gpu_radix_buffers = GpuRadixBuffers::new(cloud.len(), generation, &render_device);
         sort_buffers.asset_map.insert(asset_id, gpu_radix_buffers);
     }
 }
@@ -242,7 +441,7 @@ impl<R: PlanarSync> RadixSortPipeline<R> {
         self.variants[radix_sort_depth_bits.pipeline_index()].as_ref()
     }
 
-    fn queue_variant(
+    pub(crate) fn queue_variant(
         &mut self,
         pipeline_cache: &PipelineCache,
         radix_sort_depth_bits: RadixSortDepthBits,
@@ -257,6 +456,15 @@ impl<R: PlanarSync> RadixSortPipeline<R> {
             self.sorting_layout.clone(),
             radix_sort_depth_bits,
         ));
+    }
+
+    pub(crate) fn variant_is_loaded(
+        &self,
+        pipeline_cache: &PipelineCache,
+        radix_sort_depth_bits: RadixSortDepthBits,
+    ) -> bool {
+        self.variant(radix_sort_depth_bits)
+            .is_some_and(|variant| variant.is_loaded(pipeline_cache))
     }
 }
 
@@ -295,7 +503,11 @@ impl<R: PlanarSync> FromWorld for RadixSortPipeline<R> {
             binding: 3,
             visibility: ShaderStages::COMPUTE,
             ty: BindingType::Buffer {
-                ty: BufferBindingType::Storage { read_only: false },
+                // Radix never mutates the exact instance count. Keeping this
+                // binding read-only permits the same buffer to supply an
+                // indirect dispatch in the active LoD path; read-write storage
+                // is exclusive and conflicts with `BufferUses::INDIRECT`.
+                ty: BufferBindingType::Storage { read_only: true },
                 has_dynamic_offset: false,
                 min_binding_size: BufferSize::new(
                     std::mem::size_of::<wgpu::util::DrawIndirectArgs>() as u64,
@@ -362,6 +574,223 @@ impl<R: PlanarSync> FromWorld for RadixSortPipeline<R> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn blelloch_exclusive_scan(values: &mut [usize]) -> usize {
+        assert!(values.len().is_power_of_two());
+        let mut stride = 1;
+        while stride < values.len() {
+            for index in ((stride * 2 - 1)..values.len()).step_by(stride * 2) {
+                values[index] += values[index - stride];
+            }
+            stride *= 2;
+        }
+        let total = *values.last().unwrap();
+        *values.last_mut().unwrap() = 0;
+        stride = values.len() / 2;
+        loop {
+            for index in ((stride * 2 - 1)..values.len()).step_by(stride * 2) {
+                let left = index - stride;
+                let left_value = values[left];
+                let parent_value = values[index];
+                values[left] = parent_value;
+                values[index] = parent_value + left_value;
+            }
+            if stride == 1 {
+                break;
+            }
+            stride /= 2;
+        }
+        total
+    }
+
+    fn stable_binary_digit_partition(entries: &[SortEntry], shift: u32) -> Vec<SortEntry> {
+        let mut current = entries.to_vec();
+        let mut next = vec![SortEntry::default(); entries.len()];
+        for bit in 0..8 {
+            let mut zero_prefix = vec![0usize; 1_024];
+            for (index, entry) in current.iter().enumerate() {
+                zero_prefix[index] = usize::from(((entry.key >> (shift + bit)) & 1) == 0);
+            }
+            let zero_count = blelloch_exclusive_scan(&mut zero_prefix);
+            for (index, entry) in current.iter().enumerate() {
+                let zeros_before = zero_prefix[index];
+                let destination = if ((entry.key >> (shift + bit)) & 1) == 0 {
+                    zeros_before
+                } else {
+                    zero_count + index - zeros_before
+                };
+                next[destination] = *entry;
+            }
+            std::mem::swap(&mut current, &mut next);
+        }
+        current
+    }
+
+    fn shader_radix_pass(input: &[SortEntry], shift: u32) -> Vec<SortEntry> {
+        let mut global_counts = [0usize; 256];
+        for entry in input {
+            global_counts[((entry.key >> shift) & 0xff) as usize] += 1;
+        }
+        let mut global_offsets = global_counts;
+        blelloch_exclusive_scan(&mut global_offsets);
+        let mut earlier_tile_counts = [0usize; 256];
+        let mut output = vec![SortEntry::default(); input.len()];
+        for tile in input.chunks(1_024) {
+            let sorted_tile = stable_binary_digit_partition(tile, shift);
+            let mut local_rank = [0usize; 256];
+            for entry in sorted_tile {
+                let digit = ((entry.key >> shift) & 0xff) as usize;
+                let destination =
+                    global_offsets[digit] + earlier_tile_counts[digit] + local_rank[digit];
+                output[destination] = entry;
+                local_rank[digit] += 1;
+            }
+            for digit in 0..256 {
+                earlier_tile_counts[digit] += local_rank[digit];
+            }
+        }
+        output
+    }
+
+    #[test]
+    fn radix_count_binding_is_read_only_for_indirect_dispatch_compatibility() {
+        let host = include_str!("radix.rs");
+        let shader = include_str!("radix.wgsl");
+        assert!(host.contains("ty: BufferBindingType::Storage { read_only: true }"));
+        assert!(shader.contains("var<storage, read> draw_indirect: RadixDrawIndirect"));
+        assert!(shader.contains("return draw_indirect.instance_count"));
+        assert!(!shader.contains("atomicLoad(&draw_indirect.instance_count)"));
+    }
+
+    #[test]
+    fn portable_radix_entry_points_never_exceed_256_invocations() {
+        let shader = include_str!("radix.wgsl");
+        assert!(shader.contains("@compute @workgroup_size(#{RADIX_BASE})\nfn radix_reset"));
+        assert!(shader.contains("@compute @workgroup_size(#{RADIX_BASE})\nfn radix_sort_a"));
+        assert!(shader.contains("@compute @workgroup_size(#{RADIX_BASE})\nfn radix_sort_active_a"));
+        assert!(shader.contains("@compute @workgroup_size(#{RADIX_BASE})\nfn radix_sort_b"));
+        assert!(!shader.contains("#{RADIX_BASE}, #{RADIX_DIGIT_PLACES}"));
+        assert!(!shader.contains("@compute @workgroup_size(1)\nfn radix_sort_b"));
+        assert!(shader.contains("@compute @workgroup_size(#{WORKGROUP_INVOCATIONS_C})"));
+        assert_eq!(crate::render::ShaderDefines::default().radix_base, 256);
+        assert_eq!(
+            crate::render::ShaderDefines::default().workgroup_invocations_c,
+            256
+        );
+    }
+
+    #[test]
+    fn radix_uses_parallel_stable_scans_without_capacity_clears() {
+        let host = include_str!("radix.rs");
+        let shader = include_str!("radix.wgsl");
+        assert!(shader.contains("Eight stable binary partitions"));
+        assert!(shader.contains("tile_prefix_values"));
+        assert!(shader.contains("workgroup_digit_histogram"));
+        assert!(shader.contains("base < tile_count; base += #{RADIX_BASE}u"));
+        assert!(shader.contains("fn exclusive_radix_scan"));
+        assert!(shader.contains("fn exclusive_tile_scan"));
+        assert!(shader.contains("Work-efficient exclusive Blelloch scan"));
+        assert!(shader.contains("radix_scan_values[index - stride]"));
+        assert!(shader.contains("tile_prefix_values[left_index] = parent_value"));
+        assert!(!shader.contains("local_digit_counts"));
+        assert!(!shader.contains("while offset < #{RADIX_BASE}u"));
+        assert!(!shader.contains("while offset < tile_size"));
+        assert!(!shader.contains("zeros_inclusive"));
+        assert!(!shader.contains("var addends:"));
+        assert!(!shader.contains("var pass ="), "`pass` is reserved by WGSL");
+        assert!(!shader.contains("let pass ="), "`pass` is reserved by WGSL");
+        assert!(
+            !shader.contains("let entry = select("),
+            "WGSL select cannot choose between Entry structures"
+        );
+        let full_capacity_clear = ["clear", "_buffer"].concat();
+        assert!(!host.contains(&full_capacity_clear));
+        assert!(host.contains("dispatch_workgroups(1, shader_defines.radix_base, 1)"));
+    }
+
+    #[test]
+    fn stale_radix_assets_are_removed_and_resizes_replace_exact_capacity() {
+        assert_eq!(
+            radix_allocation_decision(Some(1_000_000), None),
+            RadixAllocationDecision::Remove
+        );
+        assert_eq!(
+            radix_allocation_decision(Some(1_000_000), Some(1_000_000)),
+            RadixAllocationDecision::Reuse
+        );
+        assert_eq!(
+            radix_allocation_decision(Some(1_000_000), Some(32_000)),
+            RadixAllocationDecision::Replace
+        );
+        assert_eq!(
+            radix_allocation_decision(Some(32_000), Some(2_000_000)),
+            RadixAllocationDecision::Replace
+        );
+        assert_eq!(
+            radix_allocation_decision(None, Some(1_000)),
+            RadixAllocationDecision::Replace
+        );
+
+        let host = include_str!("radix.rs");
+        assert!(host.contains("commands.entity(entity).remove::<RadixBindGroup>()"));
+        assert!(host.contains("work_cache.signatures"));
+        assert!(host.contains("live_assets.contains_key(asset_id)"));
+        assert!(host.contains("cloud_asset: UntypedAssetId"));
+
+        let chained_transaction = host
+            .find("invalidate_stale_radix_bind_groups::<R>,\n                    flush_radix_buffer_changes::<R>,\n                )\n                    .chain()")
+            .expect("resize invalidation and flush must have an ApplyDeferred chain edge");
+        let invalidate_phase = host
+            .find("fn invalidate_stale_radix_bind_groups")
+            .expect("legacy invalidation phase");
+        let flush_phase = host
+            .find("fn flush_radix_buffer_changes")
+            .expect("legacy flush phase");
+        assert!(chained_transaction < invalidate_phase && invalidate_phase < flush_phase);
+        let flush_source = &host[flush_phase..];
+        let old_buffer_drop = flush_source
+            .find("!invalidated_assets.contains(&asset_id.untyped())")
+            .expect("all invalidated old buffers are dropped together");
+        let replacement_allocation = flush_source
+            .find("GpuRadixBuffers::new")
+            .expect("replacement allocation");
+        assert!(
+            old_buffer_drop < replacement_allocation,
+            "old buffers must drop after dependent bind groups and before any replacement allocation"
+        );
+    }
+
+    #[test]
+    fn stable_lsd_passes_match_reference_for_every_depth_and_parity() {
+        let source = (0..2_053u32)
+            .map(|index| SortEntry {
+                // Stay within 16 bits so all supported depths have one exact
+                // reference order, with many equal keys spanning tile edges.
+                key: index.wrapping_mul(73).wrapping_add(index / 17) % 257,
+                index,
+            })
+            .rev()
+            .collect::<Vec<_>>();
+        let mut reference = source.clone();
+        reference.sort_by_key(|entry| entry.key);
+
+        for bits in RadixSortDepthBits::VARIANTS {
+            let mut input = source.clone();
+            for pass in 0..bits.bits() / 8 {
+                input = shader_radix_pass(&input, pass * 8);
+            }
+            assert_eq!(input, reference, "{}-bit stable LSD parity", bits.bits());
+            assert_eq!(
+                (bits.bits() / 8) % 2,
+                crate::render::lod::radix_sorted_output_buffer_index(bits) as u32
+            );
+        }
+    }
+}
+
 fn queue_radix_sort_pipeline_variant(
     pipeline_cache: &PipelineCache,
     sorting_layout: Vec<BindGroupLayoutDescriptor>,
@@ -423,11 +852,22 @@ fn queue_radix_sort_pipeline_variant(
 
     let radix_sort_c_scatter = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
         label: Some(format!("radix_sort_c_scatter_{label_suffix}bit").into()),
+        layout: sorting_layout.clone(),
+        immediate_size: 0,
+        shader: RADIX_SHADER_HANDLE,
+        shader_defs: shader_defs.clone(),
+        entry_point: Some("radix_sort_c_scatter".into()),
+        zero_initialize_workgroup_memory: true,
+    });
+
+    #[cfg(lod_render_path)]
+    let radix_sort_active_a = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+        label: Some(format!("radix_sort_active_a_{label_suffix}bit").into()),
         layout: sorting_layout,
         immediate_size: 0,
         shader: RADIX_SHADER_HANDLE,
         shader_defs,
-        entry_point: Some("radix_sort_c_scatter".into()),
+        entry_point: Some("radix_sort_active_a".into()),
         zero_initialize_workgroup_memory: true,
     });
 
@@ -440,6 +880,8 @@ fn queue_radix_sort_pipeline_variant(
             radix_sort_c_count,
             radix_sort_c_scan,
             radix_sort_c_scatter,
+            #[cfg(lod_render_path)]
+            radix_sort_active_a,
         ],
     }
 }
@@ -449,16 +891,161 @@ pub struct RadixBindGroup {
     // For each digit pass idx in 0..RADIX_DIGIT_PLACES, we create 2 bind groups (parity 0/1):
     // index = pass_idx * 2 + parity (parity 0: input=sorted_entries, output=entry_buffer_b; parity 1: input=entry_buffer_b, output=sorted_entries)
     pub radix_sort_bind_groups: [BindGroup; 8],
+    cloud_asset: UntypedAssetId,
+    buffer_generation: u64,
+    sorted_entry_buffer_id: BufferId,
+    sorted_entry_buffer_size: u64,
+    radix_depth_bits: RadixSortDepthBits,
 }
+
+#[cfg(lod_render_path)]
+mod lod_bind_groups {
+    use super::*;
+
+    pub(super) struct LodRadixBindGroup {
+        pub(super) generation: u64,
+        pub(super) groups: [BindGroup; 4],
+    }
+
+    #[derive(Resource)]
+    pub(crate) struct LodRadixBindGroups<R: PlanarSync> {
+        pub(super) entries:
+            HashMap<(RetainedViewEntity, Entity, AssetId<R::PlanarType>), LodRadixBindGroup>,
+    }
+
+    impl<R: PlanarSync> Default for LodRadixBindGroups<R> {
+        fn default() -> Self {
+            Self {
+                entries: HashMap::new(),
+            }
+        }
+    }
+
+    impl<R: PlanarSync> LodRadixBindGroups<R> {
+        /// Release dependent bind groups before their compaction buffers are dropped or replaced.
+        /// A bind group retains its bound buffers, so ordering this ahead of allocation is required
+        /// for the compaction aggregate budget to remain a peak-live-memory bound.
+        pub(crate) fn retain_keys(
+            &mut self,
+            active: &HashSet<(RetainedViewEntity, Entity, AssetId<R::PlanarType>)>,
+        ) {
+            self.entries.retain(|key, _| active.contains(key));
+        }
+
+        pub(crate) fn remove(
+            &mut self,
+            key: &(RetainedViewEntity, Entity, AssetId<R::PlanarType>),
+        ) {
+            self.entries.remove(key);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    pub(crate) fn queue_lod_radix_bind_groups<R: PlanarSync>(
+        mut groups: ResMut<LodRadixBindGroups<R>>,
+        mut radix_pipeline: ResMut<RadixSortPipeline<R>>,
+        pipeline_cache: Res<PipelineCache>,
+        render_device: Res<RenderDevice>,
+        lod_buffers: Res<LodCompactionBuffers<R>>,
+        views: Query<(&ExtractedView, &RenderVisibleEntities), With<GaussianCamera>>,
+        clouds: Query<(Entity, &R::PlanarTypeHandle, &CloudSettings)>,
+    ) where
+        R::GpuPlanarType: GpuPlanarStorage,
+    {
+        let mut active = HashSet::new();
+        for (view, visible_entities) in &views {
+            let Some(visible_clouds) = visible_entities.get::<CloudVisibilityClass>() else {
+                continue;
+            };
+            for (render_entity, _) in &visible_clouds.entities_cpu_culling {
+                let Ok((entity, handle, settings)) = clouds.get(*render_entity) else {
+                    continue;
+                };
+                if settings.sort_mode != SortMode::Radix {
+                    continue;
+                }
+                let key =
+                    lod_view_cloud_key(view.retained_view_entity, entity, handle.handle().id());
+                let Some(state) = lod_buffers
+                    .get(key.0, key.1, key.2)
+                    .filter(|state| state.has_staged_candidates())
+                else {
+                    continue;
+                };
+                active.insert(key);
+                radix_pipeline.queue_variant(&pipeline_cache, settings.radix_sort_depth_bits);
+                if groups
+                    .entries
+                    .get(&key)
+                    .is_some_and(|group| group.generation == state.generation())
+                {
+                    continue;
+                }
+
+                let radix_groups = std::array::from_fn(|pass_index| {
+                    let (input, output) = if pass_index % 2 == 0 {
+                        (&state.active_entries_buffer, &state.radix_scratch_buffer)
+                    } else {
+                        (&state.radix_scratch_buffer, &state.active_entries_buffer)
+                    };
+                    render_device.create_bind_group(
+                        "gaussian_lod_radix_bind_group",
+                        &radix_pipeline.radix_sort_layout,
+                        &[
+                            BindGroupEntry {
+                                binding: 0,
+                                resource: state.sorting_pass_buffers[pass_index]
+                                    .as_entire_binding(),
+                            },
+                            BindGroupEntry {
+                                binding: 1,
+                                resource: state.sorting_global_buffer.as_entire_binding(),
+                            },
+                            BindGroupEntry {
+                                binding: 2,
+                                resource: state.sorting_status_counter_buffer.as_entire_binding(),
+                            },
+                            BindGroupEntry {
+                                binding: 3,
+                                resource: state.indirect_args_buffer.as_entire_binding(),
+                            },
+                            BindGroupEntry {
+                                binding: 4,
+                                resource: input.as_entire_binding(),
+                            },
+                            BindGroupEntry {
+                                binding: 5,
+                                resource: output.as_entire_binding(),
+                            },
+                        ],
+                    )
+                });
+                groups.entries.insert(
+                    key,
+                    LodRadixBindGroup {
+                        generation: state.generation(),
+                        groups: radix_groups,
+                    },
+                );
+            }
+        }
+        groups.entries.retain(|key, _| active.contains(key));
+    }
+}
+
+#[cfg(lod_render_path)]
+pub(crate) use lod_bind_groups::{LodRadixBindGroups, queue_lod_radix_bind_groups};
 
 type RadixViewQueryItem = (
     &'static GaussianCamera,
+    &'static ExtractedView,
+    &'static RenderVisibleEntities,
     &'static crate::render::GaussianComputeViewBindGroup,
     &'static ViewUniformOffset,
     &'static PreviousViewUniformOffset,
 );
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn queue_radix_bind_group<R: PlanarSync>(
     mut commands: Commands,
     mut radix_pipeline: ResMut<RadixSortPipeline<R>>,
@@ -472,12 +1059,14 @@ pub fn queue_radix_bind_group<R: PlanarSync>(
         &R::PlanarTypeHandle,
         &SortedEntriesHandle,
         &CloudSettings,
+        Option<&RadixBindGroup>,
     )>,
     sort_buffers: Res<RadixSortBuffers<R>>,
 ) where
     R::GpuPlanarType: GpuPlanarStorage,
 {
-    for (entity, cloud_handle, sorted_entries_handle, settings) in gaussian_clouds.iter() {
+    for (entity, cloud_handle, sorted_entries_handle, settings, existing) in gaussian_clouds.iter()
+    {
         if settings.sort_mode != SortMode::Radix {
             commands.entity(entity).remove::<RadixBindGroup>();
             continue;
@@ -492,9 +1081,10 @@ pub fn queue_radix_bind_group<R: PlanarSync>(
             continue;
         }
 
-        if gaussian_cloud_res.get(cloud_handle.handle()).is_none() {
+        let Some(cloud) = gaussian_cloud_res.get(cloud_handle.handle()) else {
+            commands.entity(entity).remove::<RadixBindGroup>();
             continue;
-        }
+        };
 
         if let Some(load_state) = asset_server.get_load_state(&sorted_entries_handle.0)
             && load_state.is_loading()
@@ -502,20 +1092,38 @@ pub fn queue_radix_bind_group<R: PlanarSync>(
             continue;
         }
 
-        if sorted_entries_res.get(sorted_entries_handle).is_none() {
+        let Some(sorted_entries) = sorted_entries_res.get(sorted_entries_handle) else {
             continue;
-        }
+        };
+
+        let Some(sorted_entry_binding_size) =
+            sort_entry_binding_size(sorted_entries.entry_count, cloud.len())
+        else {
+            // The LoD bridge can publish a larger atlas handle one frame
+            // before `SortedEntries` is resized. Never create a legacy radix
+            // bind group whose declared range exceeds the old GPU buffer.
+            commands.entity(entity).remove::<RadixBindGroup>();
+            continue;
+        };
 
         if !sort_buffers
             .asset_map
             .contains_key(&cloud_handle.handle().id())
         {
+            commands.entity(entity).remove::<RadixBindGroup>();
             continue;
         }
 
-        let cloud = gaussian_cloud_res.get(cloud_handle.handle()).unwrap();
-        let sorted_entries = sorted_entries_res.get(sorted_entries_handle).unwrap();
         let sorting_assets = &sort_buffers.asset_map[&cloud_handle.handle().id()];
+        if existing.is_some_and(|existing| {
+            existing.cloud_asset == cloud_handle.handle().id().untyped()
+                && existing.buffer_generation == sorting_assets.generation
+                && existing.sorted_entry_buffer_id == sorted_entries.sorted_entry_buffer.id()
+                && existing.sorted_entry_buffer_size == sorted_entries.sorted_entry_buffer.size()
+                && existing.radix_depth_bits == settings.radix_sort_depth_bits
+        }) {
+            continue;
+        }
 
         let sorting_global_entry = BindGroupEntry {
             binding: 1,
@@ -582,9 +1190,7 @@ pub fn queue_radix_bind_group<R: PlanarSync>(
                                 resource: BindingResource::Buffer(BufferBinding {
                                     buffer: input_buf,
                                     offset: 0,
-                                    size: BufferSize::new(
-                                        (cloud.len() * std::mem::size_of::<SortEntry>()) as u64,
-                                    ),
+                                    size: BufferSize::new(sorted_entry_binding_size),
                                 }),
                             },
                             // output_entries
@@ -593,9 +1199,7 @@ pub fn queue_radix_bind_group<R: PlanarSync>(
                                 resource: BindingResource::Buffer(BufferBinding {
                                     buffer: output_buf,
                                     offset: 0,
-                                    size: BufferSize::new(
-                                        (cloud.len() * std::mem::size_of::<SortEntry>()) as u64,
-                                    ),
+                                    size: BufferSize::new(sorted_entry_binding_size),
                                 }),
                             },
                         ],
@@ -608,45 +1212,71 @@ pub fn queue_radix_bind_group<R: PlanarSync>(
 
         commands.entity(entity).insert(RadixBindGroup {
             radix_sort_bind_groups,
+            cloud_asset: cloud_handle.handle().id().untyped(),
+            buffer_generation: sorting_assets.generation,
+            sorted_entry_buffer_id: sorted_entries.sorted_entry_buffer.id(),
+            sorted_entry_buffer_size: sorted_entries.sorted_entry_buffer.size(),
+            radix_depth_bits: settings.radix_sort_depth_bits,
         });
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn run_radix_sort<R: PlanarSync>(
     mut render_context: RenderContext,
     pipeline_cache: Res<PipelineCache>,
     pipeline: Res<RadixSortPipeline<R>>,
     gaussian_uniforms: Res<GaussianUniformBindGroups>,
     sort_buffers: Res<RadixSortBuffers<R>>,
+    mut work_cache: ResMut<RadixSortWorkCache<R>>,
+    #[cfg(lod_render_path)] mut lod_buffers: ResMut<LodCompactionBuffers<R>>,
+    #[cfg(lod_render_path)] lod_radix_groups: Res<LodRadixBindGroups<R>>,
     gpu_planars: Res<RenderAssets<R::GpuPlanarType>>,
     view_bind_group: ViewQuery<RadixViewQueryItem>,
     gaussian_clouds: Query<(
+        Entity,
         &'static <R as PlanarSync>::PlanarTypeHandle,
-        &'static PlanarStorageBindGroup<R>,
+        Ref<'static, PlanarStorageBindGroup<R>>,
         &'static RadixBindGroup,
         &'static DynamicUniformIndex<CloudUniform>,
         &'static CloudSettings,
+        &'static GlobalTransform,
     )>,
 ) where
     R::GpuPlanarType: GpuPlanarStorage,
 {
-    let (_camera, view_bind_group, view_uniform_offset, previous_view_uniform_offset) =
-        view_bind_group.into_inner();
+    let (
+        _camera,
+        _extracted_view,
+        visible_entities,
+        view_bind_group,
+        view_uniform_offset,
+        previous_view_uniform_offset,
+    ) = view_bind_group.into_inner();
 
     let Some(uniform_bind_group) = gaussian_uniforms.base_bind_group.as_ref() else {
         debug!("RadixSort run skipped: GaussianUniform base bind group missing");
         return;
     };
 
-    for (cloud_handle, cloud_bind_group, radix_bind_group, cloud_uniform_index, cloud_settings) in
-        &gaussian_clouds
-    {
-        let Some(cloud) = gpu_planars.get(cloud_handle.handle()) else {
+    let Some(visible_clouds) = visible_entities.get::<CloudVisibilityClass>() else {
+        return;
+    };
+
+    for (render_entity, _) in &visible_clouds.entities_cpu_culling {
+        let Ok((
+            _cloud_entity,
+            cloud_handle,
+            cloud_bind_group,
+            radix_bind_group,
+            cloud_uniform_index,
+            cloud_settings,
+            transform,
+        )) = gaussian_clouds.get(*render_entity)
+        else {
             continue;
         };
-
-        let Some(sorting_assets) = sort_buffers.asset_map.get(&cloud_handle.handle().id()) else {
+        let Some(cloud) = gpu_planars.get(cloud_handle.handle()) else {
             continue;
         };
 
@@ -657,17 +1287,168 @@ fn run_radix_sort<R: PlanarSync>(
             continue;
         }
 
-        let command_encoder = render_context.command_encoder();
         let shader_defines = pipeline_variant.shader_defines;
         let radix_digit_places = shader_defines.radix_digit_places;
         let initial_parity = shader_defines.radix_initial_parity();
-        let workgroup_entries_a = shader_defines.workgroup_entries_a;
+        let workgroup_entries_a =
+            shader_defines.radix_base * shader_defines.entries_per_invocation_a;
         let workgroup_entries_c = shader_defines.workgroup_entries_c;
-        let tile_workgroups = (cloud.len() as u32).div_ceil(workgroup_entries_c);
 
-        command_encoder.clear_buffer(&sorting_assets.sorting_global_buffer, 0, None);
-        command_encoder.clear_buffer(&sorting_assets.sorting_status_counter_buffer, 0, None);
-        command_encoder.clear_buffer(cloud.draw_indirect_buffer(), 0, None);
+        #[cfg(lod_render_path)]
+        if let (Some(state), Some(radix_groups)) = (
+            lod_buffers.get_ready_mut(
+                _extracted_view.retained_view_entity,
+                _cloud_entity,
+                cloud_handle.handle().id(),
+            ),
+            lod_radix_groups.entries.get(&lod_view_cloud_key(
+                _extracted_view.retained_view_entity,
+                _cloud_entity,
+                cloud_handle.handle().id(),
+            )),
+        ) {
+            if state.radix_sort_is_current() {
+                continue;
+            }
+
+            macro_rules! radix_direct_stage {
+                ($label:literal, $pipeline_index:expr, $group:expr, $x:expr, $y:expr, $z:expr) => {{
+                    let mut pass = render_context.command_encoder().begin_compute_pass(
+                        &ComputePassDescriptor {
+                            label: Some($label),
+                            ..default()
+                        },
+                    );
+                    pass.set_bind_group(
+                        0,
+                        &view_bind_group.value,
+                        &[
+                            view_uniform_offset.offset,
+                            previous_view_uniform_offset.offset,
+                        ],
+                    );
+                    pass.set_bind_group(1, uniform_bind_group, &[cloud_uniform_index.index()]);
+                    pass.set_bind_group(2, &cloud_bind_group.bind_group, &[]);
+                    pass.set_bind_group(3, $group, &[]);
+                    pass.set_pipeline(
+                        pipeline_cache
+                            .get_compute_pipeline(
+                                pipeline_variant.radix_sort_pipelines[$pipeline_index],
+                            )
+                            .expect("loaded radix pipeline"),
+                    );
+                    pass.dispatch_workgroups($x, $y, $z);
+                }};
+            }
+
+            macro_rules! radix_indirect_stage {
+                ($label:literal, $pipeline_index:expr, $group:expr, $offset:expr) => {{
+                    let mut pass = render_context.command_encoder().begin_compute_pass(
+                        &ComputePassDescriptor {
+                            label: Some($label),
+                            ..default()
+                        },
+                    );
+                    pass.set_bind_group(
+                        0,
+                        &view_bind_group.value,
+                        &[
+                            view_uniform_offset.offset,
+                            previous_view_uniform_offset.offset,
+                        ],
+                    );
+                    pass.set_bind_group(1, uniform_bind_group, &[cloud_uniform_index.index()]);
+                    pass.set_bind_group(2, &cloud_bind_group.bind_group, &[]);
+                    pass.set_bind_group(3, $group, &[]);
+                    pass.set_pipeline(
+                        pipeline_cache
+                            .get_compute_pipeline(
+                                pipeline_variant.radix_sort_pipelines[$pipeline_index],
+                            )
+                            .expect("loaded radix pipeline"),
+                    );
+                    pass.dispatch_workgroups_indirect(&state.indirect_args_buffer, $offset);
+                }};
+            }
+
+            radix_direct_stage!(
+                "lod_radix_reset",
+                RADIX_PIPELINE_RESET,
+                &radix_groups.groups[0],
+                1,
+                1,
+                1
+            );
+            radix_indirect_stage!(
+                "lod_radix_histogram",
+                RADIX_PIPELINE_ACTIVE_A,
+                &radix_groups.groups[0],
+                DISPATCH_A_INDIRECT_OFFSET
+            );
+            radix_direct_stage!(
+                "lod_radix_histogram_scan",
+                RADIX_PIPELINE_B,
+                &radix_groups.groups[0],
+                1,
+                radix_digit_places,
+                1
+            );
+
+            for pass_idx in 0..radix_digit_places {
+                let group = &radix_groups.groups[pass_idx as usize];
+                radix_indirect_stage!(
+                    "lod_radix_tile_count",
+                    RADIX_PIPELINE_C_COUNT,
+                    group,
+                    DISPATCH_C_INDIRECT_OFFSET
+                );
+                radix_direct_stage!(
+                    "lod_radix_tile_scan",
+                    RADIX_PIPELINE_C_SCAN,
+                    group,
+                    1,
+                    shader_defines.radix_base,
+                    1
+                );
+                radix_indirect_stage!(
+                    "lod_radix_scatter",
+                    RADIX_PIPELINE_C_SCATTER,
+                    group,
+                    DISPATCH_C_INDIRECT_OFFSET
+                );
+            }
+            state.mark_radix_sorted();
+            continue;
+        }
+
+        let Some(sorting_assets) = sort_buffers.asset_map.get(&cloud_handle.handle().id()) else {
+            continue;
+        };
+        let legacy_key = (
+            _extracted_view.retained_view_entity,
+            _cloud_entity,
+            cloud_handle.handle().id(),
+        );
+        let signature = legacy_sort_signature(
+            _extracted_view,
+            transform,
+            cloud_settings,
+            sorting_assets.generation,
+            radix_bind_group.sorted_entry_buffer_id,
+            cloud.len(),
+            Some(cloud_bind_group.last_changed().get()),
+        );
+        if work_cache.signatures.get(&legacy_key) == Some(&signature) {
+            continue;
+        }
+        if work_cache.signatures.len() >= 65_536 {
+            work_cache.signatures.clear();
+        }
+        let tile_workgroups = (cloud.len() as u32).div_ceil(workgroup_entries_c);
+        let command_encoder = render_context.command_encoder();
+        // Draw counts are initialized with the flat cloud and, when LoD is
+        // active, owned by a distinct per-view compaction buffer. Radix only
+        // sorts entries and must never replace an exact post-filter count.
 
         {
             let mut pass = command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
@@ -740,9 +1521,8 @@ fn run_radix_sort<R: PlanarSync>(
                 .get_compute_pipeline(pipeline_variant.radix_sort_pipelines[RADIX_PIPELINE_C_SCAN])
                 .unwrap();
             pass.set_pipeline(radix_sort_c_scan);
-            // ONE workgroup of RADIX_BASE lanes (lane = digit), not RADIX_BASE single-lane
-            // workgroups -- see `radix_sort_c_scan_tiles`'s @workgroup_size in radix.wgsl.
-            pass.dispatch_workgroups(1, 1, 1);
+            // One 256-lane workgroup per digit scans tiles in 256-wide chunks.
+            pass.dispatch_workgroups(1, shader_defines.radix_base, 1);
 
             let radix_sort_c_scatter = pipeline_cache
                 .get_compute_pipeline(
@@ -752,5 +1532,6 @@ fn run_radix_sort<R: PlanarSync>(
             pass.set_pipeline(radix_sort_c_scatter);
             pass.dispatch_workgroups(1, tile_workgroups, 1);
         }
+        work_cache.signatures.insert(legacy_key, signature);
     }
 }

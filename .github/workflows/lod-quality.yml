@@ -1,0 +1,127 @@
+name: LoD real-scene quality
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Trellis quality-graph coverage
+        required: true
+        default: full
+        type: choice
+        options:
+          - pr
+          - full
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUST_TOOLCHAIN: 1.95.0
+
+jobs:
+  trellis_psnr:
+    name: Trellis PSNR quality graph
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup minimum supported Rust toolchain
+        uses: brndnmtthws/rust-action@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          enable-sccache: "false"
+
+      - name: Select quality-graph profile
+        shell: bash
+        env:
+          DISPATCH_PROFILE: ${{ inputs.profile }}
+        run: |
+          profile=pr
+          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
+            profile=full
+          elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            profile="${DISPATCH_PROFILE}"
+          fi
+          case "${profile}" in
+            pr|full) ;;
+            *)
+              echo "unsupported Trellis quality-graph profile: ${profile}" >&2
+              exit 2
+              ;;
+          esac
+          echo "BGS_TRELLIS_AUDIT_PROFILE=${profile}" >> "${GITHUB_ENV}"
+
+      - name: Restore canonical Trellis fixture
+        id: trellis-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/bgs-fixtures/trellis.glb
+          key: trellis-glb-v1-${{ runner.os }}-fbe9d96b6689a78228c121e5f1bc8c5ccc32cef1941294d25f1db66f4a901dc1
+
+      - name: Fetch or validate canonical Trellis fixture
+        shell: bash
+        run: bash tools/fetch_trellis_fixture.sh "${RUNNER_TEMP}/bgs-fixtures/trellis.glb"
+
+      - name: Save canonical Trellis fixture
+        if: steps.trellis-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/bgs-fixtures/trellis.glb
+          key: ${{ steps.trellis-cache.outputs.cache-primary-key }}
+
+      - name: Test Trellis LoD quality graph
+        shell: bash
+        env:
+          BGS_TRELLIS_GLB: ${{ runner.temp }}/bgs-fixtures/trellis.glb
+          BGS_LOD_REPORT_PATH: ${{ runner.temp }}/trellis-lod-quality.md
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          set -o pipefail
+          cargo "+${RUST_TOOLCHAIN}" test --locked \
+            --test lod_real_scene_quality \
+            --features "lod_build testing headless" \
+            canonical_trellis_high_quality_color_and_covariance_audit -- \
+            --ignored --nocapture --test-threads=1 \
+            2>&1 | tee "${RUNNER_TEMP}/trellis-lod-quality.log"
+
+      - name: Publish Trellis LoD report summary
+        if: always()
+        shell: bash
+        env:
+          BGS_LOD_REPORT_PATH: ${{ runner.temp }}/trellis-lod-quality.md
+        run: |
+          if [[ -s "${BGS_LOD_REPORT_PATH}" ]]; then
+            cat "${BGS_LOD_REPORT_PATH}" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            {
+              echo "### Trellis LoD quality graph"
+              echo
+              echo "A structured report was not produced; see the captured test log."
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Upload Trellis LoD report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trellis-lod-quality-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/trellis-lod-quality.md
+            ${{ runner.temp }}/trellis-lod-quality.log
+          if-no-files-found: warn
+          retention-days: 14

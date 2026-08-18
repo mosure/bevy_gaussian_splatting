@@ -6,25 +6,60 @@
 
 bevy gaussian splatting render pipeline plugin. view the [live demo gallery](https://mosure.github.io/bevy_gaussian_splatting/examples/) or open [`trellis.glb`](https://mosure.github.io/bevy_gaussian_splatting/index.html?input_scene=https%3A%2F%2Fmitchell.mosure.me%2Ftrellis.glb&rasterization_mode=Color) directly.
 
-![Alt text](docs/bevy_gaussian_splatting_demo.webp)
-![Alt text](docs/go.gif)
+![Gaussian splatting demo](https://raw.githubusercontent.com/mosure/bevy_gaussian_splatting/main/docs/bevy_gaussian_splatting_demo.webp)
+![Animated Gaussian splatting example](https://raw.githubusercontent.com/mosure/bevy_gaussian_splatting/main/docs/go.gif)
 
 
 ## install
 
 ```bash
-cargo +nightly install bevy_gaussian_splatting
+cargo install bevy_gaussian_splatting
 bevy_gaussian_splatting --input-cloud [file://gaussian.ply | https://mitchell.mosure.me/go_trimmed.ply]
 bevy_gaussian_splatting --input-scene [file://scene.glb | https://mitchell.mosure.me/trellis.glb]
+bevy_gaussian_splatting --input-lod [directory/scene.gsplatlod | https://cdn.example/scene.gsplatlod]
 ```
-
-> note: default bevy_gaussian_splatting features require nightly rust for generic associated types. to use on stable, disable default features and `nightly_generic_alias` feature
 
 ## viewer hotkeys
 
 - `esc`: close viewer
 - `s`: save screenshot to `screenshots/`
 - `g`: export the loaded gaussian scene to `exports/gaussian_scene_<frame>.glb` (cloud transforms + active camera)
+- `f`: freeze/unfreeze the current LoD camera selection for close inspection
+
+For a reproducible native LoD review scene (editor and LoD panel are on by
+default):
+
+```bash
+cargo run --release --bin bevy_gaussian_splatting -- \
+  --gaussian-count=65536 --gaussian-seed=42 --lod-quality=0.65
+```
+
+Append `--lod-debug=selection-pressure` to visualize the effective guarded
+selection pressure: structural detail and projected error, plus the
+continuous high-fidelity certificate demand. Structural coverage and
+certificate authority strengthen progressively toward the high-quality end.
+
+For a larger native review, open Trellis at the guarded high-fidelity setting:
+
+```bash
+cargo run --release --bin bevy_gaussian_splatting -- \
+  --input-scene=https://mitchell.mosure.me/trellis.glb \
+  --lod-quality=0.95
+```
+
+The editor and Gaussian LoD panel are on by default. The GLB is loaded as a
+resident scene and receives a transient CPU-built hierarchy; this is not the
+out-of-core `.gsplatlod` package path. Quality `.95` is a safety gate, not a
+promise that a coarser representation exists, so exact source leaves are a
+valid result. Compare authored color at quality `1`, inspect `.95`, then sweep
+`.90` through `.95` when evaluating useful savings. The panel's selected-splat
+count confirms whether the selected cut actually saves records. `level` and
+`selection-pressure` explain the logical cut; `page` shows physical packing,
+and `residency` is mainly useful for streamed packages. Use `F` to freeze a
+distant cut and move closer to inspect exactly what it contains. The URL is a
+review convenience; use the
+[hash-pinned quality audit](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod_quality_report.md)
+for regression results.
 
 
 ## capabilities
@@ -55,7 +90,8 @@ bevy_gaussian_splatting --input-scene [file://scene.glb | https://mitchell.mosur
 - [ ] temporal depth sorting
 - [ ] skeletons
 - [ ] volume masks
-- [ ] level of detail
+- [X] [bounded CPU/GPU LoD construction, native/HTTP package streaming with persistent caches, atomic complete-cut commits, automatic GPU-atlas bridges, exact compaction/radix, and device recovery](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod.md)
+- [X] [named LoD level, page, residency, pressure, and boundary debug views](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod_debug.md)
 - [ ] lighting and shadows
 - [ ] bevy_openxr support
 - [ ] bevy 3D camera to gaussian cloud pipeline
@@ -96,7 +132,11 @@ fn setup_gaussian_cloud(
 
 ## tools
 
-- [ply to gcloud converter](tools/README.md#ply-to-gcloud-converter)
+- [LoD architecture, package builder, fixtures, tests, and benchmarks](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod.md)
+- [Pinned Trellis LoD quality report and regression protocol](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod_quality_report.md)
+- [Named LoD level, page, residency, pressure, and boundary debug views](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod_debug.md)
+- [Security policy and LoD package trust boundary](https://github.com/mosure/bevy_gaussian_splatting/blob/main/SECURITY.md)
+- [ply to gcloud converter](https://github.com/mosure/bevy_gaussian_splatting/blob/main/tools/README.md#ply-to-gcloud-converter)
 - [gaussian cloud training pipeline](https://github.com/mosure/burn_gaussian_splatting)
 - aabb vs. obb gaussian comparison via `cargo run --bin compare_aabb_obb`
 
@@ -123,6 +163,7 @@ the following tools are compatible with `bevy_gaussian_splatting`:
 
 | `bevy_gaussian_splatting` | `bevy` |
 | :--                       | :--    |
+| `9.0`                     | `0.19` |
 | `8.0`                     | `0.19` |
 | `7.0`                     | `0.18` |
 | `6.0`                     | `0.17` |

@@ -1,6 +1,3 @@
-#![allow(incomplete_features)]
-#![cfg_attr(feature = "nightly_generic_alias", feature(checked_type_aliases))]
-
 use bevy::prelude::*;
 pub use bevy_interleave::prelude::*;
 
@@ -12,12 +9,78 @@ pub use gaussian::{
             Gaussian3d, PlanarGaussian3d, PlanarGaussian3dHandle, random_gaussians_3d,
             random_gaussians_3d_seeded,
         },
+        planar_3d_chunked::{
+            LodBounds, LodBoundsError, LodIndexRange, LodNodeId, LodPageDescriptor,
+            LodPageEncoding, LodPageId, LodPageKind, LodPageRange, LodPageStorage,
+            LodPageValidationError, LodSourceRange, PlanarGaussian3dPage,
+        },
+        planar_3d_lod::{
+            CpuGaussianLodBuilder, GaussianLodBuildMetadata, GaussianLodBuildSettings,
+            GaussianLodManifest, GaussianLodManifestHeader, GaussianLodNode,
+            GaussianLodQualityMetadata, LOD_MORTON_AXIS_MAX, LOD_MORTON_BITS_PER_AXIS,
+            LodBuildError, LodBuildSettingsError, LodError, LodMortonRange, LodQualityInterval,
+            LodReducerKind, LodValidationError, MomentMergeReducer, MomentMergeResult,
+            PROGRESSIVE_MOMENT_MERGE_BUILDER_ABI_VERSION, PlanarGaussian3dLod, build_planar_3d_lod,
+            canonical_lod_morton_code, gaussian_support_bounds,
+        },
         planar_4d::{
             Gaussian4d, PlanarGaussian4d, PlanarGaussian4dHandle, random_gaussians_4d,
             random_gaussians_4d_seeded,
         },
     },
+    lod_debug::{LodDebugPreset, LodDebugSettings},
+    lod_settings::{
+        GaussianLodSettings, GaussianStreamingSettings, LodBudgets, LodDegradation,
+        LodEffectiveStatus, LodQualityEndpoint, LodQualityTarget, LodSelectionMode,
+        LodSettingsError,
+    },
     settings::{CloudSettings, GaussianMode, RadixSortDepthBits, RasterizeMode},
+};
+
+#[cfg(feature = "lod")]
+pub use stream::{LodRenderPathSupportError, lod_render_path_is_supported};
+
+#[cfg(feature = "lod")]
+pub use render::recovery::{
+    GaussianRecoveryAdapterPolicy, GaussianRenderRecoveryError, GaussianRenderRecoveryPhase,
+    GaussianRenderRecoveryPlugin, GaussianRenderRecoverySettings, GaussianRenderRecoverySnapshot,
+    GaussianRenderRecoveryStatus,
+};
+
+#[cfg(feature = "lod")]
+pub use io::lod::{GaussianLodAsset, GaussianLodHandle, GaussianLodManifestLoaderSettings};
+
+#[cfg(feature = "lod")]
+pub use stream::bridge::{GaussianLodBridgeConfig, GaussianLodBridgePlugin};
+
+#[cfg(feature = "lod")]
+pub use stream::status::{
+    GaussianLodDebugAvailability, GaussianLodLifecycle, GaussianLodSourceKind, GaussianLodStatus,
+    GaussianLodStatusPlugin,
+};
+
+#[cfg(feature = "lod")]
+pub use stream::render_commit::{
+    LodOrchestrationFailure, LodOrchestrationFailureCategory, LodOrchestrationFailureCode,
+};
+
+#[cfg(feature = "lod")]
+pub use stream::package::{
+    GaussianLodPackageConfig, GaussianLodPackagePlugin, GaussianLodPackageSource,
+};
+
+#[cfg(feature = "lod_build")]
+pub use gaussian::lod_build_gpu::hierarchy::{
+    GpuLodHierarchyBuilder, GpuLodHierarchyError, GpuLodHierarchyLimits,
+};
+
+#[cfg(all(feature = "lod_build", not(target_arch = "wasm32")))]
+pub use io::lod_build_external::{
+    CpuExternalLodBatchPreprocessor, EXTERNAL_LOD_BUILDER_ABI_VERSION,
+    ExternalLodBatchPreprocessor, ExternalLodBuildConfig, ExternalLodBuildError,
+    ExternalLodBuildLimits, ExternalLodBuildPlan, ExternalLodBuildReport,
+    ExternalLodPreprocessorOutputOrder, GpuHierarchyExternalLodBatchPreprocessor,
+    PlyGaussianSource, ReplayableGaussianSource, build_external_lod_package,
 };
 
 pub use io::scene::{
@@ -42,6 +105,9 @@ pub mod sort;
 pub mod stream;
 pub mod utils;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 #[cfg(feature = "noise")]
 pub mod noise;
 
@@ -61,6 +127,12 @@ impl Plugin for GaussianSplattingPlugin {
             gaussian::cloud::CloudPlugin::<Gaussian4d>::default(),
         ));
 
+        #[cfg(feature = "lod")]
+        app.add_plugins((
+            gaussian::lod_settings::GaussianLodSettingsPlugin,
+            render::recovery::GaussianRenderRecoveryPlugin,
+        ));
+
         // TODO: add half types
         app.add_plugins((
             PlanarStoragePlugin::<Gaussian3d>::default(),
@@ -70,6 +142,13 @@ impl Plugin for GaussianSplattingPlugin {
         app.add_plugins((
             render::RenderPipelinePlugin::<Gaussian3d>::default(),
             render::RenderPipelinePlugin::<Gaussian4d>::default(),
+        ));
+
+        #[cfg(feature = "lod")]
+        app.add_plugins((
+            stream::bridge::GaussianLodBridgePlugin,
+            stream::package::GaussianLodPackagePlugin,
+            stream::status::GaussianLodStatusPlugin,
         ));
 
         app.add_plugins((material::MaterialPlugin, query::QueryPlugin));

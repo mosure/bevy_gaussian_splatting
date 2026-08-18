@@ -23,9 +23,9 @@ mod headless {
         winit::WinitPlugin,
     };
     use bevy_gaussian_splatting::{
-        CloudSettings, Gaussian3d, GaussianCamera, GaussianMode, GaussianSplattingPlugin,
-        PlanarGaussian3d, PlanarGaussian3dHandle, SphericalHarmonicCoefficients,
-        gaussian::f32::Rotation, sort::SortMode,
+        CloudSettings, Gaussian3d, GaussianCamera, GaussianLodSettings, GaussianMode,
+        GaussianSplattingPlugin, PlanarGaussian3d, PlanarGaussian3dHandle,
+        SphericalHarmonicCoefficients, gaussian::f32::Rotation, sort::SortMode,
     };
 
     const WIDTH: u32 = 128;
@@ -138,12 +138,13 @@ mod headless {
                 PlanarGaussian3dHandle(cloud),
                 CloudSettings {
                     gaussian_mode: GaussianMode::Gaussian3d,
-                    sort_mode: SortMode::None,
+                    sort_mode: SortMode::Radix,
                     global_opacity: 2.0,
                     global_scale: 1.0,
                     opacity_adaptive_radius: false,
                     ..default()
                 },
+                GaussianLodSettings::default(),
                 Transform::default(),
                 Visibility::Visible,
                 Name::new("visibility_test_cloud"),

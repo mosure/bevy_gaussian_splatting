@@ -10,6 +10,13 @@
             covariance_3d_opacity,
         }
 
+        #ifdef PLANAR_F32
+            #import bevy_gaussian_splatting::bindings::{
+                rotation,
+                scale_opacity,
+            }
+        #endif
+
         #ifdef BINARY_GAUSSIAN_OP
             #import bevy_gaussian_splatting::bindings::{
                 rhs_position_visibility,
@@ -19,6 +26,15 @@
                 out_spherical_harmonics,
                 out_covariance_3d_opacity,
             }
+
+            #ifdef PLANAR_F32
+                #import bevy_gaussian_splatting::bindings::{
+                    rhs_rotation,
+                    rhs_scale_opacity,
+                    out_rotation,
+                    out_scale_opacity,
+                }
+            #endif
         #endif
     #else
         #import bevy_gaussian_splatting::bindings::{
@@ -339,6 +355,7 @@ fn convert_sh_color_to_linear(color: vec3<f32>) -> vec3<f32> {
             return planar_color_from_sh(ray_direction, spherical_harmonics[index]);
         }
 
+
         fn get_position(index: u32) -> vec3<f32> {
             return planar_position(position_visibility[index]);
         }
@@ -355,8 +372,22 @@ fn convert_sh_color_to_linear(color: vec3<f32>) -> vec3<f32> {
             return planar_scale_from(scale_opacity[index]);
         }
 
+        #ifdef PRECOMPUTE_COVARIANCE_3D
+            fn get_cov3d(index: u32) -> array<f32, 6> {
+                var covariance: array<f32, 6>;
+                for (var i = 0u; i < 6u; i = i + 1u) {
+                    covariance[i] = covariance_3d_opacity[index][i];
+                }
+                return covariance;
+            }
+        #endif
+
         fn get_opacity(index: u32) -> f32 {
-            return planar_opacity_from(scale_opacity[index]);
+            #ifdef PRECOMPUTE_COVARIANCE_3D
+                return covariance_3d_opacity[index][6];
+            #else
+                return planar_opacity_from(scale_opacity[index]);
+            #endif
         }
 
         fn get_visibility(index: u32) -> f32 {
@@ -387,8 +418,22 @@ fn convert_sh_color_to_linear(color: vec3<f32>) -> vec3<f32> {
                 return planar_scale_from(rhs_scale_opacity[index]);
             }
 
+            #ifdef PRECOMPUTE_COVARIANCE_3D
+                fn get_rhs_cov3d(index: u32) -> array<f32, 6> {
+                    var covariance: array<f32, 6>;
+                    for (var i = 0u; i < 6u; i = i + 1u) {
+                        covariance[i] = rhs_covariance_3d_opacity[index][i];
+                    }
+                    return covariance;
+                }
+            #endif
+
             fn get_rhs_opacity(index: u32) -> f32 {
-                return planar_opacity_from(rhs_scale_opacity[index]);
+                #ifdef PRECOMPUTE_COVARIANCE_3D
+                    return rhs_covariance_3d_opacity[index][6];
+                #else
+                    return planar_opacity_from(rhs_scale_opacity[index]);
+                #endif
             }
 
             fn get_rhs_visibility(index: u32) -> f32 {
@@ -412,6 +457,16 @@ fn convert_sh_color_to_linear(color: vec3<f32>) -> vec3<f32> {
                 }
             }
 
+            fn set_output_transform(
+                index: u32,
+                rotation_value: vec4<f32>,
+                scale: vec3<f32>,
+                opacity: f32,
+            ) {
+                out_rotation[index] = rotation_value;
+                out_scale_opacity[index] = vec4<f32>(scale, opacity);
+            }
+
             #ifdef PRECOMPUTE_COVARIANCE_3D
                 fn set_output_covariance(
                     index: u32,
@@ -424,18 +479,8 @@ fn convert_sh_color_to_linear(color: vec3<f32>) -> vec3<f32> {
                     out_covariance_3d_opacity[index][3] = cov[3];
                     out_covariance_3d_opacity[index][4] = cov[4];
                     out_covariance_3d_opacity[index][5] = cov[5];
-                    out_covariance_3d_opacity[index][6] = 0.0;
-                    out_covariance_3d_opacity[index][7] = opacity;
-                }
-            #else
-                fn set_output_transform(
-                    index: u32,
-                    rotation: vec4<f32>,
-                    scale: vec3<f32>,
-                    opacity: f32,
-                ) {
-                    out_rotation[index] = rotation;
-                    out_scale_opacity[index] = vec4<f32>(scale, opacity);
+                    out_covariance_3d_opacity[index][6] = opacity;
+                    out_covariance_3d_opacity[index][7] = 0.0;
                 }
             #endif
 

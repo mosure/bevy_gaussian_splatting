@@ -5,8 +5,9 @@ use bevy::{
     core_pipeline::{Core3d, Core3dSystems, prepass::PreviousViewUniformOffset},
     prelude::*,
     render::{
-        Extract, ExtractSchedule, Render, RenderApp, RenderSystems,
+        Extract, ExtractSchedule, Render, RenderApp, RenderStartup, RenderSystems,
         extract_component::DynamicUniformIndex,
+        init_gpu_resource,
         render_asset::RenderAssets,
         render_resource::{
             BindGroup, BindGroupLayout, CachedComputePipelineId, CachedPipelineState,
@@ -23,9 +24,9 @@ use crate::{
     camera::GaussianCamera,
     gaussian::formats::planar_3d::{Gaussian3d, PlanarGaussian3d, PlanarGaussian3dHandle},
     render::{
-        CloudPipeline, CloudPipelineKey, CloudUniform, GaussianComputeViewBindGroup,
-        GaussianUniformBindGroups, PlanarStorageRebindQueue, shader_defs,
-        storage_layout_descriptor,
+        CloudPipeline, CloudPipelineKey, CloudPipelineReady, CloudUniform,
+        GaussianComputeViewBindGroup, GaussianUniformBindGroups, PlanarStorageRebindQueue,
+        gaussian_storage_layout_descriptor, shader_defs,
     },
 };
 
@@ -55,7 +56,7 @@ where
     <R::GpuPlanarType as GpuPlanar>::PackedType: ReflectInterleaved,
 {
     fn build(&self, app: &mut App) {
-        if TypeId::of::<R::PlanarType>() != TypeId::of::<PlanarGaussian3d>() {
+        if !supports_gaussian_interpolation::<R>() {
             return;
         }
 
@@ -86,10 +87,23 @@ where
     }
 
     fn finish(&self, app: &mut App) {
+        if !supports_gaussian_interpolation::<R>() {
+            return;
+        }
+
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app.init_resource::<GaussianInterpolatePipeline<R>>();
+            render_app.add_systems(
+                RenderStartup,
+                init_gpu_resource::<GaussianInterpolatePipeline<R>>
+                    .after(CloudPipelineReady)
+                    .ambiguous_with_all(),
+            );
         }
     }
+}
+
+fn supports_gaussian_interpolation<R: PlanarSync>() -> bool {
+    TypeId::of::<R::PlanarType>() == TypeId::of::<PlanarGaussian3d>()
 }
 
 fn ensure_gaussian_interpolate_synced<R: PlanarSync>(
@@ -188,9 +202,8 @@ where
         let pipeline_cache = render_world.resource::<PipelineCache>();
 
         let output_layout = R::GpuPlanarType::bind_group_layout(render_device, false);
-        let output_layout_desc = storage_layout_descriptor::<
-            <R::GpuPlanarType as GpuPlanar>::PackedType,
-        >("gaussian_interpolate_output_layout", false);
+        let output_layout_desc =
+            gaussian_storage_layout_descriptor::<R>("gaussian_interpolate_output_layout", false);
 
         let key = CloudPipelineKey {
             binary_gaussian_op: true,
@@ -474,4 +487,28 @@ fn run_gaussian_interpolate<R: PlanarSync>(
     }
 
     debug!("GaussianInterpolate run completed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::supports_gaussian_interpolation;
+    use crate::gaussian::formats::{planar_3d::Gaussian3d, planar_4d::Gaussian4d};
+
+    #[test]
+    fn interpolation_pipeline_is_initialized_only_for_gaussian3d() {
+        assert!(supports_gaussian_interpolation::<Gaussian3d>());
+        assert!(!supports_gaussian_interpolation::<Gaussian4d>());
+
+        let source = include_str!("interpolate.rs");
+        let production_source = source
+            .split_once("#[cfg(test)]")
+            .map_or(source, |(production, _)| production);
+        assert_eq!(
+            production_source
+                .matches("if !supports_gaussian_interpolation::<R>()")
+                .count(),
+            2,
+            "both Plugin::build and Plugin::finish must reject unsupported planar types"
+        );
+    }
 }

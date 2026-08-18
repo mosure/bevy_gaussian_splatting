@@ -1,0 +1,47 @@
+[package]
+name = "bevy_gaussian_splatting-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.bevy_gaussian_splatting]
+path = ".."
+default-features = false
+features = [
+  "planar",
+  "buffer_storage",
+  "lod",
+  "sh3",
+  "io_flexbuffers",
+  "sort_std",
+]
+
+[[bin]]
+name = "lod_manifest"
+path = "fuzz_targets/lod_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lod_page"
+path = "fuzz_targets/lod_page.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lod_shard_index"
+path = "fuzz_targets/lod_shard_index.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

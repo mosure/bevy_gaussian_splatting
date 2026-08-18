@@ -18,6 +18,10 @@
     in_frustum,
 }
 
+#ifdef LOD_DEBUG
+    #import bevy_gaussian_splatting::lod_debug::apply_lod_debug_annotation
+#endif
+
 #ifdef GAUSSIAN_2D
     #import bevy_gaussian_splatting::gaussian_2d::{
         compute_cov2d_surfel,
@@ -49,6 +53,7 @@
             get_visibility,
             get_opacity,
             get_cov3d,
+            get_scale,
         }
     #else
         #import bevy_gaussian_splatting::packed::{
@@ -68,6 +73,7 @@
             get_visibility,
             get_opacity,
             get_cov3d,
+            get_scale,
         }
     #else
         #import bevy_gaussian_splatting::planar::{
@@ -87,6 +93,7 @@
             get_visibility,
             get_opacity,
             get_cov3d,
+            get_scale,
             location,
         }
     #else
@@ -181,6 +188,35 @@ fn world_to_local_direction(ray_direction_world: vec3<f32>, transform: mat4x4<f3
 
     return normalize(local);
 }
+
+// Conservative world-space sphere for the visible Gaussian support. This is
+// intentionally shared in policy with LoD compaction so the raster stage never
+// reintroduces a center-only false negative after compaction retained an
+// edge-overlapping splat.
+fn gaussian_support_radius_world(index: u32, cutoff: f32) -> f32 {
+    let scale = abs(get_scale(index));
+    let local_radius = cutoff * abs(gaussian_uniforms.global_scale) * max(
+        scale.x,
+        max(scale.y, scale.z),
+    );
+    return local_radius * gaussian_uniforms.transform_scale_bound;
+}
+
+fn gaussian_support_sphere_in_frustum(center: vec3<f32>, radius: f32) -> bool {
+    if !(radius >= 0.0) {
+        return true;
+    }
+    for (var plane_index = 0u; plane_index < 6u; plane_index += 1u) {
+        let plane = view.frustum[plane_index];
+        let signed_distance = dot(plane.xyz, center) + plane.w;
+        // Bevy ViewUniform frustum half-spaces have unit normals.
+        if signed_distance < -radius {
+            return false;
+        }
+    }
+    return true;
+}
+
 @vertex
 fn vs_points(
     @builtin(instance_index) instance_index: u32,
@@ -200,6 +236,14 @@ fn vs_points(
     var transformed_position = (gaussian_uniforms.transform * position).xyz;
     var previous_transformed_position = transformed_position;
 
+    var opacity = get_opacity(splat_index);
+
+#ifdef OPACITY_ADAPTIVE_RADIUS
+    let cutoff = sqrt(max(9.0 + 2.0 * log(max(opacity, 0.000001)), 0.000001));
+#else
+    let cutoff = 3.0;
+#endif
+
 #ifdef DRAW_SELECTED
     discard_quad |= get_visibility(splat_index) < 0.5;
 #endif
@@ -207,7 +251,11 @@ fn vs_points(
 #ifdef GAUSSIAN_4D
 #else
     let projected_position = world_to_clip(transformed_position);
-    discard_quad |= !in_frustum(projected_position.xyz);
+    let support_radius = gaussian_support_radius_world(splat_index, cutoff);
+    discard_quad |= !gaussian_support_sphere_in_frustum(
+        transformed_position,
+        support_radius,
+    );
 #endif
 
     if (discard_quad) {
@@ -225,14 +273,6 @@ fn vs_points(
 
     let quad_index = vertex_index % 4u;
     let quad_offset = quad_vertices[quad_index];
-
-    var opacity = get_opacity(splat_index);
-
-#ifdef OPACITY_ADAPTIVE_RADIUS
-    let cutoff = sqrt(max(9.0 + 2.0 * log(opacity), 0.000001));
-#else
-    let cutoff = 3.0;
-#endif
 
 #ifdef GAUSSIAN_2D
     let surfel = compute_cov2d_surfel(
@@ -328,8 +368,8 @@ fn vs_points(
     );
 #else ifdef RASTERIZE_DEPTH
     // TODO: unbiased depth rendering, see: https://zju3dv.github.io/pgsr/
-    let first_position = vec4<f32>(get_position(get_entry(1u).value), 1.0);
-    let last_position = vec4<f32>(get_position(get_entry(gaussian_uniforms.count - 1u).value), 1.0);
+    let first_position = vec4<f32>(get_position(source_index_from_entry(get_entry(1u))), 1.0);
+    let last_position = vec4<f32>(get_position(source_index_from_entry(get_entry(gaussian_uniforms.count - 1u))), 1.0);
 
     let min_position = (gaussian_uniforms.transform * last_position).xyz;
     let max_position = (gaussian_uniforms.transform * first_position).xyz;
@@ -415,14 +455,16 @@ fn vs_points(
     #endif
 #endif
 
-    output.color = vec4<f32>(
-        rgb,
-        opacity * gaussian_uniforms.global_opacity,
-    );
+#ifdef LOD_DEBUG
+    rgb = apply_lod_debug_annotation(splat_index, rgb);
+#endif
+
+    var output_opacity = clamp(opacity * gaussian_uniforms.global_opacity, 0.0, 1.0);
+    output.color = vec4<f32>(rgb, output_opacity);
 
 #ifdef HIGHLIGHT_SELECTED
     if (get_visibility(splat_index) > 0.5) {
-        output.color = vec4<f32>(0.3, 1.0, 0.1, 1.0);
+        output.color = vec4<f32>(0.3, 1.0, 0.1, output_opacity);
     }
 #endif
 

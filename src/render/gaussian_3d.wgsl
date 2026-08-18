@@ -71,12 +71,35 @@ fn compute_cov3d(scale: vec3<f32>, rotation: vec4<f32>) -> array<f32, 6> {
     );
 }
 
+fn transform_precomputed_cov3d(covariance: array<f32, 6>) -> array<f32, 6> {
+    let T = mat3x3<f32>(
+        gaussian_uniforms.transform[0].xyz,
+        gaussian_uniforms.transform[1].xyz,
+        gaussian_uniforms.transform[2].xyz,
+    );
+    let Sigma = mat3x3<f32>(
+        vec3<f32>(covariance[0], covariance[1], covariance[2]),
+        vec3<f32>(covariance[1], covariance[3], covariance[4]),
+        vec3<f32>(covariance[2], covariance[4], covariance[5]),
+    );
+    let transformed = T * Sigma * transpose(T);
+
+    return array<f32, 6>(
+        transformed[0][0],
+        transformed[0][1],
+        transformed[0][2],
+        transformed[1][1],
+        transformed[1][2],
+        transformed[2][2],
+    );
+}
+
 fn compute_cov2d_3dgs(
     position: vec3<f32>,
     index: u32,
 ) -> vec3<f32> {
 #ifdef PRECOMPUTE_COVARIANCE_3D
-    let cov3d = get_cov3d(index);
+    let cov3d = transform_precomputed_cov3d(get_cov3d(index));
 #else
     let rotation = get_rotation(index);
     let scale = get_scale(index);

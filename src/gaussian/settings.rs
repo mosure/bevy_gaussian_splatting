@@ -1,7 +1,8 @@
 use bevy::prelude::*;
+use bevy::render::extract_component::ExtractComponentPlugin;
 use bevy_args::{Deserialize, Serialize, ValueEnum};
 
-use crate::sort::SortMode;
+use crate::{gaussian::lod_debug::LodDebugSettings, sort::SortMode};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Reflect, Serialize, Deserialize)]
 pub enum DrawMode {
@@ -100,6 +101,8 @@ pub struct CloudSettings {
     pub playback_mode: PlaybackMode,
     pub rasterize_mode: RasterizeMode,
     pub color_space: GaussianColorSpace,
+    /// Named hierarchy, page, residency, boundary, or selection-pressure view.
+    pub lod_debug: LodDebugSettings,
     pub num_classes: usize,
     pub time: f32,
     pub time_scale: f32,
@@ -121,6 +124,7 @@ impl Default for CloudSettings {
             gaussian_mode: GaussianMode::default(),
             rasterize_mode: RasterizeMode::default(),
             color_space: GaussianColorSpace::default(),
+            lod_debug: LodDebugSettings::default(),
             num_classes: 1,
             playback_mode: PlaybackMode::default(),
             time: 0.0,
@@ -136,7 +140,12 @@ pub struct SettingsPlugin;
 impl Plugin for SettingsPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<CloudSettings>();
+        app.register_type::<LodDebugSettings>();
+        app.register_type::<crate::gaussian::lod_debug::LodDebugPreset>();
         app.register_type::<RadixSortDepthBits>();
+        app.add_plugins(ExtractComponentPlugin::<
+            crate::gaussian::lod_debug::LodDebugMetadata,
+        >::default());
 
         app.add_systems(Update, (playback_update,));
     }

@@ -6,20 +6,18 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   RUST_TOOLCHAIN: nightly-2026-07-30
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest, macos-14]
-
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+  source_quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
     - uses: actions/checkout@v4
@@ -31,15 +29,18 @@ jobs:
         components: rustfmt, clippy
         enable-sccache: "false"
 
-    - name: build
-      run: cargo build
+    - name: formatting and whitespace
+      shell: bash
+      run: |
+        cargo fmt --all -- --check
+        git show --check --format= HEAD
 
 
   build_tools:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, macos-14]
+        os: [ubuntu-latest, windows-latest, macos-latest]
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
@@ -54,5 +55,8 @@ jobs:
         components: rustfmt, clippy
         enable-sccache: "false"
 
-    - name: build_tools
-      run: cargo build --bin ply_to_gcloud
+    - name: build tools
+      run: cargo build --locked --bin ply_to_gcloud --bin build_lod --features="lod_build testing"
+
+    - name: check standalone LoD builder contract
+      run: cargo check --locked --no-default-features --bin build_lod --features="lod_build"

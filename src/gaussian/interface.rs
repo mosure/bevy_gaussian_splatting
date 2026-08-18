@@ -8,7 +8,7 @@ use crate::gaussian::iter::PositionIter;
 
 pub trait CommonCloud
 where
-    Self: Planar,
+    Self: Planar + Sync,
 {
     type PackedType;
 
@@ -27,18 +27,16 @@ where
         let mut min = Vec3::splat(f32::INFINITY);
         let mut max = Vec3::splat(f32::NEG_INFINITY);
 
-        // TODO: find a more correct aabb bound derived from scalar max gaussian scale
-        let max_scale = 0.1;
-
         #[cfg(feature = "sort_rayon")]
         {
             (min, max) = self
                 .position_par_iter()
+                .enumerate()
                 .fold(
                     || (min, max),
-                    |(curr_min, curr_max), position| {
+                    |(curr_min, curr_max), (index, position)| {
                         let pos = Vec3::from(*position);
-                        let offset = Vec3::splat(max_scale);
+                        let offset = self.support_radius(index);
                         (curr_min.min(pos - offset), curr_max.max(pos + offset))
                     },
                 )
@@ -50,9 +48,10 @@ where
 
         #[cfg(not(feature = "sort_rayon"))]
         {
-            for position in self.position_iter() {
-                min = min.min(Vec3::from(*position) - Vec3::splat(max_scale));
-                max = max.max(Vec3::from(*position) + Vec3::splat(max_scale));
+            for (index, position) in self.position_iter().enumerate() {
+                let support_radius = self.support_radius(index);
+                min = min.min(Vec3::from(*position) - support_radius);
+                max = max.max(Vec3::from(*position) + support_radius);
             }
         }
 
@@ -64,6 +63,12 @@ where
 
     fn visibility(&self, index: usize) -> f32;
     fn visibility_mut(&mut self, index: usize) -> &mut f32;
+
+    /// Conservative axis-aligned support radius used for culling and hierarchy bounds.
+    /// Implementations should cover the visible Gaussian footprint rather than only its center.
+    fn support_radius(&self, _index: usize) -> Vec3 {
+        Vec3::splat(0.1)
+    }
 
     // TODO: type erasure for position iterators
     fn position_iter(&self) -> PositionIter<'_>;

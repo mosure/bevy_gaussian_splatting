@@ -220,6 +220,15 @@ impl CommonCloud for PlanarGaussian4d {
         &mut self.position_visibility[index].visibility
     }
 
+    fn support_radius(&self, index: usize) -> Vec3 {
+        let scale = Vec3::from_array(self.scale_opacity[index].scale).abs();
+        if scale.is_finite() {
+            Vec3::splat(scale.max_element() * 3.0)
+        } else {
+            Vec3::splat(0.1)
+        }
+    }
+
     fn position_iter(&self) -> PositionIter<'_> {
         PositionIter::new(&self.position_visibility)
     }

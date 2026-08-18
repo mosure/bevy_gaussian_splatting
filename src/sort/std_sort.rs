@@ -18,7 +18,10 @@ where
     R::PlanarType: CommonCloud,
 {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, std_sort::<R>);
+        app.add_systems(
+            Update,
+            std_sort::<R>.after(super::update_sorted_entries_sizes::<R>),
+        );
     }
 }
 

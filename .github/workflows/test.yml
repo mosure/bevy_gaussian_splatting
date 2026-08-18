@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -17,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, macos-14]
+        os: [ubuntu-latest, windows-latest, macos-latest]
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
@@ -33,16 +36,39 @@ jobs:
         enable-sccache: "false"
 
     - name: test (default)
-      run: cargo test
+      run: cargo test --locked
+
+
+  test_msrv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup declared minimum Rust toolchain
+      uses: brndnmtthws/rust-action@v1
+      with:
+        toolchain: 1.95.0
+        components: rustfmt, clippy
+        enable-sccache: "false"
+
+    - name: check default library on MSRV
+      run: cargo check --locked --lib
+
+    - name: check supported and portable LoD profiles on MSRV
+      shell: bash
+      run: |
+        cargo check --locked --lib --no-default-features \
+          --features="planar lod_render sh0 io_flexbuffers"
+        cargo check --locked --lib --no-default-features \
+          --features="planar buffer_storage lod sh0 sort_std io_flexbuffers"
 
 
   test_web:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest, macos-14]
-
-    runs-on: ${{ matrix.os }}
+    # Browser/Wasm execution is covered below. This host-side feature test need
+    # not be repeated on every native OS.
+    runs-on: ubuntu-latest
     timeout-minutes: 120
 
     steps:
@@ -56,7 +82,96 @@ jobs:
         enable-sccache: "false"
 
     - name: test (web)
-      run: cargo test --no-default-features --features="web io_ply tooling"
+      run: cargo test --locked --no-default-features --features="web io_ply tooling"
+
+
+  test_lod_web_runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Rust toolchain with caching
+      uses: brndnmtthws/rust-action@v1
+      with:
+        toolchain: ${{ env.RUST_TOOLCHAIN }}
+        components: rustfmt, clippy
+        enable-sccache: "false"
+
+    - name: install wasm32-unknown-unknown
+      run: rustup target add wasm32-unknown-unknown
+
+    - name: check native-only LoD builder stub on Wasm
+      run: cargo check --locked --target wasm32-unknown-unknown --no-default-features --features="lod_build" --bin build_lod
+
+    - name: install pinned wasm-pack
+      shell: bash
+      run: |
+        archive="${RUNNER_TEMP}/wasm-pack-v0.15.0.tar.gz"
+        curl --fail --location --silent --show-error \
+          https://github.com/wasm-bindgen/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz \
+          --output "${archive}"
+        printf '%s  %s\n' \
+          c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a \
+          "${archive}" | sha256sum --check -
+        tar --extract --gzip --file "${archive}" --directory "${RUNNER_TEMP}"
+        install \
+          "${RUNNER_TEMP}/wasm-pack-v0.15.0-x86_64-unknown-linux-musl/wasm-pack" \
+          "${RUNNER_TEMP}/wasm-pack"
+        echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+
+    - name: test browser HTTP and persistent-cache runtime
+      shell: bash
+      run: |
+        export CHROMEDRIVER="${CHROMEWEBDRIVER}/chromedriver"
+        test -x "${CHROMEDRIVER}"
+        TMPDIR="${RUNNER_TEMP}" wasm-pack test --headless --chrome . \
+          --no-default-features \
+          --features "planar lod_render sh0 io_flexbuffers" --lib
+
+
+  test_lod:
+    runs-on: macos-14
+    timeout-minutes: 120
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Rust toolchain with caching
+      uses: brndnmtthws/rust-action@v1
+      with:
+        toolchain: ${{ env.RUST_TOOLCHAIN }}
+        components: rustfmt, clippy
+        enable-sccache: "false"
+
+    - name: test LoD contracts and reference pipeline
+      run: cargo test --locked --lib --features="lod_build testing"
+
+    - name: test LoD render feature contract
+      shell: bash
+      run: |
+        test_contract() {
+          local features="$1"
+          cargo test --locked --lib --no-default-features --features="${features}" \
+            lod_render_path_support_matches_the_functional_handshake_cfg
+          cargo test --locked --lib --no-default-features --features="${features}" \
+            flat_streaming_settings_are_cloned_per_cloud
+          cargo test --locked --lib --no-default-features --features="${features}" \
+            package_streaming_settings_validate_and_rebuild_signatures_track_config
+        }
+        test_contract "planar lod_render sh0 io_flexbuffers"
+        test_contract "planar buffer_storage lod sh0 sort_std io_flexbuffers"
+        test_contract "planar lod_render sh0 io_flexbuffers webgl2"
+        cargo check --locked --lib --no-default-features \
+          --features="planar buffer_texture lod sh0 sort_std io_flexbuffers"
+        cargo check --locked --lib --no-default-features \
+          --features="planar lod_render buffer_texture sh0 sort_std io_flexbuffers"
+
+    - name: compile LoD benchmarks
+      run: |
+        cargo bench --locked --no-run --bench lod --features="lod_build lod testing"
+        cargo bench --locked --no-run --bench lod_gpu --features="lod_build testing"
 
 
   test_visibility_render:
@@ -76,4 +191,59 @@ jobs:
     - name: test visibility render
       env:
         RUN_GPU_RENDER_TESTS: "1"
-      run: cargo test --no-default-features --features headless --test visibility_render -- --nocapture
+      run: cargo test --locked --no-default-features --features headless --test visibility_render -- --nocapture
+
+    - name: test support-aware edge rendering
+      env:
+        RUN_GPU_RENDER_TESTS: "1"
+      run: cargo test --locked --no-default-features --features headless --test support_overlap_render -- --nocapture
+
+    - name: test LoD debug annotations
+      env:
+        RUN_GPU_RENDER_TESTS: "1"
+      run: cargo test --locked --no-default-features --features headless --test lod_debug_render -- --nocapture
+
+    - name: test LoD debug annotations with precomputed covariance
+      env:
+        RUN_GPU_RENDER_TESTS: "1"
+      run: cargo test --locked --no-default-features --features="headless precompute_covariance_3d" --test lod_debug_render -- --nocapture
+
+    - name: test support-aware edge rendering with precomputed covariance
+      env:
+        RUN_GPU_RENDER_TESTS: "1"
+      run: cargo test --locked --no-default-features --features="headless precompute_covariance_3d" --test support_overlap_render -- --nocapture
+
+    - name: test LoD quality counts and image metrics
+      env:
+        RUN_GPU_RENDER_TESTS: "1"
+      run: cargo test --locked --no-default-features --features="headless testing" --test lod_quality_render -- --nocapture
+
+    - name: test LoD quality subrange uploads with precomputed covariance
+      env:
+        RUN_GPU_RENDER_TESTS: "1"
+      run: cargo test --locked --no-default-features --features="headless testing precompute_covariance_3d" --test lod_quality_render -- --nocapture
+
+    - name: test LoD atlas copies
+      env:
+        RUN_GPU_LOD_ATLAS_TESTS: "1"
+      run: cargo test --locked --lib --no-default-features --features="planar buffer_storage lod sh0 sort_std io_flexbuffers" gpu_atlas_copy_matches_cpu_oracle -- --ignored --nocapture
+
+    - name: test LoD atlas copies with precomputed covariance
+      env:
+        RUN_GPU_LOD_ATLAS_TESTS: "1"
+      run: cargo test --locked --lib --no-default-features --features="planar buffer_storage lod sh0 sort_std io_flexbuffers precompute_covariance_3d" gpu_atlas_copy_matches_cpu_oracle -- --ignored --nocapture
+
+    - name: test active LoD rendering after device loss
+      env:
+        RUN_GPU_DEVICE_LOSS_TESTS: "1"
+      run: cargo test --locked --no-default-features --features="headless testing" --test lod_device_recovery headless::active_lod_render_recovers_after_injected_device_loss -- --exact --nocapture
+
+    - name: test precomputed-covariance LoD rendering after device loss
+      env:
+        RUN_GPU_DEVICE_LOSS_TESTS: "1"
+      run: cargo test --locked --no-default-features --features="headless testing precompute_covariance_3d" --test lod_device_recovery headless::active_lod_render_recovers_after_injected_device_loss -- --exact --nocapture
+
+    - name: test global multi-run GPU LoD hierarchy parity
+      env:
+        RUN_GPU_LOD_HIERARCHY_TESTS: "1"
+      run: cargo test --locked --features lod_build --lib gpu_global_external_multi_run_matches_cpu_topology -- --ignored --nocapture

@@ -14,6 +14,7 @@ struct GaussianUniforms {
     transform: mat4x4<f32>,
     global_opacity: f32,
     global_scale: f32,
+    transform_scale_bound: f32,
     count: u32,
     count_root_ceil: u32,
     time: f32,
@@ -70,11 +71,11 @@ struct GaussianUniforms {
 
             @group(3) @binding(1) var<storage, read> rhs_spherical_harmonics: array<array<f32, #{SH_COEFF_COUNT}>>;
 
+            @group(3) @binding(2) var<storage, read> rhs_rotation: array<vec4<f32>>;
+            @group(3) @binding(3) var<storage, read> rhs_scale_opacity: array<vec4<f32>>;
+
             #ifdef PRECOMPUTE_COVARIANCE_3D
-                @group(3) @binding(2) var<storage, read> rhs_covariance_3d_opacity: array<array<f32, 8>>;
-            #else
-                @group(3) @binding(2) var<storage, read> rhs_rotation: array<vec4<f32>>;
-                @group(3) @binding(3) var<storage, read> rhs_scale_opacity: array<vec4<f32>>;
+                @group(3) @binding(4) var<storage, read> rhs_covariance_3d_opacity: array<array<f32, 8>>;
             #endif
         #endif
 
@@ -83,19 +84,19 @@ struct GaussianUniforms {
             @group(4) @binding(0) var<storage, read_write> out_position_visibility: array<vec4<f32>>;
             @group(4) @binding(1) var<storage, read_write> out_spherical_harmonics: array<array<f32, #{SH_COEFF_COUNT}>>;
 
+            @group(4) @binding(2) var<storage, read_write> out_rotation: array<vec4<f32>>;
+            @group(4) @binding(3) var<storage, read_write> out_scale_opacity: array<vec4<f32>>;
+
             #ifdef PRECOMPUTE_COVARIANCE_3D
-                @group(4) @binding(2) var<storage, read_write> out_covariance_3d_opacity: array<array<f32, 8>>;
-            #else
-                @group(4) @binding(2) var<storage, read_write> out_rotation: array<vec4<f32>>;
-                @group(4) @binding(3) var<storage, read_write> out_scale_opacity: array<vec4<f32>>;
+                @group(4) @binding(4) var<storage, read_write> out_covariance_3d_opacity: array<array<f32, 8>>;
             #endif
         #endif
 
+        @group(2) @binding(2) var<storage, read> rotation: array<vec4<f32>>;
+        @group(2) @binding(3) var<storage, read> scale_opacity: array<vec4<f32>>;
+
         #ifdef PRECOMPUTE_COVARIANCE_3D
-            @group(2) @binding(2) var<storage, read> covariance_3d_opacity: array<array<f32, 8>>;
-        #else
-            @group(2) @binding(2) var<storage, read> rotation: array<vec4<f32>>;
-            @group(2) @binding(3) var<storage, read> scale_opacity: array<vec4<f32>>;
+            @group(2) @binding(4) var<storage, read> covariance_3d_opacity: array<array<f32, 8>>;
         #endif
     #endif
 

@@ -103,6 +103,19 @@ fn interpolate_gaussians(
     }
     let opacity = mix(get_opacity(index), get_rhs_opacity(index), t);
     set_output_covariance(index, cov, opacity);
+
+    // Preserve canonical transform planes for Gaussian2d, normal/debug
+    // rendering, and support-aware LoD culling while the Gaussian3d raster
+    // path consumes the interpolated covariance plane.
+    let rotation = normalize_quaternion(
+        mix(
+            get_rotation(index),
+            get_rhs_rotation(index),
+            rotation_t,
+        ),
+    );
+    let scale = mix(get_scale(index), get_rhs_scale(index), position_t);
+    set_output_transform(index, rotation, scale, opacity);
 #else
     let rotation = normalize_quaternion(
         mix(
