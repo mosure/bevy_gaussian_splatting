@@ -2,32 +2,45 @@ use std::hint::black_box;
 
 use bevy::math::Vec3;
 use bevy_gaussian_splatting::{
+    GaussianLodAsset,
     gaussian::{
         formats::planar_3d_lod::{
             CpuGaussianLodBuilder, GaussianLodBuildSettings, PlanarGaussian3dLod,
         },
-        lod_settings::{GaussianLodSettings, GaussianStreamingSettings},
+        lod_settings::{
+            GaussianLodSettings, GaussianStreamingSettings, MAX_STREAMING_CONCURRENT_REQUESTS,
+        },
     },
     io::{
         lod::{LodCodecLimits, decode_manifest, decode_page, encode_manifest, encode_page},
-        lod_build_external::{ExternalLodBuildConfig, ExternalLodBuildPlan},
+        lod_build_external::{
+            ExternalLodBuildConfig, ExternalLodBuildLimits, ExternalLodBuildPlan,
+        },
     },
     random_gaussians_3d_seeded,
     stream::{
         atlas_upload::LodAtlasUploadQueue,
         cache::AtlasSlot,
-        hierarchy::{AllResident, LodView, ManifestLodHierarchy, select_frontier},
+        hierarchy::{
+            AllResident, CompiledManifestLodHierarchy, LodView, ManifestLodHierarchy,
+            select_frontier,
+        },
+        persistent_cache::PersistentCachePageIdentities,
         runtime::LodStreamingRuntime,
-        transport::MemoryPageTransport,
+        transport::{ManifestPageLocations, MemoryPageTransport},
     },
     testing::{LodTestScene, VirtualCityScene},
 };
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 const BUILD_COUNTS: [usize; 3] = [1_024, 8_192, 65_536];
 const QUALITY_SWEEP: [f32; 5] = [0.0, 0.25, 0.5, 0.75, 1.0];
 const VIRTUAL_PAGE_COUNTS: [u32; 4] = [256, 1_024, 4_096, 16_384];
-const EXTERNAL_PLAN_COUNTS: [u64; 3] = [10_000_000, 100_000_001, 250_000_000];
+const EXTERNAL_PLAN_COUNTS: [u64; 3] = [
+    10_000_000,
+    100_000_001,
+    ExternalLodBuildLimits::DEFAULT_MAX_SOURCE_COUNT,
+];
 const RUNTIME_FIXTURE_LEVELS: u32 = 5;
 const ATLAS_SLOTS_PER_UPLOAD: u32 = 64;
 const ATLAS_CHURN_CASES: [(u32, u32); 2] = [(64, 4), (1_024, 8)];
@@ -102,7 +115,7 @@ fn runtime_benchmark_fixture() -> RuntimeBenchmarkFixture {
     settings.budgets.max_upload_bytes_per_frame = 256 * 1024 * 1024;
     settings.budgets.max_traversal_nodes_per_view = lod.manifest.header.node_count;
     let streaming = GaussianStreamingSettings {
-        max_concurrent_requests: page_count,
+        max_concurrent_requests: page_count.min(MAX_STREAMING_CONCURRENT_REQUESTS),
         ..Default::default()
     };
 
@@ -221,6 +234,122 @@ fn traversal_quality_benchmarks(c: &mut Criterion) {
     group.finish();
 }
 
+/// Measures the public owned-manifest hierarchy API. The first case excludes
+/// input setup and measures validation plus topology compilation; the second
+/// explicitly includes the legacy/ownership cost of a full manifest clone.
+/// The package path instead shares its already-validated asset Arc.
+fn manifest_compilation_benchmarks(c: &mut Criterion) {
+    let manifest = runtime_benchmark_fixture().manifest;
+    let node_count = manifest.header.node_count;
+    assert!(
+        manifest.nodes.iter().enumerate().all(|(index, node)| {
+            u64::try_from(index)
+                .ok()
+                .and_then(|index| index.checked_add(1))
+                .is_some_and(|expected| node.id.0 == expected)
+        }),
+        "the package-open benchmark must exercise the dense one-based fast path"
+    );
+
+    let mut group = c.benchmark_group("lod/manifest_compilation");
+    group.sample_size(10);
+    group.throughput(Throughput::Elements(u64::from(node_count)));
+    group.bench_function("public_owned_validate_compile", |b| {
+        b.iter_batched(
+            || manifest.clone(),
+            |manifest| {
+                let hierarchy = CompiledManifestLodHierarchy::new(black_box(manifest))
+                    .expect("benchmark manifest should compile");
+                black_box((
+                    hierarchy.manifest().header.node_count,
+                    hierarchy.manifest().roots.len(),
+                ));
+            },
+            BatchSize::LargeInput,
+        );
+    });
+    group.bench_function("public_owned_clone_validate_compile", |b| {
+        b.iter(|| {
+            let hierarchy = CompiledManifestLodHierarchy::new(black_box(manifest.clone()))
+                .expect("benchmark manifest should compile");
+            black_box((
+                hierarchy.manifest().header.node_count,
+                hierarchy.manifest().roots.len(),
+            ));
+        });
+    });
+    group.finish();
+}
+
+/// Measures the independently visible package-open components. The actual
+/// package integration uses crate-private validated-Arc constructors and is
+/// covered by integration tests; this external benchmark deliberately reports
+/// the public validation/index costs instead of labelling an Arc clone as the
+/// complete package-open path.
+fn package_runtime_open_benchmarks(c: &mut Criterion) {
+    let fixture = runtime_benchmark_fixture();
+    let asset = GaussianLodAsset::new(fixture.manifest.clone())
+        .expect("benchmark package manifest should validate");
+    let compiled_locations = ManifestPageLocations::from_manifest(&fixture.manifest)
+        .expect("benchmark locations should compile");
+    let compiled_identities = PersistentCachePageIdentities::from_manifest(&fixture.manifest)
+        .expect("benchmark identities should compile");
+    let last_page = fixture.manifest.pages.last().unwrap().id;
+    let node_count = fixture.manifest.header.node_count;
+    let mut group = c.benchmark_group("lod/package_open_components");
+    group.sample_size(10);
+    group.throughput(Throughput::Elements(u64::from(node_count)));
+    group.bench_function("validated_asset_arc_share", |b| {
+        b.iter(|| {
+            let manifest = black_box(asset.shared_manifest());
+            black_box((manifest.header.node_count, manifest.pages.len()));
+        });
+    });
+    group.bench_function("locations_public_validate_dense_compile_intern", |b| {
+        b.iter(|| {
+            let locations = ManifestPageLocations::from_manifest(black_box(&fixture.manifest))
+                .expect("benchmark locations should compile");
+            let encoded_len = locations
+                .get(black_box(last_page))
+                .map(|location| location.encoded_len);
+            black_box((locations.len(), encoded_len));
+        });
+    });
+    group.bench_function("locations_arc_clone", |b| {
+        b.iter(|| black_box(compiled_locations.clone()));
+    });
+    group.bench_function("cache_ids_public_validate_dense_compile", |b| {
+        b.iter(|| {
+            let identities =
+                PersistentCachePageIdentities::from_manifest(black_box(&fixture.manifest))
+                    .expect("benchmark identities should compile");
+            let content_hash = identities
+                .get(black_box(last_page))
+                .map(|identity| identity.content_hash);
+            black_box((identities.len(), content_hash));
+        });
+    });
+    group.bench_function("cache_ids_arc_clone", |b| {
+        b.iter(|| black_box(compiled_identities.clone()));
+    });
+    group.bench_function("public_owned_clone_validate_runtime", |b| {
+        b.iter(|| {
+            let runtime = LodStreamingRuntime::new(
+                black_box(fixture.manifest.clone()),
+                MemoryPageTransport::default(),
+                black_box(&fixture.settings),
+                black_box(&fixture.streaming),
+            )
+            .expect("benchmark package runtime should initialize");
+            black_box((
+                runtime.hierarchy().manifest().header.node_count,
+                runtime.atlas_layout().gaussians_per_slot,
+            ));
+        });
+    });
+    group.finish();
+}
+
 fn codec_benchmarks(c: &mut Criterion) {
     let source_count = 16_384;
     let cloud = random_gaussians_3d_seeded(source_count, 0x10d0_c0de);
@@ -300,9 +429,10 @@ fn virtual_page_generation_benchmarks(c: &mut Criterion) {
     group.finish();
 }
 
-/// Steady-state CPU orchestration after every deterministic in-memory page has
-/// been admitted. This isolates per-frame hierarchy selection, pin updates,
-/// and physical-range construction from codec, transport, and GPU work.
+/// Steady-state CPU orchestration after every page required by the selected
+/// cut has been admitted. This isolates per-frame hierarchy selection, pin
+/// updates, and physical-range construction from codec, transport, and GPU
+/// work without pretending the entire manifest is resident at coarse quality.
 fn runtime_steady_state_benchmarks(c: &mut Criterion) {
     let fixture = runtime_benchmark_fixture();
     let mut group = c.benchmark_group("lod/runtime_steady_state_selection");
@@ -466,6 +596,8 @@ criterion_group! {
     config = Criterion::default().sample_size(10);
     targets = reference_build_benchmarks,
               traversal_quality_benchmarks,
+              manifest_compilation_benchmarks,
+              package_runtime_open_benchmarks,
               codec_benchmarks,
               virtual_page_generation_benchmarks,
               runtime_steady_state_benchmarks,

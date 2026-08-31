@@ -56,7 +56,7 @@ jobs:
         enable-sccache: "false"
 
     - name: build tools
-      run: cargo build --locked --bin ply_to_gcloud --bin build_lod --features="lod_build testing"
+      run: cargo build --locked --bin ply_to_gcloud --bin build_lod --features="lod_build_sh3 testing"
 
     - name: check standalone LoD builder contract
-      run: cargo check --locked --no-default-features --bin build_lod --features="lod_build"
+      run: cargo check --locked --no-default-features --bin build_lod --features="lod_build_sh3"

@@ -103,7 +103,7 @@ jobs:
       run: rustup target add wasm32-unknown-unknown
 
     - name: check native-only LoD builder stub on Wasm
-      run: cargo check --locked --target wasm32-unknown-unknown --no-default-features --features="lod_build" --bin build_lod
+      run: cargo check --locked --target wasm32-unknown-unknown --no-default-features --features="lod_build_sh0" --bin build_lod
 
     - name: install pinned wasm-pack
       shell: bash
@@ -146,7 +146,7 @@ jobs:
         enable-sccache: "false"
 
     - name: test LoD contracts and reference pipeline
-      run: cargo test --locked --lib --features="lod_build testing"
+      run: cargo test --locked --lib --features="lod_build_sh3 testing"
 
     - name: test LoD render feature contract
       shell: bash
@@ -170,8 +170,8 @@ jobs:
 
     - name: compile LoD benchmarks
       run: |
-        cargo bench --locked --no-run --bench lod --features="lod_build lod testing"
-        cargo bench --locked --no-run --bench lod_gpu --features="lod_build testing"
+        cargo bench --locked --no-run --bench lod --features="lod_build_sh3 lod testing"
+        cargo bench --locked --no-run --bench lod_gpu --features="lod_build_sh3 testing"
 
 
   test_visibility_render:
@@ -223,6 +223,16 @@ jobs:
         RUN_GPU_RENDER_TESTS: "1"
       run: cargo test --locked --no-default-features --features="headless testing precompute_covariance_3d" --test lod_quality_render -- --nocapture
 
+    - name: test authenticated ABI16 K=2 morph radiance and visibility
+      env:
+        RUN_GPU_RENDER_TESTS: "1"
+      run: cargo test --locked --no-default-features --features="headless testing lod_build_sh3" --test lod_morph_radiance_render headless::authenticated_abi16_k2_morph_radiance_visibility -- --exact --nocapture --test-threads=1
+
+    - name: test authenticated ABI16 K=2 morph radiance and visibility with precomputed covariance
+      env:
+        RUN_GPU_RENDER_TESTS: "1"
+      run: cargo test --locked --no-default-features --features="headless testing lod_build_sh3 precompute_covariance_3d" --test lod_morph_radiance_render headless::authenticated_abi16_k2_morph_radiance_visibility -- --exact --nocapture --test-threads=1
+
     - name: test LoD atlas copies
       env:
         RUN_GPU_LOD_ATLAS_TESTS: "1"
@@ -243,7 +253,12 @@ jobs:
         RUN_GPU_DEVICE_LOSS_TESTS: "1"
       run: cargo test --locked --no-default-features --features="headless testing precompute_covariance_3d" --test lod_device_recovery headless::active_lod_render_recovers_after_injected_device_loss -- --exact --nocapture
 
-    - name: test global multi-run GPU LoD hierarchy parity
+    - name: test GPU canonical sort collisions
       env:
         RUN_GPU_LOD_HIERARCHY_TESTS: "1"
-      run: cargo test --locked --features lod_build --lib gpu_global_external_multi_run_matches_cpu_topology -- --ignored --nocapture
+      run: cargo test --locked --features lod_build_sh3 --lib gpu_collision_sort_matches_cpu_canonical_order -- --ignored --nocapture
+
+    - name: test GPU-sorted external package parity
+      env:
+        RUN_GPU_LOD_HIERARCHY_TESTS: "1"
+      run: cargo test --locked --features lod_build_sh3 --lib gpu_sorted_external_multi_run_matches_cpu_package -- --ignored --nocapture

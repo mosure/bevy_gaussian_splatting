@@ -633,7 +633,6 @@ impl<Upstream: LodPageTransport> PersistentCachePageTransport<Upstream> {
         let identity = self
             .identities
             .get(page)
-            .cloned()
             .ok_or(PersistentCacheTransportError::MissingIdentity(page))?;
         self.cache_mut()
             .invalidate(&identity)
@@ -1128,7 +1127,6 @@ impl<Upstream: LodPageTransport> SharedPersistentCachePageTransport<Upstream> {
         let identity = self
             .identities
             .get(page)
-            .cloned()
             .ok_or(PersistentCacheTransportError::MissingIdentity(page))?;
         self.invalidations
             .insert(page, NativeCacheInvalidation::Queued(identity));

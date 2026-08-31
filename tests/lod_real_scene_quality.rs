@@ -5,11 +5,13 @@ fn lod_real_scene_quality_requires_headless_and_testing_features() {}
 #[cfg(all(feature = "headless", feature = "testing"))]
 mod headless {
     use std::{
-        collections::BTreeSet,
+        collections::{BTreeMap, BTreeSet, HashMap, HashSet},
         env,
         fmt::Write as _,
         fs,
+        io::{self, BufReader, Read, Seek, SeekFrom},
         path::{Path, PathBuf},
+        sync::{Arc, Mutex},
         thread,
         time::{Duration, Instant},
     };
@@ -24,7 +26,12 @@ mod headless {
         core_pipeline::tonemapping::Tonemapping,
         prelude::*,
         render::{
+            Render, RenderApp, RenderSystems,
+            extract_resource::{ExtractResource, ExtractResourcePlugin},
+            pipelined_rendering::PipelinedRenderingPlugin,
             render_resource::TextureFormat,
+            renderer::{RenderDevice, RenderQueue},
+            view::ExtractedView,
             view::screenshot::{Screenshot, ScreenshotCaptured},
         },
         window::ExitCondition,
@@ -32,20 +39,44 @@ mod headless {
     };
     use bevy_gaussian_splatting::{
         CloudSettings, Gaussian3d, GaussianCamera, GaussianLodBridgeConfig,
-        GaussianLodBuildSettings, GaussianLodSettings, GaussianMode, GaussianSplattingPlugin,
-        PlanarGaussian3d, PlanarGaussian3dHandle, SphericalHarmonicCoefficients,
+        GaussianLodBuildSettings, GaussianLodLifecycle, GaussianLodManifest, GaussianLodSettings,
+        GaussianLodSourceKind, GaussianLodStatus, GaussianMode, GaussianSplattingPlugin,
+        LodDegradation, LodEffectiveStatus, LodNodeId, LodPageDescriptor, LodPageId, LodPageKind,
+        LodQualityTarget, LodReducerKind, PlanarGaussian3d, PlanarGaussian3dHandle,
+        PlanarGaussian3dLod, PlanarGaussian3dPage, PlanarHandle, SphericalHarmonicCoefficients,
         build_planar_3d_lod,
         gaussian::{covariance::compute_covariance_3d, settings::GaussianColorSpace},
-        io::{IoPlugin, scene::GaussianScene},
+        io::{
+            IoPlugin,
+            lod::{LodCodecLimits, decode_manifest, decode_page_with_descriptor},
+            ply::stream_ply_3d,
+            scene::GaussianScene,
+        },
         material::spherical_harmonics::SH_DEGREE,
+        render::{
+            ShaderDefines, gaussian_mip_filter_covariance_2d,
+            lod::{
+                LodCompactionBuffers, LodIndirectArgs, LodLastRadixDrawableForTesting,
+                LodViewBlendPublicationLabel, finalized_indirect_args,
+                read_lod_indirect_args_for_testing,
+            },
+        },
         sort::SortMode,
         stream::{
             bridge::{GaussianLodBridgePhase, GaussianLodBridgeStatus},
             hierarchy::{
                 AllResident, LodHierarchy, LodView, ManifestLodHierarchy, select_frontier,
+                select_frontier_with_visibility,
             },
+            render_commit::LodRenderCandidates,
         },
-        testing::{ImageMetrics, LodProjection, LodTestCamera, compare_linear_rgba},
+        testing::{
+            BoundaryBandMetrics, ImageMetrics, LodProjection, LodTestCamera,
+            SpatialResidualMetrics, compare_linear_rgba, compare_node_boundary_bands,
+            gather_frontier_gaussians_with_nodes,
+            render_production_flat_linear_gaussians_with_owners,
+            render_production_lod_linear_gaussians,
+        },
     };
     use sha2::{Digest, Sha256};
 
@@ -80,6 +111,57 @@ mod headless {
     // representative rather than sub-pixel covariance noise.
     const VISIBLE_ELONGATION_MIN_MAJOR_SIGMA_PX: f32 = 4.0;
     const VISIBLE_ELONGATION_MIN_ASPECT_RATIO: f32 = 8.0;
+
+    const GARDEN_LOD_ENV: &str = "BGS_GARDEN_LOD";
+    const GARDEN_PLY_ENV: &str = "BGS_GARDEN_PLY";
+    const GARDEN_SOURCE_BYTE_LEN: u64 = 1_447_027_964;
+    const GARDEN_SOURCE_GAUSSIANS: u64 = 5_834_784;
+    const GARDEN_SOURCE_SHA256: &str =
+        "16701d5e0630dfaca74f8794ed7ce2aa23fa922f87dc09a7e37484e8d3f82d5a";
+    const GARDEN_MANIFEST_SHA256: &str =
+        "67b9119222e1435fb88755698dcd916e608c9cd21c1417b687a7cce663729600";
+    const GARDEN_SHARDS: [(&str, u64, &str); 3] = [
+        (
+            "pages/shard-000000.bgslodpack",
+            536_660_028,
+            "d8884945ff558d8a231d48511900f9cc97df407c9bd442d1a8ab35bc9a0766ea",
+        ),
+        (
+            "pages/shard-000001.bgslodpack",
+            536_660_028,
+            "1232414ca7f0addbd4524516d06c205832468f685eb897c60e53412e24608504",
+        ),
+        (
+            "pages/shard-000002.bgslodpack",
+            527_570_716,
+            "cdc3c896fba1f1aae469c09e913ba075c824fb6b8e0434b08206b48a03c9a8b2",
+        ),
+    ];
+    const GARDEN_ABI16: u32 = 16;
+    const GARDEN_MOMENT_MERGE_V4: u32 = 4;
+    const GARDEN_NODE_PAGE_COUNT: u32 = 6_517;
+    const GARDEN_STORED_GAUSSIANS: u64 = 6_668_314;
+    const GARDEN_MIN: [f32; 3] = [-118.729_54, -130.432_02, -121.283_48];
+    const GARDEN_MAX: [f32; 3] = [137.847_32, 109.880_554, 136.600_8];
+    const GARDEN_CENTER: Vec3 = Vec3::new(9.558_891, -10.275_734, 7.658_661);
+    const GARDEN_RADIUS: f32 = 217.994_34;
+    const GARDEN_AUTO_FRAME_DISTANCE: f32 = 474.641_1;
+    const GARDEN_BOUNDARY_WIDTH: u32 = 1_920;
+    const GARDEN_BOUNDARY_HEIGHT: u32 = 1_080;
+    const GARDEN_VIEWPORT_HEIGHT_PX: f32 = 1_080.0;
+    const GARDEN_VIEWPORT_ASPECT: f32 = 16.0 / 9.0;
+    const GARDEN_VIEWER_FOV: f32 = std::f32::consts::FRAC_PI_4;
+    const GARDEN_VIEWER_NEAR: f32 = 0.1;
+    const GARDEN_BOUNDARY_BAND_RADIUS: u32 = 1;
+    const GARDEN_MIN_MATCHED_PIXELS: usize = 128;
+    // A boundary-specific two-percentage-point signed shift is visible in
+    // linear alpha/luminance even when the whole-frame score remains good.
+    const GARDEN_MAX_MATCHED_SIGNED_BIAS_GAP: f64 = 0.02;
+    const GARDEN_MAX_REFERENCE_MATCH_GAP: f64 = 0.05;
+    // Regularization makes an exact/near-exact interior control meaningful:
+    // the gate still limits boundary error to 0.5% when the control is zero.
+    const GARDEN_ENRICHMENT_FLOOR: f64 = 0.005;
+    const GARDEN_MAX_MATCHED_ENRICHMENT: f64 = 2.0;
     const SYNTHETIC_COARSE_QUALITY: f32 = 0.65;
     const SYNTHETIC_COARSE_THRESHOLDS: QualityThresholds = QualityThresholds {
         minimum_foreground_psnr: 30.0,
@@ -118,9 +200,11 @@ mod headless {
         }
 
         let mut app = App::new();
+        let render_probe = GpuRenderProbe::default();
         app.insert_resource(ClearColor(Color::linear_rgba(0.0, 0.0, 0.0, 0.0)))
             .insert_resource(synthetic_bridge_config())
-            .insert_resource(GpuQualityState::default());
+            .insert_resource(GpuQualityState::default())
+            .insert_resource(render_probe);
         app.add_plugins(
             DefaultPlugins
                 .set(AssetPlugin {
@@ -137,15 +221,25 @@ mod headless {
                     ..default()
                 })
                 .disable::<WinitPlugin>()
+                .disable::<PipelinedRenderingPlugin>()
                 .disable::<bevy::log::LogPlugin>(),
         );
         app.add_plugins(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(
             1.0 / 60.0,
         )));
-        app.add_plugins(GaussianSplattingPlugin)
-            .add_systems(Startup, setup_gpu_fixture)
-            .add_systems(Update, drive_gpu_capture)
-            .add_observer(on_gpu_capture);
+        app.add_plugins((
+            GaussianSplattingPlugin,
+            ExtractResourcePlugin::<GpuRenderProbe>::default(),
+        ))
+        .add_systems(Startup, setup_gpu_fixture)
+        .add_systems(Update, drive_gpu_capture)
+        .add_observer(on_gpu_capture);
+        app.sub_app_mut(RenderApp).add_systems(
+            Render,
+            capture_gpu_render_proof
+                .after(LodViewBlendPublicationLabel)
+                .in_set(RenderSystems::Cleanup),
+        );
         app.run();
     }
 
@@ -169,13 +263,17 @@ mod headless {
         phase_frames: u32,
         total_frames: u32,
         stable_frames: u32,
+        stable_identity: Option<GpuMainDrawableIdentity>,
         target: Option<Handle<Image>>,
         cloud: Option<Entity>,
+        camera: Option<Entity>,
         reference: Option<Vec<[f32; 4]>>,
         coarse: Option<GpuCapture>,
         quality95: Option<GpuCapture>,
         quality99: Option<GpuCapture>,
         pending_active_gaussians: u64,
+        pending_request: Option<Entity>,
+        pending_main_proof: Option<GpuMainDrawableIdentity>,
     }
 
     impl Default for GpuQualityState {
@@ -185,13 +283,17 @@ mod headless {
                 phase_frames: 0,
                 total_frames: 0,
                 stable_frames: 0,
+                stable_identity: None,
                 target: None,
                 cloud: None,
+                camera: None,
                 reference: None,
                 coarse: None,
                 quality95: None,
                 quality99: None,
                 pending_active_gaussians: 0,
+                pending_request: None,
+                pending_main_proof: None,
             }
         }
     }
@@ -201,6 +303,62 @@ mod headless {
             self.phase = phase;
             self.phase_frames = 0;
             self.stable_frames = 0;
+            self.stable_identity = None;
+        }
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct GpuMainDrawableIdentity {
+        status_revision: u64,
+        requested_target: LodQualityTarget,
+        selected_gaussians: u64,
+        submitted_candidates: u32,
+        render_commit_identity: usize,
+    }
+
+    #[derive(Clone, Debug)]
+    struct GpuRenderDrawableProof {
+        requested_target: LodQualityTarget,
+        rendered_quality: LodEffectiveStatus,
+        frontier_candidate_count: u32,
+        rendered_candidate_count: u32,
+        compaction_candidate_count: u32,
+        render_commit_identity: usize,
+        candidate_active: bool,
+        candidate_transitioning: bool,
+        candidate_failed: bool,
+        drawable: LodLastRadixDrawableForTesting,
+        indirect: LodIndirectArgs,
+        expected_indirect: LodIndirectArgs,
+    }
+
+    #[derive(Default)]
+    struct GpuRenderProbeShared {
+        armed_requests: HashSet<Entity>,
+        latched_requests: HashMap<Entity, Option<GpuRenderDrawableProof>>,
+    }
+
+    #[derive(Resource, Clone, ExtractResource, Default)]
+    struct GpuRenderProbe(Arc<Mutex<GpuRenderProbeShared>>);
+
+    impl GpuRenderProbe {
+        fn arm(&self, request: Entity) {
+            let mut shared = self
+                .0
+                .lock()
+                .expect("real-pattern render probe mutex is not poisoned");
+            assert!(
+                shared.armed_requests.insert(request),
+                "screenshot request {request:?} was armed twice"
+            );
+            assert!(
+                !shared.latched_requests.contains_key(&request),
+                "screenshot request {request:?} reused an old render latch"
+            );
+        }
+
+        fn take_latched(&self, request: Entity) -> Option<Option<GpuRenderDrawableProof>> {
+            self.0.lock().ok()?.latched_requests.remove(&request)
         }
     }
 
@@ -272,29 +430,194 @@ mod headless {
                 Name::new("lod_covariance_diagonal_ribbons"),
             ))
             .id();
-        commands.spawn((
-            Camera3d::default(),
-            Camera::default(),
-            Projection::Perspective(PerspectiveProjection {
-                fov: FOV_Y,
-                near: 0.01,
-                far: 100.0,
-                ..default()
-            }),
-            RenderTarget::Image(target.clone().into()),
-            Transform::from_translation(Vec3::new(0.0, 0.0, 5.0)),
-            Tonemapping::None,
-            GaussianCamera::default(),
-            Name::new("lod_covariance_ribbon_camera"),
-        ));
+        let camera = commands
+            .spawn((
+                Camera3d::default(),
+                Camera::default(),
+                Projection::Perspective(PerspectiveProjection {
+                    fov: FOV_Y,
+                    near: 0.01,
+                    far: 100.0,
+                    ..default()
+                }),
+                RenderTarget::Image(target.clone().into()),
+                Transform::from_translation(Vec3::new(0.0, 0.0, 5.0)),
+                Tonemapping::None,
+                GaussianCamera::default(),
+                Name::new("lod_covariance_ribbon_camera"),
+            ))
+            .id();
         state.target = Some(target);
         state.cloud = Some(cloud);
+        state.camera = Some(camera);
+    }
+
+    fn capture_gpu_render_proof(
+        render_device: Res<RenderDevice>,
+        render_queue: Res<RenderQueue>,
+        buffers: Res<LodCompactionBuffers<Gaussian3d>>,
+        views: Query<&ExtractedView, With<GaussianCamera>>,
+        clouds: Query<(
+            Entity,
+            &PlanarGaussian3dHandle,
+            &GaussianLodSettings,
+            &CloudSettings,
+            &LodRenderCandidates,
+        )>,
+        probe: Res<GpuRenderProbe>,
+    ) {
+        if probe
+            .0
+            .lock()
+            .expect("real-pattern render probe mutex is not poisoned")
+            .armed_requests
+            .is_empty()
+        {
+            return;
+        }
+
+        let mut latest = None;
+        for view in &views {
+            let camera = view.retained_view_entity.main_entity.id();
+            for (cloud, handle, settings, cloud_settings, candidates) in &clouds {
+                let Some(candidate) = candidates.get(camera) else {
+                    continue;
+                };
+                let Some(compaction) =
+                    buffers.get_ready(view.retained_view_entity, cloud, handle.handle().id())
+                else {
+                    continue;
+                };
+                let Some(drawable) = compaction.last_radix_drawable_for_testing(candidate) else {
+                    continue;
+                };
+                let indirect =
+                    read_lod_indirect_args_for_testing(&render_device, &render_queue, compaction)
+                        .unwrap_or_else(|error| {
+                            panic!("real-pattern indirect-args readback failed: {error}")
+                        });
+                let defines =
+                    ShaderDefines::for_radix_depth_bits(cloud_settings.radix_sort_depth_bits);
+                let expected_indirect = finalized_indirect_args(
+                    drawable.rendered_candidate_count,
+                    compaction.output_capacity(),
+                    defines.radix_base * defines.entries_per_invocation_a,
+                    defines.workgroup_entries_c,
+                );
+                assert!(
+                    latest.is_none(),
+                    "real-pattern quality gate expected one retained view/cloud consumer"
+                );
+                latest = Some(GpuRenderDrawableProof {
+                    requested_target: settings.quality_target(),
+                    rendered_quality: candidate.rendered_quality_status(),
+                    frontier_candidate_count: candidate.frontier().candidate_count(),
+                    rendered_candidate_count: candidate.rendered_candidate_count(),
+                    compaction_candidate_count: compaction.candidate_count(),
+                    render_commit_identity: candidate.render_commit_identity_for_testing(),
+                    candidate_active: candidate.render_is_active_for_testing(),
+                    candidate_transitioning: candidate.render_is_transitioning_for_testing(),
+                    candidate_failed: candidate.failed(),
+                    drawable,
+                    indirect,
+                    expected_indirect,
+                });
+            }
+        }
+
+        let mut shared = probe
+            .0
+            .lock()
+            .expect("real-pattern render probe mutex is not poisoned");
+        let armed = std::mem::take(&mut shared.armed_requests);
+        for request in armed {
+            assert!(
+                shared
+                    .latched_requests
+                    .insert(request, latest.clone())
+                    .is_none(),
+                "screenshot request {request:?} was latched twice"
+            );
+        }
+    }
+
+    fn current_gpu_main_identity(
+        bridge: &GaussianLodBridgeStatus,
+        status: &GaussianLodStatus,
+        settings: &GaussianLodSettings,
+        candidates: &LodRenderCandidates,
+        camera: Entity,
+    ) -> Option<GpuMainDrawableIdentity> {
+        let candidate = candidates.get(camera)?;
+        let requested_target = settings.quality_target();
+        let rendered_quality = candidate.rendered_quality_status();
+        let submitted_candidates = candidate.rendered_candidate_count();
+        if bridge.phase != GaussianLodBridgePhase::Active
+            || bridge.failure.is_some()
+            || bridge.active_views != 1
+            || bridge.active_gaussians != u64::from(submitted_candidates)
+            || status.source != GaussianLodSourceKind::Ephemeral
+            || status.lifecycle != GaussianLodLifecycle::Active
+            || status.active_views != 1
+            || status.requested_target != requested_target
+            || status.target_satisfied != Some(true)
+            || status.degradation != LodDegradation::None
+            || status.view_blend_edges != 0
+            || status.view_blend_lagging_edges != 0
+            || status.view_blend_invalid_pressure_evaluations != 0
+            || status.view_blend_missing_consumers != 0
+            || status.submitted_candidates != submitted_candidates
+            || status.selected_gaussians != rendered_quality.active_gaussians
+            || rendered_quality.requested_target != requested_target
+            || rendered_quality.degradation != LodDegradation::None
+            || rendered_quality.achieved_max_target_ratio > 1.0
+            || !candidate.render_is_active_for_testing()
+            || candidate.failed()
+        {
+            return None;
+        }
+        Some(GpuMainDrawableIdentity {
+            status_revision: status.revision,
+            requested_target,
+            selected_gaussians: status.selected_gaussians,
+            submitted_candidates,
+            render_commit_identity: candidate.render_commit_identity_for_testing(),
+        })
+    }
+
+    fn gpu_render_proof_matches_main(
+        render: &GpuRenderDrawableProof,
+        main: &GpuMainDrawableIdentity,
+    ) -> bool {
+        render.requested_target == main.requested_target
+            && render.rendered_quality.requested_target == main.requested_target
+            && render.rendered_quality.degradation == LodDegradation::None
+            && render.rendered_quality.achieved_max_target_ratio <= 1.0
+            && render.rendered_quality.active_gaussians == main.selected_gaussians
+            && u64::from(render.frontier_candidate_count) == main.selected_gaussians
+            && render.rendered_candidate_count == main.submitted_candidates
+            && render.compaction_candidate_count == main.submitted_candidates
+            && render.render_commit_identity == main.render_commit_identity
+            && render.candidate_active
+            && !render.candidate_transitioning
+            && !render.candidate_failed
+            && render.drawable.candidate_token_matches
+            && render.drawable.candidate_content_matches
+            && render.drawable.rendered_candidate_count == main.submitted_candidates
+            && render.drawable.morph_identity.is_none()
+            && render.drawable.view_blend.is_none()
+            && render.indirect == render.expected_indirect
+            && render.indirect.instance_count != 0
     }
 
     fn drive_gpu_capture(
         mut commands: Commands,
         mut state: ResMut<GpuQualityState>,
-        statuses: Query<&GaussianLodBridgeStatus>,
+        bridge_statuses: Query<&GaussianLodBridgeStatus>,
+        statuses: Query<&GaussianLodStatus>,
+        settings: Query<&GaussianLodSettings>,
+        candidates: Query<&LodRenderCandidates>,
+        probe: Res<GpuRenderProbe>,
     ) {
         state.total_frames += 1;
         state.phase_frames += 1;
@@ -302,33 +625,52 @@ mod headless {
             state.total_frames <= MAX_FRAMES,
             "real-pattern LoD GPU regression timed out in {:?}; status={:?}",
             state.phase,
-            state.cloud.and_then(|cloud| statuses.get(cloud).ok())
+            state
+                .cloud
+                .and_then(|cloud| bridge_statuses.get(cloud).ok())
         );
 
         let cloud = state.cloud.expect("ribbon cloud exists");
         match state.phase {
             GpuPhase::ReferenceWarmup if state.phase_frames >= REFERENCE_WARMUP_FRAMES => {
                 assert!(
-                    statuses.get(cloud).is_err(),
+                    bridge_statuses.get(cloud).is_err(),
                     "quality one unexpectedly retained a LoD bridge"
                 );
-                request_gpu_capture(&mut commands, &state);
                 state.enter(GpuPhase::ReferencePending);
+                request_gpu_capture(&mut commands, &mut state, &probe, None);
             }
             GpuPhase::CoarseWaiting | GpuPhase::Quality95Waiting | GpuPhase::Quality99Waiting => {
-                let Ok(status) = statuses.get(cloud) else {
+                let (Ok(bridge), Ok(status), Ok(settings), Ok(candidates)) = (
+                    bridge_statuses.get(cloud),
+                    statuses.get(cloud),
+                    settings.get(cloud),
+                    candidates.get(cloud),
+                ) else {
                     state.stable_frames = 0;
+                    state.stable_identity = None;
                     return;
                 };
-                assert!(status.failure.is_none(), "LoD bridge failed: {status:?}");
-                if status.phase == GaussianLodBridgePhase::Active && status.active_gaussians > 0 {
-                    state.pending_active_gaussians = status.active_gaussians;
+                assert!(bridge.failure.is_none(), "LoD bridge failed: {bridge:?}");
+                let Some(identity) = current_gpu_main_identity(
+                    bridge,
+                    status,
+                    settings,
+                    candidates,
+                    state.camera.expect("ribbon camera exists"),
+                ) else {
+                    state.stable_frames = 0;
+                    state.stable_identity = None;
+                    return;
+                };
+                if state.stable_identity.as_ref() == Some(&identity) {
                     state.stable_frames += 1;
                 } else {
-                    state.stable_frames = 0;
+                    state.pending_active_gaussians = u64::from(identity.submitted_candidates);
+                    state.stable_identity = Some(identity.clone());
+                    state.stable_frames = 1;
                 }
                 if state.stable_frames >= STABLE_ACTIVE_FRAMES {
-                    request_gpu_capture(&mut commands, &state);
                     let pending = match state.phase {
                         GpuPhase::CoarseWaiting => GpuPhase::CoarsePending,
                         GpuPhase::Quality95Waiting => GpuPhase::Quality95Pending,
@@ -336,17 +678,18 @@ mod headless {
                         _ => unreachable!(),
                     };
                     state.enter(pending);
+                    request_gpu_capture(&mut commands, &mut state, &probe, Some(identity));
                 }
             }
             GpuPhase::RestoredWaiting => {
-                if statuses.get(cloud).is_err() {
+                if bridge_statuses.get(cloud).is_err() {
                     state.stable_frames += 1;
                 } else {
                     state.stable_frames = 0;
                 }
                 if state.stable_frames >= RESTORED_WARMUP_FRAMES {
-                    request_gpu_capture(&mut commands, &state);
                     state.enter(GpuPhase::RestoredPending);
+                    request_gpu_capture(&mut commands, &mut state, &probe, None);
                 }
             }
             GpuPhase::ReferenceWarmup
@@ -358,18 +701,65 @@ mod headless {
         }
     }
 
-    fn request_gpu_capture(commands: &mut Commands, state: &GpuQualityState) {
-        commands.spawn(Screenshot::image(
-            state.target.clone().expect("render target exists"),
-        ));
+    fn request_gpu_capture(
+        commands: &mut Commands,
+        state: &mut GpuQualityState,
+        probe: &GpuRenderProbe,
+        main_proof: Option<GpuMainDrawableIdentity>,
+    ) {
+        assert!(
+            state.pending_request.is_none() && state.pending_main_proof.is_none(),
+            "real-pattern quality gate already has a screenshot in flight"
+        );
+        let request = commands
+            .spawn(Screenshot::image(
+                state.target.clone().expect("render target exists"),
+            ))
+            .id();
+        probe.arm(request);
+        state.pending_request = Some(request);
+        state.pending_main_proof = main_proof;
     }
 
     fn on_gpu_capture(
         trigger: On<ScreenshotCaptured>,
         mut state: ResMut<GpuQualityState>,
+        probe: Res<GpuRenderProbe>,
         mut settings: Query<&mut GaussianLodSettings>,
         mut exit: MessageWriter<AppExit>,
     ) {
+        let request = state
+            .pending_request
+            .take()
+            .expect("screenshot completed without an in-flight request");
+        assert_eq!(
+            trigger.entity, request,
+            "screenshot callback did not match the in-flight request"
+        );
+        let main_proof = state.pending_main_proof.take();
+        let render_proof = probe.take_latched(request).unwrap_or_else(|| {
+            panic!(
+                "screenshot request {request:?} completed without its request-frame Render Cleanup latch"
+            )
+        });
+        let proof_matches = match (&main_proof, &render_proof) {
+            (Some(main), Some(render)) => gpu_render_proof_matches_main(render, main),
+            (None, None) => true,
+            _ => false,
+        };
+        if !proof_matches {
+            let waiting = match state.phase {
+                GpuPhase::ReferencePending => GpuPhase::ReferenceWarmup,
+                GpuPhase::CoarsePending => GpuPhase::CoarseWaiting,
+                GpuPhase::Quality95Pending => GpuPhase::Quality95Waiting,
+                GpuPhase::Quality99Pending => GpuPhase::Quality99Waiting,
+                GpuPhase::RestoredPending => GpuPhase::RestoredWaiting,
+                phase => panic!("screenshot captured during unexpected phase {phase:?}"),
+            };
+            state.enter(waiting);
+            return;
+        }
+
         let image = linear_rgba(
             trigger
                 .image
@@ -646,6 +1036,1535 @@ mod headless {
             pitch_degrees: -25.0,
         },
     ];
+
+    /// Authenticated CPU-only seam oracle for the canonical Garden source and
+    /// its ABI-16 native package. The attributed image uses authored SH color;
+    /// Page debug colors are deliberately absent because their palette luma
+    /// would confound a density-bias measurement.
+    ///
+    /// Raw node-boundary/interior metrics remain useful diagnostics, but real
+    /// scene edges correlate with hierarchy boundaries and isolated dominant
+    /// contributors can alternate densely under translucent overlap. The
+    /// acceptance checks therefore retain only coherent two-pixel ownership
+    /// runs and compare the interface endpoints with their immediate same-node
+    /// interiors. A second difference-in-differences check compares the
+    /// residual jump across the interface with the immediately local residual
+    /// slopes inside both nodes. Reference-only alpha/gradient matching decides
+    /// whether a local pair is eligible, so candidate error cannot select its
+    /// own controls.
+    #[test]
+    #[ignore = "requires canonical Garden ABI-16 package and PLY via BGS_GARDEN_LOD/BGS_GARDEN_PLY"]
+    fn canonical_garden_abi16_node_boundary_oracle() {
+        let manifest_path = required_fixture_path(GARDEN_LOD_ENV);
+        let source_path = required_fixture_path(GARDEN_PLY_ENV);
+        let encoded = fs::read(&manifest_path).unwrap_or_else(|error| {
+            panic!(
+                "failed to read Garden manifest {}: {error}",
+                manifest_path.display()
+            )
+        });
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&encoded)),
+            GARDEN_MANIFEST_SHA256,
+            "Garden host-Morton manifest SHA-256 drifted"
+        );
+        let manifest = decode_manifest(&encoded, LodCodecLimits::default())
+            .expect("canonical Garden ABI-16 manifest decodes and validates");
+        assert_authenticated_garden_abi16_manifest(&manifest);
+        authenticate_garden_package_shards(&manifest_path);
+
+        let views = garden_boundary_views(&manifest);
+        assert!(
+            views[1].active_gaussians < views[0].active_gaussians,
+            "farther Garden q=.65 view must select fewer records: auto={}, far={}",
+            views[0].active_gaussians,
+            views[1].active_gaussians
+        );
+        assert!(
+            views[2].active_gaussians < views[0].active_gaussians,
+            "Garden q=.35 overview must be coarser than auto-frame q=.65: q35={}, q65={}",
+            views[2].active_gaussians,
+            views[0].active_gaussians
+        );
+        assert!(
+            views
+                .iter()
+                .all(|view| view.active_gaussians < GARDEN_SOURCE_GAUSSIANS),
+            "Garden q=.65 views must exercise an actual ABI-16 reduction"
+        );
+        let selected_pages = garden_selected_page_ids(&manifest, &views);
+
+        // Authenticate the fixed PLY byte stream without retaining a second
+        // 1.45 GB cloud. The package's hash-checked source-leaf pages are the
+        // authoritative canonical order: its GPU preprocessor returned the
+        // Morton keys used by the manifest fingerprint, while recomputing keys
+        // with host division can differ at quantization boundaries.
+        authenticate_garden_source(&source_path);
+        let source = load_authenticated_garden_leaf_source(&manifest_path, &manifest);
+        let mut references = Vec::with_capacity(views.len());
+        for view in &views {
+            let owners = garden_selected_source_owners(&manifest, &view.frontier, source.len());
+            references.push(
+                render_production_flat_linear_gaussians_with_owners(
+                    &source,
+                    &owners,
+                    view.camera,
+                    GARDEN_BOUNDARY_WIDTH,
+                    GARDEN_BOUNDARY_HEIGHT,
+                    GaussianColorSpace::SrgbRec709Display,
+                )
+                .unwrap_or_else(|error| {
+                    panic!("{} flat Garden oracle render failed: {error}", view.label)
+                }),
+            );
+        }
+        drop(source);
+
+        // Read only the pages needed by the two selected cuts. Packed shard
+        // byte ranges are seek-read directly; whole shard payloads are never
+        // materialized.
+        let pages = decode_selected_garden_pages(&manifest_path, &manifest, &selected_pages);
+        let lod = PlanarGaussian3dLod { manifest, pages };
+
+        let mut accepted_class_metrics: [Vec<GardenMatchedBoundaryMetrics>; 4] =
+            std::array::from_fn(|_| Vec::new());
+        let mut acceptance_failures = Vec::new();
+        for (view, reference) in views.iter().zip(&references) {
+            let gaussians = gather_frontier_gaussians_with_nodes(&lod, &view.frontier)
+                .unwrap_or_else(|error| {
+                    panic!("{} ABI-16 frontier does not resolve: {error}", view.label)
+                });
+            assert_eq!(
+                gaussians.len() as u64,
+                view.active_gaussians,
+                "{} gathered record count differs from selector status",
+                view.label
+            );
+            let candidate = render_production_lod_linear_gaussians(
+                &gaussians,
+                view.camera,
+                GARDEN_BOUNDARY_WIDTH,
+                GARDEN_BOUNDARY_HEIGHT,
+                GaussianColorSpace::SrgbRec709Display,
+            )
+            .unwrap_or_else(|error| panic!("{} ABI-16 render failed: {error}", view.label));
+            let labels = reference
+                .dominant_nodes
+                .iter()
+                .map(|node| node.map(|node| node.0))
+                .collect::<Vec<_>>();
+            let raw = compare_node_boundary_bands(
+                &reference.rgba,
+                &candidate,
+                &labels,
+                GARDEN_BOUNDARY_WIDTH,
+                GARDEN_BOUNDARY_HEIGHT,
+                GARDEN_BOUNDARY_BAND_RADIUS,
+            )
+            .map_err(|error| {
+                eprintln!(
+                    "Garden ABI16 node-boundary oracle {} raw diagnostic unavailable: {error}",
+                    view.label
+                );
+            })
+            .ok();
+            let interfaces = garden_boundary_interfaces(
+                &lod.manifest,
+                &reference.rgba,
+                &labels,
+                GARDEN_BOUNDARY_WIDTH,
+                GARDEN_BOUNDARY_HEIGHT,
+            );
+            let matched =
+                garden_paired_boundary_metrics(&reference.rgba, &candidate, &interfaces.all);
+            let overall = compare_linear_rgba(&reference.rgba, &candidate, 1.0 / 255.0)
+                .expect("Garden oracle images are finite and equally sized");
+            report_garden_boundary_metrics(view, overall, raw, matched);
+            if view.acceptance {
+                if let Some(matched) = matched {
+                    acceptance_failures
+                        .extend(garden_boundary_metric_failures(view.label, matched));
+                } else {
+                    acceptance_failures.push(format!(
+                        "{} exposes no coherent, locally matched logical-node interface",
+                        view.label
+                    ));
+                }
+            }
+
+            for (class_index, (class, class_interfaces)) in [
+                ("same-depth", &interfaces.same_depth),
+                ("mixed-depth", &interfaces.mixed_depth),
+                ("same-parent", &interfaces.same_parent),
+                ("cross-parent", &interfaces.cross_parent),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let metrics =
+                    garden_paired_boundary_metrics(&reference.rgba, &candidate, class_interfaces);
+                if view.acceptance {
+                    accepted_class_metrics[class_index].extend(metrics);
+                }
+                report_garden_boundary_class(view.label, class, metrics);
+                // A per-view subclass is an additional behavior sample only
+                // when both estimators have enough observations. Sparse
+                // subclasses retain their evidence for the mandatory
+                // accepted-view class aggregate below; entering on endpoint
+                // coverage alone would make 62 jump interfaces fail a
+                // 64-interface gate before aggregation can supply power.
+                if view.acceptance
+                    && metrics.is_some_and(|metrics| {
+                        metrics.boundary.pixels >= GARDEN_MIN_MATCHED_PIXELS
+                            && metrics.jump_interfaces.saturating_mul(2)
+                                >= GARDEN_MIN_MATCHED_PIXELS
+                    })
+                {
+                    let metrics = metrics.unwrap();
+                    acceptance_failures.extend(garden_boundary_metric_failures(
+                        &format!("{} {class}", view.label),
+                        metrics,
+                    ));
+                }
+            }
+        }
+        for (class_index, class) in ["same-depth", "mixed-depth", "same-parent", "cross-parent"]
+            .into_iter()
+            .enumerate()
+        {
+            let aggregate =
+                combine_garden_matched_boundary_metrics(&accepted_class_metrics[class_index]);
+            report_garden_boundary_class("q=.65 accepted-view aggregate", class, aggregate);
+            if let Some(aggregate) = aggregate {
+                acceptance_failures.extend(garden_boundary_metric_failures(
+                    &format!("q=.65 Garden accepted-view aggregate {class}"),
+                    aggregate,
+                ));
+            } else {
+                acceptance_failures.push(format!(
+                    "q=.65 Garden acceptance views expose no coherent, locally matched {class} interface"
+                ));
+            }
+        }
+        assert!(
+            acceptance_failures.is_empty(),
+            "Garden ABI16 boundary acceptance failed:\n{}",
+            acceptance_failures.join("\n")
+        );
+    }
+
+    #[derive(Clone, Debug)]
+    struct GardenBoundaryView {
+        label: &'static str,
+        camera: LodTestCamera,
+        frontier: Vec<LodNodeId>,
+        active_gaussians: u64,
+        acceptance: bool,
+    }
+
+    fn required_fixture_path(variable: &str) -> PathBuf {
+        PathBuf::from(
+            env::var_os(variable)
+                .unwrap_or_else(|| panic!("set {variable} to the canonical local fixture")),
+        )
+    }
+
+    fn assert_authenticated_garden_abi16_manifest(manifest: &GaussianLodManifest) {
+        assert_eq!(
+            manifest.header.source_gaussian_count, GARDEN_SOURCE_GAUSSIANS,
+            "Garden package source count drifted"
+        );
+        assert_eq!(manifest.header.node_count, GARDEN_NODE_PAGE_COUNT);
+        assert_eq!(manifest.header.page_count, GARDEN_NODE_PAGE_COUNT);
+        assert_eq!(manifest.nodes.len() as u32, GARDEN_NODE_PAGE_COUNT);
+        assert_eq!(manifest.pages.len() as u32, GARDEN_NODE_PAGE_COUNT);
+        assert_eq!(
+            manifest.header.stored_gaussian_count, GARDEN_STORED_GAUSSIANS,
+            "Garden package stored-record count drifted"
+        );
+        assert_eq!(
+            manifest.build.builder_abi_version, GARDEN_ABI16,
+            "Garden boundary oracle requires the ABI-16 spatial package"
+        );
+        assert_eq!(manifest.build.reducer, LodReducerKind::MomentMerge);
+        assert_eq!(
+            manifest.build.reducer_version, GARDEN_MOMENT_MERGE_V4,
+            "Garden boundary oracle requires MomentMerge v4"
+        );
+        let morph_map = manifest
+            .morph_map
+            .as_ref()
+            .expect("ABI-16 Garden package carries its monotone morph map");
+        assert_eq!(morph_map.schema_version, 1);
+        assert_eq!(
+            morph_map.node_runs.len(),
+            manifest.nodes.len(),
+            "Garden morph map must cover every hierarchy node"
+        );
+        assert_ne!(
+            manifest.build.source_fingerprint, 0,
+            "Garden package omits its canonical-source fingerprint"
+        );
+        let bounds = manifest
+            .scene_bounds
+            .expect("canonical Garden manifest has scene bounds");
+        assert_eq!(bounds.min, GARDEN_MIN, "Garden scene minimum drifted");
+        assert_eq!(bounds.max, GARDEN_MAX, "Garden scene maximum drifted");
+        let center = Vec3::from_array(bounds.center());
+        assert!(
+            center.distance(GARDEN_CENTER) <= 1.0e-4,
+            "Garden center drifted: expected={GARDEN_CENTER:?}, actual={center:?}"
+        );
+        assert!(
+            (bounds.radius() - GARDEN_RADIUS).abs() <= 1.0e-3,
+            "Garden radius drifted: expected={GARDEN_RADIUS}, actual={}",
+            bounds.radius()
+        );
+        assert!(
+            (GARDEN_AUTO_FRAME_DISTANCE / bounds.radius() - 2.177_31).abs() <= 1.0e-5,
+            "Garden viewer auto-frame ratio drifted"
+        );
+    }
+
+    fn garden_boundary_views(manifest: &GaussianLodManifest) -> [GardenBoundaryView; 3] {
+        let hierarchy =
+            ManifestLodHierarchy::new(manifest).expect("Garden ABI-16 hierarchy compiles");
+        let center = Vec3::from_array(
+            manifest
+                .scene_bounds
+                .expect("canonical Garden manifest has scene bounds")
+                .center(),
+        );
+        let radius = manifest.scene_bounds.unwrap().radius();
+        let view_direction = Vec3::new(0.0, 1.5, 5.0).normalize();
+        [
+            ("viewer-auto-q65", GARDEN_AUTO_FRAME_DISTANCE, 0.65, true),
+            ("far-4r-q65", 4.0 * radius, 0.65, true),
+            (
+                "viewer-auto-q35-diagnostic",
+                GARDEN_AUTO_FRAME_DISTANCE,
+                0.35,
+                false,
+            ),
+        ]
+        .map(|(label, distance, quality, acceptance)| {
+            let mut settings = GaussianLodSettings {
+                quality,
+                hysteresis: 0.0,
+                ..default()
+            };
+            settings.budgets.max_active_gaussians = 8_000_000;
+            settings.budgets.max_traversal_nodes_per_view = manifest.header.node_count.max(1);
+            let camera_position = center + view_direction * distance;
+            let clip_from_world = Mat4::perspective_infinite_reverse_rh(
+                GARDEN_VIEWER_FOV,
+                GARDEN_VIEWPORT_ASPECT,
+                GARDEN_VIEWER_NEAR,
+            ) * Mat4::look_at_rh(camera_position, center, Vec3::Y);
+            let view = LodView::perspective(
+                camera_position,
+                GARDEN_VIEWPORT_HEIGHT_PX,
+                GARDEN_VIEWER_FOV,
+                GARDEN_VIEWER_NEAR,
+            )
+            .with_clip_from_world(clip_from_world);
+            let selected = select_frontier_with_visibility(
+                &hierarchy,
+                &AllResident,
+                view,
+                &settings,
+                |_, metrics| view.node_is_visible(metrics, 0.0),
+            )
+            .unwrap_or_else(|error| panic!("{label} Garden selection failed: {error:?}"));
+            assert!(
+                selected.requested_nodes.is_empty(),
+                "AllResident Garden selection requested pages"
+            );
+            GardenBoundaryView {
+                label,
+                camera: LodTestCamera {
+                    position: camera_position,
+                    target: center,
+                    up: Vec3::Y,
+                    projection: LodProjection::Perspective {
+                        vertical_fov_radians: GARDEN_VIEWER_FOV,
+                    },
+                    near: GARDEN_VIEWER_NEAR,
+                    far: distance + radius * 4.0,
+                    viewport: [GARDEN_BOUNDARY_WIDTH, GARDEN_BOUNDARY_HEIGHT],
+                },
+                frontier: selected.nodes,
+                active_gaussians: selected.status.active_gaussians,
+                acceptance,
+            }
+        })
+    }
+
+    fn garden_selected_page_ids(
+        manifest: &GaussianLodManifest,
+        views: &[GardenBoundaryView],
+    ) -> BTreeSet<LodPageId> {
+        let nodes = manifest
+            .nodes
+            .iter()
+            .map(|node| (node.id, node))
+            .collect::<BTreeMap<_, _>>();
+        views
+            .iter()
+            .flat_map(|view| view.frontier.iter())
+            .map(|node| {
+                nodes
+                    .get(node)
+                    .unwrap_or_else(|| panic!("selected Garden node {node:?} is absent"))
+                    .representation
+                    .page
+            })
+            .collect()
+    }
+
+    fn garden_selected_source_owners(
+        manifest: &GaussianLodManifest,
+        frontier: &[LodNodeId],
+        source_len: usize,
+    ) -> Vec<Option<LodNodeId>> {
+        let nodes = manifest
+            .nodes
+            .iter()
+            .map(|node| (node.id, node))
+            .collect::<BTreeMap<_, _>>();
+        let mut selected_ranges = Vec::with_capacity(frontier.len());
+        for &node_id in frontier {
+            let node = nodes
+                .get(&node_id)
+                .unwrap_or_else(|| panic!("selected Garden node {node_id:?} is absent"));
+            let start = usize::try_from(node.source.start)
+                .expect("Garden source range starts fit host usize");
+            let end = usize::try_from(node.source.end().expect("Garden source range ends"))
+                .expect("Garden source range ends fit host usize");
+            assert!(
+                start < end && end <= source_len,
+                "selected Garden node {node_id:?} owns an empty or invalid source range"
+            );
+            selected_ranges.push((start, end, node_id));
+        }
+        selected_ranges.sort_unstable_by_key(|&(start, end, node_id)| (start, end, node_id));
+        for pair in selected_ranges.windows(2) {
+            assert!(
+                pair[0].1 <= pair[1].0,
+                "selected Garden antichain source ranges overlap: {:?} and {:?}",
+                pair[0].2,
+                pair[1].2
+            );
+        }
+
+        let mut owners = vec![None; source_len];
+        let mut owned = 0_usize;
+        for (start, end, node_id) in selected_ranges {
+            for (source_index, owner) in owners[start..end].iter_mut().enumerate() {
+                assert!(
+                    owner.replace(node_id).is_none(),
+                    "selected Garden frontier repeats canonical source position {}",
+                    start + source_index
+                );
+            }
+            owned += end - start;
+        }
+        assert!(
+            owned > 0,
+            "Garden frontier owns no canonical source records"
+        );
+        owners
+    }
+
+    struct GardenSha256Reader<R> {
+        inner: R,
+        digest: Sha256,
+    }
+
+    impl<R> GardenSha256Reader<R> {
+        fn new(inner: R) -> Self {
+            Self {
+                inner,
+                digest: Sha256::new(),
+            }
+        }
+
+        fn finish(self) -> String {
+            format!("{:x}", self.digest.finalize())
+        }
+    }
+
+    impl<R: Read> Read for GardenSha256Reader<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let read = self.inner.read(buffer)?;
+            self.digest.update(&buffer[..read]);
+            Ok(read)
+        }
+    }
+
+    fn authenticate_garden_package_shards(manifest_path: &Path) {
+        let package_root = manifest_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        for (relative, expected_len, expected_sha256) in GARDEN_SHARDS {
+            let path = package_root.join(relative);
+            let file = fs::File::open(&path).unwrap_or_else(|error| {
+                panic!(
+                    "failed to open canonical Garden shard {}: {error}",
+                    path.display()
+                )
+            });
+            assert_eq!(
+                file.metadata()
+                    .expect("canonical Garden shard metadata is readable")
+                    .len(),
+                expected_len,
+                "canonical Garden shard length drifted: {}",
+                path.display()
+            );
+            let mut reader = GardenSha256Reader::new(BufReader::with_capacity(1024 * 1024, file));
+            io::copy(&mut reader, &mut io::sink())
+                .expect("canonical Garden shard authentication reads every byte");
+            assert_eq!(
+                reader.finish(),
+                expected_sha256,
+                "canonical Garden shard SHA-256 drifted: {}",
+                path.display()
+            );
+        }
+    }
+
+    fn authenticate_garden_source(path: &Path) {
+        let file = fs::File::open(path).unwrap_or_else(|error| {
+            panic!(
+                "failed to open canonical Garden PLY {}: {error}",
+                path.display()
+            )
+        });
+        assert_eq!(
+            file.metadata()
+                .expect("canonical Garden PLY metadata is readable")
+                .len(),
+            GARDEN_SOURCE_BYTE_LEN,
+            "canonical Garden PLY byte length drifted"
+        );
+        let reader = GardenSha256Reader::new(file);
+        let mut reader = BufReader::with_capacity(1024 * 1024, reader);
+        let mut gaussian_count = 0_u64;
+        stream_ply_3d(&mut reader, 32 * 1024, |batch| {
+            gaussian_count = gaussian_count
+                .checked_add(batch.len() as u64)
+                .expect("canonical Garden PLY record count fits u64");
+            Ok(())
+        })
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to parse canonical Garden PLY {}: {error}",
+                path.display()
+            )
+        });
+        io::copy(&mut reader, &mut io::sink())
+            .expect("canonical Garden authentication consumes trailing bytes");
+        let actual_sha256 = reader.into_inner().finish();
+        assert_eq!(
+            actual_sha256, GARDEN_SOURCE_SHA256,
+            "canonical Garden PLY SHA-256 drifted"
+        );
+        assert_eq!(
+            gaussian_count, GARDEN_SOURCE_GAUSSIANS,
+            "canonical Garden PLY record count drifted"
+        );
+    }
+
+    fn load_authenticated_garden_leaf_source(
+        manifest_path: &Path,
+        manifest: &GaussianLodManifest,
+    ) -> Vec<Gaussian3d> {
+        let descriptors = manifest
+            .pages
+            .iter()
+            .map(|descriptor| (descriptor.id, descriptor))
+            .collect::<BTreeMap<_, _>>();
+        let mut leaves = manifest
+            .nodes
+            .iter()
+            .filter(|node| node.is_leaf())
+            .collect::<Vec<_>>();
+        leaves.sort_unstable_by_key(|node| (node.source.start, node.id));
+        assert!(!leaves.is_empty(), "Garden hierarchy has no source leaves");
+
+        let mut leaf_starts = BTreeMap::new();
+        let mut leaf_ends = BTreeMap::new();
+        let mut cursor = 0_u64;
+        let mut previous_morton_max = None;
+        for leaf in &leaves {
+            assert_eq!(
+                leaf.source.start, cursor,
+                "Garden source leaves are not a complete disjoint canonical partition at {:?}",
+                leaf.id
+            );
+            cursor = leaf
+                .source
+                .end()
+                .expect("Garden leaf source range ends without overflow");
+            assert_eq!(
+                u64::from(leaf.representation.count),
+                leaf.source.count,
+                "Garden leaf {:?} is not an exact-cardinality source page",
+                leaf.id
+            );
+            assert!(
+                leaf.morton.min <= leaf.morton.max,
+                "Garden leaf {:?} has an inverted Morton range",
+                leaf.id
+            );
+            if let Some(previous) = previous_morton_max {
+                assert!(
+                    previous <= leaf.morton.min,
+                    "Garden leaf Morton ranges are not canonical and monotonic at {:?}",
+                    leaf.id
+                );
+            }
+            previous_morton_max = Some(leaf.morton.max);
+            assert!(
+                leaf_starts.insert(leaf.source.start, *leaf).is_none(),
+                "Garden source leaves repeat a canonical start"
+            );
+            assert!(
+                leaf_ends.insert(cursor, *leaf).is_none(),
+                "Garden source leaves repeat a canonical end"
+            );
+        }
+        assert_eq!(
+            cursor, manifest.header.source_gaussian_count,
+            "Garden source leaves do not cover the full canonical source"
+        );
+
+        // Every internal range must be exactly the union of consecutive leaf
+        // ranges, including the Morton endpoints authenticated by the
+        // manifest. This proves that assigning a selected range by canonical
+        // position cannot invent or overlap an ownership domain.
+        for node in &manifest.nodes {
+            let first = leaf_starts.get(&node.source.start).unwrap_or_else(|| {
+                panic!(
+                    "Garden node {:?} source start is not a leaf boundary",
+                    node.id
+                )
+            });
+            let end = node
+                .source
+                .end()
+                .expect("Garden node source range ends without overflow");
+            let last = leaf_ends.get(&end).unwrap_or_else(|| {
+                panic!(
+                    "Garden node {:?} source end is not a leaf boundary",
+                    node.id
+                )
+            });
+            assert_eq!(
+                node.morton.min, first.morton.min,
+                "Garden node {:?} Morton minimum disagrees with its first source leaf",
+                node.id
+            );
+            assert_eq!(
+                node.morton.max, last.morton.max,
+                "Garden node {:?} Morton maximum disagrees with its last source leaf",
+                node.id
+            );
+        }
+
+        let source_len = usize::try_from(manifest.header.source_gaussian_count)
+            .expect("Garden source count fits host usize");
+        let mut source = Vec::new();
+        source
+            .try_reserve_exact(source_len)
+            .expect("host can reserve the authenticated Garden leaf source");
+        let mut reader = GardenPackagePageReader::new(manifest_path);
+        let mut seen_pages = BTreeSet::new();
+        for leaf in leaves {
+            assert!(
+                seen_pages.insert(leaf.representation.page),
+                "Garden source leaf page {:?} is referenced more than once",
+                leaf.representation.page
+            );
+            let descriptor = descriptors
+                .get(&leaf.representation.page)
+                .unwrap_or_else(|| panic!("Garden leaf {:?} has no page descriptor", leaf.id));
+            assert_eq!(
+                descriptor.kind,
+                LodPageKind::SourceLeaves,
+                "Garden leaf {:?} does not reference an exact source-leaf page",
+                leaf.id
+            );
+            let page = reader.decode(descriptor);
+            let start = usize::try_from(leaf.representation.offset)
+                .expect("Garden leaf page offset fits host usize");
+            let end = usize::try_from(
+                leaf.representation
+                    .end()
+                    .expect("Garden leaf page range ends without overflow"),
+            )
+            .expect("Garden leaf page end fits host usize");
+            let records = page
+                .gaussians
+                .get(start..end)
+                .unwrap_or_else(|| panic!("Garden leaf {:?} has an invalid page range", leaf.id));
+            assert_eq!(
+                records.len() as u64,
+                leaf.source.count,
+                "Garden leaf {:?} page range is not its exact source range",
+                leaf.id
+            );
+            source.extend_from_slice(records);
+        }
+        let source_leaf_pages = manifest
+            .pages
+            .iter()
+            .filter(|descriptor| descriptor.kind == LodPageKind::SourceLeaves)
+            .map(|descriptor| descriptor.id)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            seen_pages, source_leaf_pages,
+            "Garden source-leaf descriptors and leaf nodes are not one-to-one"
+        );
+        assert_eq!(
+            source.len(),
+            source_len,
+            "decoded Garden source leaves do not reproduce the manifest source count"
+        );
+        source
+    }
+
+    struct GardenPackagePageReader {
+        package_root: PathBuf,
+        files: BTreeMap<PathBuf, fs::File>,
+    }
+
+    impl GardenPackagePageReader {
+        fn new(manifest_path: &Path) -> Self {
+            let package_root = manifest_path
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."))
+                .canonicalize()
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "failed to canonicalize Garden package root for {}: {error}",
+                        manifest_path.display()
+                    )
+                });
+            Self {
+                package_root,
+                files: BTreeMap::new(),
+            }
+        }
+
+        fn decode(&mut self, descriptor: &LodPageDescriptor) -> PlanarGaussian3dPage {
+            let storage = descriptor
+                .storage
+                .as_ref()
+                .unwrap_or_else(|| panic!("Garden page {:?} has no native storage", descriptor.id));
+            let relative = Path::new(&storage.uri);
+            assert!(
+                !relative.is_absolute()
+                    && relative
+                        .components()
+                        .all(|component| matches!(component, std::path::Component::Normal(_))),
+                "Garden page URI is not package-relative: {}",
+                storage.uri
+            );
+            let page_path = self
+                .package_root
+                .join(relative)
+                .canonicalize()
+                .unwrap_or_else(|error| {
+                    panic!("failed to resolve Garden page {}: {error}", storage.uri)
+                });
+            assert!(
+                page_path.starts_with(&self.package_root),
+                "Garden page URI escapes the package root: {}",
+                storage.uri
+            );
+            let encoded_len = usize::try_from(storage.encoded_len)
+                .expect("Garden encoded page length fits host usize");
+            let file = self.files.entry(page_path.clone()).or_insert_with(|| {
+                fs::File::open(&page_path).unwrap_or_else(|error| {
+                    panic!(
+                        "failed to open Garden page {}: {error}",
+                        page_path.display()
+                    )
+                })
+            });
+            let (offset, length) = storage.byte_range.unwrap_or((0, storage.encoded_len));
+            assert_eq!(length, storage.encoded_len);
+            if storage.byte_range.is_none() {
+                assert_eq!(
+                    file.metadata()
+                        .expect("Garden page metadata is readable")
+                        .len(),
+                    storage.encoded_len,
+                    "standalone Garden page length drifted"
+                );
+            }
+            file.seek(SeekFrom::Start(offset)).unwrap_or_else(|error| {
+                panic!(
+                    "failed to seek Garden page {}: {error}",
+                    page_path.display()
+                )
+            });
+            let mut encoded = vec![0_u8; encoded_len];
+            file.read_exact(&mut encoded).unwrap_or_else(|error| {
+                panic!(
+                    "failed to read Garden page {}: {error}",
+                    page_path.display()
+                )
+            });
+            decode_page_with_descriptor(&encoded, descriptor, LodCodecLimits::default())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "Garden page {:?} failed authentication: {error}",
+                        descriptor.id
+                    )
+                })
+        }
+    }
+
+    fn decode_selected_garden_pages(
+        manifest_path: &Path,
+        manifest: &GaussianLodManifest,
+        selected: &BTreeSet<LodPageId>,
+    ) -> Vec<bevy_gaussian_splatting::PlanarGaussian3dPage> {
+        let mut reader = GardenPackagePageReader::new(manifest_path);
+        let mut pages = Vec::with_capacity(selected.len());
+        for descriptor in manifest
+            .pages
+            .iter()
+            .filter(|descriptor| selected.contains(&descriptor.id))
+        {
+            pages.push(reader.decode(descriptor));
+        }
+        assert_eq!(
+            pages.len(),
+            selected.len(),
+            "Garden manifest omits a selected page descriptor"
+        );
+        pages
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct GardenMatchedBoundaryMetrics {
+        interfaces: usize,
+        jump_interfaces: usize,
+        boundary: SpatialResidualMetrics,
+        control: SpatialResidualMetrics,
+        boundary_jump: GardenResidualJumpMetrics,
+        control_jump: GardenResidualJumpMetrics,
+        rgb_rmse_enrichment: f64,
+        alpha_abs_enrichment: f64,
+        rgb_jump_enrichment: f64,
+        alpha_jump_enrichment: f64,
+        reference_alpha_gap: f64,
+        reference_gradient_gap: f64,
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct GardenResidualJumpMetrics {
+        edges: usize,
+        rgb_rmse: f64,
+        luminance_abs_mean: f64,
+        alpha_abs_mean: f64,
+        max_abs_delta: f32,
+    }
+
+    fn combine_garden_matched_boundary_metrics(
+        metrics: &[GardenMatchedBoundaryMetrics],
+    ) -> Option<GardenMatchedBoundaryMetrics> {
+        if metrics.is_empty() {
+            return None;
+        }
+        let boundary = combine_garden_spatial_residuals(
+            &metrics
+                .iter()
+                .map(|metrics| metrics.boundary)
+                .collect::<Vec<_>>(),
+        );
+        let control = combine_garden_spatial_residuals(
+            &metrics
+                .iter()
+                .map(|metrics| metrics.control)
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(boundary.pixels, control.pixels);
+        let boundary_jump = combine_garden_residual_jumps(
+            &metrics
+                .iter()
+                .map(|metrics| metrics.boundary_jump)
+                .collect::<Vec<_>>(),
+        );
+        let control_jump = combine_garden_residual_jumps(
+            &metrics
+                .iter()
+                .map(|metrics| metrics.control_jump)
+                .collect::<Vec<_>>(),
+        );
+        let interfaces = metrics
+            .iter()
+            .map(|metrics| metrics.interfaces)
+            .sum::<usize>();
+        let jump_interfaces = metrics
+            .iter()
+            .map(|metrics| metrics.jump_interfaces)
+            .sum::<usize>();
+        let pixels = boundary.pixels as f64;
+        Some(GardenMatchedBoundaryMetrics {
+            interfaces,
+            jump_interfaces,
+            boundary,
+            control,
+            boundary_jump,
+            control_jump,
+            rgb_rmse_enrichment: garden_regularized_enrichment(boundary.rgb_rmse, control.rgb_rmse),
+            alpha_abs_enrichment: garden_regularized_enrichment(
+                boundary.alpha_abs_mean,
+                control.alpha_abs_mean,
+            ),
+            rgb_jump_enrichment: garden_regularized_enrichment(
+                boundary_jump.rgb_rmse,
+                control_jump.rgb_rmse,
+            ),
+            alpha_jump_enrichment: garden_regularized_enrichment(
+                boundary_jump.alpha_abs_mean,
+                control_jump.alpha_abs_mean,
+            ),
+            reference_alpha_gap: metrics
+                .iter()
+                .map(|metrics| metrics.reference_alpha_gap * metrics.boundary.pixels as f64)
+                .sum::<f64>()
+                / pixels,
+            reference_gradient_gap: metrics
+                .iter()
+                .map(|metrics| metrics.reference_gradient_gap * metrics.boundary.pixels as f64)
+                .sum::<f64>()
+                / pixels,
+        })
+    }
+
+    fn combine_garden_residual_jumps(
+        metrics: &[GardenResidualJumpMetrics],
+    ) -> GardenResidualJumpMetrics {
+        let edges = metrics.iter().map(|metrics| metrics.edges).sum::<usize>();
+        if edges == 0 {
+            return GardenResidualJumpMetrics::default();
+        }
+        let weighted = |value: fn(GardenResidualJumpMetrics) -> f64| {
+            metrics
+                .iter()
+                .copied()
+                .map(|metrics| value(metrics) * metrics.edges as f64)
+                .sum::<f64>()
+                / edges as f64
+        };
+        GardenResidualJumpMetrics {
+            edges,
+            rgb_rmse: weighted(|metrics| metrics.rgb_rmse * metrics.rgb_rmse).sqrt(),
+            luminance_abs_mean: weighted(|metrics| metrics.luminance_abs_mean),
+            alpha_abs_mean: weighted(|metrics| metrics.alpha_abs_mean),
+            max_abs_delta: metrics
+                .iter()
+                .map(|metrics| metrics.max_abs_delta)
+                .fold(0.0, f32::max),
+        }
+    }
+
+    fn combine_garden_spatial_residuals(
+        metrics: &[SpatialResidualMetrics],
+    ) -> SpatialResidualMetrics {
+        let pixels = metrics.iter().map(|metrics| metrics.pixels).sum::<usize>();
+        assert!(pixels > 0);
+        let weighted = |value: fn(SpatialResidualMetrics) -> f64| {
+            metrics
+                .iter()
+                .copied()
+                .map(|metrics| value(metrics) * metrics.pixels as f64)
+                .sum::<f64>()
+                / pixels as f64
+        };
+        SpatialResidualMetrics {
+            pixels,
+            rgb_rmse: weighted(|metrics| metrics.rgb_rmse * metrics.rgb_rmse).sqrt(),
+            signed_luminance_mean: weighted(|metrics| metrics.signed_luminance_mean),
+            signed_alpha_mean: weighted(|metrics| metrics.signed_alpha_mean),
+            alpha_abs_mean: weighted(|metrics| metrics.alpha_abs_mean),
+            max_abs_residual: metrics
+                .iter()
+                .map(|metrics| metrics.max_abs_residual)
+                .fold(0.0, f32::max),
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct GardenBoundaryInterface {
+        /// The two adjacent pixels on opposite sides of the logical interface.
+        boundary: [usize; 2],
+        /// Immediate same-node controls behind each interface endpoint.
+        control: [usize; 2],
+        reference_alpha_gap: f64,
+        reference_gradient_gap: f64,
+    }
+
+    #[derive(Default)]
+    struct GardenBoundaryInterfaces {
+        all: Vec<GardenBoundaryInterface>,
+        same_depth: Vec<GardenBoundaryInterface>,
+        mixed_depth: Vec<GardenBoundaryInterface>,
+        same_parent: Vec<GardenBoundaryInterface>,
+        cross_parent: Vec<GardenBoundaryInterface>,
+    }
+
+    fn garden_boundary_interfaces(
+        manifest: &GaussianLodManifest,
+        reference: &[[f32; 4]],
+        labels: &[Option<u64>],
+        width: u32,
+        height: u32,
+    ) -> GardenBoundaryInterfaces {
+        let topology = manifest
+            .nodes
+            .iter()
+            .map(|node| (node.id.0, (node.depth, node.parent.map(|parent| parent.0))))
+            .collect::<BTreeMap<_, _>>();
+        garden_boundary_interfaces_with_topology(&topology, reference, labels, width, height)
+    }
+
+    fn garden_boundary_interfaces_with_topology(
+        topology: &BTreeMap<u64, (u16, Option<u64>)>,
+        reference: &[[f32; 4]],
+        labels: &[Option<u64>],
+        width: u32,
+        height: u32,
+    ) -> GardenBoundaryInterfaces {
+        let width = width as usize;
+        let height = height as usize;
+        assert!(width > 0 && height > 0);
+        assert_eq!(reference.len(), width * height);
+        assert_eq!(labels.len(), reference.len());
+        let mut interfaces = GardenBoundaryInterfaces::default();
+        for y in 0..height {
+            for x in 0..width {
+                if x >= 1 && x + 2 < width {
+                    let left = y * width + x;
+                    let right = left + 1;
+                    maybe_push_garden_boundary_interface(
+                        labels,
+                        reference,
+                        topology,
+                        [left, right],
+                        [left - 1, right + 1],
+                        &mut interfaces,
+                    );
+                }
+                if y >= 1 && y + 2 < height {
+                    let top = y * width + x;
+                    let bottom = top + width;
+                    maybe_push_garden_boundary_interface(
+                        labels,
+                        reference,
+                        topology,
+                        [top, bottom],
+                        [top - width, bottom + width],
+                        &mut interfaces,
+                    );
+                }
+            }
+        }
+        interfaces
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn maybe_push_garden_boundary_interface(
+        labels: &[Option<u64>],
+        reference: &[[f32; 4]],
+        topology: &BTreeMap<u64, (u16, Option<u64>)>,
+        boundary: [usize; 2],
+        control: [usize; 2],
+        interfaces: &mut GardenBoundaryInterfaces,
+    ) {
+        let (Some(left_node), Some(right_node)) = (labels[boundary[0]], labels[boundary[1]]) else {
+            return;
+        };
+        if left_node == right_node
+            || labels[control[0]] != Some(left_node)
+            || labels[control[1]] != Some(right_node)
+        {
+            return;
+        }
+        let reference_alpha_gaps = std::array::from_fn::<_, 2, _>(|side| {
+            f64::from((reference[boundary[side]][3] - reference[control[side]][3]).abs())
+        });
+        let reference_gradient_gaps = std::array::from_fn::<_, 2, _>(|side| {
+            (garden_reference_luminance(reference[boundary[side]])
+                - garden_reference_luminance(reference[control[side]]))
+            .abs()
+        });
+        let reference_alpha_gap = reference_alpha_gaps.iter().sum::<f64>() / 2.0;
+        let reference_gradient_gap = reference_gradient_gaps.iter().sum::<f64>() / 2.0;
+        // Eligibility depends only on the flat reference. Candidate residuals
+        // can therefore neither choose nor reject their own controls.
+        if reference_alpha_gaps
+            .iter()
+            .chain(&reference_gradient_gaps)
+            .any(|gap| *gap > GARDEN_MAX_REFERENCE_MATCH_GAP)
+        {
+            return;
+        }
+        let &(left_depth, left_parent) = topology
+            .get(&left_node)
+            .unwrap_or_else(|| panic!("Garden dominant node {left_node} is absent"));
+        let &(right_depth, right_parent) = topology
+            .get(&right_node)
+            .unwrap_or_else(|| panic!("Garden dominant node {right_node} is absent"));
+        let interface = GardenBoundaryInterface {
+            boundary,
+            control,
+            reference_alpha_gap,
+            reference_gradient_gap,
+        };
+        interfaces.all.push(interface);
+        if left_depth == right_depth {
+            interfaces.same_depth.push(interface);
+        } else {
+            interfaces.mixed_depth.push(interface);
+        }
+        if left_parent.is_some() && left_parent == right_parent {
+            interfaces.same_parent.push(interface);
+        } else {
+            interfaces.cross_parent.push(interface);
+        }
+    }
+
+    fn garden_paired_boundary_metrics(
+        reference: &[[f32; 4]],
+        candidate: &[[f32; 4]],
+        interfaces: &[GardenBoundaryInterface],
+    ) -> Option<GardenMatchedBoundaryMetrics> {
+        if interfaces.is_empty() {
+            return None;
+        }
+        assert_eq!(reference.len(), candidate.len());
+        let boundary = interfaces
+            .iter()
+            .flat_map(|interface| interface.boundary)
+            .collect::<Vec<_>>();
+        let control = interfaces
+            .iter()
+            .flat_map(|interface| interface.control)
+            .collect::<Vec<_>>();
+        let boundary_metrics = garden_spatial_residual(reference, candidate, &boundary);
+        let control_metrics = garden_spatial_residual(reference, candidate, &control);
+        let boundary_jump = garden_boundary_residual_jumps(reference, candidate, interfaces);
+        let control_jump = garden_control_residual_jumps(reference, candidate, interfaces);
+        Some(GardenMatchedBoundaryMetrics {
+            interfaces: interfaces.len(),
+            jump_interfaces: boundary_jump.edges,
+            boundary: boundary_metrics,
+            control: control_metrics,
+            boundary_jump,
+            control_jump,
+            rgb_rmse_enrichment: garden_regularized_enrichment(
+                boundary_metrics.rgb_rmse,
+                control_metrics.rgb_rmse,
+            ),
+            alpha_abs_enrichment: garden_regularized_enrichment(
+                boundary_metrics.alpha_abs_mean,
+                control_metrics.alpha_abs_mean,
+            ),
+            rgb_jump_enrichment: garden_regularized_enrichment(
+                boundary_jump.rgb_rmse,
+                control_jump.rgb_rmse,
+            ),
+            alpha_jump_enrichment: garden_regularized_enrichment(
+                boundary_jump.alpha_abs_mean,
+                control_jump.alpha_abs_mean,
+            ),
+            reference_alpha_gap: interfaces
+                .iter()
+                .map(|interface| interface.reference_alpha_gap)
+                .sum::<f64>()
+                / interfaces.len() as f64,
+            reference_gradient_gap: interfaces
+                .iter()
+                .map(|interface| interface.reference_gradient_gap)
+                .sum::<f64>()
+                / interfaces.len() as f64,
+        })
+    }
+
+    #[inline]
+    fn garden_reference_luminance(pixel: [f32; 4]) -> f64 {
+        0.2126 * pixel[0] as f64 + 0.7152 * pixel[1] as f64 + 0.0722 * pixel[2] as f64
+    }
+
+    fn garden_boundary_residual_jumps(
+        reference: &[[f32; 4]],
+        candidate: &[[f32; 4]],
+        interfaces: &[GardenBoundaryInterface],
+    ) -> GardenResidualJumpMetrics {
+        let pairs = interfaces
+            .iter()
+            .filter(|interface| garden_jump_eligible(reference, interface))
+            .map(|interface| interface.boundary)
+            .collect::<Vec<_>>();
+        garden_residual_jumps(reference, candidate, &pairs)
+    }
+
+    fn garden_control_residual_jumps(
+        reference: &[[f32; 4]],
+        candidate: &[[f32; 4]],
+        interfaces: &[GardenBoundaryInterface],
+    ) -> GardenResidualJumpMetrics {
+        let pairs = interfaces
+            .iter()
+            .filter(|interface| garden_jump_eligible(reference, interface))
+            .flat_map(|interface| {
+                [
+                    [interface.control[0], interface.boundary[0]],
+                    [interface.boundary[1], interface.control[1]],
+                ]
+            })
+            .collect::<Vec<_>>();
+        garden_residual_jumps(reference, candidate, &pairs)
+    }
+
+    fn garden_jump_eligible(reference: &[[f32; 4]], interface: &GardenBoundaryInterface) -> bool {
+        (0..4).all(|channel| {
+            (reference[interface.boundary[0]][channel] - reference[interface.boundary[1]][channel])
+                .abs()
+                <= GARDEN_MAX_REFERENCE_MATCH_GAP as f32
+        })
+    }
+
+    fn garden_residual_jumps(
+        reference: &[[f32; 4]],
+        candidate: &[[f32; 4]],
+        pairs: &[[usize; 2]],
+    ) -> GardenResidualJumpMetrics {
+        assert_eq!(reference.len(), candidate.len());
+        if pairs.is_empty() {
+            return GardenResidualJumpMetrics::default();
+        }
+        let mut rgb_squared_sum = 0.0_f64;
+        let mut luminance_abs_sum = 0.0_f64;
+        let mut alpha_abs_sum = 0.0_f64;
+        let mut max_abs_delta = 0.0_f32;
+        for &[left, right] in pairs {
+            let left_residual = std::array::from_fn::<_, 4, _>(|channel| {
+                f64::from(candidate[left][channel] - reference[left][channel])
+            });
+            let right_residual = std::array::from_fn::<_, 4, _>(|channel| {
+                f64::from(candidate[right][channel] - reference[right][channel])
+            });
+            let mut rgb_delta = [0.0_f64; 3];
+            for channel in 0..3 {
+                rgb_delta[channel] = right_residual[channel] - left_residual[channel];
+                rgb_squared_sum += rgb_delta[channel] * rgb_delta[channel];
+                max_abs_delta = max_abs_delta.max(rgb_delta[channel].abs() as f32);
+            }
+            luminance_abs_sum +=
+                (0.2126 * rgb_delta[0] + 0.7152 * rgb_delta[1] + 0.0722 * rgb_delta[2]).abs();
+            let alpha_delta = right_residual[3] - left_residual[3];
+            alpha_abs_sum += alpha_delta.abs();
+            max_abs_delta = max_abs_delta.max(alpha_delta.abs() as f32);
+        }
+        GardenResidualJumpMetrics {
+            edges: pairs.len(),
+            rgb_rmse: (rgb_squared_sum / (pairs.len() * 3) as f64).sqrt(),
+            luminance_abs_mean: luminance_abs_sum / pairs.len() as f64,
+            alpha_abs_mean: alpha_abs_sum / pairs.len() as f64,
+            max_abs_delta,
+        }
+    }
+
+    fn garden_spatial_residual(
+        reference: &[[f32; 4]],
+        candidate: &[[f32; 4]],
+        indices: &[usize],
+    ) -> SpatialResidualMetrics {
+        assert_eq!(reference.len(), candidate.len());
+        assert!(!indices.is_empty());
+        let mut rgb_squared_sum = 0.0_f64;
+        let mut signed_luminance_sum = 0.0_f64;
+        let mut signed_alpha_sum = 0.0_f64;
+        let mut alpha_abs_sum = 0.0_f64;
+        let mut max_abs_residual = 0.0_f32;
+        for &index in indices {
+            let expected = reference[index];
+            let actual = candidate[index];
+            for channel in 0..3 {
+                let residual = f64::from(actual[channel] - expected[channel]);
+                rgb_squared_sum += residual * residual;
+                max_abs_residual = max_abs_residual.max(residual.abs() as f32);
+            }
+            let expected_luminance = 0.2126 * expected[0] as f64
+                + 0.7152 * expected[1] as f64
+                + 0.0722 * expected[2] as f64;
+            let actual_luminance =
+                0.2126 * actual[0] as f64 + 0.7152 * actual[1] as f64 + 0.0722 * actual[2] as f64;
+            signed_luminance_sum += actual_luminance - expected_luminance;
+            let alpha = f64::from(actual[3] - expected[3]);
+            signed_alpha_sum += alpha;
+            alpha_abs_sum += alpha.abs();
+            max_abs_residual = max_abs_residual.max(alpha.abs() as f32);
+        }
+        SpatialResidualMetrics {
+            pixels: indices.len(),
+            rgb_rmse: (rgb_squared_sum / (indices.len() * 3) as f64).sqrt(),
+            signed_luminance_mean: signed_luminance_sum / indices.len() as f64,
+            signed_alpha_mean: signed_alpha_sum / indices.len() as f64,
+            alpha_abs_mean: alpha_abs_sum / indices.len() as f64,
+            max_abs_residual,
+        }
+    }
+
+    fn garden_regularized_enrichment(boundary: f64, control: f64) -> f64 {
+        (boundary + GARDEN_ENRICHMENT_FLOOR) / (control + GARDEN_ENRICHMENT_FLOOR)
+    }
+
+    fn report_garden_boundary_metrics(
+        view: &GardenBoundaryView,
+        overall: ImageMetrics,
+        raw: Option<BoundaryBandMetrics>,
+        matched: Option<GardenMatchedBoundaryMetrics>,
+    ) {
+        eprintln!(
+            "Garden ABI16 node-boundary oracle {} [{}]: active={} nodes={} overall_psnr={:.3} overall_alpha_mae={:.6}",
+            view.label,
+            if view.acceptance {
+                "acceptance"
+            } else {
+                "diagnostic-only"
+            },
+            view.active_gaussians,
+            view.frontier.len(),
+            overall.foreground_psnr_rgb,
+            overall.alpha_mae,
+        );
+        if let Some(raw) = raw {
+            eprintln!(
+                "Garden ABI16 node-boundary oracle {} raw diagnostic: boundary_px={} interior_px={} boundary_signed_luma={:+.6} interior_signed_luma={:+.6} boundary_signed_alpha={:+.6} interior_signed_alpha={:+.6} rgb_enrichment={:.3} alpha_enrichment={:.3}",
+                view.label,
+                raw.boundary.pixels,
+                raw.interior.pixels,
+                raw.boundary.signed_luminance_mean,
+                raw.interior.signed_luminance_mean,
+                raw.boundary.signed_alpha_mean,
+                raw.interior.signed_alpha_mean,
+                raw.rgb_rmse_enrichment,
+                raw.alpha_abs_enrichment,
+            );
+        }
+        report_garden_boundary_class(view.label, "all", matched);
+    }
+
+    fn report_garden_boundary_class(
+        view: &str,
+        class: &str,
+        metrics: Option<GardenMatchedBoundaryMetrics>,
+    ) {
+        let Some(metrics) = metrics else {
+            eprintln!(
+                "Garden ABI16 node-boundary oracle {view} {class}: no measurable boundary band"
+            );
+            return;
+        };
+        eprintln!(
+            "Garden ABI16 node-boundary oracle {view} {class}: paired_interfaces={} jump_eligible_interfaces={} boundary_px={} boundary_signed_luma={:+.6} control_signed_luma={:+.6} boundary_signed_alpha={:+.6} control_signed_alpha={:+.6} rgb_enrichment={:.3} alpha_enrichment={:.3} cross_rgb_jump={:.6} local_rgb_jump={:.6} rgb_jump_enrichment={:.3} cross_luma_jump={:.6} local_luma_jump={:.6} cross_alpha_jump={:.6} local_alpha_jump={:.6} alpha_jump_enrichment={:.3} reference_alpha_gap={:.6} reference_gradient_gap={:.6}",
+            metrics.interfaces,
+            metrics.jump_interfaces,
+            metrics.boundary.pixels,
+            metrics.boundary.signed_luminance_mean,
+            metrics.control.signed_luminance_mean,
+            metrics.boundary.signed_alpha_mean,
+            metrics.control.signed_alpha_mean,
+            metrics.rgb_rmse_enrichment,
+            metrics.alpha_abs_enrichment,
+            metrics.boundary_jump.rgb_rmse,
+            metrics.control_jump.rgb_rmse,
+            metrics.rgb_jump_enrichment,
+            metrics.boundary_jump.luminance_abs_mean,
+            metrics.control_jump.luminance_abs_mean,
+            metrics.boundary_jump.alpha_abs_mean,
+            metrics.control_jump.alpha_abs_mean,
+            metrics.alpha_jump_enrichment,
+            metrics.reference_alpha_gap,
+            metrics.reference_gradient_gap,
+        );
+    }
+
+    fn garden_boundary_metric_failures(
+        label: &str,
+        metrics: GardenMatchedBoundaryMetrics,
+    ) -> Vec<String> {
+        let mut failures = Vec::new();
+        if metrics.boundary.pixels < GARDEN_MIN_MATCHED_PIXELS {
+            failures.push(format!(
+                "{label} has too few matched boundary pixels: {}",
+                metrics.boundary.pixels
+            ));
+        }
+        let jump_eligible_pixels = metrics.jump_interfaces.saturating_mul(2);
+        if jump_eligible_pixels < GARDEN_MIN_MATCHED_PIXELS {
+            failures.push(format!(
+                "{label} has too few content-smooth jump-eligible boundary pixels: {jump_eligible_pixels}"
+            ));
+        }
+        if metrics.boundary.pixels != metrics.control.pixels {
+            failures.push(format!(
+                "{label} boundary/control pixel counts differ: boundary={}, control={}",
+                metrics.boundary.pixels, metrics.control.pixels
+            ));
+        }
+        if !(metrics.reference_alpha_gap <= GARDEN_MAX_REFERENCE_MATCH_GAP) {
+            failures.push(format!(
+                "{label} reference-alpha control mismatch is too large: {}",
+                metrics.reference_alpha_gap
+            ));
+        }
+        if !(metrics.reference_gradient_gap <= GARDEN_MAX_REFERENCE_MATCH_GAP) {
+            failures.push(format!(
+                "{label} reference-gradient control mismatch is too large: {}",
+                metrics.reference_gradient_gap
+            ));
+        }
+        let luminance_bias_gap =
+            metrics.boundary.signed_luminance_mean - metrics.control.signed_luminance_mean;
+        let alpha_bias_gap = metrics.boundary.signed_alpha_mean - metrics.control.signed_alpha_mean;
+        if !(luminance_bias_gap.abs() <= GARDEN_MAX_MATCHED_SIGNED_BIAS_GAP) {
+            failures.push(format!(
+                "{label} matched boundary luminance bias gap is {luminance_bias_gap:+.6}"
+            ));
+        }
+        if !(alpha_bias_gap.abs() <= GARDEN_MAX_MATCHED_SIGNED_BIAS_GAP) {
+            failures.push(format!(
+                "{label} matched boundary alpha bias gap is {alpha_bias_gap:+.6}"
+            ));
+        }
+        if !(metrics.rgb_rmse_enrichment <= GARDEN_MAX_MATCHED_ENRICHMENT) {
+            failures.push(format!(
+                "{label} matched boundary RGB enrichment is {}",
+                metrics.rgb_rmse_enrichment
+            ));
+        }
+        if !(metrics.alpha_abs_enrichment <= GARDEN_MAX_MATCHED_ENRICHMENT) {
+            failures.push(format!(
+                "{label} matched boundary alpha enrichment is {}",
+                metrics.alpha_abs_enrichment
+            ));
+        }
+        if !(metrics.rgb_jump_enrichment <= GARDEN_MAX_MATCHED_ENRICHMENT) {
+            failures.push(format!(
+                "{label} cross-interface residual RGB jump enrichment is {}",
+                metrics.rgb_jump_enrichment
+            ));
+        }
+        if !(metrics.alpha_jump_enrichment <= GARDEN_MAX_MATCHED_ENRICHMENT) {
+            failures.push(format!(
+                "{label} cross-interface residual alpha jump enrichment is {}",
+                metrics.alpha_jump_enrichment
+            ));
+        }
+        failures
+    }
+
+    #[test]
+    fn garden_local_pairs_ignore_matched_scene_edges_and_content_correlated_error() {
+        const WIDTH: u32 = 12;
+        const HEIGHT: u32 = 128;
+        let topology = BTreeMap::from([(1, (3, Some(10))), (2, (3, Some(10)))]);
+        let mut reference = Vec::with_capacity((WIDTH * HEIGHT) as usize);
+        let mut candidate = Vec::with_capacity(reference.capacity());
+        let mut labels = Vec::with_capacity(reference.capacity());
+        for y in 0..HEIGHT {
+            let strong_content_edge = y % 2 == 0;
+            let smooth_residual = (y as f32 / (HEIGHT - 1) as f32 - 0.5) * 0.004;
+            for x in 0..WIDTH {
+                let left = x < WIDTH / 2;
+                let expected = if strong_content_edge {
+                    if left {
+                        [0.08, 0.04, 0.02, 0.20]
+                    } else {
+                        [0.72, 0.56, 0.40, 0.80]
+                    }
+                } else {
+                    [0.30, 0.24, 0.18, 0.50]
+                };
+                reference.push(expected);
+                candidate.push(expected.map(|value| value * 0.98 + smooth_residual));
+                labels.push(Some(if left { 1 } else { 2 }));
+            }
+        }
+
+        let interfaces =
+            garden_boundary_interfaces_with_topology(&topology, &reference, &labels, WIDTH, HEIGHT);
+        let metrics = garden_paired_boundary_metrics(&reference, &candidate, &interfaces.all)
+            .expect("coherent synthetic interface is measurable");
+        assert_eq!(metrics.interfaces, HEIGHT as usize);
+        assert_eq!(metrics.boundary.pixels, 2 * HEIGHT as usize);
+        assert_eq!(metrics.jump_interfaces, HEIGHT as usize / 2);
+        assert!(
+            garden_boundary_metric_failures("matched scene edge", metrics).is_empty(),
+            "a global content-correlated error must not be diagnosed as a logical seam: {metrics:?}"
+        );
+    }
+
+    #[test]
+    fn garden_local_pairs_detect_a_signed_node_density_and_color_step() {
+        const WIDTH: u32 = 12;
+        const HEIGHT: u32 = 128;
+        let topology = BTreeMap::from([(1, (3, Some(10))), (2, (3, Some(10)))]);
+        let reference = vec![[0.40; 4]; (WIDTH * HEIGHT) as usize];
+        let mut candidate = reference.clone();
+        let mut labels = Vec::with_capacity(reference.len());
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                let index = (y * WIDTH + x) as usize;
+                let left = x < WIDTH / 2;
+                candidate[index] = [if left { 0.36 } else { 0.44 }; 4];
+                labels.push(Some(if left { 1 } else { 2 }));
+            }
+        }
+
+        let interfaces =
+            garden_boundary_interfaces_with_topology(&topology, &reference, &labels, WIDTH, HEIGHT);
+        let metrics = garden_paired_boundary_metrics(&reference, &candidate, &interfaces.all)
+            .expect("coherent synthetic interface is measurable");
+        assert_eq!(metrics.jump_interfaces, HEIGHT as usize);
+        let failures = garden_boundary_metric_failures("injected node step", metrics);
+        assert!(
+            failures.iter().any(|failure| failure.contains("RGB jump"))
+                && failures
+                    .iter()
+                    .any(|failure| failure.contains("alpha jump")),
+            "the seam oracle missed an injected signed color+density step: {metrics:?}; failures={failures:?}"
+        );
+    }
+
+    #[test]
+    fn garden_coherent_interfaces_exclude_one_pixel_dominant_label_noise() {
+        const WIDTH: u32 = 12;
+        const HEIGHT: u32 = 16;
+        let topology = BTreeMap::from([(1, (3, Some(10))), (2, (3, Some(10)))]);
+        let reference = vec![[0.40; 4]; (WIDTH * HEIGHT) as usize];
+        let labels = (0..WIDTH * HEIGHT)
+            .map(|index| Some(if index % WIDTH % 2 == 0 { 1 } else { 2 }))
+            .collect::<Vec<_>>();
+        let interfaces =
+            garden_boundary_interfaces_with_topology(&topology, &reference, &labels, WIDTH, HEIGHT);
+        assert!(
+            interfaces.all.is_empty(),
+            "one-pixel dominant-contributor alternation is not a coherent logical interface"
+        );
+    }
 
     /// Full-scene color and covariance audit for the documented Trellis
     /// artifact. It is ignored by default and accepts only a caller-supplied
@@ -1462,9 +3381,12 @@ mod headless {
                 - forward * (focal_x * view_x * reciprocal_depth_squared);
             let jacobian_y = -up * (focal_y * reciprocal_depth)
                 + forward * (focal_y * view_y * reciprocal_depth_squared);
-            let covariance_x = jacobian_x.dot(covariance * jacobian_x) + 0.3;
-            let covariance_xy = jacobian_x.dot(covariance * jacobian_y);
-            let covariance_y = jacobian_y.dot(covariance * jacobian_y) + 0.3;
+            let filtered_covariance = gaussian_mip_filter_covariance_2d([
+                jacobian_x.dot(covariance * jacobian_x),
+                jacobian_x.dot(covariance * jacobian_y),
+                jacobian_y.dot(covariance * jacobian_y),
+            ]);
+            let [covariance_x, covariance_xy, covariance_y] = filtered_covariance.covariance;
             let midpoint = 0.5 * (covariance_x + covariance_y);
             let determinant = covariance_x * covariance_y - covariance_xy * covariance_xy;
             let discriminant = (midpoint * midpoint - determinant).max(0.0).sqrt();
@@ -1484,7 +3406,8 @@ mod headless {
             diagnostics.extreme_projected_splats += usize::from(major > 8.0 && aspect > 20.0);
             let opacity = (gaussian.scale_opacity.opacity
                 * gaussian.position_visibility.visibility)
-                .clamp(0.0, 0.999);
+                * filtered_covariance.opacity_scale;
+            let opacity = opacity.clamp(0.0, 0.999);
             let support_radius = 3.0 * major;
             let intersects_viewport = center.x + support_radius >= 0.0
                 && center.x - support_radius < width as f32
@@ -2620,7 +4543,7 @@ mod headless {
             }
         }
         assert!(
-            foreground_distance.iter().any(|distance| *distance == 0),
+            foreground_distance.contains(&0),
             "alpha spill reference has no foreground"
         );
 

@@ -672,6 +672,15 @@ mod tests {
     }
 
     #[test]
+    fn portable_gaussian_accepts_finite_opacity_above_one() {
+        for opacity in [1.0_f32, 2.0, f32::MAX] {
+            let mut sample = gaussian([0.0, 1.0, 2.0]);
+            sample.scale_opacity.opacity = opacity;
+            assert_eq!(validate_gaussian(&sample), Ok(()));
+        }
+    }
+
+    #[test]
     fn page_round_trips_planar_storage() {
         let cloud: PlanarGaussian3d = vec![gaussian([0.0; 3]), gaussian([1.0; 3])].into();
         let page = PlanarGaussian3dPage::from_planar(LodPageId(9), &cloud);

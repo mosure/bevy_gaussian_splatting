@@ -14,6 +14,8 @@ pub mod iter;
 pub mod lod_build_gpu;
 pub mod lod_debug;
 pub mod lod_settings;
+#[cfg(feature = "lod")]
+pub mod lodge_settings;
 pub mod settings;
 
 assert_cfg!(

@@ -32,6 +32,7 @@ struct LodDebugUniforms {
 // Must match gaussian::lod_settings quality-policy constants.
 const HIGH_QUALITY_FIDELITY_GUARD_START: f32 = 0.90;
 const HIGH_QUALITY_FIDELITY_GUARD_FULL: f32 = 0.99;
+const HIGH_QUALITY_CERTIFICATE_GUARD_START: f32 = 0.90;
 const HIGH_QUALITY_CERTIFICATE_GUARD_FULL: f32 = 0.95;
 const PROJECTED_ERROR_AUTHORITY_FULL: f32 = 0.99;
 
@@ -44,8 +45,16 @@ const LOD_DEBUG_BOUNDARY_COLOR: vec3<f32> = vec3<f32>(0.05, 1.0, 0.2);
 const LOD_DEBUG_RESIDENT_COLOR: vec3<f32> = vec3<f32>(0.1, 0.85, 0.25);
 const LOD_DEBUG_FALLBACK_COLOR: vec3<f32> = vec3<f32>(1.0, 0.65, 0.05);
 const LOD_DEBUG_UNKNOWN_COLOR: vec3<f32> = vec3<f32>(0.45, 0.45, 0.5);
+const LOD_DEBUG_PAGE_LINEAR_LUMINANCE: f32 = 0.30;
+const REC709_LINEAR_LUMINANCE: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
-fn lod_debug_residency(record: LodDebugRecord) -> u32 {
+fn lod_debug_residency(record: LodDebugRecord, entry_residency: u32) -> u32 {
+    // A compacted LoD entry owns its exact per-view residency epoch. Flat and
+    // legacy entries leave the packed code zero and retain record-authored
+    // behavior.
+    if entry_residency == 1u || entry_residency == 2u {
+        return entry_residency;
+    }
     return record.residency & LOD_DEBUG_RESIDENCY_MASK;
 }
 
@@ -83,7 +92,12 @@ fn lod_debug_hsv_to_rgb(hue: f32, saturation: f32, value: f32) -> vec3<f32> {
 fn lod_debug_page_color(page_key: u32) -> vec3<f32> {
     let hash = lod_debug_hash32(page_key);
     let hue = f32(hash & 0x00ffffffu) / 16777215.0;
-    return lod_debug_hsv_to_rgb(hue, 0.72, 0.95);
+    let base = lod_debug_hsv_to_rgb(hue, 0.72, 0.95);
+    // The target is below the darkest hue in this HSV ring, so scaling never
+    // clips. Every Page color has the same Rec.709 linear luma and cannot
+    // masquerade as a page-boundary opacity/density change.
+    let luminance = dot(base, REC709_LINEAR_LUMINANCE);
+    return base * (LOD_DEBUG_PAGE_LINEAR_LUMINANCE / luminance);
 }
 
 // Fixed, seed-independent level order: purple, cyan, green, yellow, orange,
@@ -218,12 +232,11 @@ fn lod_debug_high_quality_fidelity_guard(detail_fraction: f32) -> f32 {
 }
 
 fn lod_debug_high_quality_certificate_guard(detail_fraction: f32) -> f32 {
-    let normalized = clamp(
-        clamp(detail_fraction, 0.0, 1.0) / HIGH_QUALITY_CERTIFICATE_GUARD_FULL,
-        0.0,
-        1.0,
+    return lod_debug_smooth_quality_guard(
+        detail_fraction,
+        HIGH_QUALITY_CERTIFICATE_GUARD_START,
+        HIGH_QUALITY_CERTIFICATE_GUARD_FULL,
     );
-    return normalized * normalized * normalized;
 }
 
 fn lod_debug_high_quality_certificate_demand(
@@ -237,10 +250,12 @@ fn lod_debug_high_quality_certificate_demand(
         1.0,
     );
     let base_demand = detail * normalized;
-    let authority = lod_debug_high_quality_certificate_guard(detail);
+    let coverage_authority = normalized * normalized * normalized;
     let coverage = clamp(projected_coverage, 0.0, 1.0);
-    let effective_coverage = coverage + (1.0 - coverage) * authority;
-    return base_demand * effective_coverage;
+    let effective_coverage = coverage + (1.0 - coverage) * coverage_authority;
+    return lod_debug_high_quality_certificate_guard(detail)
+        * base_demand
+        * effective_coverage;
 }
 
 fn lod_debug_projected_error_authority(detail_fraction: f32) -> f32 {
@@ -321,10 +336,40 @@ fn lod_debug_residency_color(residency: u32) -> vec3<f32> {
     }
 }
 
+// Returns whether the raster path must evaluate authored SH color before the
+// annotation is applied. Full-field modes overwrite authored color, so paying
+// that cost for every Gaussian is unnecessary. Boundaries, missing metadata,
+// and Selection Pressure without an extracted quality policy preserve it.
+fn lod_debug_requires_authored_color(splat_index: u32) -> bool {
+    let mode = lod_debug_uniforms.flags.x;
+    let metadata_count = lod_debug_uniforms.flags.y;
+    if mode == 0u || splat_index >= metadata_count {
+        return true;
+    }
+    switch mode {
+        case 1u, 2u, 3u: { return false; }
+        case 4u: { return true; }
+        case 5u: { return lod_debug_uniforms.quality_params.x < 0.0; }
+        default: { return true; }
+    }
+}
+
+fn lod_debug_morph_requires_authored_color(
+    child_splat_index: u32,
+    parent_splat_index: u32,
+) -> bool {
+    return lod_debug_requires_authored_color(child_splat_index)
+        || lod_debug_requires_authored_color(parent_splat_index);
+}
+
 // Applies field coloring and the support-aware chunk boundary overlay. Missing
 // metadata deliberately preserves authored color rather than reading out of
 // bounds or fabricating a hierarchy value for an ordinary flat cloud.
-fn apply_lod_debug_annotation(splat_index: u32, authored: vec3<f32>) -> vec3<f32> {
+fn apply_lod_debug_annotation_at(
+    splat_index: u32,
+    entry_residency: u32,
+    authored: vec3<f32>,
+) -> vec3<f32> {
     let mode = lod_debug_uniforms.flags.x;
     let metadata_count = lod_debug_uniforms.flags.y;
     if (mode == 0u || splat_index >= metadata_count) {
@@ -342,7 +387,9 @@ fn apply_lod_debug_annotation(splat_index: u32, authored: vec3<f32>) -> vec3<f32
             annotated = lod_debug_page_color(record.page_color_key);
         }
         case 3u: {
-            annotated = lod_debug_residency_color(lod_debug_residency(record));
+            annotated = lod_debug_residency_color(
+                lod_debug_residency(record, entry_residency),
+            );
         }
         case 4u: {
             // Boundaries retain authored appearance before the overlay below.
@@ -369,4 +416,58 @@ fn apply_lod_debug_annotation(splat_index: u32, authored: vec3<f32>) -> vec3<f32
     }
 
     return annotated;
+}
+
+fn apply_lod_debug_annotation(
+    splat_index: u32,
+    entry_residency: u32,
+    authored: vec3<f32>,
+) -> vec3<f32> {
+    return apply_lod_debug_annotation_at(splat_index, entry_residency, authored);
+}
+
+// During a destination-cardinality transition both physical endpoint records
+// remain resident. Evaluate their exact annotations and blend the displayed
+// diagnostic with the same local t as geometry/SH. Residency is different: it
+// is per-view entry provenance for the presented cut, so it must not be mixed
+// with stale parent metadata.
+fn apply_lod_debug_morph_annotation(
+    child_splat_index: u32,
+    parent_splat_index: u32,
+    blend_t: f32,
+    entry_residency: u32,
+    authored: vec3<f32>,
+) -> vec3<f32> {
+    if lod_debug_uniforms.flags.x == 3u {
+        return apply_lod_debug_annotation_at(
+            child_splat_index,
+            entry_residency,
+            authored,
+        );
+    }
+    if blend_t <= 0.0 {
+        return apply_lod_debug_annotation_at(
+            parent_splat_index,
+            entry_residency,
+            authored,
+        );
+    }
+    if blend_t >= 1.0 {
+        return apply_lod_debug_annotation_at(
+            child_splat_index,
+            entry_residency,
+            authored,
+        );
+    }
+    let parent = apply_lod_debug_annotation_at(
+        parent_splat_index,
+        entry_residency,
+        authored,
+    );
+    let child = apply_lod_debug_annotation_at(
+        child_splat_index,
+        entry_residency,
+        authored,
+    );
+    return mix(parent, child, blend_t);
 }

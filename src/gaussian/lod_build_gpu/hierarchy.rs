@@ -5,8 +5,11 @@
 //!
 //! WebGPU does not expose portable `f64`, so MomentMerge accumulation is
 //! deterministic f32 on the GPU rather than bit-identical to the CPU's f64
-//! reference reduction. Ordering and Morton keys are exact; reduction results
-//! are conservatively validated on readback.
+//! reference reduction. Canonical Morton keys are authored on the host and
+//! uploaded as integers before the GPU sorts them; exact CPU payload ordering
+//! is repaired inside equal-Morton spans after readback so adapter floating
+//! point modes cannot affect package bytes.
+//! Reduction results are conservatively validated on readback.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc;
@@ -19,8 +22,7 @@ use crate::{
         planar_3d::Gaussian3d,
         planar_3d_chunked::{GaussianField, LodBounds, validate_gaussian},
         planar_3d_lod::{
-            LOD_MORTON_AXIS_MAX, LOD_MORTON_BITS_PER_AXIS, LodError, canonicalize_gaussian_zeros,
-            compare_gaussians,
+            LodError, canonical_lod_morton_code, canonicalize_gaussian_zeros, compare_gaussians,
         },
     },
     material::spherical_harmonics::{SH_COEFF_COUNT, SH_VEC4_PLANES},
@@ -36,11 +38,6 @@ fn shader_source() -> String {
     SHADER_SOURCE
         .replace("__SH_VEC4_PLANES__", &SH_VEC4_PLANES.to_string())
         .replace("__SH_COEFF_COUNT__", &SH_COEFF_COUNT.to_string())
-        .replace(
-            "__LOD_MORTON_BITS_PER_AXIS__",
-            &LOD_MORTON_BITS_PER_AXIS.to_string(),
-        )
-        .replace("__LOD_MORTON_AXIS_MAX__", &LOD_MORTON_AXIS_MAX.to_string())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -341,7 +338,7 @@ struct GpuStageParams {
 }
 
 #[repr(C, align(16))]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 struct GpuSortEntryRaw {
     key_and_source: [u32; 4],
     input_and_valid: [u32; 4],
@@ -511,6 +508,12 @@ impl GpuLodHierarchyBuilder {
         validate_normalization_bounds(normalization_bounds)?;
         let canonical = canonical_records(records)?;
         let padded_count = (records.len() as u32).next_power_of_two();
+        let host_entries = canonical_sort_entries(
+            &canonical,
+            source_index_base,
+            normalization_bounds,
+            padded_count,
+        )?;
         let commands = sort_stages(padded_count);
         if commands.len() > self.limits.max_stage_commands as usize {
             return Err(GpuLodHierarchyError::StageCapacityExceeded {
@@ -531,6 +534,11 @@ impl GpuLodHierarchyBuilder {
             );
             queue.write_buffer(&slot.globals, 0, bytemuck::bytes_of(&globals));
             queue.write_buffer(&slot.input, 0, bytemuck::cast_slice(&canonical));
+            // The existing sort-entry allocation is also the bounded upload
+            // staging target. The shader never derives a key from floating
+            // point coordinates, so adapter arithmetic cannot change package
+            // ordering at Morton quantization boundaries.
+            queue.write_buffer(&slot.entries, 0, bytemuck::cast_slice(&host_entries));
             write_stage_commands(queue, slot, self.capacities.stage_stride, &commands);
 
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -607,6 +615,8 @@ impl GpuLodHierarchyBuilder {
                         self.capacities.readback,
                         source_index_base,
                         record_count,
+                        &canonical,
+                        &host_entries,
                     )
                 },
             )
@@ -911,6 +921,54 @@ fn canonical_records(records: &[Gaussian3d]) -> Result<Vec<Gaussian3d>, GpuLodHi
         .collect()
 }
 
+fn canonical_sort_entries(
+    canonical: &[Gaussian3d],
+    source_index_base: u64,
+    normalization_bounds: LodBounds,
+    padded_count: u32,
+) -> Result<Vec<GpuSortEntryRaw>, GpuLodHierarchyError> {
+    if canonical.is_empty() || canonical.len() > padded_count as usize {
+        return Err(GpuLodHierarchyError::MalformedReadback(
+            "host sort-entry count is invalid",
+        ));
+    }
+    let staging_bytes = checked_bytes(
+        padded_count,
+        size_of::<GpuSortEntryRaw>(),
+        "host sort-entry staging",
+    )?;
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(padded_count as usize)
+        .map_err(|_| GpuLodHierarchyError::HostAllocationFailed {
+            field: "sort-entry staging",
+            bytes: staging_bytes,
+        })?;
+    for (local_index, gaussian) in canonical.iter().enumerate() {
+        let source_index = source_index_base
+            .checked_add(local_index as u64)
+            .ok_or(GpuLodHierarchyError::SourceIndexOverflow)?;
+        let morton =
+            canonical_lod_morton_code(gaussian.position_visibility.position, normalization_bounds);
+        entries.push(GpuSortEntryRaw {
+            key_and_source: [
+                morton as u32,
+                (morton >> 32) as u32,
+                source_index as u32,
+                (source_index >> 32) as u32,
+            ],
+            input_and_valid: [local_index as u32, 1, 0, 0],
+        });
+    }
+    for local_index in canonical.len()..padded_count as usize {
+        entries.push(GpuSortEntryRaw {
+            key_and_source: [u32::MAX; 4],
+            input_and_valid: [local_index as u32, 0, 0, 0],
+        });
+    }
+    Ok(entries)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn hierarchy_globals(
     record_count: u32,
@@ -1000,66 +1058,130 @@ fn decode_sorted_readback(
     layout: ReadbackLayout,
     source_index_base: u64,
     record_count: u32,
+    canonical: &[Gaussian3d],
+    host_entries: &[GpuSortEntryRaw],
 ) -> Result<Vec<GpuLodHierarchySortedRecord>, GpuLodHierarchyError> {
     let statuses = pod_vec::<u32>(mapped, layout.status_offset, record_count)?;
+    let entries = pod_vec::<GpuSortEntryRaw>(mapped, layout.entry_offset, record_count)?;
+    let gaussians = pod_vec::<Gaussian3d>(mapped, layout.sorted_offset, record_count)?;
+    validate_sorted_readback(
+        &statuses,
+        &entries,
+        &gaussians,
+        source_index_base,
+        canonical,
+        host_entries,
+    )
+}
+
+fn validate_sorted_readback(
+    statuses: &[u32],
+    entries: &[GpuSortEntryRaw],
+    gpu_gaussians: &[Gaussian3d],
+    source_index_base: u64,
+    canonical: &[Gaussian3d],
+    host_entries: &[GpuSortEntryRaw],
+) -> Result<Vec<GpuLodHierarchySortedRecord>, GpuLodHierarchyError> {
+    if statuses.len() != canonical.len()
+        || entries.len() != canonical.len()
+        || gpu_gaussians.len() != canonical.len()
+        || host_entries.len() < canonical.len()
+    {
+        return Err(GpuLodHierarchyError::MalformedReadback(
+            "host and device sort record counts differ",
+        ));
+    }
     if let Some((local_index, status)) = statuses
         .iter()
         .copied()
         .enumerate()
         .find(|(_, status)| *status != 0)
     {
+        let source_index = source_index_base
+            .checked_add(local_index as u64)
+            .ok_or(GpuLodHierarchyError::SourceIndexOverflow)?;
         return Err(GpuLodHierarchyError::InvalidGpuRecord {
-            source_index: source_index_base + local_index as u64,
+            source_index,
             status,
         });
     }
-    let entries = pod_vec::<GpuSortEntryRaw>(mapped, layout.entry_offset, record_count)?;
-    let gaussians = pod_vec::<Gaussian3d>(mapped, layout.sorted_offset, record_count)?;
-    let mut seen = vec![false; record_count as usize];
-    let mut result = Vec::with_capacity(record_count as usize);
-    for (index, (entry, gaussian)) in entries.into_iter().zip(gaussians).enumerate() {
+    let mut seen = vec![false; canonical.len()];
+    let mut result = Vec::with_capacity(canonical.len());
+    for (index, (entry, gpu_gaussian)) in entries.iter().zip(gpu_gaussians).enumerate() {
         let local_index = entry.input_and_valid[0] as usize;
-        if entry.input_and_valid[1] != 1
-            || local_index >= record_count as usize
-            || seen[local_index]
-        {
+        if entry.input_and_valid[1] != 1 || local_index >= canonical.len() || seen[local_index] {
             return Err(GpuLodHierarchyError::MalformedReadback(
                 "sorted entries are invalid, duplicated, or outside the source batch",
             ));
         }
         seen[local_index] = true;
+        if *entry != host_entries[local_index] {
+            return Err(GpuLodHierarchyError::MalformedReadback(
+                "sorted entry differs from its host-authored key/source tuple",
+            ));
+        }
         let morton =
             u64::from(entry.key_and_source[0]) | (u64::from(entry.key_and_source[1]) << 32);
         let source_index =
             u64::from(entry.key_and_source[2]) | (u64::from(entry.key_and_source[3]) << 32);
-        if source_index < source_index_base
-            || source_index >= source_index_base + u64::from(record_count)
-        {
+        let expected_source_index = source_index_base
+            .checked_add(local_index as u64)
+            .ok_or(GpuLodHierarchyError::SourceIndexOverflow)?;
+        if source_index != expected_source_index {
             return Err(GpuLodHierarchyError::MalformedReadback(
-                "sorted source index is outside the submitted batch",
+                "sorted source index does not match its source record",
             ));
         }
-        validate_gaussian(&gaussian)
+        validate_gaussian(gpu_gaussian)
             .map_err(|field| GpuLodHierarchyError::InvalidGaussian { index, field })?;
         result.push(GpuLodHierarchySortedRecord {
             morton,
             source_index,
-            gaussian,
+            // The gathered GPU payload is diagnostic only. Preserve the
+            // canonical host bits so device subnormal handling can affect
+            // neither equal-key fixup nor the returned package payload.
+            gaussian: canonical[local_index],
         });
     }
-    if !result.windows(2).all(|pair| {
-        pair[0]
-            .morton
-            .cmp(&pair[1].morton)
-            .then_with(|| compare_gaussians(&pair[0].gaussian, &pair[1].gaussian))
-            .then_with(|| pair[0].source_index.cmp(&pair[1].source_index))
-            .is_le()
-    }) {
+    canonicalize_equal_morton_spans(&mut result)?;
+    Ok(result)
+}
+
+/// Finish the package merge-key order on the host without re-sorting the
+/// host-authored Morton sequence sorted by the GPU.
+///
+/// GPU floating-point modes may flush subnormal payload values to zero during
+/// comparisons. Sorting only each collision span with Rust's canonical total
+/// order makes the result exact while keeping host work proportional to actual
+/// Morton collisions.
+fn canonicalize_equal_morton_spans(
+    records: &mut [GpuLodHierarchySortedRecord],
+) -> Result<(), GpuLodHierarchyError> {
+    if !records
+        .windows(2)
+        .all(|pair| pair[0].morton <= pair[1].morton)
+    {
         return Err(GpuLodHierarchyError::MalformedReadback(
-            "GPU Morton output is not in canonical order",
+            "GPU Morton output is not monotonic",
         ));
     }
-    Ok(result)
+
+    let mut start = 0;
+    while start < records.len() {
+        let morton = records[start].morton;
+        let mut end = start + 1;
+        while end < records.len() && records[end].morton == morton {
+            end += 1;
+        }
+        if end - start > 1 {
+            records[start..end].sort_unstable_by(|left, right| {
+                compare_gaussians(&left.gaussian, &right.gaussian)
+                    .then_with(|| left.source_index.cmp(&right.source_index))
+            });
+        }
+        start = end;
+    }
+    Ok(())
 }
 
 fn validate_reduction_groups(
@@ -1380,6 +1502,10 @@ pub enum GpuLodHierarchyError {
         required: u64,
         configured: u64,
     },
+    HostAllocationFailed {
+        field: &'static str,
+        bytes: u64,
+    },
     DeviceLimit {
         field: &'static str,
         required: u64,
@@ -1453,6 +1579,10 @@ impl fmt::Display for GpuLodHierarchyError {
             } => write!(
                 f,
                 "GPU hierarchy requires {required} bytes but {field} is {configured}"
+            ),
+            Self::HostAllocationFailed { field, bytes } => write!(
+                f,
+                "GPU hierarchy could not reserve {bytes} bounded host bytes for {field}"
             ),
             Self::DeviceLimit {
                 field,
@@ -1544,8 +1674,72 @@ impl Error for GpuLodHierarchyError {}
 mod tests {
     use super::*;
 
+    fn valid_gaussian() -> Gaussian3d {
+        Gaussian3d {
+            position_visibility: [0.0, 0.0, 0.0, 1.0].into(),
+            spherical_harmonic: Default::default(),
+            rotation: [1.0, 0.0, 0.0, 0.0].into(),
+            scale_opacity: [0.25, 0.5, 1.0, 0.75].into(),
+        }
+    }
+
+    fn gaussian_at(mut gaussian: Gaussian3d, position: [f32; 3]) -> Gaussian3d {
+        gaussian.position_visibility.position = position;
+        gaussian
+    }
+
+    fn quantization_boundary_pair(
+        base: Gaussian3d,
+        bounds: LodBounds,
+        axis: usize,
+        bin: u32,
+    ) -> [Gaussian3d; 2] {
+        use crate::gaussian::formats::planar_3d_lod::LOD_MORTON_AXIS_MAX;
+
+        let extent = bounds.max[axis] - bounds.min[axis];
+        let approximate = bounds.min[axis] + extent * (bin as f32 / LOD_MORTON_AXIS_MAX as f32);
+        let mut first = approximate;
+        for _ in 0..256 {
+            first = first.next_down();
+        }
+        let mut positions = Vec::with_capacity(513);
+        positions.push(first);
+        for _ in 0..512 {
+            positions.push(positions.last().copied().unwrap().next_up());
+        }
+        let center = bounds.center();
+        positions
+            .windows(2)
+            .find_map(|pair| {
+                let mut left_position = center;
+                left_position[axis] = pair[0];
+                let mut right_position = center;
+                right_position[axis] = pair[1];
+                let left = gaussian_at(base, left_position);
+                let right = gaussian_at(base, right_position);
+                (canonical_lod_morton_code(left_position, bounds)
+                    != canonical_lod_morton_code(right_position, bounds))
+                .then_some([left, right])
+            })
+            .expect("fixture straddles a canonical Morton quantization boundary")
+    }
+
     #[test]
     fn host_layout_exactly_matches_wgsl() {
+        assert_eq!(
+            size_of::<Gaussian3d>(),
+            (SH_VEC4_PLANES + 3) * size_of::<[f32; 4]>()
+        );
+        assert_eq!(std::mem::offset_of!(Gaussian3d, position_visibility), 0);
+        assert_eq!(std::mem::offset_of!(Gaussian3d, spherical_harmonic), 16);
+        assert_eq!(
+            std::mem::offset_of!(Gaussian3d, rotation),
+            16 + SH_COEFF_COUNT * size_of::<f32>()
+        );
+        assert_eq!(
+            std::mem::offset_of!(Gaussian3d, scale_opacity),
+            32 + SH_COEFF_COUNT * size_of::<f32>()
+        );
         assert_eq!(size_of::<GpuGlobalParams>(), 64);
         assert_eq!(size_of::<GpuStageParams>(), 32);
         assert_eq!(size_of::<GpuSortEntryRaw>(), 32);
@@ -1560,6 +1754,510 @@ mod tests {
         assert!(shader.contains("let r0 = eigen.row0;"));
         assert!(shader.contains("let r1 = eigen.row1;"));
         assert!(shader.contains("let r2 = eigen.row2;"));
+        let ordered_float = shader
+            .split_once("fn ordered_float")
+            .unwrap()
+            .1
+            .split_once("fn compare_float")
+            .unwrap()
+            .0;
+        assert!(ordered_float.contains("let bits = bitcast<u32>(value);"));
+        assert!(!ordered_float.contains("value == 0.0"));
+        let payload_order = shader
+            .split_once("fn compare_gaussians")
+            .unwrap()
+            .1
+            .split_once("fn compare_entries")
+            .unwrap()
+            .0;
+        let payload_fields = [
+            "left.position_visibility",
+            "left.spherical_harmonic",
+            "left.rotation",
+            "left.scale_opacity",
+        ]
+        .map(|field| payload_order.find(field).unwrap());
+        assert!(payload_fields.is_sorted());
+        let entry_order = shader
+            .split_once("fn compare_entries")
+            .unwrap()
+            .1
+            .split_once("@compute")
+            .unwrap()
+            .0;
+        let entry_fields = [
+            "left.key_and_source.y",
+            "left.key_and_source.x",
+            "compare_gaussians",
+            "left.key_and_source.w",
+            "left.key_and_source.z",
+        ]
+        .map(|field| entry_order.find(field).unwrap());
+        assert!(entry_fields.is_sorted());
+        assert!(entry_order.contains("left.input_and_valid.y != right.input_and_valid.y"));
+        assert!(entry_order.contains("left.input_and_valid.y == 0u"));
+        assert!(!shader.contains("fn morton_key"));
+        assert!(!shader.contains("fn quantize_axis"));
+        let initialize = shader
+            .split_once("fn initialize")
+            .unwrap()
+            .1
+            .split_once("fn bitonic_stage")
+            .unwrap()
+            .0;
+        assert!(initialize.contains("statuses[index] = validate_gaussian(inputs[index]);"));
+        assert!(!initialize.contains("entries[index]"));
+    }
+
+    #[test]
+    fn host_sort_entries_author_canonical_keys_source_indices_and_padding() {
+        let bounds = LodBounds::new(
+            [-118.729_54, -130.432_02, -121.283_48],
+            [137.847_32, 109.880_554, 136.600_8],
+        )
+        .unwrap();
+        let base = valid_gaussian();
+        let boundary = quantization_boundary_pair(base, bounds, 0, 1_048_575);
+        let canonical =
+            canonical_records(&[boundary[1], gaussian_at(base, bounds.center()), boundary[0]])
+                .unwrap();
+        let source_index_base = u64::from(u32::MAX) - 1;
+        let entries = canonical_sort_entries(&canonical, source_index_base, bounds, 4).unwrap();
+
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries.len() * size_of::<GpuSortEntryRaw>(), 4 * 32);
+        for (local_index, gaussian) in canonical.iter().enumerate() {
+            let morton = canonical_lod_morton_code(gaussian.position_visibility.position, bounds);
+            let source_index = source_index_base + local_index as u64;
+            assert_eq!(
+                entries[local_index],
+                GpuSortEntryRaw {
+                    key_and_source: [
+                        morton as u32,
+                        (morton >> 32) as u32,
+                        source_index as u32,
+                        (source_index >> 32) as u32,
+                    ],
+                    input_and_valid: [local_index as u32, 1, 0, 0],
+                }
+            );
+        }
+        assert_eq!(
+            entries[3],
+            GpuSortEntryRaw {
+                key_and_source: [u32::MAX; 4],
+                input_and_valid: [3, 0, 0, 0],
+            }
+        );
+        assert_ne!(
+            entries[0].key_and_source[..2],
+            entries[2].key_and_source[..2]
+        );
+
+        let final_source = canonical_sort_entries(&canonical[..1], u64::MAX, bounds, 1).unwrap();
+        assert_eq!(final_source[0].key_and_source[2..], [u32::MAX; 2]);
+        assert!(matches!(
+            canonical_sort_entries(&canonical[..2], u64::MAX, bounds, 2),
+            Err(GpuLodHierarchyError::SourceIndexOverflow)
+        ));
+    }
+
+    #[test]
+    fn readback_rejects_a_tampered_host_authored_morton_key() {
+        let bounds = LodBounds::new([0.0; 3], [1.0; 3]).unwrap();
+        let base = valid_gaussian();
+        let canonical = canonical_records(&[
+            gaussian_at(base, [0.75, 0.5, 0.25]),
+            gaussian_at(base, [0.25, 0.5, 0.75]),
+            gaussian_at(base, [0.5; 3]),
+        ])
+        .unwrap();
+        let source_index_base = u64::from(u32::MAX) - 1;
+        let host_entries =
+            canonical_sort_entries(&canonical, source_index_base, bounds, 4).unwrap();
+        let mut order = (0..canonical.len()).collect::<Vec<_>>();
+        order.sort_unstable_by(|&left, &right| {
+            let left_morton =
+                canonical_lod_morton_code(canonical[left].position_visibility.position, bounds);
+            let right_morton =
+                canonical_lod_morton_code(canonical[right].position_visibility.position, bounds);
+            left_morton
+                .cmp(&right_morton)
+                .then_with(|| compare_gaussians(&canonical[left], &canonical[right]))
+                .then_with(|| left.cmp(&right))
+        });
+        let entries = order
+            .iter()
+            .map(|&index| host_entries[index])
+            .collect::<Vec<_>>();
+        let gpu_gaussians = order
+            .iter()
+            .map(|&index| canonical[index])
+            .collect::<Vec<_>>();
+        let statuses = vec![0; canonical.len()];
+
+        let valid = validate_sorted_readback(
+            &statuses,
+            &entries,
+            &gpu_gaussians,
+            source_index_base,
+            &canonical,
+            &host_entries,
+        )
+        .unwrap();
+        assert_eq!(valid.len(), canonical.len());
+        for (record, &local_index) in valid.iter().zip(&order) {
+            assert_eq!(
+                bytemuck::bytes_of(&record.gaussian),
+                bytemuck::bytes_of(&canonical[local_index])
+            );
+        }
+
+        let mut tampered = entries;
+        tampered[0].key_and_source[0] ^= 1;
+        assert!(matches!(
+            validate_sorted_readback(
+                &statuses,
+                &tampered,
+                &gpu_gaussians,
+                source_index_base,
+                &canonical,
+                &host_entries,
+            ),
+            Err(GpuLodHierarchyError::MalformedReadback(
+                "sorted entry differs from its host-authored key/source tuple"
+            ))
+        ));
+
+        let mut tampered = order
+            .iter()
+            .map(|&index| host_entries[index])
+            .collect::<Vec<_>>();
+        tampered[1].key_and_source[3] ^= 1;
+        assert!(matches!(
+            validate_sorted_readback(
+                &statuses,
+                &tampered,
+                &gpu_gaussians,
+                source_index_base,
+                &canonical,
+                &host_entries,
+            ),
+            Err(GpuLodHierarchyError::MalformedReadback(
+                "sorted entry differs from its host-authored key/source tuple"
+            ))
+        ));
+
+        let mut tampered = order
+            .iter()
+            .map(|&index| host_entries[index])
+            .collect::<Vec<_>>();
+        tampered[2].input_and_valid[2] = 1;
+        assert!(matches!(
+            validate_sorted_readback(
+                &statuses,
+                &tampered,
+                &gpu_gaussians,
+                source_index_base,
+                &canonical,
+                &host_entries,
+            ),
+            Err(GpuLodHierarchyError::MalformedReadback(
+                "sorted entry differs from its host-authored key/source tuple"
+            ))
+        ));
+
+        let mut diagnostic_gaussians = gpu_gaussians;
+        diagnostic_gaussians[0].position_visibility.visibility = 0.25;
+        let result = validate_sorted_readback(
+            &statuses,
+            &order
+                .iter()
+                .map(|&index| host_entries[index])
+                .collect::<Vec<_>>(),
+            &diagnostic_gaussians,
+            source_index_base,
+            &canonical,
+            &host_entries,
+        )
+        .unwrap();
+        assert_eq!(
+            bytemuck::bytes_of(&result[0].gaussian),
+            bytemuck::bytes_of(&canonical[order[0]])
+        );
+    }
+
+    #[test]
+    fn canonical_upload_normalizes_signed_zero_and_rejects_nan() {
+        let mut gaussian = valid_gaussian();
+        gaussian.position_visibility.position[0] = -0.0;
+        gaussian.position_visibility.visibility = -0.0;
+        gaussian.spherical_harmonic.coefficients.fill(-0.0);
+        gaussian.rotation.rotation[3] = -0.0;
+        gaussian.scale_opacity.scale[0] = -0.0;
+        gaussian.scale_opacity.opacity = -0.0;
+        let canonical = canonical_records(&[gaussian]).unwrap().pop().unwrap();
+        let fields = canonical
+            .position_visibility
+            .position
+            .iter()
+            .chain(std::iter::once(&canonical.position_visibility.visibility))
+            .chain(canonical.spherical_harmonic.coefficients.iter())
+            .chain(canonical.rotation.rotation.iter())
+            .chain(canonical.scale_opacity.scale.iter())
+            .chain(std::iter::once(&canonical.scale_opacity.opacity));
+        assert!(
+            fields
+                .into_iter()
+                .all(|value| value.to_bits() != 0x8000_0000)
+        );
+
+        gaussian.spherical_harmonic.coefficients[SH_COEFF_COUNT - 1] = f32::NAN;
+        assert!(matches!(
+            canonical_records(&[gaussian]),
+            Err(GpuLodHierarchyError::InvalidGaussian { index: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn host_collision_fixup_repairs_subnormal_device_ordering() {
+        let base = valid_gaussian();
+        let mut subnormal_x = base;
+        subnormal_x.position_visibility.position[0] = f32::from_bits(1);
+        let mut subnormal_y = base;
+        subnormal_y.position_visibility.position[1] = f32::from_bits(1);
+        let source_base = u64::from(u32::MAX) - 1;
+        // Mimic a device that flushes both subnormals to zero and therefore
+        // leaves this collision span in source-index order.
+        let mut actual = vec![
+            GpuLodHierarchySortedRecord {
+                morton: 7,
+                source_index: source_base,
+                gaussian: subnormal_x,
+            },
+            GpuLodHierarchySortedRecord {
+                morton: 7,
+                source_index: source_base + 1,
+                gaussian: subnormal_y,
+            },
+            GpuLodHierarchySortedRecord {
+                morton: 7,
+                source_index: source_base + 2,
+                gaussian: base,
+            },
+            GpuLodHierarchySortedRecord {
+                morton: 8,
+                source_index: source_base + 3,
+                gaussian: base,
+            },
+        ];
+        let mut expected = actual.clone();
+        expected.sort_unstable_by(|left, right| {
+            left.morton
+                .cmp(&right.morton)
+                .then_with(|| compare_gaussians(&left.gaussian, &right.gaussian))
+                .then_with(|| left.source_index.cmp(&right.source_index))
+        });
+
+        canonicalize_equal_morton_spans(&mut actual).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(actual[3].morton, 8);
+    }
+
+    #[test]
+    fn host_collision_fixup_rejects_non_monotonic_gpu_morton_output() {
+        let mut records = vec![
+            GpuLodHierarchySortedRecord {
+                morton: 2,
+                source_index: 0,
+                gaussian: valid_gaussian(),
+            },
+            GpuLodHierarchySortedRecord {
+                morton: 1,
+                source_index: 1,
+                gaussian: valid_gaussian(),
+            },
+        ];
+        assert!(matches!(
+            canonicalize_equal_morton_spans(&mut records),
+            Err(GpuLodHierarchyError::MalformedReadback(
+                "GPU Morton output is not monotonic"
+            ))
+        ));
+    }
+
+    /// Opt in with:
+    /// `RUN_GPU_LOD_HIERARCHY_TESTS=1 cargo test --features lod_build gpu_collision_sort_matches_cpu_canonical_order -- --ignored --nocapture`
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[ignore = "requires an explicitly requested wgpu adapter"]
+    fn gpu_collision_sort_matches_cpu_canonical_order() {
+        use crate::gaussian::formats::planar_3d_lod::canonical_lod_morton_code;
+
+        if std::env::var("RUN_GPU_LOD_HIERARCHY_TESTS").as_deref() != Ok("1") {
+            eprintln!("set RUN_GPU_LOD_HIERARCHY_TESTS=1 to execute the adapter test");
+            return;
+        }
+
+        let base = valid_gaussian();
+        let mut records = vec![base];
+        let mut signed_zero = base;
+        signed_zero.position_visibility.position = [-0.0, -0.0, -0.0];
+        signed_zero.spherical_harmonic.coefficients.fill(-0.0);
+        signed_zero.rotation.rotation[1..].fill(-0.0);
+        records.push(signed_zero);
+        // An identical canonical payload after the low 32-bit source index
+        // wraps exercises the final high/low source tiebreaker.
+        records.push(base);
+        for component in 0..3 {
+            let mut gaussian = base;
+            gaussian.position_visibility.position[component] = f32::from_bits(1);
+            records.push(gaussian);
+        }
+        let mut gaussian = base;
+        gaussian.position_visibility.visibility = 0.5;
+        records.push(gaussian);
+        for coefficient in 0..SH_COEFF_COUNT {
+            let mut gaussian = base;
+            gaussian.spherical_harmonic.coefficients[coefficient] = coefficient as f32 * 0.25 - 1.0;
+            records.push(gaussian);
+        }
+        for component in 0..4 {
+            let mut gaussian = base;
+            gaussian.rotation.rotation[component] = if component == 0 { 0.5 } else { 0.25 };
+            records.push(gaussian);
+        }
+        for component in 0..3 {
+            let mut gaussian = base;
+            gaussian.scale_opacity.scale[component] *= 0.5;
+            records.push(gaussian);
+        }
+        let mut gaussian = base;
+        gaussian.scale_opacity.opacity = 0.5;
+        records.push(gaussian);
+        let normalization_bounds = LodBounds::new(
+            [-118.729_54, -130.432_02, -121.283_48],
+            [137.847_32, 109.880_554, 136.600_8],
+        )
+        .unwrap();
+        for (axis, bin) in [262_143, 1_048_575, 1_835_007].into_iter().enumerate() {
+            records.extend(quantization_boundary_pair(
+                base,
+                normalization_bounds,
+                axis,
+                bin,
+            ));
+        }
+        assert!(!records.len().is_power_of_two());
+        assert!(records.len() <= 128);
+
+        let source_index_base = u64::from(u32::MAX) - 1;
+        let mut expected = canonical_records(&records)
+            .unwrap()
+            .into_iter()
+            .enumerate()
+            .map(|(index, gaussian)| GpuLodHierarchySortedRecord {
+                morton: canonical_lod_morton_code(
+                    gaussian.position_visibility.position,
+                    normalization_bounds,
+                ),
+                source_index: source_index_base + index as u64,
+                gaussian,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            expected
+                .windows(2)
+                .any(|pair| pair[0].morton != pair[1].morton)
+        );
+        expected.sort_unstable_by(|left, right| {
+            left.morton
+                .cmp(&right.morton)
+                .then_with(|| compare_gaussians(&left.gaussian, &right.gaussian))
+                .then_with(|| left.source_index.cmp(&right.source_index))
+        });
+
+        let instance = wgpu::Instance::default();
+        let adapter = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(
+            &instance, None,
+        ))
+        .expect("collision-sort GPU test requires an adapter");
+        eprintln!("collision-sort GPU adapter: {:?}", adapter.get_info());
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("gaussian_lod_collision_sort_test_device"),
+            ..Default::default()
+        }))
+        .expect("collision-sort GPU test could not create a device");
+        let mut builder = GpuLodHierarchyBuilder::new(
+            &device,
+            GpuLodHierarchyLimits {
+                max_records: 128,
+                max_nodes: 1,
+                max_input_bytes: 1024 * 1024,
+                max_node_bytes: 1024 * 1024,
+                max_readback_bytes: 4 * 1024 * 1024,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let actual = builder
+            .sort_morton_batch(
+                &device,
+                &queue,
+                &records,
+                source_index_base,
+                normalization_bounds,
+                3.0,
+            )
+            .unwrap();
+
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(&expected) {
+            assert_eq!(actual.morton, expected.morton);
+            assert_eq!(actual.source_index, expected.source_index);
+            assert_eq!(
+                bytemuck::bytes_of(&actual.gaussian),
+                bytemuck::bytes_of(&expected.gaussian)
+            );
+        }
+
+        // Reuse the same slot with a much smaller non-power-of-two batch. A
+        // stale valid entry from the first dispatch must never enter the sort.
+        let smaller = [
+            records[records.len() - 1],
+            records[0],
+            records[records.len() - 2],
+        ];
+        let mut smaller_expected = canonical_records(&smaller)
+            .unwrap()
+            .into_iter()
+            .enumerate()
+            .map(|(index, gaussian)| GpuLodHierarchySortedRecord {
+                morton: canonical_lod_morton_code(
+                    gaussian.position_visibility.position,
+                    normalization_bounds,
+                ),
+                source_index: source_index_base + index as u64,
+                gaussian,
+            })
+            .collect::<Vec<_>>();
+        smaller_expected.sort_unstable_by(|left, right| {
+            left.morton
+                .cmp(&right.morton)
+                .then_with(|| compare_gaussians(&left.gaussian, &right.gaussian))
+                .then_with(|| left.source_index.cmp(&right.source_index))
+        });
+        let smaller_actual = builder
+            .sort_morton_batch(
+                &device,
+                &queue,
+                &smaller,
+                source_index_base,
+                normalization_bounds,
+                3.0,
+            )
+            .unwrap();
+        assert_eq!(smaller_actual, smaller_expected);
     }
 
     #[test]

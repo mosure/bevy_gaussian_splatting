@@ -4,6 +4,8 @@
 //! versioned hierarchy/page contract and provides a bounded-complexity CPU
 //! builder against which the bounded GPU hierarchy primitives are tested.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::{
     cmp::Ordering,
     collections::{BinaryHeap, HashMap, HashSet, VecDeque},
@@ -13,6 +15,8 @@ use std::{
 };
 
 use bevy::math::{Mat3, Quat, Vec3};
+#[cfg(feature = "sort_rayon")]
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -35,25 +39,43 @@ pub const LOD_MANIFEST_MAGIC: [u8; 8] = *b"BGSLOD3\0";
 pub const LOD_MANIFEST_VERSION: u16 = 3;
 /// CPU builder ABI which guarantees that one MomentMerge refinement cannot
 /// increase its parent's representation count by more than the configured
-/// [`GaussianLodBuildSettings::branching_factor`]. ABI 13 also guarantees that
-/// representative covariance uses the renderer's `Q D Q^T` convention, emits
-/// a conservative high-fidelity certificate (including anisotropy growth) for
-/// every hierarchy node, uses risk-ranked adjacent agglomeration for ordinary
+/// [`GaussianLodBuildSettings::branching_factor`]. ABI 14 also guarantees
+/// renderer-compatible covariance, all-view projected-alpha conservation, a
+/// conservative high-fidelity certificate (including anisotropy growth), and
+/// risk-ranked adjacent agglomeration for ordinary
 /// reductions averaging at most 16 source records per representative while preserving
 /// a conservative balanced-partition selection-metadata envelope,
 /// preserves the risk-ranked adjacent-pair bridge directly above 64-record
 /// logical leaves, and packs logical node payloads into independently bounded
 /// physical pages.
-pub const PROGRESSIVE_MOMENT_MERGE_BUILDER_ABI_VERSION: u32 = 13;
+pub const PROGRESSIVE_MOMENT_MERGE_BUILDER_ABI_VERSION: u32 = 14;
+#[cfg(test)]
+thread_local! {
+    static GAUSSIAN_SUPPORT_FULL_VALIDATIONS: Cell<u64> = const { Cell::new(0) };
+}
 // External CPU/GPU package builders use distinct, wide topologies. Their ABI
 // values remain readable even though only the progressive CPU builder lives in
 // this module.
 const EXTERNAL_CPU_MOMENT_MERGE_BUILDER_ABI_VERSION: u32 = 5;
 const EXTERNAL_GPU_MOMENT_MERGE_BUILDER_ABI_VERSION: u32 = 6;
-/// MomentMerge version 2 fixes the covariance convention used for both source
-/// accumulation and representative eigensolve output. Version 1 pages can
-/// contain representatives whose anisotropic axes are transposed at render time.
-pub const MOMENT_MERGE_VERSION: u32 = 2;
+/// Read-only external-memory progressive ABI. Each internal rung contains a
+/// bounded number of v3 representatives accumulated directly from disjoint
+/// intervals of the canonical source stream.
+const EXTERNAL_PROGRESSIVE_MOMENT_MERGE_BUILDER_ABI_VERSION: u32 = 15;
+/// External-memory progressive ABI with renderer-consistent spatial fitting
+/// and a required monotone child-record to parent-record morph map.
+pub(crate) const EXTERNAL_SPATIAL_MOMENT_MERGE_BUILDER_ABI_VERSION: u32 = 16;
+/// External CPU/GPU builders retain their shared optical-depth-union reducer
+/// until the GPU implementation can provide the same all-view proof as ABI 14.
+pub(crate) const EXTERNAL_MOMENT_MERGE_VERSION: u32 = 2;
+/// MomentMerge version 3 conservatively calibrates representative opacity so
+/// projected alpha mass cannot inflate in any view. Version 2 fixed the
+/// covariance convention, but widely separated surface splats could still
+/// become a large, nearly opaque ellipsoid.
+pub const MOMENT_MERGE_VERSION: u32 = 3;
+/// MomentMerge version 4 retains v3's all-view projected-alpha ceiling and
+/// adds bounded spatial fitting plus a monotone morph correspondence proof.
+pub const SPATIAL_MOMENT_MERGE_VERSION: u32 = 4;
 pub const LOD_REQUIRED_FEATURE_SH0: u64 = 1 << 0;
 pub const LOD_REQUIRED_FEATURE_SH1: u64 = 1 << 1;
 pub const LOD_REQUIRED_FEATURE_SH2: u64 = 1 << 2;
@@ -65,6 +87,10 @@ pub const LOD_REQUIRED_FEATURE_HIGH_FIDELITY_CERTIFICATE: u64 = 1 << 5;
 /// page descriptor bound covers their union; payload validation checks each
 /// node's referenced slice against that node's own bound.
 pub const LOD_REQUIRED_FEATURE_SHARED_NODE_PAGES: u64 = 1 << 6;
+/// Every internal node has a compact, monotone mapping from its concatenated
+/// immediate-child records to its own representation records.
+pub const LOD_REQUIRED_FEATURE_MONOTONE_MORPH_MAP: u64 = 1 << 7;
+pub const LOD_MORPH_MAP_SCHEMA_VERSION: u16 = 1;
 pub const LOD_REQUIRED_FEATURE_SH_MASK: u64 = LOD_REQUIRED_FEATURE_SH0
     | LOD_REQUIRED_FEATURE_SH1
     | LOD_REQUIRED_FEATURE_SH2
@@ -73,8 +99,9 @@ pub const LOD_REQUIRED_FEATURE_SH_MASK: u64 = LOD_REQUIRED_FEATURE_SH0
 pub const LOD_CURRENT_SH_FEATURE: u64 = 1 << SH_DEGREE;
 pub const LOD_CURRENT_REQUIRED_FEATURES: u64 =
     LOD_CURRENT_SH_FEATURE | LOD_REQUIRED_FEATURE_HIGH_FIDELITY_CERTIFICATE;
-pub const LOD_SUPPORTED_REQUIRED_FEATURES: u64 =
-    LOD_CURRENT_REQUIRED_FEATURES | LOD_REQUIRED_FEATURE_SHARED_NODE_PAGES;
+pub const LOD_SUPPORTED_REQUIRED_FEATURES: u64 = LOD_CURRENT_REQUIRED_FEATURES
+    | LOD_REQUIRED_FEATURE_SHARED_NODE_PAGES
+    | LOD_REQUIRED_FEATURE_MONOTONE_MORPH_MAP;
 
 const PROGRESSIVE_LOGICAL_LEAF_CAPACITY: u32 = 64;
 const PROGRESSIVE_PHYSICAL_PAGE_CAPACITY: u32 = 1024;
@@ -84,6 +111,51 @@ const HIGH_FIDELITY_MAX_REPRESENTATIVE_DENOMINATOR: usize = 8;
 /// Bound the more expensive risk-aware ordinary rung to the near-leaf regime.
 /// Larger reductions retain the deterministic balanced reducer.
 const PROGRESSIVE_RISK_AWARE_MAX_SOURCES_PER_REPRESENTATIVE: usize = 16;
+/// Expensive linear builder passes poll cancellation at this record cadence.
+/// Leaf and deepest-bridge work items are already capped at 64 and 128 source
+/// records respectively, so one poll per such item is also bounded by this
+/// limit.
+const LOD_BUILD_CANCEL_CHECK_INTERVAL: usize = 256;
+/// Fixed sorted runs bound the longest non-cooperative Morton-sort operation.
+const LOD_MORTON_SORT_RUN_LEN: usize = 64 * 1024;
+
+#[derive(Debug)]
+enum CancelableLodBuildError {
+    Canceled,
+    Build(LodBuildError),
+}
+
+type CancelableLodBuildResult<T> = Result<T, CancelableLodBuildError>;
+
+impl From<LodBuildError> for CancelableLodBuildError {
+    fn from(error: LodBuildError) -> Self {
+        Self::Build(error)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct LodBuildCancellation<'a> {
+    is_canceled: &'a (dyn Fn() -> bool + Sync),
+}
+
+impl LodBuildCancellation<'_> {
+    #[inline]
+    fn check(self) -> CancelableLodBuildResult<()> {
+        if (self.is_canceled)() {
+            Err(CancelableLodBuildError::Canceled)
+        } else {
+            Ok(())
+        }
+    }
+
+    #[inline]
+    fn poll(self, index: usize) -> CancelableLodBuildResult<()> {
+        if index.is_multiple_of(LOD_BUILD_CANCEL_CHECK_INTERVAL) {
+            self.check()?;
+        }
+        Ok(())
+    }
+}
 
 pub const LOD_MORTON_BITS_PER_AXIS: u32 = 21;
 pub const LOD_MORTON_AXIS_MAX: u32 = (1 << LOD_MORTON_BITS_PER_AXIS) - 1;
@@ -173,14 +245,21 @@ pub enum LodReducerKind {
     MomentMerge,
 }
 
-fn moment_merge_config_fingerprint(build: GaussianLodBuildSettings) -> u64 {
+fn moment_merge_config_fingerprint_for_reducer(
+    build: GaussianLodBuildSettings,
+    reducer_version: u32,
+) -> u64 {
     let mut hash = StableHasher::new();
     // Preserve the promoted MomentMerge fingerprint byte-for-byte so valid
     // manifests do not change when the unused reducer configuration is removed.
     hash.write(b"BGSLOD MomentMerge config");
     hash.write(&build.stable_hash().to_le_bytes());
-    hash.write(&MOMENT_MERGE_VERSION.to_le_bytes());
+    hash.write(&reducer_version.to_le_bytes());
     hash.finish()
+}
+
+fn moment_merge_config_fingerprint(build: GaussianLodBuildSettings) -> u64 {
+    moment_merge_config_fingerprint_for_reducer(build, MOMENT_MERGE_VERSION)
 }
 
 /// Fingerprint for every immutable hierarchy and page-encoding choice.
@@ -192,7 +271,19 @@ pub fn lod_config_fingerprint(
     build: GaussianLodBuildSettings,
     compressed_representative_sh_degree: Option<u8>,
 ) -> u64 {
-    let base = moment_merge_config_fingerprint(build);
+    lod_config_fingerprint_for_reducer(
+        build,
+        compressed_representative_sh_degree,
+        MOMENT_MERGE_VERSION,
+    )
+}
+
+pub(crate) fn lod_config_fingerprint_for_reducer(
+    build: GaussianLodBuildSettings,
+    compressed_representative_sh_degree: Option<u8>,
+    reducer_version: u32,
+) -> u64 {
+    let base = moment_merge_config_fingerprint_for_reducer(build, reducer_version);
     let Some(degree) = compressed_representative_sh_degree else {
         return base;
     };
@@ -339,9 +430,17 @@ pub struct GaussianLodBuildMetadata {
 }
 
 impl GaussianLodBuildMetadata {
-    /// Whether the manifest guarantees binary topology with monotonic,
-    /// configured parent-to-children representation-count amplification.
+    /// Whether the manifest guarantees monotonic, configured
+    /// parent-to-children representation-count amplification.
     pub const fn has_bounded_refinement_amplification(&self) -> bool {
+        is_bounded_refinement_moment_merge_builder_abi(self.builder_abi_version)
+            && matches!(self.reducer, LodReducerKind::MomentMerge)
+    }
+
+    /// ABI 14 additionally fixes the progressive in-memory topology to binary
+    /// parent/child replacement. ABI 15 retains the configured external
+    /// branching factor while providing the same amplification bound.
+    const fn has_binary_progressive_topology(&self) -> bool {
         is_progressive_moment_merge_builder_abi(self.builder_abi_version)
             && matches!(self.reducer, LodReducerKind::MomentMerge)
     }
@@ -351,13 +450,24 @@ const fn is_progressive_moment_merge_builder_abi(builder_abi_version: u32) -> bo
     builder_abi_version == PROGRESSIVE_MOMENT_MERGE_BUILDER_ABI_VERSION
 }
 
-const fn is_supported_moment_merge_builder_abi(builder_abi_version: u32) -> bool {
+const fn is_bounded_refinement_moment_merge_builder_abi(builder_abi_version: u32) -> bool {
     matches!(
         builder_abi_version,
-        EXTERNAL_CPU_MOMENT_MERGE_BUILDER_ABI_VERSION
-            | EXTERNAL_GPU_MOMENT_MERGE_BUILDER_ABI_VERSION
-            | PROGRESSIVE_MOMENT_MERGE_BUILDER_ABI_VERSION
+        PROGRESSIVE_MOMENT_MERGE_BUILDER_ABI_VERSION
+            | EXTERNAL_PROGRESSIVE_MOMENT_MERGE_BUILDER_ABI_VERSION
+            | EXTERNAL_SPATIAL_MOMENT_MERGE_BUILDER_ABI_VERSION
     )
+}
+
+const fn moment_merge_reducer_version_for_builder_abi(builder_abi_version: u32) -> Option<u32> {
+    match builder_abi_version {
+        EXTERNAL_CPU_MOMENT_MERGE_BUILDER_ABI_VERSION
+        | EXTERNAL_GPU_MOMENT_MERGE_BUILDER_ABI_VERSION => Some(EXTERNAL_MOMENT_MERGE_VERSION),
+        PROGRESSIVE_MOMENT_MERGE_BUILDER_ABI_VERSION
+        | EXTERNAL_PROGRESSIVE_MOMENT_MERGE_BUILDER_ABI_VERSION => Some(MOMENT_MERGE_VERSION),
+        EXTERNAL_SPATIAL_MOMENT_MERGE_BUILDER_ABI_VERSION => Some(SPATIAL_MOMENT_MERGE_VERSION),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -374,6 +484,22 @@ pub struct GaussianLodManifestHeader {
     pub page_count: u32,
 }
 
+/// Compact morph correspondence for ABI 16 hierarchies.
+///
+/// `node_runs` is index-aligned with [`GaussianLodManifest::nodes`]. For one
+/// internal node, the referenced u16 values are ordered by parent-local record
+/// index. Run `p` maps the next `child_run_lengths[p]` records from the
+/// concatenation of the node's immediate children to parent-local record `p`.
+/// Children are concatenated in manifest child-range order and each child's
+/// records retain their page-local representation order. Positive runs make
+/// the mapping monotone and surjective without storing a parent index per run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GaussianLodMorphMap {
+    pub schema_version: u16,
+    pub node_runs: Vec<LodIndexRange>,
+    pub child_run_lengths: Vec<u16>,
+}
+
 /// Portable hierarchy manifest. It is deliberately separate from page bytes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GaussianLodManifest {
@@ -385,9 +511,67 @@ pub struct GaussianLodManifest {
     pub pages: Vec<LodPageDescriptor>,
     pub build: GaussianLodBuildMetadata,
     pub quality: GaussianLodQualityMetadata,
+    /// Required for ABI 16 and absent from every older readable ABI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub morph_map: Option<GaussianLodMorphMap>,
 }
 
 impl GaussianLodManifest {
+    /// Stable manifest-global run range for one node index.
+    #[inline]
+    pub fn morph_child_run_range_at(&self, node_index: usize) -> Option<LodIndexRange> {
+        self.morph_map.as_ref()?.node_runs.get(node_index).copied()
+    }
+
+    /// Zero-allocation run slice for one node index.
+    pub fn morph_child_run_lengths_at(&self, node_index: usize) -> Option<&[u16]> {
+        let morph_map = self.morph_map.as_ref()?;
+        let range = *morph_map.node_runs.get(node_index)?;
+        let end = range.end()? as usize;
+        morph_map.child_run_lengths.get(range.start as usize..end)
+    }
+
+    /// Parent-local record corresponding to a concatenated child-local record.
+    pub fn morph_parent_record_at(
+        &self,
+        node_index: usize,
+        child_record_index: u32,
+    ) -> Option<u16> {
+        let mut child_start = 0_u32;
+        for (parent_record, run) in self
+            .morph_child_run_lengths_at(node_index)?
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            let child_end = child_start.checked_add(u32::from(run))?;
+            if child_record_index < child_end {
+                return u16::try_from(parent_record).ok();
+            }
+            child_start = child_end;
+        }
+        None
+    }
+
+    /// Node-id convenience wrapper. Runtime upload paths should retain the
+    /// validated manifest index and use [`Self::morph_child_run_range_at`].
+    pub fn morph_child_run_range(&self, node: LodNodeId) -> Option<LodIndexRange> {
+        let node_index = self
+            .nodes
+            .iter()
+            .position(|candidate| candidate.id == node)?;
+        self.morph_child_run_range_at(node_index)
+    }
+
+    /// Node-id convenience oracle for tests and CPU transition planning.
+    pub fn morph_parent_record(&self, node: LodNodeId, child_record_index: u32) -> Option<u16> {
+        let node_index = self
+            .nodes
+            .iter()
+            .position(|candidate| candidate.id == node)?;
+        self.morph_parent_record_at(node_index, child_record_index)
+    }
+
     pub fn validate(&self) -> Result<(), LodValidationError> {
         if self.header.magic != LOD_MANIFEST_MAGIC {
             return Err(LodValidationError::InvalidMagic(self.header.magic));
@@ -424,11 +608,37 @@ impl GaussianLodManifest {
             .settings
             .validate()
             .map_err(LodValidationError::InvalidBuildSettings)?;
-        if !is_supported_moment_merge_builder_abi(self.build.builder_abi_version)
-            || self.build.reducer != LodReducerKind::MomentMerge
-            || self.build.reducer_version != MOMENT_MERGE_VERSION
+        if self.build.reducer != LodReducerKind::MomentMerge
+            || moment_merge_reducer_version_for_builder_abi(self.build.builder_abi_version)
+                != Some(self.build.reducer_version)
         {
             return Err(LodValidationError::InvalidBuildVersion);
+        }
+        let morph_feature =
+            self.header.required_features & LOD_REQUIRED_FEATURE_MONOTONE_MORPH_MAP != 0;
+        let spatial_builder =
+            self.build.builder_abi_version == EXTERNAL_SPATIAL_MOMENT_MERGE_BUILDER_ABI_VERSION;
+        match (spatial_builder, morph_feature, self.morph_map.as_ref()) {
+            (true, true, Some(morph_map)) => {
+                if morph_map.schema_version != LOD_MORPH_MAP_SCHEMA_VERSION {
+                    return Err(LodValidationError::UnsupportedMorphMapVersion(
+                        morph_map.schema_version,
+                    ));
+                }
+                if self.build.settings.leaf_capacity > u32::from(u16::MAX) {
+                    return Err(LodValidationError::MorphRecordCapacityExceeded(
+                        self.build.settings.leaf_capacity,
+                    ));
+                }
+            }
+            (true, false, _) => {
+                return Err(LodValidationError::MissingMonotoneMorphMapFeature);
+            }
+            (true, true, None) => return Err(LodValidationError::MissingMorphMap),
+            (false, true, _) | (false, false, Some(_)) => {
+                return Err(LodValidationError::UnexpectedMorphMap);
+            }
+            (false, false, None) => {}
         }
         let actual_node_count = u32::try_from(self.nodes.len())
             .map_err(|_| LodValidationError::CountOverflow("nodes"))?;
@@ -439,6 +649,25 @@ impl GaussianLodManifest {
         }
         if actual_page_count != self.header.page_count {
             return Err(LodValidationError::CountMismatch("pages"));
+        }
+        if let Some(morph_map) = &self.morph_map {
+            if morph_map.node_runs.len() != self.nodes.len() {
+                return Err(LodValidationError::MorphNodeCountMismatch);
+            }
+            let mut expected_start = 0_u32;
+            for (node_index, range) in morph_map.node_runs.iter().copied().enumerate() {
+                let end = range
+                    .end()
+                    .ok_or(LodValidationError::InvalidMorphRunRange(node_index))?;
+                if range.start != expected_start || end as usize > morph_map.child_run_lengths.len()
+                {
+                    return Err(LodValidationError::InvalidMorphRunRange(node_index));
+                }
+                expected_start = end;
+            }
+            if expected_start as usize != morph_map.child_run_lengths.len() {
+                return Err(LodValidationError::MorphRunCoverageMismatch);
+            }
         }
 
         if self.header.source_gaussian_count == 0 {
@@ -503,7 +732,11 @@ impl GaussianLodManifest {
             return Err(LodValidationError::CountMismatch("stored Gaussians"));
         }
         if self.build.config_fingerprint
-            != lod_config_fingerprint(self.build.settings, compressed_representative_sh_degree)
+            != lod_config_fingerprint_for_reducer(
+                self.build.settings,
+                compressed_representative_sh_degree,
+                self.build.reducer_version,
+            )
         {
             return Err(LodValidationError::ConfigFingerprintMismatch);
         }
@@ -631,6 +864,12 @@ impl GaussianLodManifest {
             let child_start = node.children.start as usize;
             let child_end = node.children.end().unwrap() as usize;
             if child_start == child_end {
+                if self
+                    .morph_child_run_range_at(index)
+                    .is_some_and(|range| !range.is_empty())
+                {
+                    return Err(LodValidationError::InvalidLeafMorphRuns(node.id));
+                }
                 if self.pages[*page_by_id.get(&node.representation.page).unwrap()].kind
                     == LodPageKind::Representatives
                 {
@@ -649,8 +888,8 @@ impl GaussianLodManifest {
                 }
                 continue;
             }
-            let progressive_moment_merge = self.build.has_bounded_refinement_amplification();
-            if (progressive_moment_merge && child_end - child_start != 2)
+            let bounded_refinement = self.build.has_bounded_refinement_amplification();
+            if (self.build.has_binary_progressive_topology() && child_end - child_start != 2)
                 || child_end - child_start < 2
                 || child_end - child_start > usize::from(self.build.settings.branching_factor)
             {
@@ -722,7 +961,7 @@ impl GaussianLodManifest {
                 }
                 queue.push_back(child_index);
             }
-            if progressive_moment_merge {
+            if bounded_refinement {
                 let parent_count = u64::from(node.representation.count);
                 let maximum_child_count = parent_count
                     .checked_mul(u64::from(self.build.settings.branching_factor))
@@ -737,6 +976,31 @@ impl GaussianLodManifest {
                         parent_count,
                         child_count: child_representation_count,
                         maximum: self.build.settings.branching_factor,
+                    });
+                }
+            }
+            if let Some(run_lengths) = self.morph_child_run_lengths_at(index) {
+                if run_lengths.len() != node.representation.count as usize {
+                    return Err(LodValidationError::InvalidMorphRunCount {
+                        node: node.id,
+                        expected: node.representation.count,
+                        actual: run_lengths.len(),
+                    });
+                }
+                let mut mapped_child_count = 0_u64;
+                for &run_length in run_lengths {
+                    if run_length == 0 {
+                        return Err(LodValidationError::ZeroMorphRun(node.id));
+                    }
+                    mapped_child_count = mapped_child_count
+                        .checked_add(u64::from(run_length))
+                        .ok_or(LodValidationError::CountOverflow("morph child records"))?;
+                }
+                if mapped_child_count != child_representation_count {
+                    return Err(LodValidationError::MorphChildCoverageMismatch {
+                        node: node.id,
+                        expected: child_representation_count,
+                        actual: mapped_child_count,
                     });
                 }
             }
@@ -917,6 +1181,26 @@ impl MomentMergeReducer {
     }
 
     pub fn reduce(&self, gaussians: &[Gaussian3d]) -> Result<MomentMergeResult, LodBuildError> {
+        self.accumulate_validated(gaussians)?
+            .finish(self.support_sigma)
+    }
+
+    /// Reducer used by external CPU builds and as the CPU oracle for the
+    /// external GPU builder. Their ABI v2 contract retains raw optical-depth
+    /// union opacity until both implementations can promote together.
+    #[cfg(test)]
+    pub(crate) fn reduce_external_v2(
+        &self,
+        gaussians: &[Gaussian3d],
+    ) -> Result<MomentMergeResult, LodBuildError> {
+        self.accumulate_validated(gaussians)?
+            .finish_external_v2(self.support_sigma)
+    }
+
+    fn accumulate_validated(
+        &self,
+        gaussians: &[Gaussian3d],
+    ) -> Result<MomentAccumulator, LodBuildError> {
         if gaussians.is_empty() {
             return Err(LodBuildError::EmptyReduction);
         }
@@ -926,7 +1210,7 @@ impl MomentMergeReducer {
                 .map_err(|field| LodBuildError::InvalidGaussian { index, field })?;
             accumulator.add(gaussian, self.support_sigma)?;
         }
-        accumulator.finish(self.support_sigma)
+        Ok(accumulator)
     }
 }
 
@@ -958,16 +1242,617 @@ impl MomentMergeResult {
     /// deviation. Opacity error is intentionally excluded: projected alpha
     /// mass is already bounded by the raster certificate, while compositing
     /// coincident source alpha makes raw per-record opacity differences noisy.
-    fn high_fidelity_certificate(&self) -> f32 {
-        let coefficients_per_channel = (SH_COEFF_COUNT / 3).max(1) as f32;
-        let worst_direction_factor = (SH_COEFF_COUNT as f32).sqrt()
-            * (coefficients_per_channel / (4.0 * std::f32::consts::PI)).sqrt();
-        let appearance_bound = worst_direction_factor * self.error.appearance;
-        let appearance_certificate = (1.0 + appearance_bound).recip().clamp(0.0, 1.0);
+    pub(crate) fn high_fidelity_certificate(&self) -> f32 {
+        let appearance_certificate = appearance_error_certificate(self.error.appearance);
         self.raster_risk
             .high_fidelity_certificate()
             .min(appearance_certificate)
     }
+}
+
+#[cfg(any(feature = "lod_build", test))]
+const SPATIAL_FIT_MAX_RELATIVE_BOUNDARY_ERROR: f64 = 0.10;
+#[cfg(any(feature = "lod_build", test))]
+const SPATIAL_FIT_MIN_REFERENCE_ALPHA: f64 = 1e-4;
+#[cfg(any(feature = "lod_build", test))]
+const SPATIAL_FIT_TANGENT_FACTORS: [f32; 5] = [1.031_25, 1.062_5, 1.125, 1.25, 1.5];
+#[cfg(any(feature = "lod_build", test))]
+const SPATIAL_FIT_MAX_SIBLING_NODES: usize = 32;
+#[cfg(any(feature = "lod_build", test))]
+const SPATIAL_FIT_TANGENT_GRID: [f32; 3] = [0.0, 0.5, 1.0];
+#[cfg(any(feature = "lod_build", test))]
+const SPATIAL_FIT_PROJECTED_SCALE_FACTORS: [f64; 7] = [0.0625, 0.125, 0.25, 0.5, 1.0, 2.0, 4.0];
+#[cfg(any(feature = "lod_build", test))]
+const SPATIAL_FIT_MAX_PROBES_PER_NODE_PAIR: usize =
+    SPATIAL_FIT_TANGENT_GRID.len() * SPATIAL_FIT_TANGENT_GRID.len();
+#[cfg(any(feature = "lod_build", test))]
+const SPATIAL_FIT_SAMPLE_POINTS_PER_DIRECTION: usize = 3;
+
+/// One bounded ABI 16 node participating in a sibling-cohort spatial fit.
+///
+/// Risk-aware rungs retain their original records and exact representative
+/// source partitions until their at-most-32-node sibling cohort is complete.
+/// Coarser streamed rungs use `None` and therefore take the conservative
+/// selection-error path instead of buffering an unbounded source interval.
+#[cfg(any(feature = "lod_build", test))]
+#[derive(Clone, Debug)]
+pub(crate) struct SpatialMomentMergeNode {
+    pub(crate) representatives: Vec<MomentMergeResult>,
+    pub(crate) source_records: Option<Vec<Gaussian3d>>,
+    pub(crate) source_ranges: Vec<std::ops::Range<usize>>,
+    pub(crate) authored_support_bounds: LodBounds,
+    pub(crate) spatial_certificate_cap: f32,
+    pub(crate) spatial_geometric_error_floor: f32,
+}
+
+#[cfg(any(feature = "lod_build", test))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct SpatialMomentMergeFitReport {
+    /// All authored-support touching pairs inside this future-parent cohort.
+    pub(crate) touching_node_pairs: u32,
+    /// Touching pairs with retained source partitions and therefore measured.
+    pub(crate) overlapping_node_pairs: u32,
+    /// Touching coarse pairs lacking retained source payload. These are left
+    /// unchanged instead of being assigned an artificial infinite error.
+    pub(crate) unmeasured_touching_node_pairs: u32,
+    pub(crate) accepted_edits: u32,
+    pub(crate) unsafe_node_pairs: u32,
+    pub(crate) maximum_relative_boundary_error_before: f32,
+    pub(crate) maximum_relative_boundary_error_after: f32,
+    pub(crate) cohort_composited_error_before: f64,
+    pub(crate) cohort_composited_error_after: f64,
+}
+
+#[cfg(any(feature = "lod_build", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SpatialBoundaryProbe {
+    left_node: usize,
+    left_representative: usize,
+    right_node: usize,
+    right_representative: usize,
+}
+
+#[cfg(any(feature = "lod_build", test))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct SpatialBoundaryMetrics {
+    relative_boundary_error: f64,
+    composited_error: f64,
+    relative_boundary_error_by_scale: [f64; SPATIAL_FIT_PROJECTED_SCALE_FACTORS.len()],
+    composited_error_by_scale: [f64; SPATIAL_FIT_PROJECTED_SCALE_FACTORS.len()],
+}
+
+/// Probe geometry and flat-source alpha samples which cannot change during a
+/// spatial fit. Candidate edits retain both representative centers and source
+/// partitions, so computing this table once is byte-equivalent to replaying
+/// the source renderer for every widening candidate.
+#[cfg(any(feature = "lod_build", test))]
+#[derive(Clone, Debug, PartialEq)]
+struct SpatialBoundaryReference {
+    characteristic_pixels_per_world: [f64; PROJECTED_ALPHA_MASS_DIRECTIONS.len()],
+    sample_points: [[[f64; 2]; SPATIAL_FIT_SAMPLE_POINTS_PER_DIRECTION];
+        PROJECTED_ALPHA_MASS_DIRECTIONS.len()],
+    source_alpha: [[[f64; SPATIAL_FIT_SAMPLE_POINTS_PER_DIRECTION];
+        SPATIAL_FIT_PROJECTED_SCALE_FACTORS.len()];
+        PROJECTED_ALPHA_MASS_DIRECTIONS.len()],
+}
+
+#[cfg(any(feature = "lod_build", test))]
+#[derive(Clone, Copy)]
+enum SpatialBoundaryMetricMode {
+    Cached,
+    #[cfg(test)]
+    BruteForce,
+}
+
+#[cfg(any(feature = "lod_build", test))]
+#[derive(Clone, Debug)]
+struct SpatialRepresentativeOverride {
+    node: usize,
+    representative: usize,
+    value: MomentMergeResult,
+}
+
+#[cfg(any(feature = "lod_build", test))]
+type SpatialFitCandidate = (
+    f64,
+    f64,
+    usize,
+    Vec<SpatialRepresentativeOverride>,
+    Vec<(usize, SpatialBoundaryMetrics)>,
+);
+
+#[cfg(any(feature = "lod_build", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SpatialMomentMergeFitBounds {
+    pub(crate) node_pair_checks: u64,
+    pub(crate) boundary_probes: u64,
+    pub(crate) scratch_host_bytes: u64,
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_fit_explicit_vec_payload_bytes(
+    node_pair_capacity: usize,
+    probe_capacity: usize,
+) -> Option<usize> {
+    probe_capacity
+        // Frozen probe keys plus one at-most-nine-key pair-probe temporary.
+        .checked_mul(size_of::<SpatialBoundaryProbe>())?
+        .checked_add(
+            SPATIAL_FIT_MAX_PROBES_PER_NODE_PAIR.checked_mul(size_of::<SpatialBoundaryProbe>())?,
+        )?
+        // One immutable flat-source reference table per frozen probe.
+        .checked_add(probe_capacity.checked_mul(size_of::<SpatialBoundaryReference>())?)?
+        // Current and initial metrics remain live throughout candidate search.
+        .checked_add(
+            probe_capacity.checked_mul(size_of::<SpatialBoundaryMetrics>().checked_mul(2)?)?,
+        )?
+        // Two sorted incidence entries per probe.
+        .checked_add(
+            probe_capacity.checked_mul(size_of::<(usize, usize, usize)>().checked_mul(2)?)?,
+        )?
+        // Before sort/dedup, two edited representatives can each contribute
+        // every probe index.
+        .checked_add(probe_capacity.checked_mul(size_of::<usize>().checked_mul(2)?)?)?
+        // Current and retained-best affected metrics may coexist.
+        .checked_add(
+            probe_capacity
+                .checked_mul(size_of::<(usize, SpatialBoundaryMetrics)>().checked_mul(2)?)?,
+        )?
+        // Unsafe-pair aggregation is preallocated to the exact node-pair cap.
+        .checked_add(node_pair_capacity.checked_mul(size_of::<(usize, usize, f64)>())?)?
+        // Current and retained-best candidates each own at most two edits.
+        .checked_add(size_of::<SpatialRepresentativeOverride>().checked_mul(4)?)
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_fit_scratch_host_bytes(
+    node_count: usize,
+    node_pair_capacity: usize,
+    probe_capacity: usize,
+) -> Option<usize> {
+    spatial_fit_explicit_vec_payload_bytes(node_pair_capacity, probe_capacity)?
+        // The caller's bounded cohort-node payload participates in the fit.
+        .checked_add(node_count.checked_mul(size_of::<SpatialMomentMergeNode>())?)?
+        // One precomputed widening per side is held outside the candidate Vecs.
+        .checked_add(size_of::<MomentMergeResult>().checked_mul(2)?)
+}
+
+/// Allocation bound for one ABI 16 sibling-cohort fit. The validated
+/// branching limit keeps the outer pair count at 496 and the fixed tangential
+/// grid keeps the probe count at 4,464 without a representative cross product.
+#[cfg(any(feature = "lod_build", test))]
+pub(crate) fn spatial_moment_merge_fit_bounds(
+    node_count: usize,
+) -> Option<SpatialMomentMergeFitBounds> {
+    if node_count > SPATIAL_FIT_MAX_SIBLING_NODES {
+        return None;
+    }
+    let node_pair_checks = node_count.checked_mul(node_count.saturating_sub(1))? / 2;
+    let boundary_probes = node_pair_checks.checked_mul(SPATIAL_FIT_MAX_PROBES_PER_NODE_PAIR)?;
+    let scratch_host_bytes =
+        spatial_fit_scratch_host_bytes(node_count, node_pair_checks, boundary_probes)?;
+    Some(SpatialMomentMergeFitBounds {
+        node_pair_checks: node_pair_checks.try_into().ok()?,
+        boundary_probes: boundary_probes.try_into().ok()?,
+        scratch_host_bytes: scratch_host_bytes.try_into().ok()?,
+    })
+}
+
+/// Fit all geometrically adjacent siblings, not merely consecutive Morton
+/// intervals. The pair bound is `B*(B-1)/2 <= 496` for the validated maximum
+/// branching factor. Each pair samples a fixed 3x3 grid over its two tangential
+/// overlap axes and deterministically selects the nearest contributor from each
+/// node, deduplicating the resulting at-most-nine representative pairs. This
+/// covers elongated seams without a representative cross product. Candidate
+/// edits keep centers fixed, widen only the two tangent axes, remain inside
+/// that target pair's authored support AABB (never a looser
+/// disconnected-sibling cohort box), and rerun the existing all-view opacity
+/// ceiling. Source references use the flat renderer's adaptive support cutoff;
+/// emitted representatives use the LoD candidate's at-least-3-sigma cutoff.
+/// Both are compared across a deterministic 0.0625x..4x pixel-scale ladder
+/// normalized by projected source sigma, so the fixed 0.3-pixel mip variance
+/// cannot make an arbitrary one-pixel/world fit look universally safe.
+///
+/// An edit is committed only when its target boundary strictly improves, every
+/// other boundary touched by either edited representative does not regress,
+/// and the sum of renderer-consistent composited probe error over the cohort
+/// does not increase. A candidate must also preserve every contributor-order
+/// key: centers, authored node bounds, probe targets, and representative index
+/// are immutable, while the only support-dependent key is whether a
+/// representative overlaps the other authored node. Requiring that overlap
+/// bit to remain unchanged against every node proves that the frozen 3x3 probe
+/// topology and its incidence index remain valid after each sequential edit.
+/// If no admissible edit repairs an overlapping boundary, both nodes receive a
+/// selection-visible geometric-error floor spanning that sibling pair; the
+/// high-fidelity cap is lowered as an additional q>=.90 signal. This makes
+/// ordinary q=.65 traversal refine past a known-bad spatial representation
+/// instead of displaying a page/node grid.
+#[cfg(any(feature = "lod_build", test))]
+pub(crate) fn fit_spatial_moment_merge_sibling_cohort(
+    nodes: &mut [SpatialMomentMergeNode],
+    support_sigma: f32,
+) -> Result<SpatialMomentMergeFitReport, LodBuildError> {
+    fit_spatial_moment_merge_sibling_cohort_with_mode(
+        nodes,
+        support_sigma,
+        SpatialBoundaryMetricMode::Cached,
+    )
+}
+
+#[cfg(test)]
+fn fit_spatial_moment_merge_sibling_cohort_brute_force(
+    nodes: &mut [SpatialMomentMergeNode],
+    support_sigma: f32,
+) -> Result<SpatialMomentMergeFitReport, LodBuildError> {
+    fit_spatial_moment_merge_sibling_cohort_with_mode(
+        nodes,
+        support_sigma,
+        SpatialBoundaryMetricMode::BruteForce,
+    )
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn fit_spatial_moment_merge_sibling_cohort_with_mode(
+    nodes: &mut [SpatialMomentMergeNode],
+    support_sigma: f32,
+    metric_mode: SpatialBoundaryMetricMode,
+) -> Result<SpatialMomentMergeFitReport, LodBuildError> {
+    if nodes.len() < 2 {
+        return Ok(SpatialMomentMergeFitReport::default());
+    }
+    if nodes.len() > SPATIAL_FIT_MAX_SIBLING_NODES {
+        return Err(LodBuildError::CountOverflow("spatial sibling cohort"));
+    }
+    for node in nodes.iter() {
+        if node.representatives.is_empty() {
+            return Err(LodBuildError::EmptyReduction);
+        }
+        if let Some(source) = &node.source_records {
+            validate_spatial_source_partition(source.len(), &node.source_ranges)?;
+            if node.source_ranges.len() != node.representatives.len() {
+                return Err(LodBuildError::CountOverflow(
+                    "spatial representative source partition",
+                ));
+            }
+        } else if !node.source_ranges.is_empty() {
+            return Err(LodBuildError::CountOverflow(
+                "streamed spatial source partition",
+            ));
+        }
+    }
+
+    let maximum_node_pairs = nodes.len() * nodes.len().saturating_sub(1) / 2;
+    debug_assert!(maximum_node_pairs <= 496);
+    let mut probes = Vec::with_capacity(maximum_node_pairs * SPATIAL_FIT_MAX_PROBES_PER_NODE_PAIR);
+    debug_assert_eq!(
+        probes.capacity(),
+        maximum_node_pairs * SPATIAL_FIT_MAX_PROBES_PER_NODE_PAIR
+    );
+    let mut touching_node_pairs = 0_u32;
+    let mut overlapping_node_pairs = 0_u32;
+    let mut unmeasured_touching_node_pairs = 0_u32;
+    for left_node in 0..nodes.len() {
+        for right_node in left_node + 1..nodes.len() {
+            if !lod_bounds_touch_or_overlap(
+                nodes[left_node].authored_support_bounds,
+                nodes[right_node].authored_support_bounds,
+            ) {
+                continue;
+            }
+            touching_node_pairs = touching_node_pairs
+                .checked_add(1)
+                .ok_or(LodBuildError::CountOverflow("touching spatial node pairs"))?;
+            // Only measured risk-aware cohorts authorize a spatial edit or a
+            // selection-error floor. Coarse streamed rungs deliberately carry
+            // no source payload; treating that absence as infinite error would
+            // conservatively refine every coarse node and destroy useful LoD.
+            if nodes[left_node].source_records.is_none()
+                || nodes[right_node].source_records.is_none()
+            {
+                unmeasured_touching_node_pairs =
+                    unmeasured_touching_node_pairs.checked_add(1).ok_or(
+                        LodBuildError::CountOverflow("unmeasured touching spatial node pairs"),
+                    )?;
+                continue;
+            }
+            overlapping_node_pairs =
+                overlapping_node_pairs
+                    .checked_add(1)
+                    .ok_or(LodBuildError::CountOverflow(
+                        "overlapping spatial node pairs",
+                    ))?;
+            probes.extend(spatial_boundary_probes_for_pair(
+                nodes, left_node, right_node,
+            ));
+        }
+    }
+    if probes.is_empty() {
+        return Ok(SpatialMomentMergeFitReport {
+            touching_node_pairs,
+            overlapping_node_pairs,
+            unmeasured_touching_node_pairs,
+            ..Default::default()
+        });
+    }
+    let mut references = Vec::with_capacity(probes.len());
+    debug_assert_eq!(references.capacity(), probes.len());
+    for probe in probes.iter().copied() {
+        references.push(spatial_boundary_reference(nodes, probe)?);
+    }
+    let mut metrics = Vec::with_capacity(probes.len());
+    debug_assert_eq!(metrics.capacity(), probes.len());
+    for (probe, reference) in probes.iter().copied().zip(&references) {
+        metrics.push(spatial_boundary_metrics_with_mode(
+            nodes,
+            probe,
+            reference,
+            &[],
+            metric_mode,
+        )?);
+    }
+    let mut initial_metrics = Vec::with_capacity(metrics.len());
+    debug_assert_eq!(initial_metrics.capacity(), metrics.len());
+    initial_metrics.extend_from_slice(&metrics);
+    let probe_incidence = spatial_probe_incidence(&probes);
+    let mut cohort_error_by_scale = [0.0_f64; SPATIAL_FIT_PROJECTED_SCALE_FACTORS.len()];
+    for metric in &metrics {
+        for (cohort, error) in cohort_error_by_scale
+            .iter_mut()
+            .zip(metric.composited_error_by_scale)
+        {
+            *cohort += error;
+        }
+    }
+    let mut accepted_edits = 0_u32;
+
+    for probe_index in 0..probes.len() {
+        let baseline = metrics[probe_index];
+        if baseline.relative_boundary_error <= SPATIAL_FIT_MAX_RELATIVE_BOUNDARY_ERROR {
+            continue;
+        }
+        let probe = probes[probe_index];
+        let pair_support_envelope = nodes[probe.left_node]
+            .authored_support_bounds
+            .union(nodes[probe.right_node].authored_support_bounds);
+        let Some(left_source) =
+            spatial_probe_source(nodes, probe.left_node, probe.left_representative)
+        else {
+            continue;
+        };
+        let Some(right_source) =
+            spatial_probe_source(nodes, probe.right_node, probe.right_representative)
+        else {
+            continue;
+        };
+
+        let mut best: Option<SpatialFitCandidate> = None;
+        let factor_modes = [(true, true), (true, false), (false, true)];
+        for (factor_index, factor) in SPATIAL_FIT_TANGENT_FACTORS.iter().copied().enumerate() {
+            // The three modes share the same two source partitions and factor.
+            // Materialize each widening once, then clone its immutable result
+            // into the candidate modes which need it.
+            let widened_left = spatial_widened_representative(
+                left_source,
+                &nodes[probe.left_node].representatives[probe.left_representative],
+                factor,
+                support_sigma,
+            )?;
+            let widened_left = match widened_left {
+                Some(value)
+                    if oriented_support_inside(
+                        &value.gaussian,
+                        support_sigma,
+                        pair_support_envelope,
+                    )? =>
+                {
+                    Some(value)
+                }
+                _ => None,
+            };
+            let widened_right = spatial_widened_representative(
+                right_source,
+                &nodes[probe.right_node].representatives[probe.right_representative],
+                factor,
+                support_sigma,
+            )?;
+            let widened_right = match widened_right {
+                Some(value)
+                    if oriented_support_inside(
+                        &value.gaussian,
+                        support_sigma,
+                        pair_support_envelope,
+                    )? =>
+                {
+                    Some(value)
+                }
+                _ => None,
+            };
+            for (mode_index, (widen_left, widen_right)) in factor_modes.iter().copied().enumerate()
+            {
+                let mut overrides = Vec::with_capacity(2);
+                if widen_left {
+                    let Some(value) = widened_left.clone() else {
+                        continue;
+                    };
+                    overrides.push(SpatialRepresentativeOverride {
+                        node: probe.left_node,
+                        representative: probe.left_representative,
+                        value,
+                    });
+                }
+                if widen_right {
+                    let Some(value) = widened_right.clone() else {
+                        continue;
+                    };
+                    overrides.push(SpatialRepresentativeOverride {
+                        node: probe.right_node,
+                        representative: probe.right_representative,
+                        value,
+                    });
+                }
+                if !spatial_candidate_preserves_probe_topology(nodes, &overrides) {
+                    continue;
+                }
+
+                let affected_indices = spatial_affected_probe_indices(
+                    &probe_incidence,
+                    overrides
+                        .iter()
+                        .map(|candidate| (candidate.node, candidate.representative)),
+                );
+                let mut affected = Vec::with_capacity(affected_indices.len());
+                let mut candidate_cohort_error_by_scale = cohort_error_by_scale;
+                let mut all_boundaries_no_worse = true;
+                for affected_index in affected_indices {
+                    let candidate_metrics = spatial_boundary_metrics_with_mode(
+                        nodes,
+                        probes[affected_index],
+                        &references[affected_index],
+                        &overrides,
+                        metric_mode,
+                    )?;
+                    for (cohort_error, (current_error, candidate_error)) in
+                        candidate_cohort_error_by_scale.iter_mut().zip(
+                            metrics[affected_index]
+                                .composited_error_by_scale
+                                .into_iter()
+                                .zip(candidate_metrics.composited_error_by_scale),
+                        )
+                    {
+                        *cohort_error = *cohort_error - current_error + candidate_error;
+                    }
+                    all_boundaries_no_worse &= spatial_boundary_metrics_no_worse(
+                        candidate_metrics,
+                        metrics[affected_index],
+                    );
+                    affected.push((affected_index, candidate_metrics));
+                }
+                let target = affected
+                    .iter()
+                    .find_map(|(index, metrics)| (*index == probe_index).then_some(*metrics))
+                    .expect("target boundary is affected by its own candidate");
+                let candidate_cohort_error = candidate_cohort_error_by_scale.iter().sum::<f64>();
+                if !spatial_boundary_metrics_strictly_better(target, baseline)
+                    || !all_boundaries_no_worse
+                    || !candidate_cohort_error_by_scale
+                        .iter()
+                        .copied()
+                        .zip(cohort_error_by_scale)
+                        .all(|(candidate, current)| float_no_worse(candidate, current))
+                {
+                    continue;
+                }
+                let order = factor_index * factor_modes.len() + mode_index;
+                let candidate_key = (
+                    target.relative_boundary_error,
+                    candidate_cohort_error,
+                    order,
+                );
+                if best.as_ref().is_none_or(|current| {
+                    candidate_key.0.total_cmp(&current.0).is_lt()
+                        || (candidate_key.0.total_cmp(&current.0).is_eq()
+                            && (candidate_key.1.total_cmp(&current.1).is_lt()
+                                || (candidate_key.1.total_cmp(&current.1).is_eq()
+                                    && candidate_key.2 < current.2)))
+                }) {
+                    best = Some((
+                        candidate_key.0,
+                        candidate_key.1,
+                        candidate_key.2,
+                        overrides,
+                        affected,
+                    ));
+                }
+            }
+        }
+        if let Some((_, _, _, overrides, affected)) = best {
+            for candidate in overrides {
+                nodes[candidate.node].representatives[candidate.representative] = candidate.value;
+            }
+            for (index, value) in affected {
+                for (cohort_error, (current_error, candidate_error)) in
+                    cohort_error_by_scale.iter_mut().zip(
+                        metrics[index]
+                            .composited_error_by_scale
+                            .into_iter()
+                            .zip(value.composited_error_by_scale),
+                    )
+                {
+                    *cohort_error = *cohort_error - current_error + candidate_error;
+                }
+                metrics[index] = value;
+            }
+            accepted_edits = accepted_edits
+                .checked_add(1)
+                .ok_or(LodBuildError::CountOverflow("spatial fit edits"))?;
+        }
+    }
+
+    let mut unsafe_pairs = Vec::<(usize, usize, f64)>::with_capacity(maximum_node_pairs);
+    debug_assert_eq!(unsafe_pairs.capacity(), maximum_node_pairs);
+    for (probe, metric) in probes.iter().copied().zip(metrics.iter().copied()) {
+        if metric.relative_boundary_error <= SPATIAL_FIT_MAX_RELATIVE_BOUNDARY_ERROR {
+            continue;
+        }
+        if let Some((_, _, maximum_error)) = unsafe_pairs
+            .iter_mut()
+            .find(|(left, right, _)| *left == probe.left_node && *right == probe.right_node)
+        {
+            *maximum_error = maximum_error.max(metric.relative_boundary_error);
+        } else {
+            unsafe_pairs.push((
+                probe.left_node,
+                probe.right_node,
+                metric.relative_boundary_error,
+            ));
+        }
+    }
+    for (left_node, right_node, maximum_error) in unsafe_pairs.iter().copied() {
+        let pair_bounds = nodes[left_node]
+            .authored_support_bounds
+            .union(nodes[right_node].authored_support_bounds);
+        let geometric_floor = pair_bounds.radius();
+        let certificate_cap = (1.0 + maximum_error as f32).recip().min(0.5);
+        for node_index in [left_node, right_node] {
+            nodes[node_index].spatial_geometric_error_floor = nodes[node_index]
+                .spatial_geometric_error_floor
+                .max(geometric_floor);
+            nodes[node_index].spatial_certificate_cap = nodes[node_index]
+                .spatial_certificate_cap
+                .min(certificate_cap);
+        }
+    }
+
+    Ok(SpatialMomentMergeFitReport {
+        touching_node_pairs,
+        overlapping_node_pairs,
+        unmeasured_touching_node_pairs,
+        accepted_edits,
+        unsafe_node_pairs: unsafe_pairs.len().try_into().unwrap_or(u32::MAX),
+        maximum_relative_boundary_error_before: initial_metrics
+            .iter()
+            .map(|metric| metric.relative_boundary_error)
+            .fold(0.0_f64, f64::max) as f32,
+        maximum_relative_boundary_error_after: metrics
+            .iter()
+            .map(|metric| metric.relative_boundary_error)
+            .fold(0.0_f64, f64::max) as f32,
+        cohort_composited_error_before: initial_metrics
+            .iter()
+            .map(|metric| metric.composited_error)
+            .sum(),
+        cohort_composited_error_after: metrics.iter().map(|metric| metric.composited_error).sum(),
+    })
+}
+
+/// Conservative SH appearance certificate shared by builders that add a page
+/// encoding error after MomentMerge has produced its raster certificate.
+pub(crate) fn appearance_error_certificate(appearance_error: f32) -> f32 {
+    let coefficients_per_channel = (SH_COEFF_COUNT / 3).max(1) as f32;
+    let worst_direction_factor = (SH_COEFF_COUNT as f32).sqrt()
+        * (coefficients_per_channel / (4.0 * std::f32::consts::PI)).sqrt();
+    let appearance_bound = worst_direction_factor * appearance_error.max(0.0);
+    (1.0 + appearance_bound).recip().clamp(0.0, 1.0)
 }
 
 /// View-independent analytic warning signals for a MomentMerge representative.
@@ -976,11 +1861,15 @@ impl MomentMergeResult {
 /// The sampled projection term evaluates a fixed, rotation-symmetric direction
 /// set. The Minkowski upper bound is conservative for every orthographic view,
 /// exact for identical source covariance, and may overestimate risk when source
-/// covariance frames differ substantially.
+/// covariance frames differ substantially. Both alpha-mass terms deliberately
+/// describe the raw optical-depth-union representative before ABI 14 opacity
+/// calibration. The emitted representative is all-view-safe, while retaining
+/// the pre-calibration correction magnitude keeps hierarchy pairing and the
+/// serialized fidelity certificate conservative.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct MomentMergeRasterRisk {
-    pub(crate) sampled_projected_alpha_mass_inflation: f32,
-    pub(crate) projected_alpha_mass_inflation_upper_bound: f32,
+    pub(crate) raw_sampled_projected_alpha_mass_inflation: f32,
+    pub(crate) raw_projected_alpha_mass_inflation_upper_bound: f32,
     pub(crate) support_leakage_fraction: f32,
     pub(crate) support_growth: f32,
     pub(crate) major_scale_growth: f32,
@@ -990,7 +1879,7 @@ pub(crate) struct MomentMergeRasterRisk {
 impl MomentMergeRasterRisk {
     #[cfg(test)]
     fn score(self) -> f32 {
-        (self.sampled_projected_alpha_mass_inflation - 1.0)
+        (self.raw_sampled_projected_alpha_mass_inflation - 1.0)
             .max(0.0)
             .max(self.support_leakage_fraction)
             .max((self.support_growth - 1.0).max(0.0))
@@ -1003,7 +1892,7 @@ impl MomentMergeRasterRisk {
     /// The second rejects representatives whose spatial support or anisotropy
     /// grows beyond the source support envelope and source shape extrema.
     pub(crate) fn high_fidelity_certificate(self) -> f32 {
-        let alpha_mass = self.projected_alpha_mass_inflation_upper_bound.max(1.0);
+        let alpha_mass = self.raw_projected_alpha_mass_inflation_upper_bound.max(1.0);
         let support = self
             .support_growth
             .max(self.major_scale_growth)
@@ -1033,6 +1922,880 @@ const PROJECTED_ALPHA_MASS_DIRECTIONS: [[f64; 3]; 13] = {
     ]
 };
 
+#[cfg(any(feature = "lod_build", test))]
+fn validate_spatial_source_partition(
+    source_count: usize,
+    ranges: &[std::ops::Range<usize>],
+) -> Result<(), LodBuildError> {
+    let mut expected_start = 0_usize;
+    for range in ranges {
+        if range.start != expected_start || range.end <= range.start || range.end > source_count {
+            return Err(LodBuildError::CountOverflow(
+                "spatial representative source partition",
+            ));
+        }
+        expected_start = range.end;
+    }
+    if expected_start != source_count {
+        return Err(LodBuildError::CountOverflow(
+            "spatial representative source coverage",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn lod_bounds_touch_or_overlap(left: LodBounds, right: LodBounds) -> bool {
+    (0..3).all(|axis| left.max[axis] >= right.min[axis] && right.max[axis] >= left.min[axis])
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_boundary_probes_for_pair(
+    nodes: &[SpatialMomentMergeNode],
+    left_node: usize,
+    right_node: usize,
+) -> Vec<SpatialBoundaryProbe> {
+    let left_bounds = nodes[left_node].authored_support_bounds;
+    let right_bounds = nodes[right_node].authored_support_bounds;
+    let left_center = left_bounds.center();
+    let right_center = right_bounds.center();
+    let separation_axis = (0..3)
+        .max_by(|left_axis, right_axis| {
+            (left_center[*left_axis] - right_center[*left_axis])
+                .abs()
+                .total_cmp(&(left_center[*right_axis] - right_center[*right_axis]).abs())
+                .then_with(|| right_axis.cmp(left_axis))
+        })
+        .expect("three-dimensional bounds contain an axis");
+    let tangent_axes = match separation_axis {
+        0 => [1, 2],
+        1 => [0, 2],
+        2 => [0, 1],
+        _ => unreachable!("three-dimensional bounds contain only three axes"),
+    };
+    let overlap_min = [0, 1, 2].map(|axis| left_bounds.min[axis].max(right_bounds.min[axis]));
+    let overlap_max = [0, 1, 2].map(|axis| left_bounds.max[axis].min(right_bounds.max[axis]));
+    let mut probes = Vec::with_capacity(SPATIAL_FIT_MAX_PROBES_PER_NODE_PAIR);
+    debug_assert_eq!(probes.capacity(), SPATIAL_FIT_MAX_PROBES_PER_NODE_PAIR);
+    for first_tangent in SPATIAL_FIT_TANGENT_GRID {
+        for second_tangent in SPATIAL_FIT_TANGENT_GRID {
+            let mut target = [0.0_f32; 3];
+            target[separation_axis] =
+                0.5 * (overlap_min[separation_axis] + overlap_max[separation_axis]);
+            for (axis, factor) in tangent_axes
+                .into_iter()
+                .zip([first_tangent, second_tangent])
+            {
+                target[axis] = overlap_min[axis] + factor * (overlap_max[axis] - overlap_min[axis]);
+            }
+            let probe = SpatialBoundaryProbe {
+                left_node,
+                left_representative: spatial_nearest_boundary_contributor(
+                    &nodes[left_node],
+                    right_bounds,
+                    target,
+                ),
+                right_node,
+                right_representative: spatial_nearest_boundary_contributor(
+                    &nodes[right_node],
+                    left_bounds,
+                    target,
+                ),
+            };
+            if !probes.contains(&probe) {
+                probes.push(probe);
+            }
+        }
+    }
+    debug_assert!(!probes.is_empty());
+    debug_assert!(probes.len() <= SPATIAL_FIT_MAX_PROBES_PER_NODE_PAIR);
+    probes
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_probe_incidence(probes: &[SpatialBoundaryProbe]) -> Vec<(usize, usize, usize)> {
+    let mut incidence = Vec::with_capacity(probes.len().saturating_mul(2));
+    debug_assert_eq!(incidence.capacity(), probes.len().saturating_mul(2));
+    for (probe_index, probe) in probes.iter().copied().enumerate() {
+        incidence.push((probe.left_node, probe.left_representative, probe_index));
+        incidence.push((probe.right_node, probe.right_representative, probe_index));
+    }
+    incidence.sort_unstable();
+    incidence
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_affected_probe_indices(
+    incidence: &[(usize, usize, usize)],
+    edited_representatives: impl IntoIterator<Item = (usize, usize)>,
+) -> Vec<usize> {
+    let mut affected = Vec::with_capacity(incidence.len());
+    debug_assert_eq!(affected.capacity(), incidence.len());
+    for key in edited_representatives {
+        let start = incidence.partition_point(|entry| (entry.0, entry.1) < key);
+        let end = incidence.partition_point(|entry| (entry.0, entry.1) <= key);
+        affected.extend(incidence[start..end].iter().map(|entry| entry.2));
+    }
+    affected.sort_unstable();
+    affected.dedup();
+    affected
+}
+
+/// Prove that a candidate cannot change any fixed-grid contributor key.
+///
+/// `spatial_nearest_boundary_contributor` orders representatives first by
+/// support overlap with the other node, then by immutable center distances and
+/// finally by index. Spatial widening keeps centers fixed. Checking the sole
+/// mutable comparison bit against every authored node is therefore equivalent
+/// to recomputing and comparing all sorted/deduplicated 3x3 probe keys, without
+/// rescanning every representative for every candidate.
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_candidate_preserves_probe_topology(
+    nodes: &[SpatialMomentMergeNode],
+    overrides: &[SpatialRepresentativeOverride],
+) -> bool {
+    overrides.iter().all(|candidate| {
+        let original = &nodes[candidate.node].representatives[candidate.representative];
+        original
+            .gaussian
+            .position_visibility
+            .position
+            .iter()
+            .zip(candidate.value.gaussian.position_visibility.position)
+            .all(|(original, candidate)| original.to_bits() == candidate.to_bits())
+            && nodes.iter().enumerate().all(|(other_node, other)| {
+                other_node == candidate.node
+                    || lod_bounds_touch_or_overlap(
+                        original.support_bounds,
+                        other.authored_support_bounds,
+                    ) == lod_bounds_touch_or_overlap(
+                        candidate.value.support_bounds,
+                        other.authored_support_bounds,
+                    )
+            })
+    })
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_nearest_boundary_contributor(
+    node: &SpatialMomentMergeNode,
+    other_bounds: LodBounds,
+    target: [f32; 3],
+) -> usize {
+    node.representatives
+        .iter()
+        .enumerate()
+        .min_by(|(left_index, left), (right_index, right)| {
+            let left_overlap = lod_bounds_touch_or_overlap(left.support_bounds, other_bounds);
+            let right_overlap = lod_bounds_touch_or_overlap(right.support_bounds, other_bounds);
+            (!left_overlap)
+                .cmp(&(!right_overlap))
+                .then_with(|| {
+                    point_to_point_squared_distance(
+                        left.gaussian.position_visibility.position,
+                        target,
+                    )
+                    .total_cmp(&point_to_point_squared_distance(
+                        right.gaussian.position_visibility.position,
+                        target,
+                    ))
+                })
+                .then_with(|| {
+                    point_to_bounds_squared_distance(
+                        left.gaussian.position_visibility.position,
+                        other_bounds,
+                    )
+                    .total_cmp(&point_to_bounds_squared_distance(
+                        right.gaussian.position_visibility.position,
+                        other_bounds,
+                    ))
+                })
+                .then_with(|| left_index.cmp(right_index))
+        })
+        .map(|(index, _)| index)
+        .expect("validated spatial nodes contain representatives")
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn point_to_bounds_squared_distance(point: [f32; 3], bounds: LodBounds) -> f64 {
+    (0..3)
+        .map(|axis| {
+            let delta = if point[axis] < bounds.min[axis] {
+                f64::from(bounds.min[axis] - point[axis])
+            } else if point[axis] > bounds.max[axis] {
+                f64::from(point[axis] - bounds.max[axis])
+            } else {
+                0.0
+            };
+            delta * delta
+        })
+        .sum()
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn point_to_point_squared_distance(left: [f32; 3], right: [f32; 3]) -> f64 {
+    (0..3)
+        .map(|axis| {
+            let delta = f64::from(left[axis]) - f64::from(right[axis]);
+            delta * delta
+        })
+        .sum()
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_probe_source(
+    nodes: &[SpatialMomentMergeNode],
+    node_index: usize,
+    representative_index: usize,
+) -> Option<&[Gaussian3d]> {
+    let node = nodes.get(node_index)?;
+    let range = node.source_ranges.get(representative_index)?.clone();
+    node.source_records.as_ref()?.get(range)
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_boundary_reference(
+    nodes: &[SpatialMomentMergeNode],
+    probe: SpatialBoundaryProbe,
+) -> Result<SpatialBoundaryReference, LodBuildError> {
+    let left_source = spatial_probe_source(nodes, probe.left_node, probe.left_representative)
+        .ok_or(LodBuildError::EmptyReduction)?;
+    let right_source = spatial_probe_source(nodes, probe.right_node, probe.right_representative)
+        .ok_or(LodBuildError::EmptyReduction)?;
+    let left_representative = &nodes[probe.left_node].representatives[probe.left_representative];
+    let right_representative = &nodes[probe.right_node].representatives[probe.right_representative];
+
+    let mut characteristic_pixels_per_world = [0.0_f64; PROJECTED_ALPHA_MASS_DIRECTIONS.len()];
+    let mut sample_points = [[[0.0_f64; 2]; SPATIAL_FIT_SAMPLE_POINTS_PER_DIRECTION];
+        PROJECTED_ALPHA_MASS_DIRECTIONS.len()];
+    let mut source_alpha = [[[0.0_f64; SPATIAL_FIT_SAMPLE_POINTS_PER_DIRECTION];
+        SPATIAL_FIT_PROJECTED_SCALE_FACTORS.len()];
+        PROJECTED_ALPHA_MASS_DIRECTIONS.len()];
+
+    for (direction_index, direction) in PROJECTED_ALPHA_MASS_DIRECTIONS.iter().copied().enumerate()
+    {
+        let (horizontal, vertical) = spatial_projection_basis(direction);
+        let characteristic = spatial_characteristic_pixels_per_world(
+            left_source.iter().chain(right_source.iter()),
+            horizontal,
+            vertical,
+        )?;
+        characteristic_pixels_per_world[direction_index] = characteristic;
+        let left_center = spatial_project_point(
+            left_representative.gaussian.position_visibility.position,
+            horizontal,
+            vertical,
+        );
+        let right_center = spatial_project_point(
+            right_representative.gaussian.position_visibility.position,
+            horizontal,
+            vertical,
+        );
+        let points = [
+            left_center,
+            [
+                0.5 * (left_center[0] + right_center[0]),
+                0.5 * (left_center[1] + right_center[1]),
+            ],
+            right_center,
+        ];
+        sample_points[direction_index] = points;
+        for (scale_index, scale_factor) in SPATIAL_FIT_PROJECTED_SCALE_FACTORS
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            let pixels_per_world = characteristic * scale_factor;
+            for (point_index, point) in points.into_iter().enumerate() {
+                source_alpha[direction_index][scale_index][point_index] =
+                    spatial_renderer_alpha_at(
+                        left_source.iter().chain(right_source.iter()),
+                        point,
+                        horizontal,
+                        vertical,
+                        pixels_per_world,
+                        false,
+                    )?;
+            }
+        }
+    }
+
+    Ok(SpatialBoundaryReference {
+        characteristic_pixels_per_world,
+        sample_points,
+        source_alpha,
+    })
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_boundary_metrics_from_reference(
+    nodes: &[SpatialMomentMergeNode],
+    probe: SpatialBoundaryProbe,
+    reference: &SpatialBoundaryReference,
+    overrides: &[SpatialRepresentativeOverride],
+) -> Result<SpatialBoundaryMetrics, LodBuildError> {
+    let left_representative =
+        spatial_probe_representative(nodes, probe.left_node, probe.left_representative, overrides);
+    let right_representative = spatial_probe_representative(
+        nodes,
+        probe.right_node,
+        probe.right_representative,
+        overrides,
+    );
+
+    let mut boundary_reference_by_scale = [0.0_f64; SPATIAL_FIT_PROJECTED_SCALE_FACTORS.len()];
+    let mut boundary_error_by_scale = [0.0_f64; SPATIAL_FIT_PROJECTED_SCALE_FACTORS.len()];
+    let mut composited_error_by_scale = [0.0_f64; SPATIAL_FIT_PROJECTED_SCALE_FACTORS.len()];
+    for (direction_index, direction) in PROJECTED_ALPHA_MASS_DIRECTIONS.iter().copied().enumerate()
+    {
+        let (horizontal, vertical) = spatial_projection_basis(direction);
+        let characteristic = reference.characteristic_pixels_per_world[direction_index];
+        for (scale_index, scale_factor) in SPATIAL_FIT_PROJECTED_SCALE_FACTORS
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            let pixels_per_world = characteristic * scale_factor;
+            for (point_index, point) in reference.sample_points[direction_index]
+                .into_iter()
+                .enumerate()
+            {
+                let source_alpha =
+                    reference.source_alpha[direction_index][scale_index][point_index];
+                let emitted = spatial_renderer_alpha_at(
+                    [
+                        &left_representative.gaussian,
+                        &right_representative.gaussian,
+                    ],
+                    point,
+                    horizontal,
+                    vertical,
+                    pixels_per_world,
+                    true,
+                )?;
+                let error = (emitted - source_alpha).abs();
+                composited_error_by_scale[scale_index] += error;
+                if point_index == 1 {
+                    boundary_reference_by_scale[scale_index] += source_alpha;
+                    boundary_error_by_scale[scale_index] += error;
+                }
+            }
+        }
+    }
+    Ok(spatial_boundary_metrics_from_accumulators(
+        boundary_reference_by_scale,
+        boundary_error_by_scale,
+        composited_error_by_scale,
+    ))
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_boundary_metrics_with_mode(
+    nodes: &[SpatialMomentMergeNode],
+    probe: SpatialBoundaryProbe,
+    reference: &SpatialBoundaryReference,
+    overrides: &[SpatialRepresentativeOverride],
+    mode: SpatialBoundaryMetricMode,
+) -> Result<SpatialBoundaryMetrics, LodBuildError> {
+    match mode {
+        SpatialBoundaryMetricMode::Cached => {
+            spatial_boundary_metrics_from_reference(nodes, probe, reference, overrides)
+        }
+        #[cfg(test)]
+        SpatialBoundaryMetricMode::BruteForce => {
+            spatial_boundary_metrics_brute_force(nodes, probe, overrides)
+        }
+    }
+}
+
+#[cfg(test)]
+fn spatial_boundary_metrics(
+    nodes: &[SpatialMomentMergeNode],
+    probe: SpatialBoundaryProbe,
+    overrides: &[SpatialRepresentativeOverride],
+) -> Result<SpatialBoundaryMetrics, LodBuildError> {
+    let reference = spatial_boundary_reference(nodes, probe)?;
+    spatial_boundary_metrics_from_reference(nodes, probe, &reference, overrides)
+}
+
+#[cfg(test)]
+fn spatial_boundary_metrics_brute_force(
+    nodes: &[SpatialMomentMergeNode],
+    probe: SpatialBoundaryProbe,
+    overrides: &[SpatialRepresentativeOverride],
+) -> Result<SpatialBoundaryMetrics, LodBuildError> {
+    let Some(left_source) = spatial_probe_source(nodes, probe.left_node, probe.left_representative)
+    else {
+        return Ok(SpatialBoundaryMetrics {
+            relative_boundary_error: f64::INFINITY,
+            composited_error: 0.0,
+            relative_boundary_error_by_scale: [f64::INFINITY;
+                SPATIAL_FIT_PROJECTED_SCALE_FACTORS.len()],
+            composited_error_by_scale: [0.0; SPATIAL_FIT_PROJECTED_SCALE_FACTORS.len()],
+        });
+    };
+    let Some(right_source) =
+        spatial_probe_source(nodes, probe.right_node, probe.right_representative)
+    else {
+        return Ok(SpatialBoundaryMetrics {
+            relative_boundary_error: f64::INFINITY,
+            composited_error: 0.0,
+            relative_boundary_error_by_scale: [f64::INFINITY;
+                SPATIAL_FIT_PROJECTED_SCALE_FACTORS.len()],
+            composited_error_by_scale: [0.0; SPATIAL_FIT_PROJECTED_SCALE_FACTORS.len()],
+        });
+    };
+    let left_representative =
+        spatial_probe_representative(nodes, probe.left_node, probe.left_representative, overrides);
+    let right_representative = spatial_probe_representative(
+        nodes,
+        probe.right_node,
+        probe.right_representative,
+        overrides,
+    );
+
+    let mut boundary_reference_by_scale = [0.0_f64; SPATIAL_FIT_PROJECTED_SCALE_FACTORS.len()];
+    let mut boundary_error_by_scale = [0.0_f64; SPATIAL_FIT_PROJECTED_SCALE_FACTORS.len()];
+    let mut composited_error_by_scale = [0.0_f64; SPATIAL_FIT_PROJECTED_SCALE_FACTORS.len()];
+    for direction in PROJECTED_ALPHA_MASS_DIRECTIONS {
+        let (horizontal, vertical) = spatial_projection_basis(direction);
+        let characteristic_pixels_per_world = spatial_characteristic_pixels_per_world(
+            left_source.iter().chain(right_source.iter()),
+            horizontal,
+            vertical,
+        )?;
+        let left_center = spatial_project_point(
+            left_representative.gaussian.position_visibility.position,
+            horizontal,
+            vertical,
+        );
+        let right_center = spatial_project_point(
+            right_representative.gaussian.position_visibility.position,
+            horizontal,
+            vertical,
+        );
+        let midpoint = [
+            0.5 * (left_center[0] + right_center[0]),
+            0.5 * (left_center[1] + right_center[1]),
+        ];
+        for (scale_index, scale_factor) in SPATIAL_FIT_PROJECTED_SCALE_FACTORS
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            let pixels_per_world = characteristic_pixels_per_world * scale_factor;
+            for (probe_index, point) in [left_center, midpoint, right_center]
+                .into_iter()
+                .enumerate()
+            {
+                let reference = spatial_renderer_alpha_at(
+                    left_source.iter().chain(right_source.iter()),
+                    point,
+                    horizontal,
+                    vertical,
+                    pixels_per_world,
+                    false,
+                )?;
+                let emitted = spatial_renderer_alpha_at(
+                    [
+                        &left_representative.gaussian,
+                        &right_representative.gaussian,
+                    ],
+                    point,
+                    horizontal,
+                    vertical,
+                    pixels_per_world,
+                    true,
+                )?;
+                let error = (emitted - reference).abs();
+                composited_error_by_scale[scale_index] += error;
+                if probe_index == 1 {
+                    boundary_reference_by_scale[scale_index] += reference;
+                    boundary_error_by_scale[scale_index] += error;
+                }
+            }
+        }
+    }
+    Ok(spatial_boundary_metrics_from_accumulators(
+        boundary_reference_by_scale,
+        boundary_error_by_scale,
+        composited_error_by_scale,
+    ))
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_boundary_metrics_from_accumulators(
+    boundary_reference_by_scale: [f64; SPATIAL_FIT_PROJECTED_SCALE_FACTORS.len()],
+    boundary_error_by_scale: [f64; SPATIAL_FIT_PROJECTED_SCALE_FACTORS.len()],
+    composited_error_by_scale: [f64; SPATIAL_FIT_PROJECTED_SCALE_FACTORS.len()],
+) -> SpatialBoundaryMetrics {
+    let relative_boundary_error_by_scale = std::array::from_fn(|scale_index| {
+        let reference = boundary_reference_by_scale[scale_index];
+        if reference <= SPATIAL_FIT_MIN_REFERENCE_ALPHA {
+            0.0
+        } else {
+            boundary_error_by_scale[scale_index] / reference
+        }
+    });
+    SpatialBoundaryMetrics {
+        relative_boundary_error: relative_boundary_error_by_scale
+            .iter()
+            .copied()
+            .fold(0.0_f64, f64::max),
+        composited_error: composited_error_by_scale.iter().sum(),
+        relative_boundary_error_by_scale,
+        composited_error_by_scale,
+    }
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_probe_representative<'a>(
+    nodes: &'a [SpatialMomentMergeNode],
+    node: usize,
+    representative: usize,
+    overrides: &'a [SpatialRepresentativeOverride],
+) -> &'a MomentMergeResult {
+    overrides
+        .iter()
+        .find(|candidate| candidate.node == node && candidate.representative == representative)
+        .map(|candidate| &candidate.value)
+        .unwrap_or(&nodes[node].representatives[representative])
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_projection_basis(direction: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    let helper = if direction[2].abs() < 0.875 {
+        [0.0, 0.0, 1.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let mut horizontal = cross_f64(helper, direction);
+    let horizontal_length = dot_f64(horizontal, horizontal).sqrt();
+    horizontal = horizontal.map(|value| value / horizontal_length);
+    let vertical = cross_f64(direction, horizontal);
+    (horizontal, vertical)
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn cross_f64(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_project_point(point: [f32; 3], horizontal: [f64; 3], vertical: [f64; 3]) -> [f64; 2] {
+    let point = point.map(f64::from);
+    [dot_f64(point, horizontal), dot_f64(point, vertical)]
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_characteristic_pixels_per_world<'a>(
+    samples: impl IntoIterator<Item = &'a Gaussian3d>,
+    horizontal: [f64; 3],
+    vertical: [f64; 3],
+) -> Result<f64, LodBuildError> {
+    let mut variance_sum = 0.0_f64;
+    let mut count = 0_u64;
+    for sample in samples {
+        let covariance = gaussian_covariance(sample)?;
+        let xx = quadratic_form_f64(covariance, horizontal).max(0.0);
+        let yy = quadratic_form_f64(covariance, vertical).max(0.0);
+        variance_sum += 0.5 * (xx + yy);
+        count = count.checked_add(1).ok_or(LodBuildError::CountOverflow(
+            "spatial characteristic samples",
+        ))?;
+    }
+    if count == 0 || !variance_sum.is_finite() || variance_sum < 0.0 {
+        return Err(LodBuildError::DerivedNonFinite(
+            "spatial characteristic projected variance",
+        ));
+    }
+    let characteristic_sigma = (variance_sum / count as f64).sqrt().max(1e-12);
+    let pixels_per_world = characteristic_sigma.recip().clamp(1e-6, 1e6);
+    if pixels_per_world.is_finite() {
+        Ok(pixels_per_world)
+    } else {
+        Err(LodBuildError::DerivedNonFinite(
+            "spatial characteristic pixels per world",
+        ))
+    }
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_renderer_alpha_at<'a>(
+    samples: impl IntoIterator<Item = &'a Gaussian3d>,
+    point: [f64; 2],
+    horizontal: [f64; 3],
+    vertical: [f64; 3],
+    pixels_per_world: f64,
+    lod_candidate: bool,
+) -> Result<f64, LodBuildError> {
+    if !pixels_per_world.is_finite() || pixels_per_world <= 0.0 {
+        return Err(LodBuildError::DerivedNonFinite("spatial pixels per world"));
+    }
+    let pixel_variance_scale = pixels_per_world * pixels_per_world;
+    let point = point.map(|coordinate| coordinate * pixels_per_world);
+    let mut remaining = 1.0_f64;
+    for sample in samples {
+        let authored_opacity = sample.scale_opacity.opacity.clamp(0.0, 1.0);
+        let visible_opacity =
+            authored_opacity * sample.position_visibility.visibility.clamp(0.0, 1.0);
+        if visible_opacity <= 0.0 {
+            continue;
+        }
+        let covariance = gaussian_covariance(sample)?;
+        let unfiltered_xx = quadratic_form_f64(covariance, horizontal);
+        let unfiltered_xy = dot_f64(horizontal, matrix_vector_product_3x3(covariance, vertical));
+        let unfiltered_yy = quadratic_form_f64(covariance, vertical);
+        let filtered = crate::render::gaussian_mip_filter_covariance_2d([
+            checked_f32(
+                unfiltered_xx * pixel_variance_scale,
+                "spatial projected covariance",
+            )?,
+            checked_f32(
+                unfiltered_xy * pixel_variance_scale,
+                "spatial projected covariance",
+            )?,
+            checked_f32(
+                unfiltered_yy * pixel_variance_scale,
+                "spatial projected covariance",
+            )?,
+        ]);
+        let [xx, xy, yy] = filtered.covariance.map(f64::from);
+        let opacity = f64::from(visible_opacity * filtered.opacity_scale);
+        if opacity <= 0.0 {
+            continue;
+        }
+        let mid = 0.5 * (xx + yy);
+        let radius = (0.25 * (xx - yy) * (xx - yy) + xy * xy).sqrt();
+        let major_variance = mid + radius;
+        let minor_variance = (mid - radius).max(f64::MIN_POSITIVE);
+        if !major_variance.is_finite() || major_variance <= 0.0 || !minor_variance.is_finite() {
+            continue;
+        }
+        let major_axis = if xy.abs() + (major_variance - xx).abs() > 1e-15 {
+            let length = (xy * xy + (major_variance - xx).powi(2)).sqrt();
+            [-xy / length, (major_variance - xx) / length]
+        } else {
+            [1.0, 0.0]
+        };
+        let minor_axis = [major_axis[1], -major_axis[0]];
+        let center =
+            spatial_project_point(sample.position_visibility.position, horizontal, vertical)
+                .map(|coordinate| coordinate * pixels_per_world);
+        let delta = [point[0] - center[0], point[1] - center[1]];
+        let major = delta[0] * major_axis[0] + delta[1] * major_axis[1];
+        let minor = delta[0] * minor_axis[0] + delta[1] * minor_axis[1];
+        let cutoff = f64::from(crate::render::gaussian_support_cutoff(
+            authored_opacity,
+            true,
+            lod_candidate,
+        ));
+        if major.abs() > cutoff * major_variance.sqrt()
+            || minor.abs() > cutoff * minor_variance.sqrt()
+        {
+            continue;
+        }
+        let power = -0.5 * (major * major / major_variance + minor * minor / minor_variance);
+        let alpha = (power.exp() * opacity).min(0.999);
+        remaining *= 1.0 - alpha;
+    }
+    Ok(1.0 - remaining)
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn matrix_vector_product_3x3(matrix: [[f64; 3]; 3], vector: [f64; 3]) -> [f64; 3] {
+    matrix.map(|row| dot_f64(row, vector))
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_widened_representative(
+    source: &[Gaussian3d],
+    original: &MomentMergeResult,
+    tangent_factor: f32,
+    support_sigma: f32,
+) -> Result<Option<MomentMergeResult>, LodBuildError> {
+    if !tangent_factor.is_finite() || tangent_factor <= 1.0 || source.is_empty() {
+        return Ok(None);
+    }
+    let mut accumulator = MomentAccumulator::new();
+    for gaussian in source {
+        accumulator.add(gaussian, support_sigma)?;
+    }
+    let mut gaussian = original.gaussian;
+    let normal_axis = gaussian
+        .scale_opacity
+        .scale
+        .iter()
+        .enumerate()
+        .min_by(|(left_index, left), (right_index, right)| {
+            left.total_cmp(right)
+                .then_with(|| left_index.cmp(right_index))
+        })
+        .map(|(index, _)| index)
+        .unwrap();
+    for axis in 0..3 {
+        if axis != normal_axis {
+            gaussian.scale_opacity.scale[axis] *= tangent_factor;
+        }
+    }
+    if !gaussian
+        .scale_opacity
+        .scale
+        .iter()
+        .all(|scale| scale.is_finite() && *scale >= 0.0)
+    {
+        return Ok(None);
+    }
+    gaussian.scale_opacity.opacity = checked_f32(
+        1.0 - (-accumulator.optical_depth).exp(),
+        "spatial fitted opacity",
+    )?
+    .clamp(0.0, 1.0);
+    let raw_union_gaussian = gaussian;
+    let covariance = gaussian_covariance(&gaussian)?;
+    let projected_area = symmetric_adjugate(covariance);
+    let raw_projected_alpha_mass_inflation_upper_bound = calibrate_projected_alpha_mass(
+        &mut gaussian,
+        projected_area,
+        accumulator.projected_alpha_mass_sqrt_sum,
+    )?;
+    let raster_risk = moment_merge_raster_risk(
+        &raw_union_gaussian,
+        covariance,
+        projected_area,
+        support_sigma,
+        raw_projected_alpha_mass_inflation_upper_bound,
+        accumulator.sampled_projected_alpha_mass,
+        accumulator.sampled_support_min,
+        accumulator.sampled_support_max,
+        accumulator.max_source_major_scale,
+        accumulator.max_source_anisotropy,
+    )?;
+    let source_bounds = accumulator
+        .bounds
+        .ok_or(LodBuildError::DerivedNonFinite("spatial source bounds"))?;
+    let geometric = farthest_corner_distance(source_bounds, gaussian.position_visibility.position)?;
+    let opacity = gaussian.scale_opacity.opacity;
+    let opacity_error = (opacity - accumulator.min_opacity)
+        .abs()
+        .max((opacity - accumulator.max_opacity).abs());
+    let appearance = original.error.appearance;
+    let combined = geometric.max(appearance).max(opacity_error);
+    Ok(Some(MomentMergeResult {
+        gaussian,
+        support_bounds: gaussian_support_bounds(&gaussian, support_sigma)?,
+        error: LodError {
+            geometric,
+            appearance,
+            opacity: opacity_error,
+            combined,
+        },
+        source_count: accumulator.count,
+        total_weight: accumulator.weight,
+        raster_risk,
+    }))
+}
+
+/// Exact oriented support AABB used only by ABI 16's spatial fitter. The
+/// portable manifest continues to retain its older conservative sphere bounds;
+/// this narrower envelope prevents the fitter from widening past authored
+/// source support while preserving format compatibility.
+#[cfg(any(feature = "lod_build", test))]
+pub(crate) fn gaussian_oriented_support_bounds(
+    gaussian: &Gaussian3d,
+    support_sigma: f32,
+) -> Result<LodBounds, LodBuildError> {
+    validate_gaussian(gaussian)
+        .map_err(|field| LodBuildError::InvalidGaussian { index: 0, field })?;
+    if !support_sigma.is_finite() || support_sigma <= 0.0 {
+        return Err(LodBuildError::InvalidSettings(
+            LodBuildSettingsError::SupportSigma(support_sigma),
+        ));
+    }
+    let covariance = gaussian_covariance(gaussian)?;
+    let position = gaussian.position_visibility.position;
+    let mut min = [0.0_f32; 3];
+    let mut max = [0.0_f32; 3];
+    for axis in 0..3 {
+        let radius = checked_f32(
+            f64::from(support_sigma) * covariance[axis][axis].max(0.0).sqrt(),
+            "oriented Gaussian support",
+        )?;
+        let radius = next_up(radius);
+        min[axis] = next_down(position[axis] - radius);
+        max[axis] = next_up(position[axis] + radius);
+    }
+    LodBounds::new(min, max).map_err(LodBuildError::InvalidBounds)
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn oriented_support_inside(
+    gaussian: &Gaussian3d,
+    support_sigma: f32,
+    envelope: LodBounds,
+) -> Result<bool, LodBuildError> {
+    let support = gaussian_oriented_support_bounds(gaussian, support_sigma)?;
+    let epsilon = bounds_epsilon(&envelope, &support);
+    Ok(envelope.contains_with_epsilon(&support, epsilon))
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_boundary_metrics_no_worse(
+    candidate: SpatialBoundaryMetrics,
+    current: SpatialBoundaryMetrics,
+) -> bool {
+    candidate
+        .relative_boundary_error_by_scale
+        .into_iter()
+        .zip(current.relative_boundary_error_by_scale)
+        .all(|(candidate, current)| float_no_worse(candidate, current))
+        && candidate
+            .composited_error_by_scale
+            .into_iter()
+            .zip(current.composited_error_by_scale)
+            .all(|(candidate, current)| float_no_worse(candidate, current))
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn spatial_boundary_metrics_strictly_better(
+    candidate: SpatialBoundaryMetrics,
+    current: SpatialBoundaryMetrics,
+) -> bool {
+    spatial_boundary_metrics_no_worse(candidate, current)
+        && float_strictly_better(
+            candidate.relative_boundary_error,
+            current.relative_boundary_error,
+        )
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn float_no_worse(candidate: f64, current: f64) -> bool {
+    if candidate == current {
+        return true;
+    }
+    if !candidate.is_finite() || !current.is_finite() {
+        return candidate < current;
+    }
+    let tolerance = 64.0 * f64::EPSILON * candidate.abs().max(current.abs()).max(1.0);
+    candidate <= current + tolerance
+}
+
+#[cfg(any(feature = "lod_build", test))]
+fn float_strictly_better(candidate: f64, current: f64) -> bool {
+    if !candidate.is_finite() {
+        return false;
+    }
+    if !current.is_finite() {
+        return true;
+    }
+    let tolerance = 64.0 * f64::EPSILON * candidate.abs().max(current.abs()).max(1.0);
+    candidate < current - tolerance
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct CpuGaussianLodBuilder {
     pub settings: GaussianLodBuildSettings,
@@ -1049,39 +2812,58 @@ impl CpuGaussianLodBuilder {
             .map_err(LodBuildError::InvalidSettings)?;
         validate_plane_lengths(cloud)?;
 
-        let mut source = Vec::with_capacity(cloud.position_visibility.len());
-        for (index, gaussian) in cloud.iter().enumerate() {
-            validate_gaussian(&gaussian)
+        build_planar_3d_lod_owned(cloud.iter().collect(), self.settings).map(|(lod, _)| lod)
+    }
+
+    fn build_owned_cancelable(
+        &self,
+        mut source: Vec<Gaussian3d>,
+        cancellation: LodBuildCancellation<'_>,
+    ) -> CancelableLodBuildResult<(PlanarGaussian3dLod, Vec<Gaussian3d>)> {
+        cancellation.check()?;
+        self.settings
+            .validate()
+            .map_err(LodBuildError::InvalidSettings)?;
+
+        for (index, gaussian) in source.iter_mut().enumerate() {
+            cancellation.poll(index)?;
+            validate_gaussian(gaussian)
                 .map_err(|field| LodBuildError::InvalidGaussian { index, field })?;
-            source.push(canonicalize_gaussian_zeros(gaussian));
+            *gaussian = canonicalize_gaussian_zeros(*gaussian);
         }
+        cancellation.check()?;
 
         if source.is_empty() {
             let output = empty_lod(self.settings);
-            output.validate().map_err(LodBuildError::Validation)?;
-            return Ok(output);
+            return Ok((output, source));
         }
 
-        let center_bounds = source_center_bounds(&source)?;
+        let center_bounds = source_center_bounds(&source, cancellation)?;
         let mut keyed = Vec::with_capacity(source.len());
-        for gaussian in source {
-            keyed.push(KeyedGaussian {
+        for (source_index, gaussian) in source.iter().enumerate() {
+            cancellation.poll(source_index)?;
+            keyed.push(MortonSourceIndex {
                 morton: canonical_lod_morton_code(
                     gaussian.position_visibility.position,
                     center_bounds,
                 ),
-                gaussian,
+                source_index,
             });
         }
-        keyed.sort_unstable_by(|left, right| {
-            left.morton
-                .cmp(&right.morton)
-                .then_with(|| compare_gaussians(&left.gaussian, &right.gaussian))
-        });
+        cancellation.check()?;
+        sort_morton_source_indices(&mut keyed, &source, cancellation)?;
+        cancellation.check()?;
 
-        let source_fingerprint = source_fingerprint(&keyed);
-        let canonical_morton: Vec<_> = keyed.iter().map(|entry| entry.morton).collect();
-        let canonical_source: Vec<_> = keyed.iter().map(|entry| entry.gaussian).collect();
+        let source_fingerprint = source_fingerprint(&keyed, &source, cancellation)?;
+        let mut canonical_morton = Vec::with_capacity(keyed.len());
+        let mut canonical_source = Vec::with_capacity(keyed.len());
+        for (index, entry) in keyed.iter().enumerate() {
+            cancellation.poll(index)?;
+            canonical_morton.push(entry.morton);
+            canonical_source.push(source[entry.source_index]);
+        }
+        cancellation.check()?;
+        drop(keyed);
         // Logical leaves are deliberately independent of transport page size.
         // With capacity >= 2, two adjacent logical leaves and every adjacent-pair
         // bridge fit in one physical page. Capacity 1 retains a forced 2:1
@@ -1097,38 +2879,43 @@ impl CpuGaussianLodBuilder {
             logical_leaf_capacity as usize,
             canonical_source.len() > 1,
         );
-        let mut temporary = Vec::new();
-        let mut current_level = Vec::with_capacity(leaf_ranges.len());
-
-        for range in leaf_ranges {
-            let source_range = LodSourceRange {
-                start: range.start as u64,
-                count: (range.end - range.start) as u64,
-            };
-            let mut accumulator = MomentAccumulator::new();
-            for gaussian in &canonical_source[range.clone()] {
-                accumulator.add(gaussian, self.settings.support_sigma)?;
-            }
-            let bounds = accumulator
-                .bounds
-                .ok_or(LodBuildError::DerivedNonFinite("leaf bounds"))?;
-            let index = temporary.len();
-            temporary.push(TempNode {
-                children: Vec::new(),
-                source: source_range,
-                morton: LodMortonRange {
-                    min: canonical_morton[range.start],
-                    max: canonical_morton[range.end - 1],
-                },
-                bounds,
-                accumulator,
-                representatives: Vec::new(),
-                representation_count: range.end - range.start,
-                error: LodError::ZERO,
-                high_fidelity_certificate: 1.0,
-            });
-            current_level.push(index);
-        }
+        // Each leaf owns a disjoint canonical source range. Rayon preserves the
+        // indexed iterator order during collection, and errors are flattened
+        // afterwards in Morton order, so worker scheduling cannot affect either
+        // node identity or which invalid derived value is reported first.
+        #[cfg(feature = "sort_rayon")]
+        let leaf_results: Vec<_> = leaf_ranges
+            .par_iter()
+            .map(|range| {
+                cancellation.check()?;
+                let node = build_leaf_temp_node(
+                    range.clone(),
+                    &canonical_source,
+                    &canonical_morton,
+                    self.settings.support_sigma,
+                )?;
+                cancellation.check()?;
+                Ok::<_, CancelableLodBuildError>(node)
+            })
+            .collect();
+        #[cfg(not(feature = "sort_rayon"))]
+        let leaf_results: Vec<_> = leaf_ranges
+            .iter()
+            .map(|range| {
+                cancellation.check()?;
+                let node = build_leaf_temp_node(
+                    range.clone(),
+                    &canonical_source,
+                    &canonical_morton,
+                    self.settings.support_sigma,
+                )?;
+                cancellation.check()?;
+                Ok::<_, CancelableLodBuildError>(node)
+            })
+            .collect();
+        let mut temporary: Vec<_> = leaf_results.into_iter().collect::<Result<_, _>>()?;
+        let mut current_level = (0..temporary.len()).collect::<Vec<_>>();
+        cancellation.check()?;
 
         let mut deepest_choices = if self.settings.leaf_capacity >= 2 {
             plan_high_fidelity_deepest_choices(
@@ -1137,12 +2924,15 @@ impl CpuGaussianLodBuilder {
                 &current_level,
                 self.settings.support_sigma,
                 usize::from(self.settings.branching_factor),
+                cancellation,
             )?
         } else {
             HashMap::new()
         };
+        cancellation.check()?;
 
         while current_level.len() > 1 {
+            cancellation.check()?;
             // Pairing produces the deepest hierarchy available for the fixed
             // leaf-page capacity. An odd final node is carried to the next
             // level instead of creating an invalid unary parent. This keeps
@@ -1151,104 +2941,75 @@ impl CpuGaussianLodBuilder {
             let paired_len = current_level.len() / 2 * 2;
             let child_groups = current_level[..paired_len]
                 .chunks_exact(2)
-                .map(|pair| pair.to_vec())
+                .map(|pair| [pair[0], pair[1]])
                 .collect::<Vec<_>>();
             let carried_node = current_level.get(paired_len).copied();
-            let mut next_level =
-                Vec::with_capacity(child_groups.len() + carried_node.is_some() as usize);
-            for children in child_groups {
-                let first = &temporary[children[0]];
-                let last = &temporary[*children.last().unwrap()];
-                let source = LodSourceRange {
-                    start: first.source.start,
-                    count: last.source.end().unwrap() - first.source.start,
-                };
-                let morton = LodMortonRange {
-                    min: first.morton.min,
-                    max: last.morton.max,
-                };
-                let mut accumulator = MomentAccumulator::new();
-                let mut bounds = first.bounds;
-                let mut error = LodError::ZERO;
-                let mut high_fidelity_certificate = 1.0_f32;
-                for child in &children {
-                    let child = &temporary[*child];
-                    accumulator.combine(&child.accumulator)?;
-                    bounds = bounds.union(child.bounds);
-                    error = error.max(child.error);
-                    high_fidelity_certificate =
-                        high_fidelity_certificate.min(child.high_fidelity_certificate);
-                }
-                let source_start = usize::try_from(source.start)
-                    .map_err(|_| LodBuildError::CountOverflow("internal source start"))?;
-                let source_end = usize::try_from(source.end().unwrap())
-                    .map_err(|_| LodBuildError::CountOverflow("internal source end"))?;
-                let child_representatives = children.iter().try_fold(0_usize, |count, child| {
-                    count
-                        .checked_add(temporary[*child].representation_count)
-                        .ok_or(LodBuildError::CountOverflow("child representations"))
-                })?;
-                let children_are_exact_leaves = children
-                    .iter()
-                    .all(|child| temporary[*child].children.is_empty());
-                let source_records = &canonical_source[source_start..source_end];
-                let (representatives, policy_envelope) = if children_are_exact_leaves
-                    && let Some(choice) = deepest_choices.remove(&children[0])
-                {
-                    (
-                        choice.into_representatives(),
-                        ProgressiveSelectionEnvelope::IDENTITY,
-                    )
-                } else {
-                    let rung = progressive_moment_merge_representatives(
-                        source_records,
-                        child_representatives
-                            .div_ceil(usize::from(self.settings.branching_factor))
-                            .max(1),
+            // Move each precomputed deepest choice into its one owning pair
+            // before borrowing the temporary hierarchy across worker threads.
+            // Parent nodes are then appended in canonical pair order.
+            let parent_work = child_groups
+                .into_iter()
+                .map(|children| {
+                    let deepest_choice = deepest_choices.remove(&children[0]);
+                    (children, deepest_choice)
+                })
+                .collect::<Vec<_>>();
+            #[cfg(feature = "sort_rayon")]
+            let parent_results: Vec<_> = parent_work
+                .into_par_iter()
+                .map(|(children, deepest_choice)| {
+                    build_parent_temp_node(
+                        children,
+                        deepest_choice,
+                        &temporary,
+                        &canonical_source,
                         self.settings.support_sigma,
-                    )?;
-                    (rung.representatives, rung.policy_envelope)
-                };
-                for representative in &representatives {
-                    bounds = bounds.union(representative.support_bounds);
-                    error = error.max(representative.error);
-                    high_fidelity_certificate =
-                        high_fidelity_certificate.min(representative.high_fidelity_certificate());
-                }
-                if let Some(policy_bounds) = policy_envelope.support_bounds {
-                    bounds = bounds.union(policy_bounds);
-                }
-                error = error.max(policy_envelope.error);
-                high_fidelity_certificate =
-                    high_fidelity_certificate.min(policy_envelope.high_fidelity_certificate_cap);
-                let index = temporary.len();
-                temporary.push(TempNode {
-                    children,
-                    source,
-                    morton,
-                    bounds,
-                    accumulator,
-                    representation_count: representatives.len(),
-                    representatives,
-                    error,
-                    high_fidelity_certificate,
-                });
-                next_level.push(index);
-            }
+                        usize::from(self.settings.branching_factor),
+                        cancellation,
+                    )
+                })
+                .collect();
+            #[cfg(not(feature = "sort_rayon"))]
+            let parent_results: Vec<_> = parent_work
+                .into_iter()
+                .map(|(children, deepest_choice)| {
+                    build_parent_temp_node(
+                        children,
+                        deepest_choice,
+                        &temporary,
+                        &canonical_source,
+                        self.settings.support_sigma,
+                        usize::from(self.settings.branching_factor),
+                        cancellation,
+                    )
+                })
+                .collect();
+            let parent_nodes = parent_results.into_iter().collect::<Result<Vec<_>, _>>()?;
+            let first_parent = temporary.len();
+            let mut next_level =
+                Vec::with_capacity(parent_nodes.len() + carried_node.is_some() as usize);
+            next_level.extend(first_parent..first_parent + parent_nodes.len());
+            temporary.extend(parent_nodes);
             if let Some(carried_node) = carried_node {
                 next_level.push(carried_node);
             }
             current_level = next_level;
+            cancellation.check()?;
         }
 
         let root = current_level[0];
-        let (order, parents, depths) = breadth_first_order(&temporary, root)?;
-        let max_depth = *depths.iter().max().unwrap();
+        let (order, parents, depths) = breadth_first_order(&temporary, root, cancellation)?;
+        let mut max_depth = 0_u16;
+        for (index, depth) in depths.iter().copied().enumerate() {
+            cancellation.poll(index)?;
+            max_depth = max_depth.max(depth);
+        }
         let node_count =
             u32::try_from(order.len()).map_err(|_| LodBuildError::CountOverflow("nodes"))?;
 
         let mut old_to_new = vec![usize::MAX; temporary.len()];
         for (new_index, old_index) in order.iter().copied().enumerate() {
+            cancellation.poll(new_index)?;
             old_to_new[old_index] = new_index;
         }
 
@@ -1256,6 +3017,7 @@ impl CpuGaussianLodBuilder {
         let mut node_page_payloads = Vec::with_capacity(order.len());
 
         for (new_index, old_index) in order.iter().copied().enumerate() {
+            cancellation.poll(new_index)?;
             let temporary_node = &temporary[old_index];
             let node_id = LodNodeId((new_index as u64) + 1);
             let is_leaf = temporary_node.children.is_empty();
@@ -1286,7 +3048,7 @@ impl CpuGaussianLodBuilder {
                 let first = old_to_new[temporary_node.children[0]];
                 for (offset, child) in temporary_node.children.iter().copied().enumerate() {
                     if old_to_new[child] != first + offset {
-                        return Err(LodBuildError::NonContiguousChildren);
+                        return Err(LodBuildError::NonContiguousChildren.into());
                     }
                 }
                 LodIndexRange {
@@ -1340,8 +3102,14 @@ impl CpuGaussianLodBuilder {
             node_page_payloads,
             physical_page_capacity,
             self.settings.support_sigma,
+            cancellation,
         )?;
-        for (node, representation) in nodes.iter_mut().zip(packed.node_ranges.iter().copied()) {
+        for (index, (node, representation)) in nodes
+            .iter_mut()
+            .zip(packed.node_ranges.iter().copied())
+            .enumerate()
+        {
+            cancellation.poll(index)?;
             node.representation = representation;
         }
         let page_count = u32::try_from(packed.descriptors.len())
@@ -1386,11 +3154,12 @@ impl CpuGaussianLodBuilder {
                     finest_gaussian_count: canonical_source.len() as u64,
                     max_error,
                 },
+                morph_map: None,
             },
             pages: packed.pages,
         };
-        output.validate().map_err(LodBuildError::Validation)?;
-        Ok(output)
+        cancellation.check()?;
+        Ok((output, source))
     }
 }
 
@@ -1422,7 +3191,8 @@ fn pack_node_pages(
     payloads: Vec<NodePagePayload>,
     physical_capacity: usize,
     support_sigma: f32,
-) -> Result<PackedNodePages, LodBuildError> {
+    cancellation: LodBuildCancellation<'_>,
+) -> CancelableLodBuildResult<PackedNodePages> {
     let payload_count = payloads.len();
     let mut packed = PackedNodePages {
         descriptors: Vec::new(),
@@ -1441,11 +3211,12 @@ fn pack_node_pages(
     let mut pending: Option<PendingNodePage> = None;
 
     for (node_index, payload) in payloads.into_iter().enumerate() {
+        cancellation.poll(node_index)?;
         if payload.gaussians.is_empty() {
-            return Err(LodBuildError::EmptyReduction);
+            return Err(LodBuildError::EmptyReduction.into());
         }
         if payload.gaussians.len() > physical_capacity {
-            return Err(LodBuildError::CountOverflow("physical page capacity"));
+            return Err(LodBuildError::CountOverflow("physical page capacity").into());
         }
         let can_append = pending.as_ref().is_some_and(|page| {
             page.depth == payload.depth
@@ -1454,7 +3225,7 @@ fn pack_node_pages(
         });
         if !can_append {
             if let Some(page) = pending.take() {
-                finish_node_page(page, support_sigma, &mut packed)?;
+                finish_node_page(page, support_sigma, &mut packed, cancellation)?;
             }
             pending = Some(PendingNodePage {
                 depth: payload.depth,
@@ -1473,7 +3244,7 @@ fn pack_node_pages(
         page.node_ranges.push((node_index, offset, count));
     }
     if let Some(page) = pending {
-        finish_node_page(page, support_sigma, &mut packed)?;
+        finish_node_page(page, support_sigma, &mut packed, cancellation)?;
     }
     debug_assert!(
         packed
@@ -1481,6 +3252,7 @@ fn pack_node_pages(
             .iter()
             .all(|range| range.page.is_valid() && range.count > 0)
     );
+    cancellation.check()?;
     Ok(packed)
 }
 
@@ -1488,7 +3260,8 @@ fn finish_node_page(
     pending: PendingNodePage,
     support_sigma: f32,
     packed: &mut PackedNodePages,
-) -> Result<(), LodBuildError> {
+    cancellation: LodBuildCancellation<'_>,
+) -> CancelableLodBuildResult<()> {
     let page_number = u64::try_from(packed.pages.len())
         .map_err(|_| LodBuildError::CountOverflow("page id"))?
         .checked_add(1)
@@ -1511,7 +3284,8 @@ fn finish_node_page(
 
     let page = PlanarGaussian3dPage::new(page_id, pending.gaussians);
     let mut page_bounds: Option<LodBounds> = None;
-    for gaussian in &page.gaussians {
+    for (index, gaussian) in page.gaussians.iter().enumerate() {
+        cancellation.poll(index)?;
         let gaussian_bounds = gaussian_support_bounds(gaussian, support_sigma)?;
         page_bounds = Some(match page_bounds {
             Some(current) => current.union(gaussian_bounds),
@@ -1543,6 +3317,41 @@ pub fn build_planar_3d_lod(
     CpuGaussianLodBuilder::new(settings).build(cloud)
 }
 
+/// Builds from an owned interleaved source while retaining its original order
+/// for callers that also need an exact flat fallback. Signed zeroes are
+/// canonicalized in both the returned source and the deterministic hierarchy.
+pub(crate) fn build_planar_3d_lod_owned(
+    source: Vec<Gaussian3d>,
+    settings: GaussianLodBuildSettings,
+) -> Result<(PlanarGaussian3dLod, Vec<Gaussian3d>), LodBuildError> {
+    let (output, source) = build_planar_3d_lod_owned_cancelable(source, settings, &|| false)?
+        .expect("a false predicate cannot cancel an owned LoD build");
+    output.validate().map_err(LodBuildError::Validation)?;
+    Ok((output, source))
+}
+
+/// Cooperatively builds an owned transient hierarchy. `Ok(None)` means the
+/// caller canceled the job; ordinary construction failures retain the stable
+/// public [`LodBuildError`] surface used by the non-cancelable entry point. The
+/// transient consumer validates the manifest and encoded pages before runtime
+/// activation; the non-cancelable wrapper additionally performs the complete
+/// reference payload validation here.
+pub(crate) fn build_planar_3d_lod_owned_cancelable<F>(
+    source: Vec<Gaussian3d>,
+    settings: GaussianLodBuildSettings,
+    is_canceled: &F,
+) -> Result<Option<(PlanarGaussian3dLod, Vec<Gaussian3d>)>, LodBuildError>
+where
+    F: Fn() -> bool + Sync,
+{
+    let cancellation = LodBuildCancellation { is_canceled };
+    match CpuGaussianLodBuilder::new(settings).build_owned_cancelable(source, cancellation) {
+        Ok(output) => Ok(Some(output)),
+        Err(CancelableLodBuildError::Canceled) => Ok(None),
+        Err(CancelableLodBuildError::Build(error)) => Err(error),
+    }
+}
+
 /// Canonical CPU/GPU support contract for offline LoD construction.
 ///
 /// The sphere uses the largest local scale and therefore conservatively
@@ -1553,6 +3362,9 @@ pub fn gaussian_support_bounds(
     gaussian: &Gaussian3d,
     support_sigma: f32,
 ) -> Result<LodBounds, LodBuildError> {
+    #[cfg(test)]
+    GAUSSIAN_SUPPORT_FULL_VALIDATIONS
+        .set(GAUSSIAN_SUPPORT_FULL_VALIDATIONS.get().saturating_add(1));
     validate_gaussian(gaussian)
         .map_err(|field| LodBuildError::InvalidGaussian { index: 0, field })?;
     if !support_sigma.is_finite() || support_sigma <= 0.0 {
@@ -1560,6 +3372,18 @@ pub fn gaussian_support_bounds(
             LodBuildSettingsError::SupportSigma(support_sigma),
         ));
     }
+    gaussian_support_bounds_trusted_decoded(gaussian, support_sigma)
+}
+
+/// Computes support for a runtime page already authenticated and semantically
+/// validated by the decoder. This deliberately reads only position and scale;
+/// rescanning opacity, rotation, and every SH coefficient on the main thread
+/// would defeat bounded LoD debug preparation.
+pub(crate) fn gaussian_support_bounds_trusted_decoded(
+    gaussian: &Gaussian3d,
+    support_sigma: f32,
+) -> Result<LodBounds, LodBuildError> {
+    debug_assert!(support_sigma.is_finite() && support_sigma > 0.0);
     let max_scale = gaussian
         .scale_opacity
         .scale
@@ -1576,8 +3400,13 @@ pub fn gaussian_support_bounds(
     LodBounds::new(min, max).map_err(LodBuildError::InvalidBounds)
 }
 
+#[cfg(test)]
+pub(crate) fn gaussian_support_full_validation_count_for_test() -> u64 {
+    GAUSSIAN_SUPPORT_FULL_VALIDATIONS.get()
+}
+
 #[derive(Clone)]
-struct MomentAccumulator {
+pub(crate) struct MomentAccumulator {
     count: u64,
     weight: f64,
     weighted_position: [f64; 3],
@@ -1598,7 +3427,7 @@ struct MomentAccumulator {
 }
 
 impl MomentAccumulator {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             count: 0,
             weight: 0.0,
@@ -1620,7 +3449,11 @@ impl MomentAccumulator {
         }
     }
 
-    fn add(&mut self, gaussian: &Gaussian3d, support_sigma: f32) -> Result<(), LodBuildError> {
+    pub(crate) fn add(
+        &mut self,
+        gaussian: &Gaussian3d,
+        support_sigma: f32,
+    ) -> Result<(), LodBuildError> {
         let bounds = gaussian_support_bounds(gaussian, support_sigma)?;
         self.bounds = Some(match self.bounds {
             Some(current) => current.union(bounds),
@@ -1638,10 +3471,10 @@ impl MomentAccumulator {
         let weight = f64::from((opacity * visibility).max(1e-12));
         self.weight += weight;
         let position = gaussian.position_visibility.position.map(f64::from);
-        let covariance = gaussian_covariance(gaussian)?;
+        let covariance_frame = gaussian_covariance_frame(gaussian)?;
+        let covariance = covariance_frame.covariance;
+        let projected_area_sqrt = covariance_frame.projected_area_sqrt;
         let effective_alpha = f64::from(opacity * visibility);
-        let projected_area_matrix = symmetric_adjugate(covariance);
-        let projected_area_sqrt = symmetric_psd_sqrt(projected_area_matrix)?;
         for (accumulated_row, projected_row) in self
             .projected_alpha_mass_sqrt_sum
             .iter_mut()
@@ -1652,9 +3485,8 @@ impl MomentAccumulator {
             }
         }
         for (index, direction) in PROJECTED_ALPHA_MASS_DIRECTIONS.iter().copied().enumerate() {
-            let projected_area = quadratic_form_f64(projected_area_matrix, direction)
-                .max(0.0)
-                .sqrt();
+            let projected = projected_area_sqrt.map(|row| dot_f64(row, direction));
+            let projected_area = dot_f64(projected, projected).max(0.0).sqrt();
             self.sampled_projected_alpha_mass[index] += effective_alpha * projected_area;
 
             let center = dot_f64(position, direction);
@@ -1764,7 +3596,20 @@ impl MomentAccumulator {
         Ok(())
     }
 
-    fn finish(&self, support_sigma: f32) -> Result<MomentMergeResult, LodBuildError> {
+    pub(crate) fn finish(&self, support_sigma: f32) -> Result<MomentMergeResult, LodBuildError> {
+        self.finish_with_projected_alpha_calibration(support_sigma, true)
+    }
+
+    #[cfg(test)]
+    fn finish_external_v2(&self, support_sigma: f32) -> Result<MomentMergeResult, LodBuildError> {
+        self.finish_with_projected_alpha_calibration(support_sigma, false)
+    }
+
+    fn finish_with_projected_alpha_calibration(
+        &self,
+        support_sigma: f32,
+        calibrate_projected_alpha: bool,
+    ) -> Result<MomentMergeResult, LodBuildError> {
         if self.count == 0 || self.weight <= 0.0 {
             return Err(LodBuildError::EmptyReduction);
         }
@@ -1792,28 +3637,55 @@ impl MomentAccumulator {
                 - mean_coefficient * mean_coefficient)
                 .max(0.0);
         }
-        let opacity =
+        let union_opacity =
             checked_f32(1.0 - (-self.optical_depth).exp(), "merged opacity")?.clamp(0.0, 1.0);
         let position = [
             checked_f32(mean[0], "merged position")?,
             checked_f32(mean[1], "merged position")?,
             checked_f32(mean[2], "merged position")?,
         ];
-        let gaussian = Gaussian3d {
+        let mut gaussian = Gaussian3d {
             position_visibility: PositionVisibility {
                 position,
                 visibility: self.max_visibility,
             },
             spherical_harmonic: SphericalHarmonicCoefficients { coefficients },
             rotation: Rotation { rotation },
-            scale_opacity: ScaleOpacity { scale, opacity },
+            scale_opacity: ScaleOpacity {
+                scale,
+                opacity: union_opacity,
+            },
         };
+        // Pairing and fidelity metadata must retain how unsafe the raw optical-
+        // depth-union representative was. ABI 14 only changes the emitted
+        // opacity; evaluating risk after calibration would erase the magnitude
+        // of that correction and can silently promote a structurally poor pair.
+        let raw_union_gaussian = gaussian;
         let representative_covariance = gaussian_covariance(&gaussian)?;
+        let representative_projected_area = symmetric_adjugate(representative_covariance);
+        let raw_projected_alpha_mass_inflation_upper_bound = if calibrate_projected_alpha {
+            calibrate_projected_alpha_mass(
+                &mut gaussian,
+                representative_projected_area,
+                self.projected_alpha_mass_sqrt_sum,
+            )?
+        } else {
+            let representative_alpha = f64::from(
+                gaussian.scale_opacity.opacity.clamp(0.0, 1.0)
+                    * gaussian.position_visibility.visibility.clamp(0.0, 1.0),
+            );
+            projected_alpha_mass_inflation_upper_bound(
+                representative_alpha,
+                representative_projected_area,
+                self.projected_alpha_mass_sqrt_sum,
+            )?
+        };
         let raster_risk = moment_merge_raster_risk(
-            &gaussian,
+            &raw_union_gaussian,
             representative_covariance,
+            representative_projected_area,
             support_sigma,
-            self.projected_alpha_mass_sqrt_sum,
+            raw_projected_alpha_mass_inflation_upper_bound,
             self.sampled_projected_alpha_mass,
             self.sampled_support_min,
             self.sampled_support_max,
@@ -1829,6 +3701,7 @@ impl MomentAccumulator {
             (appearance_variance / SH_COEFF_COUNT.max(1) as f64).sqrt(),
             "appearance error",
         )?;
+        let opacity = gaussian.scale_opacity.opacity;
         let opacity_error = (opacity - self.min_opacity)
             .abs()
             .max((opacity - self.max_opacity).abs());
@@ -1864,10 +3737,127 @@ struct TempNode {
     high_fidelity_certificate: f32,
 }
 
+fn build_leaf_temp_node(
+    range: std::ops::Range<usize>,
+    canonical_source: &[Gaussian3d],
+    canonical_morton: &[u64],
+    support_sigma: f32,
+) -> Result<TempNode, LodBuildError> {
+    let source = LodSourceRange {
+        start: range.start as u64,
+        count: (range.end - range.start) as u64,
+    };
+    let mut accumulator = MomentAccumulator::new();
+    for gaussian in &canonical_source[range.clone()] {
+        accumulator.add(gaussian, support_sigma)?;
+    }
+    let bounds = accumulator
+        .bounds
+        .ok_or(LodBuildError::DerivedNonFinite("leaf bounds"))?;
+    Ok(TempNode {
+        children: Vec::new(),
+        source,
+        morton: LodMortonRange {
+            min: canonical_morton[range.start],
+            max: canonical_morton[range.end - 1],
+        },
+        bounds,
+        accumulator,
+        representatives: Vec::new(),
+        representation_count: range.end - range.start,
+        error: LodError::ZERO,
+        high_fidelity_certificate: 1.0,
+    })
+}
+
+fn build_parent_temp_node(
+    children: [usize; 2],
+    deepest_choice: Option<DeepestRepresentationChoice>,
+    temporary: &[TempNode],
+    canonical_source: &[Gaussian3d],
+    support_sigma: f32,
+    branching_factor: usize,
+    cancellation: LodBuildCancellation<'_>,
+) -> CancelableLodBuildResult<TempNode> {
+    cancellation.check()?;
+    let first = &temporary[children[0]];
+    let last = &temporary[children[1]];
+    let source = LodSourceRange {
+        start: first.source.start,
+        count: last.source.end().unwrap() - first.source.start,
+    };
+    let morton = LodMortonRange {
+        min: first.morton.min,
+        max: last.morton.max,
+    };
+    let mut accumulator = MomentAccumulator::new();
+    let mut bounds = first.bounds;
+    let mut error = LodError::ZERO;
+    let mut high_fidelity_certificate = 1.0_f32;
+    for child in children {
+        let child = &temporary[child];
+        accumulator.combine(&child.accumulator)?;
+        bounds = bounds.union(child.bounds);
+        error = error.max(child.error);
+        high_fidelity_certificate = high_fidelity_certificate.min(child.high_fidelity_certificate);
+    }
+    let source_start = usize::try_from(source.start)
+        .map_err(|_| LodBuildError::CountOverflow("internal source start"))?;
+    let source_end = usize::try_from(source.end().unwrap())
+        .map_err(|_| LodBuildError::CountOverflow("internal source end"))?;
+    let child_representatives = children.iter().try_fold(0_usize, |count, child| {
+        count
+            .checked_add(temporary[*child].representation_count)
+            .ok_or(LodBuildError::CountOverflow("child representations"))
+    })?;
+    let children_are_exact_leaves = children
+        .iter()
+        .all(|child| temporary[*child].children.is_empty());
+    let source_records = &canonical_source[source_start..source_end];
+    let (representatives, policy_envelope) =
+        if children_are_exact_leaves && let Some(choice) = deepest_choice {
+            (
+                choice.into_representatives(),
+                ProgressiveSelectionEnvelope::IDENTITY,
+            )
+        } else {
+            let rung = progressive_moment_merge_representatives(
+                source_records,
+                child_representatives.div_ceil(branching_factor).max(1),
+                support_sigma,
+                cancellation,
+            )?;
+            (rung.representatives, rung.policy_envelope)
+        };
+    for representative in &representatives {
+        bounds = bounds.union(representative.support_bounds);
+        error = error.max(representative.error);
+        high_fidelity_certificate =
+            high_fidelity_certificate.min(representative.high_fidelity_certificate());
+    }
+    if let Some(policy_bounds) = policy_envelope.support_bounds {
+        bounds = bounds.union(policy_bounds);
+    }
+    error = error.max(policy_envelope.error);
+    high_fidelity_certificate =
+        high_fidelity_certificate.min(policy_envelope.high_fidelity_certificate_cap);
+    Ok(TempNode {
+        children: children.to_vec(),
+        source,
+        morton,
+        bounds,
+        accumulator,
+        representation_count: representatives.len(),
+        representatives,
+        error,
+        high_fidelity_certificate,
+    })
+}
+
 #[derive(Clone, Copy)]
-struct KeyedGaussian {
+struct MortonSourceIndex {
     morton: u64,
-    gaussian: Gaussian3d,
+    source_index: usize,
 }
 
 fn empty_lod(settings: GaussianLodBuildSettings) -> PlanarGaussian3dLod {
@@ -1896,8 +3886,36 @@ fn empty_lod(settings: GaussianLodBuildSettings) -> PlanarGaussian3dLod {
                 config_fingerprint: moment_merge_config_fingerprint(settings),
             },
             quality: GaussianLodQualityMetadata::default(),
+            morph_map: None,
         },
         pages: Vec::new(),
+    }
+}
+
+/// Bounded crate-internal entry point for external builders that can buffer
+/// one explicitly capped source domain. It reuses ABI 14's risk-aware adjacent
+/// agglomeration and conservative balanced selection envelope without exposing
+/// the transient builder's cancellation machinery.
+#[cfg(feature = "lod_build")]
+pub(crate) fn build_progressive_moment_merge_rung(
+    source: &[Gaussian3d],
+    representative_count: usize,
+    support_sigma: f32,
+) -> Result<ProgressiveMomentMergeRung, LodBuildError> {
+    let never_cancel = || false;
+    match progressive_moment_merge_representatives(
+        source,
+        representative_count,
+        support_sigma,
+        LodBuildCancellation {
+            is_canceled: &never_cancel,
+        },
+    ) {
+        Ok(rung) => Ok(rung),
+        Err(CancelableLodBuildError::Build(error)) => Err(error),
+        Err(CancelableLodBuildError::Canceled) => {
+            unreachable!("the external rung wrapper never requests cancellation")
+        }
     }
 }
 
@@ -1905,9 +3923,11 @@ fn progressive_moment_merge_representatives(
     source: &[Gaussian3d],
     representative_count: usize,
     support_sigma: f32,
-) -> Result<ProgressiveMomentMergeRung, LodBuildError> {
+    cancellation: LodBuildCancellation<'_>,
+) -> CancelableLodBuildResult<ProgressiveMomentMergeRung> {
+    cancellation.check()?;
     if source.is_empty() || representative_count == 0 || representative_count > source.len() {
-        return Err(LodBuildError::EmptyReduction);
+        return Err(LodBuildError::EmptyReduction.into());
     }
 
     // The ordinary rung immediately above the leaf bridge still operates in a
@@ -1925,46 +3945,55 @@ fn progressive_moment_merge_representatives(
     if source.len().div_ceil(representative_count)
         <= PROGRESSIVE_RISK_AWARE_MAX_SOURCES_PER_REPRESENTATIVE
     {
-        let representatives = risk_aware_progressive_moment_merge_representatives(
+        let (representatives, source_ranges) = risk_aware_progressive_moment_merge_representatives(
             source,
             representative_count,
             support_sigma,
+            cancellation,
         )?;
         let balanced_oracle = balanced_progressive_moment_merge_representatives(
             source,
             representative_count,
             support_sigma,
+            cancellation,
         )?;
-        let policy_envelope = progressive_selection_envelope(&balanced_oracle);
+        let policy_envelope = progressive_selection_envelope(&balanced_oracle, cancellation)?;
         return Ok(ProgressiveMomentMergeRung {
             representatives,
+            source_ranges,
             policy_envelope,
         });
     }
 
+    let source_ranges = balanced_ranges_for_group_count(source.len(), representative_count);
     Ok(ProgressiveMomentMergeRung {
         representatives: balanced_progressive_moment_merge_representatives(
             source,
             representative_count,
             support_sigma,
+            cancellation,
         )?,
+        source_ranges,
         policy_envelope: ProgressiveSelectionEnvelope::IDENTITY,
     })
 }
 
-struct ProgressiveMomentMergeRung {
-    representatives: Vec<MomentMergeResult>,
+pub(crate) struct ProgressiveMomentMergeRung {
+    pub(crate) representatives: Vec<MomentMergeResult>,
+    /// Exact, contiguous source intervals aligned with `representatives`.
+    #[cfg_attr(not(feature = "lod_build"), allow(dead_code))]
+    pub(crate) source_ranges: Vec<std::ops::Range<usize>>,
     /// Independent conservative selection-policy envelope. This is separate
     /// from the metadata of the emitted payload so clustering cannot grade its
     /// own optimization as a runtime fidelity improvement.
-    policy_envelope: ProgressiveSelectionEnvelope,
+    pub(crate) policy_envelope: ProgressiveSelectionEnvelope,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct ProgressiveSelectionEnvelope {
-    support_bounds: Option<LodBounds>,
-    error: LodError,
-    high_fidelity_certificate_cap: f32,
+pub(crate) struct ProgressiveSelectionEnvelope {
+    pub(crate) support_bounds: Option<LodBounds>,
+    pub(crate) error: LodError,
+    pub(crate) high_fidelity_certificate_cap: f32,
 }
 
 impl ProgressiveSelectionEnvelope {
@@ -1977,36 +4006,39 @@ impl ProgressiveSelectionEnvelope {
 
 fn progressive_selection_envelope(
     representatives: &[MomentMergeResult],
-) -> ProgressiveSelectionEnvelope {
-    representatives.iter().fold(
-        ProgressiveSelectionEnvelope::IDENTITY,
-        |mut envelope, representative| {
-            envelope.support_bounds = Some(
-                envelope
-                    .support_bounds
-                    .map_or(representative.support_bounds, |bounds| {
-                        bounds.union(representative.support_bounds)
-                    }),
-            );
-            envelope.error = envelope.error.max(representative.error);
-            envelope.high_fidelity_certificate_cap = envelope
-                .high_fidelity_certificate_cap
-                .min(representative.high_fidelity_certificate());
+    cancellation: LodBuildCancellation<'_>,
+) -> CancelableLodBuildResult<ProgressiveSelectionEnvelope> {
+    let mut envelope = ProgressiveSelectionEnvelope::IDENTITY;
+    for (index, representative) in representatives.iter().enumerate() {
+        cancellation.poll(index)?;
+        envelope.support_bounds = Some(
             envelope
-        },
-    )
+                .support_bounds
+                .map_or(representative.support_bounds, |bounds| {
+                    bounds.union(representative.support_bounds)
+                }),
+        );
+        envelope.error = envelope.error.max(representative.error);
+        envelope.high_fidelity_certificate_cap = envelope
+            .high_fidelity_certificate_cap
+            .min(representative.high_fidelity_certificate());
+    }
+    Ok(envelope)
 }
 
 fn balanced_progressive_moment_merge_representatives(
     source: &[Gaussian3d],
     representative_count: usize,
     support_sigma: f32,
-) -> Result<Vec<MomentMergeResult>, LodBuildError> {
+    cancellation: LodBuildCancellation<'_>,
+) -> CancelableLodBuildResult<Vec<MomentMergeResult>> {
     let ranges = balanced_ranges_for_group_count(source.len(), representative_count);
     let mut representatives = Vec::with_capacity(representative_count);
-    for range in ranges {
+    for (range_index, range) in ranges.into_iter().enumerate() {
+        cancellation.poll(range_index)?;
         let mut accumulator = MomentAccumulator::new();
-        for gaussian in &source[range] {
+        for (index, gaussian) in source[range].iter().enumerate() {
+            cancellation.poll(index)?;
             accumulator.add(gaussian, support_sigma)?;
         }
         representatives.push(accumulator.finish(support_sigma)?);
@@ -2034,6 +4066,27 @@ struct ProgressiveAgglomerationCandidate {
     right: usize,
     left_generation: usize,
     right_generation: usize,
+}
+
+/// Conservative peak allocation for the crate-internal risk-aware rung,
+/// including its externally owned source buffer, cluster state, candidate
+/// heap, and an output vector pessimistically sized to the full source. Vec
+/// headers and allocator bookkeeping are covered by one extra record of each
+/// payload type. The heap allowance is four times the source count: live stale
+/// candidates can approach `2N`, and another factor of two covers geometric
+/// Vec capacity growth.
+#[cfg(any(feature = "lod_build", test))]
+pub(crate) fn progressive_risk_aware_host_bytes_upper_bound(source_count: usize) -> Option<u64> {
+    let capacity = source_count.checked_add(1)?;
+    let candidate_capacity = source_count.checked_mul(4)?.checked_add(1)?;
+    let bytes = capacity
+        .checked_mul(size_of::<Gaussian3d>())?
+        .checked_add(capacity.checked_mul(size_of::<ProgressiveAgglomerationCluster>())?)?
+        .checked_add(
+            candidate_capacity.checked_mul(size_of::<ProgressiveAgglomerationCandidate>())?,
+        )?
+        .checked_add(capacity.checked_mul(size_of::<MomentMergeResult>())?)?;
+    u64::try_from(bytes).ok()
 }
 
 impl ProgressiveAgglomerationCandidate {
@@ -2136,9 +4189,11 @@ fn risk_aware_progressive_moment_merge_representatives(
     source: &[Gaussian3d],
     representative_count: usize,
     support_sigma: f32,
-) -> Result<Vec<MomentMergeResult>, LodBuildError> {
+    cancellation: LodBuildCancellation<'_>,
+) -> CancelableLodBuildResult<(Vec<MomentMergeResult>, Vec<std::ops::Range<usize>>)> {
     let mut clusters = Vec::with_capacity(source.len());
     for (index, gaussian) in source.iter().enumerate() {
+        cancellation.poll(index)?;
         let mut accumulator = MomentAccumulator::new();
         accumulator.add(gaussian, support_sigma)?;
         clusters.push(ProgressiveAgglomerationCluster {
@@ -2154,11 +4209,14 @@ fn risk_aware_progressive_moment_merge_representatives(
 
     let mut heap = BinaryHeap::with_capacity(source.len().saturating_sub(1));
     for left in 0..source.len().saturating_sub(1) {
+        cancellation.poll(left)?;
         push_progressive_agglomeration_candidate(&mut heap, &clusters, left, support_sigma)?;
     }
 
     let mut active_count = source.len();
+    let mut merge_count = 0_usize;
     while active_count > representative_count {
+        cancellation.poll(merge_count)?;
         let candidate = loop {
             let candidate = heap.pop().ok_or(LodBuildError::CountOverflow(
                 "risk-aware progressive agglomeration",
@@ -2201,12 +4259,15 @@ fn risk_aware_progressive_moment_merge_representatives(
             )?;
         }
         push_progressive_agglomeration_candidate(&mut heap, &clusters, left, support_sigma)?;
+        merge_count += 1;
     }
 
     let mut representatives = Vec::with_capacity(representative_count);
+    let mut source_ranges = Vec::with_capacity(representative_count);
     let mut cursor = Some(0_usize);
     let mut expected_source_start = 0_usize;
-    for _ in 0..representative_count {
+    for output_index in 0..representative_count {
+        cancellation.poll(output_index)?;
         let index = cursor.ok_or(LodBuildError::CountOverflow(
             "risk-aware progressive representative partition",
         ))?;
@@ -2214,18 +4275,21 @@ fn risk_aware_progressive_moment_merge_representatives(
         if !cluster.active || cluster.source_start != expected_source_start {
             return Err(LodBuildError::CountOverflow(
                 "risk-aware progressive representative partition",
-            ));
+            )
+            .into());
         }
         representatives.push(cluster.accumulator.finish(support_sigma)?);
+        source_ranges.push(cluster.source_start..cluster.source_end);
         expected_source_start = cluster.source_end;
         cursor = cluster.next;
     }
     if cursor.is_some() || expected_source_start != source.len() {
         return Err(LodBuildError::CountOverflow(
             "risk-aware progressive representative partition",
-        ));
+        )
+        .into());
     }
-    Ok(representatives)
+    Ok((representatives, source_ranges))
 }
 
 struct DeepestRepresentationChoice {
@@ -2338,6 +4402,51 @@ impl Ord for PairingAdjustment {
     }
 }
 
+fn projected_progressive_storage(
+    plans: &[DeepestPairingPlan],
+    source_count: usize,
+    carried_count: Option<usize>,
+    branching_factor: usize,
+    cancellation: LodBuildCancellation<'_>,
+) -> CancelableLodBuildResult<Option<usize>> {
+    let mut stored = source_count;
+    let mut level = Vec::with_capacity(plans.len() + usize::from(carried_count.is_some()));
+    for (index, plan) in plans.iter().enumerate() {
+        cancellation.poll(index)?;
+        let count = plan.representation_count();
+        let Some(next_stored) = stored.checked_add(count) else {
+            return Ok(None);
+        };
+        stored = next_stored;
+        level.push(count);
+    }
+    if let Some(carried_count) = carried_count {
+        level.push(carried_count);
+    }
+    while level.len() > 1 {
+        cancellation.check()?;
+        let paired = level.len() / 2 * 2;
+        let mut next = Vec::with_capacity(level.len().div_ceil(2));
+        for (index, pair) in level[..paired].chunks_exact(2).enumerate() {
+            cancellation.poll(index)?;
+            let Some(count) = pair[0].checked_add(pair[1]) else {
+                return Ok(None);
+            };
+            let count = count.div_ceil(branching_factor).max(1);
+            let Some(next_stored) = stored.checked_add(count) else {
+                return Ok(None);
+            };
+            stored = next_stored;
+            next.push(count);
+        }
+        if let Some(carried) = level.get(paired) {
+            next.push(*carried);
+        }
+        level = next;
+    }
+    Ok(Some(stored))
+}
+
 /// Precompute a variable-rate bridge immediately above exact leaves. Every
 /// bridge representative is either an exact source record or a two-record
 /// adjacent-Morton MomentMerge. Certified pairs are retained whenever they
@@ -2356,115 +4465,96 @@ fn plan_high_fidelity_deepest_choices(
     leaf_level: &[usize],
     support_sigma: f32,
     branching_factor: usize,
-) -> Result<HashMap<usize, DeepestRepresentationChoice>, LodBuildError> {
+    cancellation: LodBuildCancellation<'_>,
+) -> CancelableLodBuildResult<HashMap<usize, DeepestRepresentationChoice>> {
+    cancellation.check()?;
     let paired_len = leaf_level.len() / 2 * 2;
-    let mut plans = Vec::with_capacity(paired_len / 2);
-    for children in leaf_level[..paired_len].chunks_exact(2) {
-        let first = &temporary[children[0]];
-        let last = &temporary[children[1]];
-        let source_start = usize::try_from(first.source.start)
-            .map_err(|_| LodBuildError::CountOverflow("internal source start"))?;
-        let source_end = usize::try_from(last.source.end().unwrap())
-            .map_err(|_| LodBuildError::CountOverflow("internal source end"))?;
-        let source = &canonical_source[source_start..source_end];
-        let pair_certificates = adjacent_pair_certificates(source, support_sigma)?;
-        let certified = maximum_certified_pairing_score(&pair_certificates);
-        let maximum_representative_count = source
-            .len()
-            .saturating_mul(HIGH_FIDELITY_MAX_REPRESENTATIVE_NUMERATOR)
-            / HIGH_FIDELITY_MAX_REPRESENTATIVE_DENOMINATOR;
-        let minimum_pair_count = source
-            .len()
-            .saturating_sub(maximum_representative_count)
-            .max(source.len().div_ceil(branching_factor))
-            .min(source.len() / 2);
-        let base_pair_count = certified.merge_count.max(minimum_pair_count);
-        let certified_only = certified.merge_count >= minimum_pair_count;
-        let base_quality = optimal_pairing_quality_score(
-            &pair_certificates,
-            base_pair_count,
-            certified_only.then_some(HIGH_FIDELITY_PAIR_CERTIFICATE),
-        )
-        .ok_or(LodBuildError::CountOverflow("deepest bridge pairing"))?;
-        let adjusted_quality = if base_pair_count < source.len() / 2 {
-            optimal_pairing_quality_score(&pair_certificates, base_pair_count + 1, None)
-        } else {
-            None
-        };
-        plans.push(DeepestPairingPlan {
-            node_key: children[0],
-            source_start,
-            source_end,
-            base_pair_count,
-            pair_count: base_pair_count,
-            base_quality,
-            adjusted_quality,
-        });
-    }
+    let child_pairs = leaf_level[..paired_len]
+        .chunks_exact(2)
+        .map(|children| [children[0], children[1]])
+        .collect::<Vec<_>>();
+    #[cfg(feature = "sort_rayon")]
+    let plan_results: Vec<_> = child_pairs
+        .par_iter()
+        .map(|children| {
+            cancellation.check()?;
+            let plan = build_deepest_pairing_plan(
+                *children,
+                canonical_source,
+                temporary,
+                support_sigma,
+                branching_factor,
+            )?;
+            cancellation.check()?;
+            Ok::<_, CancelableLodBuildError>(plan)
+        })
+        .collect();
+    #[cfg(not(feature = "sort_rayon"))]
+    let plan_results: Vec<_> = child_pairs
+        .iter()
+        .map(|children| {
+            cancellation.check()?;
+            let plan = build_deepest_pairing_plan(
+                *children,
+                canonical_source,
+                temporary,
+                support_sigma,
+                branching_factor,
+            )?;
+            cancellation.check()?;
+            Ok::<_, CancelableLodBuildError>(plan)
+        })
+        .collect();
+    let mut plans = plan_results.into_iter().collect::<Result<Vec<_>, _>>()?;
 
-    let projected_storage = |plans: &[DeepestPairingPlan]| {
-        let mut stored = canonical_source.len();
-        let mut level =
-            Vec::with_capacity(plans.len() + usize::from(paired_len < leaf_level.len()));
-        for plan in plans {
-            let count = plan.representation_count();
-            stored = stored.checked_add(count)?;
-            level.push(count);
-        }
-        if let Some(carried) = leaf_level.get(paired_len) {
-            level.push(temporary[*carried].representation_count);
-        }
-        while level.len() > 1 {
-            let paired = level.len() / 2 * 2;
-            let mut next = Vec::with_capacity(level.len().div_ceil(2));
-            for pair in level[..paired].chunks_exact(2) {
-                let count = pair[0]
-                    .checked_add(pair[1])?
-                    .div_ceil(branching_factor)
-                    .max(1);
-                stored = stored.checked_add(count)?;
-                next.push(count);
-            }
-            if let Some(carried) = level.get(paired) {
-                next.push(*carried);
-            }
-            level = next;
-        }
-        Some(stored)
-    };
+    let carried_count = leaf_level
+        .get(paired_len)
+        .map(|carried| temporary[*carried].representation_count);
 
     let maximum_storage = canonical_source
         .len()
         .checked_mul(2)
         .ok_or(LodBuildError::CountOverflow("progressive storage budget"))?;
-    let proposed_storage = projected_storage(&plans)
-        .ok_or(LodBuildError::CountOverflow("progressive stored Gaussians"))?;
+    let proposed_storage = projected_progressive_storage(
+        &plans,
+        canonical_source.len(),
+        carried_count,
+        branching_factor,
+        cancellation,
+    )?
+    .ok_or(LodBuildError::CountOverflow("progressive stored Gaussians"))?;
     let required_adjustments = proposed_storage.saturating_sub(maximum_storage);
     let mut adjustments = BinaryHeap::new();
     for (choice_index, plan) in plans.iter().enumerate() {
+        cancellation.poll(choice_index)?;
         if let Some(adjustment) = plan.next_adjustment(choice_index) {
             adjustments.push(adjustment);
         }
     }
     let mut applied_adjustments = Vec::with_capacity(required_adjustments);
-    for _ in 0..required_adjustments {
+    for adjustment_index in 0..required_adjustments {
+        cancellation.poll(adjustment_index)?;
         let adjustment = adjustments
             .pop()
             .ok_or(LodBuildError::CountOverflow("progressive storage budget"))?;
         let plan = &mut plans[adjustment.choice_index];
         if adjustment.next_pair_count != plan.pair_count + 1 {
-            return Err(LodBuildError::CountOverflow(
-                "progressive pairing adjustment",
-            ));
+            return Err(LodBuildError::CountOverflow("progressive pairing adjustment").into());
         }
         plan.pair_count = adjustment.next_pair_count;
         applied_adjustments.push(adjustment.choice_index);
     }
 
-    let adjusted_storage = projected_storage(&plans)
-        .ok_or(LodBuildError::CountOverflow("progressive stored Gaussians"))?;
+    let adjusted_storage = projected_progressive_storage(
+        &plans,
+        canonical_source.len(),
+        carried_count,
+        branching_factor,
+        cancellation,
+    )?
+    .ok_or(LodBuildError::CountOverflow("progressive stored Gaussians"))?;
     if adjusted_storage > maximum_storage {
-        return Err(LodBuildError::CountOverflow("progressive storage budget"));
+        return Err(LodBuildError::CountOverflow("progressive storage budget").into());
     }
 
     // One deepest-record reduction can also cross an integer boundary at one
@@ -2473,54 +4563,149 @@ fn plan_high_fidelity_deepest_choices(
     let mut lower = 0;
     let mut upper = applied_adjustments.len();
     while lower < upper {
+        cancellation.check()?;
         let middle = lower + (upper - lower) / 2;
-        for plan in &mut plans {
+        for (index, plan) in plans.iter_mut().enumerate() {
+            cancellation.poll(index)?;
             plan.pair_count = plan.base_pair_count;
         }
-        for &choice_index in &applied_adjustments[..middle] {
+        for (index, &choice_index) in applied_adjustments[..middle].iter().enumerate() {
+            cancellation.poll(index)?;
             plans[choice_index].pair_count += 1;
         }
-        let candidate_storage = projected_storage(&plans)
-            .ok_or(LodBuildError::CountOverflow("progressive stored Gaussians"))?;
+        let candidate_storage = projected_progressive_storage(
+            &plans,
+            canonical_source.len(),
+            carried_count,
+            branching_factor,
+            cancellation,
+        )?
+        .ok_or(LodBuildError::CountOverflow("progressive stored Gaussians"))?;
         if candidate_storage <= maximum_storage {
             upper = middle;
         } else {
             lower = middle + 1;
         }
     }
-    for plan in &mut plans {
+    for (index, plan) in plans.iter_mut().enumerate() {
+        cancellation.poll(index)?;
         plan.pair_count = plan.base_pair_count;
     }
-    for &choice_index in &applied_adjustments[..lower] {
+    for (index, &choice_index) in applied_adjustments[..lower].iter().enumerate() {
+        cancellation.poll(index)?;
         plans[choice_index].pair_count += 1;
     }
-    let final_storage = projected_storage(&plans)
-        .ok_or(LodBuildError::CountOverflow("progressive stored Gaussians"))?;
+    let final_storage = projected_progressive_storage(
+        &plans,
+        canonical_source.len(),
+        carried_count,
+        branching_factor,
+        cancellation,
+    )?
+    .ok_or(LodBuildError::CountOverflow("progressive stored Gaussians"))?;
     if final_storage > maximum_storage {
-        return Err(LodBuildError::CountOverflow("progressive storage budget"));
+        return Err(LodBuildError::CountOverflow("progressive storage budget").into());
     }
 
-    let mut choices = HashMap::with_capacity(plans.len());
-    for plan in plans {
-        let source = &canonical_source[plan.source_start..plan.source_end];
-        let representatives = paired_leaf_representatives(
-            source,
-            support_sigma,
-            plan.pair_count,
-            Some(plan.quality().minimum_certificate),
-        )?;
-        debug_assert_eq!(representatives.len(), plan.representation_count());
-        debug_assert!(
-            representatives
-                .iter()
-                .all(|representative| representative.source_count <= 2)
-        );
-        choices.insert(
-            plan.node_key,
-            DeepestRepresentationChoice { representatives },
-        );
+    let plan_count = plans.len();
+    #[cfg(feature = "sort_rayon")]
+    let choice_results: Vec<_> = plans
+        .into_par_iter()
+        .map(|plan| {
+            cancellation.check()?;
+            let choice = materialize_deepest_pairing_plan(plan, canonical_source, support_sigma)?;
+            cancellation.check()?;
+            Ok::<_, CancelableLodBuildError>(choice)
+        })
+        .collect();
+    #[cfg(not(feature = "sort_rayon"))]
+    let choice_results: Vec<_> = plans
+        .into_iter()
+        .map(|plan| {
+            cancellation.check()?;
+            let choice = materialize_deepest_pairing_plan(plan, canonical_source, support_sigma)?;
+            cancellation.check()?;
+            Ok::<_, CancelableLodBuildError>(choice)
+        })
+        .collect();
+    let mut choices = HashMap::with_capacity(plan_count);
+    for (node_key, choice) in choice_results.into_iter().collect::<Result<Vec<_>, _>>()? {
+        choices.insert(node_key, choice);
     }
     Ok(choices)
+}
+
+fn build_deepest_pairing_plan(
+    children: [usize; 2],
+    canonical_source: &[Gaussian3d],
+    temporary: &[TempNode],
+    support_sigma: f32,
+    branching_factor: usize,
+) -> Result<DeepestPairingPlan, LodBuildError> {
+    let first = &temporary[children[0]];
+    let last = &temporary[children[1]];
+    let source_start = usize::try_from(first.source.start)
+        .map_err(|_| LodBuildError::CountOverflow("internal source start"))?;
+    let source_end = usize::try_from(last.source.end().unwrap())
+        .map_err(|_| LodBuildError::CountOverflow("internal source end"))?;
+    let source = &canonical_source[source_start..source_end];
+    let pair_certificates = adjacent_pair_certificates(source, support_sigma)?;
+    let certified = maximum_certified_pairing_score(&pair_certificates);
+    let maximum_representative_count = source
+        .len()
+        .saturating_mul(HIGH_FIDELITY_MAX_REPRESENTATIVE_NUMERATOR)
+        / HIGH_FIDELITY_MAX_REPRESENTATIVE_DENOMINATOR;
+    let minimum_pair_count = source
+        .len()
+        .saturating_sub(maximum_representative_count)
+        .max(source.len().div_ceil(branching_factor))
+        .min(source.len() / 2);
+    let base_pair_count = certified.merge_count.max(minimum_pair_count);
+    let certified_only = certified.merge_count >= minimum_pair_count;
+    let base_quality = optimal_pairing_quality_score(
+        &pair_certificates,
+        base_pair_count,
+        certified_only.then_some(HIGH_FIDELITY_PAIR_CERTIFICATE),
+    )
+    .ok_or(LodBuildError::CountOverflow("deepest bridge pairing"))?;
+    let adjusted_quality = if base_pair_count < source.len() / 2 {
+        optimal_pairing_quality_score(&pair_certificates, base_pair_count + 1, None)
+    } else {
+        None
+    };
+    Ok(DeepestPairingPlan {
+        node_key: children[0],
+        source_start,
+        source_end,
+        base_pair_count,
+        pair_count: base_pair_count,
+        base_quality,
+        adjusted_quality,
+    })
+}
+
+fn materialize_deepest_pairing_plan(
+    plan: DeepestPairingPlan,
+    canonical_source: &[Gaussian3d],
+    support_sigma: f32,
+) -> Result<(usize, DeepestRepresentationChoice), LodBuildError> {
+    let source = &canonical_source[plan.source_start..plan.source_end];
+    let representatives = paired_leaf_representatives(
+        source,
+        support_sigma,
+        plan.pair_count,
+        Some(plan.quality().minimum_certificate),
+    )?;
+    debug_assert_eq!(representatives.len(), plan.representation_count());
+    debug_assert!(
+        representatives
+            .iter()
+            .all(|representative| representative.source_count <= 2)
+    );
+    Ok((
+        plan.node_key,
+        DeepestRepresentationChoice { representatives },
+    ))
 }
 
 #[derive(Clone, Copy, Default)]
@@ -2795,8 +4980,8 @@ fn exact_source_representative(
         source_count: 1,
         total_weight: f64::from((opacity * visibility).max(1e-12)),
         raster_risk: MomentMergeRasterRisk {
-            sampled_projected_alpha_mass_inflation: 1.0,
-            projected_alpha_mass_inflation_upper_bound: 1.0,
+            raw_sampled_projected_alpha_mass_inflation: 1.0,
+            raw_projected_alpha_mass_inflation_upper_bound: 1.0,
             support_leakage_fraction: 0.0,
             support_growth: 1.0,
             major_scale_growth: 1.0,
@@ -2805,7 +4990,7 @@ fn exact_source_representative(
     })
 }
 
-fn validate_plane_lengths(cloud: &PlanarGaussian3d) -> Result<(), LodBuildError> {
+pub(crate) fn validate_plane_lengths(cloud: &PlanarGaussian3d) -> Result<(), LodBuildError> {
     let expected = cloud.position_visibility.len();
     let lengths = [
         ("spherical_harmonic", cloud.spherical_harmonic.len()),
@@ -2829,12 +5014,14 @@ type BreadthFirstLayout = (Vec<usize>, Vec<Option<usize>>, Vec<u16>);
 fn breadth_first_order(
     nodes: &[TempNode],
     root: usize,
-) -> Result<BreadthFirstLayout, LodBuildError> {
+    cancellation: LodBuildCancellation<'_>,
+) -> CancelableLodBuildResult<BreadthFirstLayout> {
     let mut order = vec![root];
     let mut parents = vec![None];
     let mut depths = vec![0_u16];
     let mut cursor = 0;
     while cursor < order.len() {
+        cancellation.poll(cursor)?;
         let depth = depths[cursor];
         for child in &nodes[order[cursor]].children {
             order.push(*child);
@@ -2879,10 +5066,14 @@ fn balanced_ranges_for_group_count(len: usize, group_count: usize) -> Vec<std::o
     ranges
 }
 
-fn source_center_bounds(source: &[Gaussian3d]) -> Result<LodBounds, LodBuildError> {
+fn source_center_bounds(
+    source: &[Gaussian3d],
+    cancellation: LodBuildCancellation<'_>,
+) -> CancelableLodBuildResult<LodBounds> {
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
-    for gaussian in source {
+    for (index, gaussian) in source.iter().enumerate() {
+        cancellation.poll(index)?;
         for axis in 0..3 {
             min[axis] = min[axis].min(gaussian.position_visibility.position[axis]);
             max[axis] = max[axis].max(gaussian.position_visibility.position[axis]);
@@ -2894,9 +5085,7 @@ fn source_center_bounds(source: &[Gaussian3d]) -> Result<LodBounds, LodBuildErro
         .into_iter()
         .any(|extent| !extent.is_finite())
     {
-        return Err(LodBuildError::DerivedNonFinite(
-            "Morton normalization extent",
-        ));
+        return Err(LodBuildError::DerivedNonFinite("Morton normalization extent").into());
     }
     Ok(bounds)
 }
@@ -2925,17 +5114,166 @@ fn interleave_morton(x: u32, y: u32, z: u32) -> u64 {
     code
 }
 
-fn source_fingerprint(source: &[KeyedGaussian]) -> u64 {
-    let mut hash = StableHasher::new();
-    hash.write(&(source.len() as u64).to_le_bytes());
-    for entry in source {
-        hash.write(&entry.morton.to_le_bytes());
-        hash.write(&stable_gaussian_hash(&entry.gaussian).to_le_bytes());
-    }
-    hash.finish()
+fn compare_morton_source_indices(
+    left: &MortonSourceIndex,
+    right: &MortonSourceIndex,
+    source: &[Gaussian3d],
+) -> Ordering {
+    left.morton
+        .cmp(&right.morton)
+        .then_with(|| compare_gaussians(&source[left.source_index], &source[right.source_index]))
 }
 
-pub(crate) fn compare_gaussians(left: &Gaussian3d, right: &Gaussian3d) -> Ordering {
+fn merge_morton_runs(
+    input: &[MortonSourceIndex],
+    output: &mut [MortonSourceIndex],
+    run_width: usize,
+    source: &[Gaussian3d],
+    cancellation: LodBuildCancellation<'_>,
+) -> CancelableLodBuildResult<()> {
+    let span = run_width.saturating_mul(2);
+    #[cfg(feature = "sort_rayon")]
+    let results: Vec<_> = output
+        .par_chunks_mut(span)
+        .enumerate()
+        .map(|(run_index, destination)| {
+            let start = run_index * span;
+            let middle = (start + run_width).min(input.len());
+            merge_morton_run_pair(
+                &input[start..middle],
+                &input[middle..start + destination.len()],
+                destination,
+                source,
+                cancellation,
+            )
+        })
+        .collect();
+    #[cfg(not(feature = "sort_rayon"))]
+    let results: Vec<_> = output
+        .chunks_mut(span)
+        .enumerate()
+        .map(|(run_index, destination)| {
+            let start = run_index * span;
+            let middle = (start + run_width).min(input.len());
+            merge_morton_run_pair(
+                &input[start..middle],
+                &input[middle..start + destination.len()],
+                destination,
+                source,
+                cancellation,
+            )
+        })
+        .collect();
+    results.into_iter().collect()
+}
+
+fn merge_morton_run_pair(
+    left: &[MortonSourceIndex],
+    right: &[MortonSourceIndex],
+    output: &mut [MortonSourceIndex],
+    source: &[Gaussian3d],
+    cancellation: LodBuildCancellation<'_>,
+) -> CancelableLodBuildResult<()> {
+    cancellation.check()?;
+    let mut left_index = 0;
+    let mut right_index = 0;
+    for (output_index, destination) in output.iter_mut().enumerate() {
+        cancellation.poll(output_index)?;
+        let take_left = right_index == right.len()
+            || (left_index < left.len()
+                && compare_morton_source_indices(&left[left_index], &right[right_index], source)
+                    != Ordering::Greater);
+        if take_left {
+            *destination = left[left_index];
+            left_index += 1;
+        } else {
+            *destination = right[right_index];
+            right_index += 1;
+        }
+    }
+    cancellation.check()
+}
+
+fn sort_morton_source_indices(
+    entries: &mut [MortonSourceIndex],
+    source: &[Gaussian3d],
+    cancellation: LodBuildCancellation<'_>,
+) -> CancelableLodBuildResult<()> {
+    cancellation.check()?;
+    #[cfg(feature = "sort_rayon")]
+    let results: Vec<_> = entries
+        .par_chunks_mut(LOD_MORTON_SORT_RUN_LEN)
+        .map(|run| {
+            cancellation.check()?;
+            run.sort_unstable_by(|left, right| compare_morton_source_indices(left, right, source));
+            cancellation.check()
+        })
+        .collect();
+    #[cfg(not(feature = "sort_rayon"))]
+    let results: Vec<_> = entries
+        .chunks_mut(LOD_MORTON_SORT_RUN_LEN)
+        .map(|run| {
+            cancellation.check()?;
+            run.sort_unstable_by(|left, right| compare_morton_source_indices(left, right, source));
+            cancellation.check()
+        })
+        .collect();
+    results
+        .into_iter()
+        .collect::<CancelableLodBuildResult<()>>()?;
+    if entries.len() <= LOD_MORTON_SORT_RUN_LEN {
+        return Ok(());
+    }
+
+    let mut scratch = Vec::with_capacity(entries.len());
+    for chunk in entries.chunks(LOD_BUILD_CANCEL_CHECK_INTERVAL) {
+        cancellation.check()?;
+        scratch.extend_from_slice(chunk);
+    }
+
+    let mut run_width = LOD_MORTON_SORT_RUN_LEN;
+    let mut input_is_entries = true;
+    while run_width < entries.len() {
+        cancellation.check()?;
+        if input_is_entries {
+            merge_morton_runs(entries, &mut scratch, run_width, source, cancellation)?;
+        } else {
+            merge_morton_runs(&scratch, entries, run_width, source, cancellation)?;
+        }
+        input_is_entries = !input_is_entries;
+        run_width = run_width.saturating_mul(2);
+    }
+    if !input_is_entries {
+        for (index, (destination, sorted)) in entries.iter_mut().zip(&scratch).enumerate() {
+            cancellation.poll(index)?;
+            *destination = *sorted;
+        }
+    }
+    cancellation.check()
+}
+
+fn source_fingerprint(
+    source_order: &[MortonSourceIndex],
+    source: &[Gaussian3d],
+    cancellation: LodBuildCancellation<'_>,
+) -> CancelableLodBuildResult<u64> {
+    let mut hash = StableHasher::new();
+    hash.write(&(source_order.len() as u64).to_le_bytes());
+    for (index, entry) in source_order.iter().enumerate() {
+        cancellation.poll(index)?;
+        hash.write(&entry.morton.to_le_bytes());
+        hash.write(&stable_gaussian_hash(&source[entry.source_index]).to_le_bytes());
+    }
+    Ok(hash.finish())
+}
+
+/// Canonical total order for Gaussian payloads inside an equal Morton key.
+///
+/// External CPU runs, GPU readback fixups, and performance oracles must use
+/// this exact comparison before the source-index tiebreaker. In particular,
+/// sorting only by `(morton, source_index)` is not the package builder's merge
+/// contract when spatial quantization produces collisions.
+pub fn compare_gaussians(left: &Gaussian3d, right: &Gaussian3d) -> Ordering {
     compare_f32_slices(
         &left.position_visibility.position,
         &right.position_visibility.position,
@@ -2989,14 +5327,14 @@ fn canonical_f32_bits(value: f32) -> u32 {
     canonical_f32(value).to_bits()
 }
 
-fn gaussian_covariance(gaussian: &Gaussian3d) -> Result<[[f64; 3]; 3], LodBuildError> {
+fn normalized_gaussian_rotation(gaussian: &Gaussian3d) -> Result<[[f64; 3]; 3], LodBuildError> {
     let [w, x, y, z] = gaussian.rotation.rotation.map(f64::from);
     let norm = (w * w + x * x + y * y + z * z).sqrt();
     if !norm.is_finite() || norm <= f64::EPSILON {
         return Err(LodBuildError::DerivedNonFinite("rotation normalization"));
     }
     let (w, x, y, z) = (w / norm, x / norm, y / norm, z / norm);
-    let rotation = [
+    Ok([
         [
             1.0 - 2.0 * (y * y + z * z),
             2.0 * (x * y - w * z),
@@ -3012,27 +5350,73 @@ fn gaussian_covariance(gaussian: &Gaussian3d) -> Result<[[f64; 3]; 3], LodBuildE
             2.0 * (y * z + w * x),
             1.0 - 2.0 * (x * x + y * y),
         ],
-    ];
+    ])
+}
+
+fn rotate_diagonal_symmetric(
+    rotation: [[f64; 3]; 3],
+    diagonal: [f64; 3],
+    derived_name: &'static str,
+) -> Result<[[f64; 3]; 3], LodBuildError> {
+    let mut matrix = [[0.0; 3]; 3];
+    for row in 0..3 {
+        for column in 0..=row {
+            let value = (0..3)
+                .map(|axis| rotation[row][axis] * diagonal[axis] * rotation[column][axis])
+                .sum::<f64>();
+            if !value.is_finite() {
+                return Err(LodBuildError::DerivedNonFinite(derived_name));
+            }
+            matrix[row][column] = value;
+            matrix[column][row] = value;
+        }
+    }
+    Ok(matrix)
+}
+
+fn gaussian_covariance(gaussian: &Gaussian3d) -> Result<[[f64; 3]; 3], LodBuildError> {
+    let rotation = normalized_gaussian_rotation(gaussian)?;
     let scale_squared = gaussian
         .scale_opacity
         .scale
         .map(|scale| f64::from(scale) * f64::from(scale));
-    let mut covariance = [[0.0; 3]; 3];
-    // These literals are the rows of the conventional quaternion matrix Q.
-    // The renderer stores them as columns in R=Q^T and evaluates R^T D R,
-    // therefore its effective covariance is Q D Q^T.
-    for row in 0..3 {
-        for column in 0..3 {
-            for axis in 0..3 {
-                covariance[row][column] +=
-                    rotation[row][axis] * scale_squared[axis] * rotation[column][axis];
-            }
-            if !covariance[row][column].is_finite() {
-                return Err(LodBuildError::DerivedNonFinite("Gaussian covariance"));
-            }
-        }
-    }
-    Ok(covariance)
+    // Q is the conventional quaternion matrix. The renderer stores Q^T and
+    // evaluates R^T D R, so its effective covariance is also Q D Q^T.
+    rotate_diagonal_symmetric(rotation, scale_squared, "Gaussian covariance")
+}
+
+#[derive(Clone, Copy)]
+struct GaussianCovarianceFrame {
+    covariance: [[f64; 3]; 3],
+    projected_area_sqrt: [[f64; 3]; 3],
+}
+
+fn gaussian_covariance_frame(
+    gaussian: &Gaussian3d,
+) -> Result<GaussianCovarianceFrame, LodBuildError> {
+    let rotation = normalized_gaussian_rotation(gaussian)?;
+    let [scale_x, scale_y, scale_z] = gaussian.scale_opacity.scale.map(f64::from);
+    let covariance = rotate_diagonal_symmetric(
+        rotation,
+        [scale_x * scale_x, scale_y * scale_y, scale_z * scale_z],
+        "Gaussian covariance",
+    )?;
+    // For Sigma = Q diag(sx^2, sy^2, sz^2) Q^T, the principal square root of
+    // adj(Sigma) is Q diag(|sy sz|, |sx sz|, |sx sy|) Q^T. Deriving it from the
+    // authored frame avoids a Jacobi eigensolve for every source insertion.
+    let projected_area_sqrt = rotate_diagonal_symmetric(
+        rotation,
+        [
+            (scale_y * scale_z).abs(),
+            (scale_x * scale_z).abs(),
+            (scale_x * scale_y).abs(),
+        ],
+        "projected-area PSD square root",
+    )?;
+    Ok(GaussianCovarianceFrame {
+        covariance,
+        projected_area_sqrt,
+    })
 }
 
 #[inline]
@@ -3071,7 +5455,9 @@ fn symmetric_adjugate(matrix: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 
 /// Deterministic principal square root of a symmetric positive-semidefinite
 /// 3x3 matrix. Negative roundoff in analytically PSD inputs is clamped to zero,
-/// matching the covariance reconstruction path.
+/// matching the covariance reconstruction path. Retained as a test oracle for
+/// the authored-frame fast path.
+#[cfg(test)]
 fn symmetric_psd_sqrt(matrix: [[f64; 3]; 3]) -> Result<[[f64; 3]; 3], LodBuildError> {
     let scale = matrix
         .iter()
@@ -3135,8 +5521,9 @@ fn scale_shape(scale: [f32; 3]) -> (f64, f64) {
 fn moment_merge_raster_risk(
     representative: &Gaussian3d,
     representative_covariance: [[f64; 3]; 3],
+    representative_projected_area: [[f64; 3]; 3],
     support_sigma: f32,
-    projected_alpha_mass_sqrt_sum: [[f64; 3]; 3],
+    raw_projected_alpha_mass_inflation_upper_bound: f64,
     sampled_source_alpha_mass: [f64; PROJECTED_ALPHA_MASS_DIRECTIONS.len()],
     sampled_source_support_min: [f64; PROJECTED_ALPHA_MASS_DIRECTIONS.len()],
     sampled_source_support_max: [f64; PROJECTED_ALPHA_MASS_DIRECTIONS.len()],
@@ -3154,9 +5541,8 @@ fn moment_merge_raster_risk(
         return Ok(MomentMergeRasterRisk::default());
     }
 
-    let representative_projected_area = symmetric_adjugate(representative_covariance);
     let position = representative.position_visibility.position.map(f64::from);
-    let mut sampled_projected_alpha_mass_inflation = 0.0_f64;
+    let mut raw_sampled_projected_alpha_mass_inflation = 0.0_f64;
     let mut support_leakage_fraction = 0.0_f64;
     let mut support_growth = 1.0_f64;
     for (index, direction) in PROJECTED_ALPHA_MASS_DIRECTIONS.iter().copied().enumerate() {
@@ -3172,8 +5558,8 @@ fn moment_merge_raster_risk(
         } else {
             f64::INFINITY
         };
-        sampled_projected_alpha_mass_inflation =
-            sampled_projected_alpha_mass_inflation.max(inflation);
+        raw_sampled_projected_alpha_mass_inflation =
+            raw_sampled_projected_alpha_mass_inflation.max(inflation);
 
         let center = dot_f64(position, direction);
         let radius = f64::from(support_sigma)
@@ -3223,20 +5609,14 @@ fn moment_merge_raster_risk(
         max_source_anisotropy,
         f64::EPSILON,
     );
-    let projected_alpha_mass_inflation_upper_bound = projected_alpha_mass_inflation_upper_bound(
-        representative_alpha,
-        representative_projected_area,
-        projected_alpha_mass_sqrt_sum,
-    )?;
-
     Ok(MomentMergeRasterRisk {
-        sampled_projected_alpha_mass_inflation: bounded_risk_f32(
-            sampled_projected_alpha_mass_inflation,
-            "sampled projected alpha-mass inflation",
+        raw_sampled_projected_alpha_mass_inflation: bounded_risk_f32(
+            raw_sampled_projected_alpha_mass_inflation,
+            "raw sampled projected alpha-mass inflation",
         )?,
-        projected_alpha_mass_inflation_upper_bound: bounded_upper_risk_f32(
-            projected_alpha_mass_inflation_upper_bound,
-            "projected alpha-mass inflation upper bound",
+        raw_projected_alpha_mass_inflation_upper_bound: bounded_upper_risk_f32(
+            raw_projected_alpha_mass_inflation_upper_bound,
+            "raw projected alpha-mass inflation upper bound",
         )?,
         support_leakage_fraction: bounded_risk_f32(
             support_leakage_fraction,
@@ -3282,22 +5662,224 @@ fn projected_alpha_mass_inflation_upper_bound(
         transpose_3x3(source_projected_alpha_mass_sqrt_sum),
         source_projected_alpha_mass_sqrt_sum,
     );
-    let Some(cholesky) = cholesky_3x3(source_projected_alpha_mass_quadratic) else {
-        return Ok(f64::INFINITY);
+    let maximum = if let Some(cholesky) = cholesky_3x3(source_projected_alpha_mass_quadratic) {
+        let inverse = invert_lower_triangular_3x3(cholesky);
+        largest_symmetric_eigenvalue(multiply_3x3(
+            multiply_3x3(inverse, representative_projected_area),
+            transpose_3x3(inverse),
+        ))?
+    } else {
+        support_restricted_projected_alpha_quotient(
+            representative_projected_area,
+            source_projected_alpha_mass_sqrt_sum,
+        )?
     };
-    let inverse = invert_lower_triangular_3x3(cholesky);
-    let mut normalized = multiply_3x3(
-        multiply_3x3(inverse, representative_projected_area),
-        transpose_3x3(inverse),
-    );
-    for (row, column) in [(0, 1), (0, 2), (1, 2)] {
-        let symmetric = 0.5 * (normalized[row][column] + normalized[column][row]);
-        normalized[row][column] = symmetric;
-        normalized[column][row] = symmetric;
-    }
-    let (eigenvalues, _) = symmetric_eigendecomposition(normalized)?;
-    let maximum = eigenvalues.into_iter().fold(0.0_f64, f64::max).max(0.0);
     Ok(representative_alpha * maximum.sqrt())
+}
+
+fn largest_symmetric_eigenvalue(mut matrix: [[f64; 3]; 3]) -> Result<f64, LodBuildError> {
+    for (row, column) in [(0, 1), (0, 2), (1, 2)] {
+        let symmetric = 0.5 * (matrix[row][column] + matrix[column][row]);
+        matrix[row][column] = symmetric;
+        matrix[column][row] = symmetric;
+    }
+    let (eigenvalues, _) = symmetric_eigendecomposition(matrix)?;
+    Ok(eigenvalues.into_iter().fold(0.0_f64, f64::max).max(0.0))
+}
+
+/// Generalized PSD quotient used when the source projected-area quadratic is
+/// singular or too ill-conditioned for Cholesky. On the range of
+/// `source_projected_alpha_mass_sqrt_sum`, this evaluates the same quotient as
+/// the positive-definite path. Directions in its nullspace are admissible only
+/// when the representative projected area is null there too; otherwise no
+/// positive representative alpha can satisfy the all-view bound.
+///
+/// The eigensolve is performed on the square-root sum rather than its square,
+/// retaining twice as many conditioning bits for nearly planar splats. A small
+/// reconstruction guard separates authored zero modes from Jacobi roundoff.
+/// Supported singular values are reduced by that guard and the numerator is
+/// enlarged by its corresponding roundoff allowance, so the finite quotient
+/// remains conservative on the retained support. A rank-deficient
+/// representative whose f32 frame re-encoding materially leaks outside that
+/// support still returns infinity and is deliberately calibrated to zero.
+fn support_restricted_projected_alpha_quotient(
+    representative_projected_area: [[f64; 3]; 3],
+    source_projected_alpha_mass_sqrt_sum: [[f64; 3]; 3],
+) -> Result<f64, LodBuildError> {
+    let source_scale = source_projected_alpha_mass_sqrt_sum
+        .iter()
+        .flatten()
+        .map(|value| value.abs())
+        .fold(0.0_f64, f64::max);
+    let representative_scale = representative_projected_area
+        .iter()
+        .flatten()
+        .map(|value| value.abs())
+        .fold(0.0_f64, f64::max);
+    if !source_scale.is_finite() || !representative_scale.is_finite() {
+        return Err(LodBuildError::DerivedNonFinite(
+            "projected alpha-mass calibration",
+        ));
+    }
+    if source_scale == 0.0 {
+        return Ok(if representative_scale == 0.0 {
+            0.0
+        } else {
+            f64::INFINITY
+        });
+    }
+
+    let normalized_source =
+        source_projected_alpha_mass_sqrt_sum.map(|row| row.map(|value| value / source_scale));
+    let (source_eigenvalues, source_eigenvectors) =
+        symmetric_eigendecomposition(normalized_source)?;
+    let reconstructed_source = rotate_diagonal_symmetric(
+        source_eigenvectors,
+        source_eigenvalues,
+        "projected alpha-mass support reconstruction",
+    )?;
+    let reconstruction_error = normalized_source
+        .iter()
+        .flatten()
+        .zip(reconstructed_source.iter().flatten())
+        .map(|(source, reconstructed)| (source - reconstructed).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    // The Jacobi solver's stopping rule and the reconstruction itself each
+    // contribute a few ulps. This is an absolute guard because the source was
+    // normalized above.
+    let support_guard = reconstruction_error + 64.0 * f64::EPSILON;
+    let mut inverse_supported_singular_value = [0.0; 3];
+    let mut supported = [false; 3];
+    for axis in 0..3 {
+        let singular_value = source_eigenvalues[axis].abs();
+        if singular_value > support_guard {
+            supported[axis] = true;
+            inverse_supported_singular_value[axis] =
+                (source_scale * (singular_value - support_guard)).recip();
+        }
+    }
+
+    let representative_in_source_frame = multiply_3x3(
+        multiply_3x3(
+            transpose_3x3(source_eigenvectors),
+            representative_projected_area,
+        ),
+        source_eigenvectors,
+    );
+    let numerator_guard = representative_scale * (support_guard + 64.0 * f64::EPSILON);
+    for row in 0..3 {
+        for column in 0..3 {
+            if (!supported[row] || !supported[column])
+                && representative_in_source_frame[row][column].abs() > numerator_guard
+            {
+                return Ok(f64::INFINITY);
+            }
+        }
+    }
+    if !supported.into_iter().any(|is_supported| is_supported) {
+        return Ok(0.0);
+    }
+
+    let mut normalized_representative = std::array::from_fn(|row| {
+        std::array::from_fn(|column| {
+            representative_in_source_frame[row][column]
+                * inverse_supported_singular_value[row]
+                * inverse_supported_singular_value[column]
+        })
+    });
+    for axis in 0..3 {
+        if supported[axis] {
+            // Enlarge the support-restricted numerator to cover eigenspace and
+            // adjugate roundoff instead of letting it reduce the proven bound.
+            normalized_representative[axis][axis] += numerator_guard
+                * inverse_supported_singular_value[axis]
+                * inverse_supported_singular_value[axis];
+        }
+    }
+    largest_symmetric_eigenvalue(normalized_representative)
+}
+
+/// Keep a MomentMerge representative inside the source mixture's projected
+/// alpha-mass envelope for every view direction. Mixture covariance includes
+/// between-center spread, which is correct as a 3D moment but can turn thin,
+/// separated surface splats into a much larger raster primitive. Raw optical
+/// depth union then overdraws that enlarged footprint. The existing Minkowski
+/// bound is linear in representative alpha, so reducing opacity by that bound
+/// is the narrow correction that preserves covariance without permitting a
+/// bright, opaque blob.
+///
+/// The return value is the conservative all-view inflation bound of the raw
+/// optical-depth-union representative, not the calibrated output. Callers use
+/// that pre-calibration risk for pairing and fidelity certificates so the
+/// required correction cannot disappear from hierarchy metadata.
+fn calibrate_projected_alpha_mass(
+    representative: &mut Gaussian3d,
+    representative_projected_area: [[f64; 3]; 3],
+    source_projected_alpha_mass_sqrt_sum: [[f64; 3]; 3],
+) -> Result<f64, LodBuildError> {
+    let visibility = representative
+        .position_visibility
+        .visibility
+        .clamp(0.0, 1.0);
+    let raw_opacity = representative.scale_opacity.opacity.clamp(0.0, 1.0);
+    if visibility == 0.0 || raw_opacity <= 0.0 {
+        representative.scale_opacity.opacity = raw_opacity;
+        return Ok(0.0);
+    }
+
+    let unit_alpha_bound = projected_alpha_mass_inflation_upper_bound(
+        1.0,
+        representative_projected_area,
+        source_projected_alpha_mass_sqrt_sum,
+    )?;
+    let raw_inflation_upper_bound = f64::from(raw_opacity * visibility) * unit_alpha_bound;
+    if unit_alpha_bound.is_infinite() {
+        representative.scale_opacity.opacity = 0.0;
+        return Ok(raw_inflation_upper_bound);
+    }
+    if !unit_alpha_bound.is_finite() || unit_alpha_bound < 0.0 {
+        return Err(LodBuildError::DerivedNonFinite(
+            "projected alpha-mass calibration",
+        ));
+    }
+
+    let maximum_opacity = if unit_alpha_bound <= f64::EPSILON {
+        1.0
+    } else {
+        (f64::from(visibility) * unit_alpha_bound)
+            .recip()
+            .clamp(0.0, 1.0)
+    };
+    representative.scale_opacity.opacity = if f64::from(raw_opacity) <= maximum_opacity {
+        raw_opacity
+    } else {
+        // Convert downward so f32 storage cannot round a proven upper bound
+        // into a small violation. This also keeps every emitted alpha finite
+        // and non-negative.
+        let rounded = maximum_opacity as f32;
+        if f64::from(rounded) > maximum_opacity {
+            next_down(rounded).max(0.0)
+        } else {
+            rounded.max(0.0)
+        }
+    };
+    let mut calibrated_bound =
+        f64::from(representative.scale_opacity.opacity * visibility) * unit_alpha_bound;
+    if calibrated_bound > 1.0 && representative.scale_opacity.opacity > 0.0 {
+        representative.scale_opacity.opacity =
+            next_down(representative.scale_opacity.opacity).max(0.0);
+        calibrated_bound =
+            f64::from(representative.scale_opacity.opacity * visibility) * unit_alpha_bound;
+    }
+    // A subnormal visibility can quantize many adjacent opacities to the same
+    // effective alpha. Fail closed instead of iterating over that plateau.
+    if calibrated_bound > 1.0 {
+        representative.scale_opacity.opacity = 0.0;
+        calibrated_bound = 0.0;
+    }
+    debug_assert!(calibrated_bound <= 1.0);
+    Ok(raw_inflation_upper_bound)
 }
 
 fn cholesky_3x3(matrix: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
@@ -3673,6 +6255,26 @@ pub enum LodValidationError {
     },
     UnsupportedRequiredFeatures(u64),
     MissingHighFidelityCertificateFeature,
+    MissingMonotoneMorphMapFeature,
+    MissingMorphMap,
+    UnexpectedMorphMap,
+    UnsupportedMorphMapVersion(u16),
+    MorphRecordCapacityExceeded(u32),
+    MorphNodeCountMismatch,
+    InvalidMorphRunRange(usize),
+    MorphRunCoverageMismatch,
+    InvalidLeafMorphRuns(LodNodeId),
+    InvalidMorphRunCount {
+        node: LodNodeId,
+        expected: u32,
+        actual: usize,
+    },
+    ZeroMorphRun(LodNodeId),
+    MorphChildCoverageMismatch {
+        node: LodNodeId,
+        expected: u64,
+        actual: u64,
+    },
     MissingSharedNodePageFeature(LodPageId),
     InhomogeneousSharedNodePage(LodPageId),
     InvalidBuildSettings(LodBuildSettingsError),
@@ -3775,6 +6377,15 @@ impl Error for LodValidationError {}
 mod tests {
     use super::*;
 
+    fn no_cancellation() -> LodBuildCancellation<'static> {
+        fn never() -> bool {
+            false
+        }
+        LodBuildCancellation {
+            is_canceled: &never,
+        }
+    }
+
     fn gaussian(position: [f32; 3], scale: [f32; 3], opacity: f32, dc: f32) -> Gaussian3d {
         let mut coefficients = [0.0; SH_COEFF_COUNT];
         coefficients[0] = dc;
@@ -3783,6 +6394,373 @@ mod tests {
             spherical_harmonic: SphericalHarmonicCoefficients { coefficients },
             rotation: [1.0, 0.0, 0.0, 0.0].into(),
             scale_opacity: [scale[0], scale[1], scale[2], opacity].into(),
+        }
+    }
+
+    fn spatial_test_node(source_records: Vec<Gaussian3d>) -> SpatialMomentMergeNode {
+        let representative = MomentMergeReducer::default()
+            .reduce(&source_records)
+            .unwrap();
+        let authored_support_bounds = source_records
+            .iter()
+            .map(|sample| gaussian_oriented_support_bounds(sample, 3.0).unwrap())
+            .reduce(LodBounds::union)
+            .unwrap();
+        let source_count = source_records.len();
+        SpatialMomentMergeNode {
+            representatives: vec![representative],
+            source_records: Some(source_records),
+            source_ranges: std::iter::once(0..source_count).collect(),
+            authored_support_bounds,
+            spatial_certificate_cap: 1.0,
+            spatial_geometric_error_floor: 0.0,
+        }
+    }
+
+    fn spatial_test_node_with_partitions(
+        partitions: Vec<Vec<Gaussian3d>>,
+    ) -> SpatialMomentMergeNode {
+        let mut source_records = Vec::new();
+        let mut source_ranges = Vec::new();
+        let mut representatives = Vec::new();
+        for partition in partitions {
+            assert!(!partition.is_empty());
+            let start = source_records.len();
+            representatives.push(MomentMergeReducer::default().reduce(&partition).unwrap());
+            source_records.extend(partition);
+            source_ranges.push(start..source_records.len());
+        }
+        let authored_support_bounds = source_records
+            .iter()
+            .map(|sample| gaussian_oriented_support_bounds(sample, 3.0).unwrap())
+            .reduce(LodBounds::union)
+            .unwrap();
+        SpatialMomentMergeNode {
+            representatives,
+            source_records: Some(source_records),
+            source_ranges,
+            authored_support_bounds,
+            spatial_certificate_cap: 1.0,
+            spatial_geometric_error_floor: 0.0,
+        }
+    }
+
+    fn feasible_spatial_strip(x: f32) -> Vec<Gaussian3d> {
+        let mut strip = [-1.5_f32, -0.5, 0.5, 1.5]
+            .into_iter()
+            .map(|y| gaussian([x, y, 1.0], [0.2, 0.2, 0.01], 0.2, 0.0))
+            .collect::<Vec<_>>();
+        // Tiny authored contributors make the strict source-support envelope
+        // wider than the dominant surface without materially changing its
+        // composited reference. Tangent widening therefore has real source
+        // support available on both axes.
+        strip.push(gaussian(
+            [x - 1.5, -3.0, 1.0],
+            [0.2, 0.2, 0.01],
+            0.000_1,
+            0.0,
+        ));
+        strip.push(gaussian(
+            [x + 1.5, 3.0, 1.0],
+            [0.2, 0.2, 0.01],
+            0.000_1,
+            0.0,
+        ));
+        strip
+    }
+
+    fn spatial_fit_benchmark_node(x: f32) -> SpatialMomentMergeNode {
+        let partitions = [-12.0_f32, 0.0, 12.0]
+            .into_iter()
+            .flat_map(|z| {
+                [-12.0_f32, 0.0, 12.0].into_iter().map(move |y| {
+                    let mut partition = feasible_spatial_strip(x);
+                    for sample in &mut partition {
+                        sample.position_visibility.position[1] += y;
+                        sample.position_visibility.position[2] += z;
+                    }
+                    partition
+                })
+            })
+            .collect();
+        spatial_test_node_with_partitions(partitions)
+    }
+
+    fn spatial_fit_exactness_node(x: f32) -> SpatialMomentMergeNode {
+        let partitions = [-12.0_f32, 0.0, 12.0]
+            .into_iter()
+            .map(|y| {
+                let mut partition = feasible_spatial_strip(x);
+                for sample in &mut partition {
+                    sample.position_visibility.position[1] += y;
+                }
+                partition
+            })
+            .collect();
+        spatial_test_node_with_partitions(partitions)
+    }
+
+    fn spatial_nearest_boundary_contributor_with_overrides_for_test(
+        nodes: &[SpatialMomentMergeNode],
+        node_index: usize,
+        other_bounds: LodBounds,
+        target: [f32; 3],
+        overrides: &[SpatialRepresentativeOverride],
+    ) -> usize {
+        nodes[node_index]
+            .representatives
+            .iter()
+            .enumerate()
+            .min_by(|(left_index, _), (right_index, _)| {
+                let left = spatial_probe_representative(nodes, node_index, *left_index, overrides);
+                let right =
+                    spatial_probe_representative(nodes, node_index, *right_index, overrides);
+                let left_overlap = lod_bounds_touch_or_overlap(left.support_bounds, other_bounds);
+                let right_overlap = lod_bounds_touch_or_overlap(right.support_bounds, other_bounds);
+                (!left_overlap)
+                    .cmp(&(!right_overlap))
+                    .then_with(|| {
+                        point_to_point_squared_distance(
+                            left.gaussian.position_visibility.position,
+                            target,
+                        )
+                        .total_cmp(&point_to_point_squared_distance(
+                            right.gaussian.position_visibility.position,
+                            target,
+                        ))
+                    })
+                    .then_with(|| {
+                        point_to_bounds_squared_distance(
+                            left.gaussian.position_visibility.position,
+                            other_bounds,
+                        )
+                        .total_cmp(&point_to_bounds_squared_distance(
+                            right.gaussian.position_visibility.position,
+                            other_bounds,
+                        ))
+                    })
+                    .then_with(|| left_index.cmp(right_index))
+            })
+            .map(|(index, _)| index)
+            .unwrap()
+    }
+
+    fn spatial_fixed_scale_metrics(
+        nodes: &[SpatialMomentMergeNode],
+        probe: SpatialBoundaryProbe,
+        overrides: &[SpatialRepresentativeOverride],
+        pixels_per_world: f64,
+    ) -> (f64, f64) {
+        let left_source =
+            spatial_probe_source(nodes, probe.left_node, probe.left_representative).unwrap();
+        let right_source =
+            spatial_probe_source(nodes, probe.right_node, probe.right_representative).unwrap();
+        let left_representative = spatial_probe_representative(
+            nodes,
+            probe.left_node,
+            probe.left_representative,
+            overrides,
+        );
+        let right_representative = spatial_probe_representative(
+            nodes,
+            probe.right_node,
+            probe.right_representative,
+            overrides,
+        );
+        let mut boundary_reference = 0.0_f64;
+        let mut boundary_error = 0.0_f64;
+        let mut composited_error = 0.0_f64;
+        for direction in PROJECTED_ALPHA_MASS_DIRECTIONS {
+            let (horizontal, vertical) = spatial_projection_basis(direction);
+            let left_center = spatial_project_point(
+                left_representative.gaussian.position_visibility.position,
+                horizontal,
+                vertical,
+            );
+            let right_center = spatial_project_point(
+                right_representative.gaussian.position_visibility.position,
+                horizontal,
+                vertical,
+            );
+            let midpoint = [
+                0.5 * (left_center[0] + right_center[0]),
+                0.5 * (left_center[1] + right_center[1]),
+            ];
+            for (point_index, point) in [left_center, midpoint, right_center]
+                .into_iter()
+                .enumerate()
+            {
+                let reference = spatial_renderer_alpha_at(
+                    left_source.iter().chain(right_source.iter()),
+                    point,
+                    horizontal,
+                    vertical,
+                    pixels_per_world,
+                    false,
+                )
+                .unwrap();
+                let emitted = spatial_renderer_alpha_at(
+                    [
+                        &left_representative.gaussian,
+                        &right_representative.gaussian,
+                    ],
+                    point,
+                    horizontal,
+                    vertical,
+                    pixels_per_world,
+                    true,
+                )
+                .unwrap();
+                let error = (emitted - reference).abs();
+                composited_error += error;
+                if point_index == 1 {
+                    boundary_reference += reference;
+                    boundary_error += error;
+                }
+            }
+        }
+        (
+            if boundary_reference <= SPATIAL_FIT_MIN_REFERENCE_ALPHA {
+                0.0
+            } else {
+                boundary_error / boundary_reference
+            },
+            composited_error,
+        )
+    }
+
+    struct SpatialSelectionHierarchy {
+        spatial_error_floor: f32,
+    }
+
+    impl crate::stream::hierarchy::LodHierarchy for SpatialSelectionHierarchy {
+        type NodeId = u32;
+
+        fn roots(&self) -> &[Self::NodeId] {
+            const ROOTS: [u32; 1] = [0];
+            &ROOTS
+        }
+
+        fn parent(&self, node: Self::NodeId) -> Option<Self::NodeId> {
+            match node {
+                1 | 2 => Some(0),
+                3 | 4 => Some(1),
+                5 | 6 => Some(2),
+                _ => None,
+            }
+        }
+
+        fn children(&self, node: Self::NodeId) -> &[Self::NodeId] {
+            const ROOT_CHILDREN: [u32; 2] = [1, 2];
+            const LEFT_CHILDREN: [u32; 2] = [3, 4];
+            const RIGHT_CHILDREN: [u32; 2] = [5, 6];
+            match node {
+                0 => &ROOT_CHILDREN,
+                1 => &LEFT_CHILDREN,
+                2 => &RIGHT_CHILDREN,
+                _ => &[],
+            }
+        }
+
+        fn metrics(&self, node: Self::NodeId) -> Option<crate::stream::hierarchy::LodNodeMetrics> {
+            (node <= 6).then_some(crate::stream::hierarchy::LodNodeMetrics {
+                center: bevy::math::Vec3::new(0.0, 0.0, 1.0),
+                radius: 24.0,
+                // The root models normal propagation of the measured child
+                // error. Only the two internal-node values vary, proving that
+                // their fitter-authored floor is what removes them at q=.65.
+                geometric_error: if node == 0 {
+                    1_000.0
+                } else if node <= 2 {
+                    self.spatial_error_floor
+                } else {
+                    0.0
+                },
+                appearance_error: 0.0,
+                opacity_error: 0.0,
+                quality_min: 1.0,
+                quality_max: 1.0,
+                high_fidelity_certificate: 1.0,
+                representative_count: 1,
+            })
+        }
+    }
+
+    fn emitted_projected_alpha_mass_inflation_upper_bound(
+        source: &[Gaussian3d],
+        representative: &Gaussian3d,
+    ) -> f64 {
+        let reducer = MomentMergeReducer::default();
+        let accumulator = reducer.accumulate_validated(source).unwrap();
+        let representative_projected_area =
+            symmetric_adjugate(gaussian_covariance(representative).unwrap());
+        let representative_alpha = f64::from(
+            representative.scale_opacity.opacity.clamp(0.0, 1.0)
+                * representative
+                    .position_visibility
+                    .visibility
+                    .clamp(0.0, 1.0),
+        );
+        projected_alpha_mass_inflation_upper_bound(
+            representative_alpha,
+            representative_projected_area,
+            accumulator.projected_alpha_mass_sqrt_sum,
+        )
+        .unwrap()
+    }
+
+    fn assert_finite_nonzero_projected_alpha_safe(
+        source: &[Gaussian3d],
+        representative: &Gaussian3d,
+    ) {
+        assert!(representative.scale_opacity.opacity.is_finite());
+        assert!(representative.scale_opacity.opacity > 0.0);
+        let emitted_bound =
+            emitted_projected_alpha_mass_inflation_upper_bound(source, representative);
+        assert!(emitted_bound.is_finite());
+        assert!(
+            emitted_bound <= 1.0,
+            "emitted all-view bound exceeds one: {emitted_bound}"
+        );
+
+        let representative_area = symmetric_adjugate(gaussian_covariance(representative).unwrap());
+        let representative_alpha = f64::from(
+            representative.scale_opacity.opacity
+                * representative
+                    .position_visibility
+                    .visibility
+                    .clamp(0.0, 1.0),
+        );
+        let source_area = source
+            .iter()
+            .map(|sample| {
+                (
+                    f64::from(
+                        sample.scale_opacity.opacity.clamp(0.0, 1.0)
+                            * sample.position_visibility.visibility.clamp(0.0, 1.0),
+                    ),
+                    symmetric_adjugate(gaussian_covariance(sample).unwrap()),
+                )
+            })
+            .collect::<Vec<_>>();
+        let golden_angle = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
+        for index in 0..2048 {
+            let z = 1.0 - 2.0 * (index as f64 + 0.5) / 2048.0;
+            let radius = (1.0 - z * z).sqrt();
+            let azimuth = golden_angle * index as f64;
+            let direction = [radius * azimuth.cos(), radius * azimuth.sin(), z];
+            let representative_mass = representative_alpha
+                * quadratic_form_f64(representative_area, direction)
+                    .max(0.0)
+                    .sqrt();
+            let source_mass = source_area
+                .iter()
+                .map(|(alpha, area)| alpha * quadratic_form_f64(*area, direction).max(0.0).sqrt())
+                .sum::<f64>();
+            assert!(
+                representative_mass <= source_mass * (1.0 + 2e-6) + 1e-30,
+                "projected alpha mass inflated in direction {direction:?}: representative={representative_mass}, source={source_mass}, bound={emitted_bound}"
+            );
         }
     }
 
@@ -3815,6 +6793,26 @@ mod tests {
         }
     }
 
+    fn assert_matrix_relative_close(
+        left: [[f64; 3]; 3],
+        right: [[f64; 3]; 3],
+        relative_epsilon: f64,
+        absolute_epsilon: f64,
+    ) {
+        for row in 0..3 {
+            for column in 0..3 {
+                let tolerance = absolute_epsilon
+                    + relative_epsilon * left[row][column].abs().max(right[row][column].abs());
+                assert!(
+                    (left[row][column] - right[row][column]).abs() <= tolerance,
+                    "matrix mismatch [{row}][{column}]: {} vs {}, tolerance {tolerance}",
+                    left[row][column],
+                    right[row][column]
+                );
+            }
+        }
+    }
+
     fn renderer_covariance(gaussian: &Gaussian3d) -> [[f64; 3]; 3] {
         let packed = crate::gaussian::covariance::compute_covariance_3d(
             bevy::math::Vec4::from_array(gaussian.rotation.rotation),
@@ -3831,6 +6829,94 @@ mod tests {
         (0..3)
             .flat_map(|row| (0..3).map(move |column| (row, column)))
             .map(|(row, column)| direction[row] * matrix[row][column] * direction[column])
+            .sum()
+    }
+
+    /// Front-to-back alpha at one pixel for the default 3D Gaussian OBB path.
+    ///
+    /// The fixture uses a front-on unit projection, so the shader's projected
+    /// covariance is the world-space xy block plus its 0.3 pixel low-pass term.
+    /// Peak opacity is determinant-normalized for that dilation. Flat sources
+    /// retain the authored-opacity adaptive cutoff, while LoD candidates keep
+    /// at least the authored three-sigma OBB before fragment evaluation.
+    fn renderer_mip_obb_alpha_at(
+        samples: &[Gaussian3d],
+        point: [f64; 2],
+        lod_candidate: bool,
+    ) -> f64 {
+        let remaining_transmittance = samples.iter().fold(1.0_f64, |remaining, sample| {
+            let authored_opacity = f64::from(sample.scale_opacity.opacity.clamp(0.0, 1.0));
+            if authored_opacity == 0.0 {
+                return remaining;
+            }
+
+            let covariance = gaussian_covariance(sample).unwrap();
+            let unfiltered_xx = covariance[0][0];
+            let xy = covariance[0][1];
+            let unfiltered_yy = covariance[1][1];
+            let filtered = crate::render::gaussian_mip_filter_covariance_2d([
+                unfiltered_xx as f32,
+                xy as f32,
+                unfiltered_yy as f32,
+            ]);
+            let [xx, xy, yy] = filtered.covariance.map(f64::from);
+            let opacity_scale = f64::from(filtered.opacity_scale);
+            let opacity = authored_opacity * opacity_scale;
+            if opacity == 0.0 {
+                return remaining;
+            }
+            let mid = 0.5 * (xx + yy);
+            let radius = (0.25 * (xx - yy) * (xx - yy) + xy * xy).sqrt();
+            let major_variance = mid + radius;
+            let minor_variance = (mid - radius).max(f64::MIN_POSITIVE);
+            let major_axis = if xy.abs() + (major_variance - xx).abs() > 1e-15 {
+                let length = (xy * xy + (major_variance - xx).powi(2)).sqrt();
+                [-xy / length, (major_variance - xx) / length]
+            } else {
+                [1.0, 0.0]
+            };
+            let minor_axis = [major_axis[1], -major_axis[0]];
+            let delta = [
+                point[0] - f64::from(sample.position_visibility.position[0]),
+                point[1] - f64::from(sample.position_visibility.position[1]),
+            ];
+            let major = delta[0] * major_axis[0] + delta[1] * major_axis[1];
+            let minor = delta[0] * minor_axis[0] + delta[1] * minor_axis[1];
+            let cutoff = f64::from(crate::render::gaussian_support_cutoff(
+                authored_opacity as f32,
+                true,
+                lod_candidate,
+            ));
+            if major.abs() > cutoff * major_variance.sqrt()
+                || minor.abs() > cutoff * minor_variance.sqrt()
+            {
+                return remaining;
+            }
+
+            let power = -0.5 * (major * major / major_variance + minor * minor / minor_variance);
+            let alpha = (power.exp() * opacity).min(0.999);
+            remaining * (1.0 - alpha)
+        });
+        1.0 - remaining_transmittance
+    }
+
+    fn renderer_mip_obb_alpha_mass(
+        samples: &[Gaussian3d],
+        center: [f64; 2],
+        half_extent: f64,
+        lod_candidate: bool,
+    ) -> f64 {
+        const SAMPLE_COUNT: usize = 33;
+        (0..SAMPLE_COUNT)
+            .flat_map(|y| (0..SAMPLE_COUNT).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let denominator = (SAMPLE_COUNT - 1) as f64;
+                let point = [
+                    center[0] - half_extent + 2.0 * half_extent * x as f64 / denominator,
+                    center[1] - half_extent + 2.0 * half_extent * y as f64 / denominator,
+                ];
+                renderer_mip_obb_alpha_at(samples, point, lod_candidate)
+            })
             .sum()
     }
 
@@ -3863,14 +6949,16 @@ mod tests {
     }
 
     #[test]
-    fn moment_merge_preserves_mixture_moments_and_transmittance() {
+    fn moment_merge_preserves_mixture_moments_without_projected_alpha_inflation() {
         let source = [
             gaussian([-1.0, 0.0, 0.0], [0.1; 3], 0.5, -1.0),
             gaussian([1.0, 0.0, 0.0], [0.1; 3], 0.5, 1.0),
         ];
         let merged = MomentMergeReducer::default().reduce(&source).unwrap();
         assert!(merged.gaussian.position_visibility.position[0].abs() < 1e-6);
-        assert!((merged.gaussian.scale_opacity.opacity - 0.75).abs() < 1e-6);
+        assert!(merged.gaussian.scale_opacity.opacity < 0.1);
+        assert!(merged.gaussian.scale_opacity.opacity >= 0.0);
+        assert!(merged.gaussian.scale_opacity.opacity.is_finite());
         assert!(merged.gaussian.spherical_harmonic.coefficients[0].abs() < 1e-6);
 
         let actual = gaussian_covariance(&merged.gaussian).unwrap();
@@ -3878,11 +6966,15 @@ mod tests {
         assert_matrix_close(actual, expected, 1e-5);
 
         let risk = merged.raster_risk();
-        assert!(risk.sampled_projected_alpha_mass_inflation > 7.0);
+        let emitted_bound =
+            emitted_projected_alpha_mass_inflation_upper_bound(&source, &merged.gaussian);
         assert!(
-            risk.projected_alpha_mass_inflation_upper_bound
-                >= risk.sampled_projected_alpha_mass_inflation
+            risk.raw_projected_alpha_mass_inflation_upper_bound
+                >= risk.raw_sampled_projected_alpha_mass_inflation
         );
+        assert!(risk.raw_sampled_projected_alpha_mass_inflation > 1.0);
+        assert!(risk.raw_projected_alpha_mass_inflation_upper_bound > 7.0);
+        assert!(emitted_bound <= 1.0);
         assert!(risk.support_leakage_fraction > 0.5);
         assert!(risk.support_growth > 2.0);
         assert!(risk.major_scale_growth > 10.0);
@@ -3891,14 +6983,48 @@ mod tests {
     }
 
     #[test]
+    fn external_v2_reducer_retains_raw_union_opacity() {
+        let source = [
+            gaussian([-1.0, 0.0, 0.0], [0.1; 3], 0.5, 0.0),
+            gaussian([1.0, 0.0, 0.0], [0.1; 3], 0.5, 0.0),
+        ];
+        let reducer = MomentMergeReducer::default();
+        let calibrated = reducer.reduce(&source).unwrap();
+        let external_v2 = reducer.reduce_external_v2(&source).unwrap();
+
+        assert!(calibrated.gaussian.scale_opacity.opacity < 0.1);
+        assert!((external_v2.gaussian.scale_opacity.opacity - 0.75).abs() < 1e-6);
+        assert!(
+            external_v2
+                .raster_risk()
+                .raw_projected_alpha_mass_inflation_upper_bound
+                > 7.0
+        );
+        assert_eq!(
+            calibrated
+                .raster_risk()
+                .raw_projected_alpha_mass_inflation_upper_bound,
+            external_v2
+                .raster_risk()
+                .raw_projected_alpha_mass_inflation_upper_bound
+        );
+    }
+
+    #[test]
     fn minkowski_bound_is_exact_for_coincident_identical_covariance() {
         let source = [gaussian([0.0; 3], [0.1; 3], 0.1, 0.0); 8];
         let merged = MomentMergeReducer::default().reduce(&source).unwrap();
         let risk = merged.raster_risk();
 
+        let expected_union_opacity = 1.0 - 0.9_f32.powi(8);
+        assert!(
+            (merged.gaussian.scale_opacity.opacity - expected_union_opacity).abs() < 1e-6,
+            "safe coincident sources should retain optical-depth union"
+        );
+
         // The sampled ratio is exact for this isotropic fixture: aggregation
         // loses projected alpha mass, and the representative support is exact.
-        assert!((0.70..0.73).contains(&risk.sampled_projected_alpha_mass_inflation));
+        assert!((0.70..0.73).contains(&risk.raw_sampled_projected_alpha_mass_inflation));
         assert!(risk.support_leakage_fraction < 1e-5);
         assert!((risk.support_growth - 1.0).abs() < 1e-5);
         assert!((risk.major_scale_growth - 1.0).abs() < 1e-5);
@@ -3908,8 +7034,8 @@ mod tests {
         // the all-view proof exact instead of falsely refining this safe
         // low-alpha overlap.
         assert!(
-            (risk.projected_alpha_mass_inflation_upper_bound
-                - risk.sampled_projected_alpha_mass_inflation)
+            (risk.raw_projected_alpha_mass_inflation_upper_bound
+                - risk.raw_sampled_projected_alpha_mass_inflation)
                 .abs()
                 < 1e-5,
             "Minkowski bound should be exact: {risk:?}"
@@ -3918,10 +7044,90 @@ mod tests {
     }
 
     #[test]
+    fn projected_alpha_calibration_preserves_coincident_zero_scale_sources() {
+        let source = [
+            gaussian([0.25, -0.5, 1.0], [0.0; 3], 0.25, 0.0),
+            gaussian([0.25, -0.5, 1.0], [0.0; 3], 0.5, 0.0),
+        ];
+        let merged = MomentMergeReducer::default().reduce(&source).unwrap();
+
+        assert!((merged.gaussian.scale_opacity.opacity - 0.625).abs() < 1e-6);
+        assert_eq!(merged.gaussian.scale_opacity.scale, [0.0; 3]);
+        assert_finite_nonzero_projected_alpha_safe(&source, &merged.gaussian);
+    }
+
+    #[test]
+    fn projected_alpha_calibration_preserves_coplanar_sources() {
+        let source = [
+            gaussian([-0.5, -0.25, 0.0], [0.25, 0.12, 0.0], 0.35, 0.0),
+            gaussian([0.3, -0.1, 0.0], [0.18, 0.22, 0.0], 0.55, 0.0),
+            gaussian([0.1, 0.4, 0.0], [0.3, 0.1, 0.0], 0.25, 0.0),
+        ];
+        let merged = MomentMergeReducer::default().reduce(&source).unwrap();
+
+        assert_eq!(merged.gaussian.scale_opacity.scale[2], 0.0);
+        assert!(
+            merged
+                .raster_risk()
+                .raw_projected_alpha_mass_inflation_upper_bound
+                .is_finite()
+        );
+        assert_finite_nonzero_projected_alpha_safe(&source, &merged.gaussian);
+    }
+
+    #[test]
+    fn projected_alpha_calibration_rejects_area_outside_zero_scale_support() {
+        let source = [
+            gaussian([-1.0, -1.0, 0.0], [0.0; 3], 0.5, 0.0),
+            gaussian([1.0, -1.0, 0.0], [0.0; 3], 0.5, 0.0),
+            gaussian([0.0, 1.0, 0.0], [0.0; 3], 0.5, 0.0),
+        ];
+        let merged = MomentMergeReducer::default().reduce(&source).unwrap();
+
+        assert_eq!(merged.gaussian.scale_opacity.opacity, 0.0);
+        assert_eq!(
+            merged
+                .raster_risk()
+                .raw_projected_alpha_mass_inflation_upper_bound,
+            f32::MAX
+        );
+    }
+
+    #[test]
+    fn projected_alpha_calibration_preserves_near_singular_sources() {
+        let source = [
+            gaussian([0.0; 3], [1.0, 0.4, 1e-8], 0.1, 0.0),
+            gaussian([0.0; 3], [1.0, 0.4, 1e-8], 0.2, 0.0),
+            gaussian([0.0; 3], [1.0, 0.4, 1e-8], 0.4, 0.0),
+        ];
+        let merged = MomentMergeReducer::default().reduce(&source).unwrap();
+
+        assert!(
+            merged
+                .raster_risk()
+                .raw_projected_alpha_mass_inflation_upper_bound
+                .is_finite()
+        );
+        assert_finite_nonzero_projected_alpha_safe(&source, &merged.gaussian);
+    }
+
+    #[test]
+    fn projected_alpha_calibration_retains_the_spd_bound() {
+        let mut source = [gaussian([0.0; 3], [0.8, 0.3, 0.1], 0.2, 0.0); 3];
+        let rotation = Quat::from_euler(bevy::math::EulerRot::XYZ, 0.37, -0.61, 1.19).normalize();
+        for sample in &mut source {
+            sample.rotation.rotation = [rotation.w, rotation.x, rotation.y, rotation.z];
+        }
+        let merged = MomentMergeReducer::default().reduce(&source).unwrap();
+
+        assert_finite_nonzero_projected_alpha_safe(&source, &merged.gaussian);
+    }
+
+    #[test]
     fn anisotropy_growth_limits_the_high_fidelity_certificate() {
         let risk = MomentMergeRasterRisk {
-            sampled_projected_alpha_mass_inflation: 1.0,
-            projected_alpha_mass_inflation_upper_bound: 1.0,
+            raw_sampled_projected_alpha_mass_inflation: 1.0,
+            raw_projected_alpha_mass_inflation_upper_bound: 1.0,
             support_leakage_fraction: 0.0,
             support_growth: 1.0,
             major_scale_growth: 1.0,
@@ -3946,15 +7152,96 @@ mod tests {
     }
 
     #[test]
-    fn projected_area_psd_square_root_reconstructs_rotated_adjugate() {
+    fn analytic_projected_area_sqrt_reconstructs_rotated_adjugate() {
         let mut source = gaussian([0.0; 3], [2e-4, 7.5e-5, 2e-5], 0.5, 0.0);
         let rotation = Quat::from_euler(bevy::math::EulerRot::XYZ, -0.41, 0.83, 1.37).normalize();
         source.rotation.rotation = [rotation.w, rotation.x, rotation.y, rotation.z];
-        let projected_area = symmetric_adjugate(gaussian_covariance(&source).unwrap());
-        let square_root = symmetric_psd_sqrt(projected_area).unwrap();
-        let reconstructed = multiply_3x3(transpose_3x3(square_root), square_root);
+        let frame = gaussian_covariance_frame(&source).unwrap();
+        let projected_area = symmetric_adjugate(frame.covariance);
+        let generic = symmetric_psd_sqrt(projected_area).unwrap();
+        let reconstructed = multiply_3x3(
+            transpose_3x3(frame.projected_area_sqrt),
+            frame.projected_area_sqrt,
+        );
 
         assert_matrix_close(reconstructed, projected_area, 1e-24);
+        assert_matrix_relative_close(frame.projected_area_sqrt, generic, 1e-8, 1e-24);
+    }
+
+    #[test]
+    fn analytic_projected_area_sqrt_matches_generic_for_random_rotated_frames() {
+        use rand::{Rng, SeedableRng, rngs::StdRng};
+
+        let mut rng = StdRng::seed_from_u64(0xa11f_1e57_5eed);
+        for _ in 0..256 {
+            let mut source = gaussian(
+                [0.0; 3],
+                std::array::from_fn(|_| 10.0_f32.powf(rng.random_range(-3.0..1.0))),
+                0.5,
+                0.0,
+            );
+            let rotation = Quat::from_euler(
+                bevy::math::EulerRot::XYZ,
+                rng.random_range(-std::f32::consts::PI..std::f32::consts::PI),
+                rng.random_range(-std::f32::consts::PI..std::f32::consts::PI),
+                rng.random_range(-std::f32::consts::PI..std::f32::consts::PI),
+            )
+            .normalize();
+            let quaternion_scale = rng.random_range(0.1..10.0);
+            source.rotation.rotation = [
+                rotation.w * quaternion_scale,
+                rotation.x * quaternion_scale,
+                rotation.y * quaternion_scale,
+                rotation.z * quaternion_scale,
+            ];
+
+            let frame = gaussian_covariance_frame(&source).unwrap();
+            let generic = symmetric_psd_sqrt(symmetric_adjugate(frame.covariance)).unwrap();
+            assert_matrix_relative_close(frame.projected_area_sqrt, generic, 2e-7, 1e-12);
+        }
+    }
+
+    #[test]
+    fn analytic_projected_area_sqrt_matches_generic_for_degenerate_scales() {
+        let cases = [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 2.0],
+            [0.0, 0.5, 2.0],
+            [1e-20, 0.25, 3.0],
+        ];
+        for (index, scale) in cases.into_iter().enumerate() {
+            let mut source = gaussian([0.0; 3], scale, 0.5, 0.0);
+            let rotation = Quat::from_euler(
+                bevy::math::EulerRot::XYZ,
+                0.31 + index as f32 * 0.17,
+                -0.83 + index as f32 * 0.11,
+                1.37 - index as f32 * 0.13,
+            )
+            .normalize();
+            source.rotation.rotation = [rotation.w, rotation.x, rotation.y, rotation.z];
+
+            let frame = gaussian_covariance_frame(&source).unwrap();
+            let projected_area = symmetric_adjugate(frame.covariance);
+            let generic = symmetric_psd_sqrt(projected_area).unwrap();
+            let reconstructed = multiply_3x3(
+                transpose_3x3(frame.projected_area_sqrt),
+                frame.projected_area_sqrt,
+            );
+            let covariance_scale = frame
+                .covariance
+                .iter()
+                .flatten()
+                .map(|value| value.abs())
+                .fold(1.0_f64, f64::max);
+
+            assert_matrix_relative_close(frame.projected_area_sqrt, generic, 2e-7, 1e-7);
+            assert_matrix_relative_close(
+                reconstructed,
+                projected_area,
+                1e-10,
+                1e-14 * covariance_scale * covariance_scale,
+            );
+        }
     }
 
     #[test]
@@ -4006,12 +7293,23 @@ mod tests {
             sampled_max = sampled_max.max(numerator / denominator);
         }
 
-        assert!(risk.projected_alpha_mass_inflation_upper_bound.is_finite());
+        let emitted_bound =
+            emitted_projected_alpha_mass_inflation_upper_bound(&source, &merged.gaussian);
         assert!(
-            f64::from(risk.projected_alpha_mass_inflation_upper_bound) >= sampled_max,
-            "Minkowski bound {} fell below dense sampled ratio {sampled_max}",
-            risk.projected_alpha_mass_inflation_upper_bound
+            risk.raw_projected_alpha_mass_inflation_upper_bound
+                .is_finite()
         );
+        assert!(
+            sampled_max <= 1.0,
+            "calibrated representative inflated projected alpha mass by {sampled_max}"
+        );
+        assert!(emitted_bound <= 1.0);
+        assert!(
+            emitted_bound >= sampled_max,
+            "Minkowski bound {} fell below dense sampled ratio {sampled_max}",
+            emitted_bound
+        );
+        assert!(f64::from(risk.raw_projected_alpha_mass_inflation_upper_bound) >= emitted_bound);
     }
 
     #[test]
@@ -4035,7 +7333,11 @@ mod tests {
             "merged major axis is not aligned with the source diagonal: along={along}, across={across}"
         );
         let risk = merged.raster_risk();
-        assert!(risk.sampled_projected_alpha_mass_inflation > 20.0);
+        let emitted_bound =
+            emitted_projected_alpha_mass_inflation_upper_bound(&source, &merged.gaussian);
+        assert!(risk.raw_sampled_projected_alpha_mass_inflation > 1.0);
+        assert!(risk.raw_projected_alpha_mass_inflation_upper_bound > 1.0);
+        assert!(emitted_bound <= 1.0);
         assert!(risk.major_scale_growth > 100.0);
         assert!(risk.high_fidelity_certificate() < 0.01);
     }
@@ -4058,16 +7360,731 @@ mod tests {
             .collect();
         let merged = MomentMergeReducer::default().reduce(&source).unwrap();
         let risk = merged.raster_risk();
+        let emitted_bound =
+            emitted_projected_alpha_mass_inflation_upper_bound(&source, &merged.gaussian);
 
-        assert!(
-            risk.sampled_projected_alpha_mass_inflation > 50.0,
-            "{risk:?}"
-        );
-        assert!(risk.projected_alpha_mass_inflation_upper_bound > 50.0);
+        assert!(risk.raw_sampled_projected_alpha_mass_inflation > 1.0);
+        assert!(risk.raw_projected_alpha_mass_inflation_upper_bound > 1.0);
+        assert!(emitted_bound <= 1.0);
         assert!(risk.support_leakage_fraction > 0.4);
         assert!(risk.support_growth > 1.5);
         assert!(risk.major_scale_growth > 8.0);
-        assert!(risk.high_fidelity_certificate() < 0.02);
+        assert!(
+            risk.high_fidelity_certificate() <= risk.major_scale_growth.recip(),
+            "geometric growth must remain represented after opacity calibration: {risk:?}"
+        );
+        assert!(risk.high_fidelity_certificate() < 0.125);
+    }
+
+    #[test]
+    fn garden_style_separated_thin_disks_are_faint_and_force_q65_refinement() {
+        let source = [
+            gaussian([-0.5, 0.0, 0.0], [0.05, 0.05, 0.000_05], 0.95, 0.0),
+            gaussian([0.5, 0.0, 0.0], [0.05, 0.05, 0.000_05], 0.95, 0.0),
+        ];
+        let merged = MomentMergeReducer::default().reduce(&source).unwrap();
+        let risk = merged.raster_risk();
+        let emitted_bound =
+            emitted_projected_alpha_mass_inflation_upper_bound(&source, &merged.gaussian);
+
+        assert!(merged.gaussian.scale_opacity.opacity < 0.2);
+        assert!(merged.gaussian.scale_opacity.opacity >= 0.0);
+        assert!(merged.gaussian.scale_opacity.opacity.is_finite());
+        assert!(risk.raw_sampled_projected_alpha_mass_inflation > 1.0);
+        assert!(risk.raw_projected_alpha_mass_inflation_upper_bound > 1.0);
+        assert!(emitted_bound <= 1.0);
+        assert!(merged.high_fidelity_certificate() < 0.125);
+
+        let settings = crate::gaussian::lod_settings::GaussianLodSettings {
+            quality: 0.65,
+            ..Default::default()
+        };
+        let target = settings.quality_target();
+        let zero_projection_pressure =
+            target.node_pressure(1.0, 0.0, 0.0, merged.high_fidelity_certificate(), false);
+        assert_eq!(
+            zero_projection_pressure, 0.0,
+            "q=.65 must not turn a source-risk certificate into distance-independent refinement"
+        );
+
+        // ABI 16 carries the merge's source-support geometric error into the
+        // selection-visible node metadata. At q=.65 that projected error, not
+        // the high-quality-only certificate gate, rejects the representative
+        // when it is large on screen while still allowing useful far-field
+        // coarsening.
+        assert!(merged.error.geometric > 0.0);
+        let metrics = crate::stream::hierarchy::LodNodeMetrics {
+            center: bevy::math::Vec3::new(0.0, 0.0, 0.0),
+            radius: merged.support_bounds.radius(),
+            geometric_error: merged.error.geometric,
+            appearance_error: 0.0,
+            opacity_error: 0.0,
+            quality_min: 0.0,
+            quality_max: 1.0,
+            high_fidelity_certificate: merged.high_fidelity_certificate(),
+            representative_count: 1,
+        };
+        let effective_limit = target.effective_max_screen_space_error_px().unwrap();
+        let view_for_error = |error_px: f32| {
+            crate::stream::hierarchy::LodView::orthographic(
+                bevy::math::Vec3::new(0.0, 0.0, 4.0),
+                720.0,
+                merged.error.geometric * 720.0 / error_px,
+                0.1,
+            )
+        };
+        let near_view = view_for_error(1.25 * effective_limit);
+        let far_view = view_for_error(0.5 * effective_limit);
+        let pressure_at = |view: crate::stream::hierarchy::LodView| {
+            target.node_pressure(
+                1.0,
+                view.projected_error_px(metrics),
+                view.projected_coverage(metrics),
+                metrics.high_fidelity_certificate,
+                false,
+            )
+        };
+        assert!(
+            pressure_at(near_view) > 1.0,
+            "an extreme surface merge must refine when its geometric error is screen-visible"
+        );
+        assert!(
+            pressure_at(far_view) <= 1.0,
+            "q=.65 must retain a useful distance response for the same representative"
+        );
+
+        let high_quality = crate::gaussian::lod_settings::GaussianLodSettings {
+            quality: 0.95,
+            ..Default::default()
+        };
+        assert!(
+            high_quality.quality_target().node_pressure(
+                1.0,
+                0.0,
+                0.0,
+                merged.high_fidelity_certificate(),
+                false,
+            ) > 1.0,
+            "the raw raster-risk certificate must remain authoritative at high quality"
+        );
+    }
+
+    #[test]
+    fn independently_reduced_siblings_preserve_boundary_alpha_mass() {
+        // A uniform 8x8 surface is split into four adjacent hierarchy nodes.
+        // Every source support remains exclusively owned by one node, matching
+        // the external builder. Each node is then reduced independently to one
+        // representative, which is the seam-producing operation under test.
+        let mut source = Vec::new();
+        let mut siblings = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        for y in 0..8 {
+            for x in 0..8 {
+                let position = [-14.0 + 4.0 * x as f32, -14.0 + 4.0 * y as f32, 1.0];
+                let sample = gaussian(position, [1.6, 1.6, 0.01], 0.2, 0.0);
+                source.push(sample);
+                siblings[usize::from(y >= 4) * 2 + usize::from(x >= 4)].push(sample);
+            }
+        }
+        let reduced = siblings
+            .iter()
+            .map(|sibling| MomentMergeReducer::default().reduce(sibling).unwrap())
+            .collect::<Vec<_>>();
+        let representatives = reduced
+            .iter()
+            .map(|representative| representative.gaussian)
+            .collect::<Vec<_>>();
+
+        // These equal-area patches differ only by an integer multiple of the
+        // uniform source spacing: the source raster therefore provides the
+        // same alpha mass at a node interior and across a sibling boundary.
+        let source_interior = renderer_mip_obb_alpha_mass(&source, [-8.0, -8.0], 2.0, false);
+        let source_boundary = renderer_mip_obb_alpha_mass(&source, [0.0, -8.0], 2.0, false);
+        assert!(
+            (source_boundary / source_interior - 1.0).abs() < 0.01,
+            "synthetic source is not spatially uniform: interior={source_interior}, boundary={source_boundary}"
+        );
+
+        let emitted_interior =
+            renderer_mip_obb_alpha_mass(&representatives, [-8.0, -8.0], 2.0, true);
+        let emitted_boundary =
+            renderer_mip_obb_alpha_mass(&representatives, [0.0, -8.0], 2.0, true);
+        let interior_retention = emitted_interior / source_interior;
+        let boundary_retention = emitted_boundary / source_boundary;
+
+        assert!((source_interior - 202.197_838_137_588_04).abs() < 1e-9);
+        assert!((source_boundary - 202.197_838_137_588_04).abs() < 1e-9);
+        assert!((emitted_interior - 368.616_285_573_197_3).abs() < 1e-9);
+        assert!((emitted_boundary - 189.281_802_650_101_47).abs() < 1e-9);
+        assert!(boundary_retention < 0.52 * interior_retention);
+
+        let mut spatial_nodes = siblings
+            .iter()
+            .cloned()
+            .map(spatial_test_node)
+            .collect::<Vec<_>>();
+        let before = spatial_nodes
+            .iter()
+            .flat_map(|node| node.representatives.iter().map(|result| result.gaussian))
+            .collect::<Vec<_>>();
+        let report = fit_spatial_moment_merge_sibling_cohort(&mut spatial_nodes, 3.0).unwrap();
+        assert_eq!(report.touching_node_pairs, 6);
+        assert_eq!(report.overlapping_node_pairs, 6);
+        assert_eq!(report.unmeasured_touching_node_pairs, 0);
+        assert_eq!(
+            report.touching_node_pairs,
+            report.overlapping_node_pairs + report.unmeasured_touching_node_pairs
+        );
+        let after = spatial_nodes
+            .iter()
+            .flat_map(|node| node.representatives.iter().map(|result| result.gaussian))
+            .collect::<Vec<_>>();
+        assert_eq!(report.accepted_edits, 0);
+        assert!(report.unsafe_node_pairs > 0);
+        assert_eq!(after, before, "infeasible fit changed representative bytes");
+        assert!(
+            spatial_nodes
+                .iter()
+                .any(|node| node.spatial_geometric_error_floor > 0.0)
+        );
+        let spatial_error_floor = spatial_nodes
+            .iter()
+            .map(|node| node.spatial_geometric_error_floor)
+            .fold(0.0_f32, f32::max);
+        let settings = crate::gaussian::lod_settings::GaussianLodSettings {
+            quality: 0.65,
+            ..Default::default()
+        };
+        let view = crate::stream::hierarchy::LodView::orthographic(
+            bevy::math::Vec3::new(0.0, 0.0, 64.0),
+            720.0,
+            56.0,
+            0.1,
+        );
+        let baseline = crate::stream::hierarchy::select_frontier(
+            &SpatialSelectionHierarchy {
+                spatial_error_floor: 0.0,
+            },
+            &crate::stream::hierarchy::AllResident,
+            view,
+            &settings,
+        )
+        .unwrap();
+        assert_eq!(baseline.nodes, [1, 2]);
+        let guarded = crate::stream::hierarchy::select_frontier(
+            &SpatialSelectionHierarchy {
+                spatial_error_floor,
+            },
+            &crate::stream::hierarchy::AllResident,
+            view,
+            &settings,
+        )
+        .unwrap();
+        assert_eq!(guarded.nodes, [3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn feasible_spatial_sibling_fit_improves_boundary_and_cohort_error() {
+        let mut nodes = vec![
+            spatial_test_node(feasible_spatial_strip(-0.35)),
+            spatial_test_node(feasible_spatial_strip(0.35)),
+        ];
+        let before = nodes
+            .iter()
+            .map(|node| node.representatives[0].gaussian)
+            .collect::<Vec<_>>();
+        let report = fit_spatial_moment_merge_sibling_cohort(&mut nodes, 3.0).unwrap();
+        assert_eq!(report.touching_node_pairs, 1);
+        assert_eq!(report.overlapping_node_pairs, 1);
+        assert_eq!(report.unmeasured_touching_node_pairs, 0);
+        assert!(report.maximum_relative_boundary_error_before > 0.1);
+        assert!(report.accepted_edits > 0);
+        assert!(
+            report.maximum_relative_boundary_error_after
+                < report.maximum_relative_boundary_error_before
+        );
+        assert!(report.cohort_composited_error_after <= report.cohort_composited_error_before);
+        assert_ne!(
+            nodes
+                .iter()
+                .map(|node| node.representatives[0].gaussian)
+                .collect::<Vec<_>>(),
+            before
+        );
+    }
+
+    #[test]
+    fn source_less_touching_coarse_pair_is_reported_without_blanket_refinement() {
+        let mut nodes = vec![
+            spatial_test_node(feasible_spatial_strip(-0.35)),
+            spatial_test_node(feasible_spatial_strip(0.35)),
+        ];
+        for node in &mut nodes {
+            node.source_records = None;
+            node.source_ranges.clear();
+        }
+        let before = nodes
+            .iter()
+            .map(|node| node.representatives[0].gaussian)
+            .collect::<Vec<_>>();
+        let report = fit_spatial_moment_merge_sibling_cohort(&mut nodes, 3.0).unwrap();
+        assert_eq!(report.touching_node_pairs, 1);
+        assert_eq!(report.overlapping_node_pairs, 0);
+        assert_eq!(report.unmeasured_touching_node_pairs, 1);
+        assert_eq!(report.accepted_edits, 0);
+        assert_eq!(report.unsafe_node_pairs, 0);
+        assert!(nodes.iter().all(|node| {
+            node.spatial_geometric_error_floor == 0.0 && node.spatial_certificate_cap == 1.0
+        }));
+        assert_eq!(
+            nodes
+                .iter()
+                .map(|node| node.representatives[0].gaussian)
+                .collect::<Vec<_>>(),
+            before
+        );
+    }
+
+    #[test]
+    fn spatial_fit_branching_bound_is_explicit_and_allocation_bounded() {
+        let maximum = spatial_moment_merge_fit_bounds(32).unwrap();
+        assert_eq!(maximum.node_pair_checks, 496);
+        assert_eq!(maximum.boundary_probes, 4_464);
+        assert_eq!(size_of::<SpatialBoundaryReference>(), 2_912);
+        let maximum_reference_cache_bytes = maximum
+            .boundary_probes
+            .checked_mul(size_of::<SpatialBoundaryReference>() as u64)
+            .unwrap();
+        assert!(maximum.scratch_host_bytes >= maximum_reference_cache_bytes);
+        let node_pair_capacity = maximum.node_pair_checks as usize;
+        let probe_capacity = maximum.boundary_probes as usize;
+        let probes = Vec::<SpatialBoundaryProbe>::with_capacity(probe_capacity);
+        let pair_probe_temporary =
+            Vec::<SpatialBoundaryProbe>::with_capacity(SPATIAL_FIT_MAX_PROBES_PER_NODE_PAIR);
+        let references = Vec::<SpatialBoundaryReference>::with_capacity(probe_capacity);
+        let metrics = Vec::<SpatialBoundaryMetrics>::with_capacity(probe_capacity);
+        let initial_metrics = Vec::<SpatialBoundaryMetrics>::with_capacity(probe_capacity);
+        let incidence = Vec::<(usize, usize, usize)>::with_capacity(probe_capacity * 2);
+        let affected_indices = Vec::<usize>::with_capacity(probe_capacity * 2);
+        let current_affected =
+            Vec::<(usize, SpatialBoundaryMetrics)>::with_capacity(probe_capacity);
+        let best_affected = Vec::<(usize, SpatialBoundaryMetrics)>::with_capacity(probe_capacity);
+        let unsafe_pairs = Vec::<(usize, usize, f64)>::with_capacity(node_pair_capacity);
+        let current_overrides = Vec::<SpatialRepresentativeOverride>::with_capacity(2);
+        let best_overrides = Vec::<SpatialRepresentativeOverride>::with_capacity(2);
+        let actual_vec_payload_bytes = probes.capacity() * size_of::<SpatialBoundaryProbe>()
+            + pair_probe_temporary.capacity() * size_of::<SpatialBoundaryProbe>()
+            + references.capacity() * size_of::<SpatialBoundaryReference>()
+            + metrics.capacity() * size_of::<SpatialBoundaryMetrics>()
+            + initial_metrics.capacity() * size_of::<SpatialBoundaryMetrics>()
+            + incidence.capacity() * size_of::<(usize, usize, usize)>()
+            + affected_indices.capacity() * size_of::<usize>()
+            + current_affected.capacity() * size_of::<(usize, SpatialBoundaryMetrics)>()
+            + best_affected.capacity() * size_of::<(usize, SpatialBoundaryMetrics)>()
+            + unsafe_pairs.capacity() * size_of::<(usize, usize, f64)>()
+            + current_overrides.capacity() * size_of::<SpatialRepresentativeOverride>()
+            + best_overrides.capacity() * size_of::<SpatialRepresentativeOverride>();
+        assert_eq!(
+            actual_vec_payload_bytes,
+            spatial_fit_explicit_vec_payload_bytes(node_pair_capacity, probe_capacity).unwrap()
+        );
+        let non_vec_payload_bytes =
+            32 * size_of::<SpatialMomentMergeNode>() + 2 * size_of::<MomentMergeResult>();
+        assert_eq!(
+            maximum.scratch_host_bytes as usize,
+            actual_vec_payload_bytes + non_vec_payload_bytes
+        );
+        assert!(spatial_moment_merge_fit_bounds(33).is_none());
+
+        let probes = vec![
+            SpatialBoundaryProbe {
+                left_node: 0,
+                left_representative: 2,
+                right_node: 1,
+                right_representative: 4,
+            },
+            SpatialBoundaryProbe {
+                left_node: 0,
+                left_representative: 3,
+                right_node: 1,
+                right_representative: 4,
+            },
+            SpatialBoundaryProbe {
+                left_node: 0,
+                left_representative: 2,
+                right_node: 2,
+                right_representative: 1,
+            },
+        ];
+        let incidence = spatial_probe_incidence(&probes);
+        assert_eq!(incidence.len(), probes.len() * 2);
+        assert!(incidence.windows(2).all(|pair| pair[0] <= pair[1]));
+        let edited = [(0_usize, 2_usize), (1, 4)];
+        let indexed = spatial_affected_probe_indices(&incidence, edited);
+        let brute_force = probes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, probe)| {
+                edited
+                    .iter()
+                    .any(|(node, representative)| {
+                        (*node == probe.left_node && *representative == probe.left_representative)
+                            || (*node == probe.right_node
+                                && *representative == probe.right_representative)
+                    })
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(indexed, brute_force);
+    }
+
+    #[test]
+    fn spatial_fit_rejects_a_candidate_that_changes_contributor_topology() {
+        let nodes = vec![
+            spatial_test_node_with_partitions(vec![
+                vec![gaussian([-0.1, 0.0, 0.0], [0.001; 3], 0.2, 0.0)],
+                vec![gaussian([-1.0, 0.0, 0.0], [0.5; 3], 0.2, 0.0)],
+            ]),
+            spatial_test_node(vec![gaussian([0.1, 0.0, 0.0], [0.016; 3], 0.2, 0.0)]),
+        ];
+        let other_bounds = nodes[1].authored_support_bounds;
+        let target = [0.1, 0.0, 0.0];
+        assert_eq!(
+            spatial_nearest_boundary_contributor(&nodes[0], other_bounds, target),
+            1,
+            "the original overlap-first key must select the broad representative"
+        );
+
+        let mut value = nodes[0].representatives[0].clone();
+        value.gaussian.scale_opacity.scale = [0.1; 3];
+        value.support_bounds = gaussian_support_bounds(&value.gaussian, 3.0).unwrap();
+        let overrides = [SpatialRepresentativeOverride {
+            node: 0,
+            representative: 0,
+            value,
+        }];
+        assert_eq!(
+            spatial_nearest_boundary_contributor_with_overrides_for_test(
+                &nodes,
+                0,
+                other_bounds,
+                target,
+                &overrides,
+            ),
+            0,
+            "changing the support-overlap bit must change this contributor key"
+        );
+        assert!(
+            !spatial_candidate_preserves_probe_topology(&nodes, &overrides),
+            "the candidate guard must reject a changed fixed-grid contributor topology"
+        );
+    }
+
+    #[test]
+    fn spatial_reference_cache_is_bit_exact_with_brute_force_and_fit_decisions() {
+        let nodes = vec![
+            spatial_fit_exactness_node(-0.35),
+            spatial_fit_exactness_node(0.35),
+        ];
+        assert!(nodes.iter().all(|node| node.representatives.len() == 3));
+        let probes = spatial_boundary_probes_for_pair(&nodes, 0, 1);
+        assert!(probes.len() >= 3);
+        for probe in probes.iter().copied() {
+            let reference = spatial_boundary_reference(&nodes, probe).unwrap();
+            assert_eq!(
+                spatial_boundary_metrics_from_reference(&nodes, probe, &reference, &[]).unwrap(),
+                spatial_boundary_metrics_brute_force(&nodes, probe, &[]).unwrap()
+            );
+
+            let overrides = [
+                SpatialRepresentativeOverride {
+                    node: probe.left_node,
+                    representative: probe.left_representative,
+                    value: spatial_widened_representative(
+                        spatial_probe_source(&nodes, probe.left_node, probe.left_representative)
+                            .unwrap(),
+                        &nodes[probe.left_node].representatives[probe.left_representative],
+                        SPATIAL_FIT_TANGENT_FACTORS[2],
+                        3.0,
+                    )
+                    .unwrap()
+                    .unwrap(),
+                },
+                SpatialRepresentativeOverride {
+                    node: probe.right_node,
+                    representative: probe.right_representative,
+                    value: spatial_widened_representative(
+                        spatial_probe_source(&nodes, probe.right_node, probe.right_representative)
+                            .unwrap(),
+                        &nodes[probe.right_node].representatives[probe.right_representative],
+                        SPATIAL_FIT_TANGENT_FACTORS[2],
+                        3.0,
+                    )
+                    .unwrap()
+                    .unwrap(),
+                },
+            ];
+            assert_eq!(
+                spatial_boundary_metrics_from_reference(&nodes, probe, &reference, &overrides,)
+                    .unwrap(),
+                spatial_boundary_metrics_brute_force(&nodes, probe, &overrides).unwrap()
+            );
+        }
+
+        let mut cached_nodes = nodes.clone();
+        let mut brute_force_nodes = nodes;
+        let cached_report =
+            fit_spatial_moment_merge_sibling_cohort(&mut cached_nodes, 3.0).unwrap();
+        let brute_force_report =
+            fit_spatial_moment_merge_sibling_cohort_brute_force(&mut brute_force_nodes, 3.0)
+                .unwrap();
+        assert_eq!(cached_report, brute_force_report);
+        assert!(
+            cached_report.accepted_edits >= 2,
+            "fixture must exercise at least two sequential accepted edits: {cached_report:?}"
+        );
+        for (cached, brute_force) in cached_nodes.iter().zip(&brute_force_nodes) {
+            assert_eq!(
+                cached.spatial_certificate_cap.to_bits(),
+                brute_force.spatial_certificate_cap.to_bits()
+            );
+            assert_eq!(
+                cached.spatial_geometric_error_floor.to_bits(),
+                brute_force.spatial_geometric_error_floor.to_bits()
+            );
+            assert_eq!(cached.representatives, brute_force.representatives);
+            for (cached, brute_force) in cached
+                .representatives
+                .iter()
+                .zip(&brute_force.representatives)
+            {
+                assert_eq!(
+                    bytemuck::bytes_of(&cached.gaussian),
+                    bytemuck::bytes_of(&brute_force.gaussian)
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "manual release-mode spatial fitter microbenchmark"]
+    fn spatial_reference_cache_max_eight_node_cohort_microbenchmark() {
+        let nodes = (0..8)
+            .map(|index| spatial_fit_benchmark_node(-0.35 + index as f32 * 0.1))
+            .collect::<Vec<_>>();
+        let mut probes = Vec::new();
+        for left in 0..nodes.len() {
+            for right in left + 1..nodes.len() {
+                probes.extend(spatial_boundary_probes_for_pair(&nodes, left, right));
+            }
+        }
+        assert_eq!(probes.len(), 252);
+        let failing_probes = probes
+            .iter()
+            .copied()
+            .filter(|probe| {
+                spatial_boundary_metrics_brute_force(&nodes, *probe, &[])
+                    .unwrap()
+                    .relative_boundary_error
+                    > SPATIAL_FIT_MAX_RELATIVE_BOUNDARY_ERROR
+            })
+            .count();
+        assert!(failing_probes >= probes.len() / 2);
+
+        let mut brute_force_nodes = nodes.clone();
+        let brute_force_started = std::time::Instant::now();
+        let brute_force_report =
+            fit_spatial_moment_merge_sibling_cohort_brute_force(&mut brute_force_nodes, 3.0)
+                .unwrap();
+        let brute_force_elapsed = brute_force_started.elapsed();
+
+        let mut cached_nodes = nodes;
+        let cached_started = std::time::Instant::now();
+        let cached_report =
+            fit_spatial_moment_merge_sibling_cohort(&mut cached_nodes, 3.0).unwrap();
+        let cached_elapsed = cached_started.elapsed();
+        assert_eq!(cached_report, brute_force_report);
+        assert_eq!(cached_nodes.len(), brute_force_nodes.len());
+        for (cached, brute_force) in cached_nodes.iter().zip(&brute_force_nodes) {
+            assert_eq!(cached.representatives, brute_force.representatives);
+        }
+        eprintln!(
+            "spatial cache benchmark: probes={}; failing={}; brute_force={:?}; cached={:?}; speedup={:.2}x",
+            probes.len(),
+            failing_probes,
+            brute_force_elapsed,
+            cached_elapsed,
+            brute_force_elapsed.as_secs_f64() / cached_elapsed.as_secs_f64()
+        );
+    }
+
+    #[test]
+    fn single_projected_scale_improvement_cannot_mask_another_zoom_regression() {
+        let guarded_strip = |x: f32| {
+            let mut source = feasible_spatial_strip(x);
+            for (offset_x, y) in [(-4.0_f32, -6.0_f32), (4.0, 6.0)] {
+                source.push(gaussian(
+                    [x + offset_x, y, 1.0],
+                    [0.2, 0.2, 0.01],
+                    0.000_001,
+                    0.0,
+                ));
+            }
+            source
+        };
+        let nodes = vec![
+            spatial_test_node(guarded_strip(-0.35)),
+            spatial_test_node(guarded_strip(0.35)),
+        ];
+        let probe = spatial_boundary_probes_for_pair(&nodes, 0, 1)[0];
+        let overrides = [
+            SpatialRepresentativeOverride {
+                node: 0,
+                representative: 0,
+                value: spatial_widened_representative(
+                    spatial_probe_source(&nodes, 0, 0).unwrap(),
+                    &nodes[0].representatives[0],
+                    1.5,
+                    3.0,
+                )
+                .unwrap()
+                .unwrap(),
+            },
+            SpatialRepresentativeOverride {
+                node: 1,
+                representative: 0,
+                value: spatial_widened_representative(
+                    spatial_probe_source(&nodes, 1, 0).unwrap(),
+                    &nodes[1].representatives[0],
+                    1.5,
+                    3.0,
+                )
+                .unwrap()
+                .unwrap(),
+            },
+        ];
+        let pair_envelope = nodes[0]
+            .authored_support_bounds
+            .union(nodes[1].authored_support_bounds);
+        assert!(overrides.iter().all(|candidate| {
+            oriented_support_inside(&candidate.value.gaussian, 3.0, pair_envelope).unwrap()
+        }));
+
+        let baseline_at_one = spatial_fixed_scale_metrics(&nodes, probe, &[], 1.0);
+        let candidate_at_one = spatial_fixed_scale_metrics(&nodes, probe, &overrides, 1.0);
+        assert!(candidate_at_one.0 < baseline_at_one.0);
+        assert!(candidate_at_one.1 < baseline_at_one.1);
+        let regresses_elsewhere = [0.25_f64, 0.5, 2.0, 4.0].into_iter().any(|scale| {
+            let baseline = spatial_fixed_scale_metrics(&nodes, probe, &[], scale);
+            let candidate = spatial_fixed_scale_metrics(&nodes, probe, &overrides, scale);
+            !float_no_worse(candidate.0, baseline.0) || !float_no_worse(candidate.1, baseline.1)
+        });
+        assert!(regresses_elsewhere);
+
+        let baseline_ladder = spatial_boundary_metrics(&nodes, probe, &[]).unwrap();
+        let candidate_ladder = spatial_boundary_metrics(&nodes, probe, &overrides).unwrap();
+        assert!(!spatial_boundary_metrics_no_worse(
+            candidate_ladder,
+            baseline_ladder
+        ));
+    }
+
+    #[test]
+    fn elongated_multi_representative_seam_checks_its_worst_segment() {
+        let end_partition = |x: f32, center_y: f32| {
+            [-1.5_f32, -0.5, 0.5, 1.5]
+                .into_iter()
+                .map(|offset| gaussian([x, center_y + offset, 1.0], [0.2, 0.2, 0.01], 0.2, 0.0))
+                .collect::<Vec<_>>()
+        };
+        let node = |x: f32| {
+            spatial_test_node_with_partitions(vec![
+                end_partition(x, -6.0),
+                vec![gaussian([x, 0.0, 1.0], [0.2, 0.2, 0.01], 0.2, 0.0)],
+                end_partition(x, 6.0),
+            ])
+        };
+        let mut nodes = vec![node(-0.35), node(0.35)];
+        let probes = spatial_boundary_probes_for_pair(&nodes, 0, 1);
+        assert!(probes.len() >= 3);
+        for representative in 0..3 {
+            assert!(probes.iter().any(|probe| {
+                probe.left_representative == representative
+                    && probe.right_representative == representative
+            }));
+        }
+        let before = probes
+            .iter()
+            .copied()
+            .map(|probe| spatial_boundary_metrics(&nodes, probe, &[]).unwrap())
+            .collect::<Vec<_>>();
+        let central = probes
+            .iter()
+            .position(|probe| probe.left_representative == 1 && probe.right_representative == 1)
+            .unwrap();
+        assert!(before[central].relative_boundary_error <= 1e-6);
+        let worst = before
+            .iter()
+            .enumerate()
+            .max_by(|(_, left), (_, right)| {
+                left.relative_boundary_error
+                    .total_cmp(&right.relative_boundary_error)
+            })
+            .map(|(index, _)| index)
+            .unwrap();
+        assert_ne!(worst, central);
+        assert!(before[worst].relative_boundary_error > 0.1);
+
+        fit_spatial_moment_merge_sibling_cohort(&mut nodes, 3.0).unwrap();
+        let after = spatial_boundary_metrics(&nodes, probes[worst], &[]).unwrap();
+        let worst_improved = after.relative_boundary_error < before[worst].relative_boundary_error;
+        let forced_refinement = nodes
+            .iter()
+            .all(|node| node.spatial_geometric_error_floor > 0.0);
+        assert!(worst_improved || forced_refinement);
+    }
+
+    #[test]
+    fn disconnected_sibling_cannot_expand_a_touching_pair_envelope() {
+        let pair = || {
+            vec![
+                spatial_test_node(feasible_spatial_strip(-0.35)),
+                spatial_test_node(feasible_spatial_strip(0.35)),
+            ]
+        };
+        let mut isolated_pair = pair();
+        let isolated_report =
+            fit_spatial_moment_merge_sibling_cohort(&mut isolated_pair, 3.0).unwrap();
+        assert!(isolated_report.accepted_edits > 0);
+
+        let mut cohort_with_gap = pair();
+        cohort_with_gap.push(spatial_test_node(vec![gaussian(
+            [20.0, 0.0, 1.0],
+            [0.2, 0.2, 0.01],
+            0.2,
+            0.0,
+        )]));
+        let third_before = cohort_with_gap[2].representatives[0].gaussian;
+        let report = fit_spatial_moment_merge_sibling_cohort(&mut cohort_with_gap, 3.0).unwrap();
+        assert_eq!(report, isolated_report);
+        for node_index in 0..2 {
+            assert_eq!(
+                cohort_with_gap[node_index].representatives[0].gaussian,
+                isolated_pair[node_index].representatives[0].gaussian
+            );
+        }
+        assert_eq!(cohort_with_gap[2].representatives[0].gaussian, third_before);
+
+        let pair_envelope = cohort_with_gap[0]
+            .authored_support_bounds
+            .union(cohort_with_gap[1].authored_support_bounds);
+        assert!(pair_envelope.max[0] < cohort_with_gap[2].authored_support_bounds.min[0]);
+        for node in &cohort_with_gap[..2] {
+            for representative in &node.representatives {
+                assert!(
+                    oriented_support_inside(&representative.gaussian, 3.0, pair_envelope).unwrap()
+                );
+            }
+        }
     }
 
     #[test]
@@ -4105,6 +8122,232 @@ mod tests {
         let second = build_planar_3d_lod(&reversed, settings).unwrap();
         assert_eq!(first, second);
         assert_eq!(first.manifest.roots, vec![LodNodeId(1)]);
+    }
+
+    #[cfg(feature = "sort_rayon")]
+    #[test]
+    fn parallel_builder_is_byte_identical_across_worker_counts() {
+        let settings = GaussianLodBuildSettings {
+            branching_factor: 8,
+            leaf_capacity: 128,
+            support_sigma: 3.0,
+        };
+        // Exercise many independent leaves, deepest pairing plans, and parent
+        // rungs so this covers every parallel builder phase rather than only
+        // the Morton sort.
+        let source = fixture(4_097);
+        let build_with_threads = |threads| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| build_planar_3d_lod(&source, settings).unwrap())
+        };
+
+        let single_threaded = build_with_threads(1);
+        let parallel = build_with_threads(4);
+
+        assert_eq!(single_threaded.manifest, parallel.manifest);
+        assert_eq!(single_threaded.pages.len(), parallel.pages.len());
+        for (single_page, parallel_page) in single_threaded.pages.iter().zip(&parallel.pages) {
+            assert_eq!(
+                crate::io::lod::encode_page(single_page).unwrap(),
+                crate::io::lod::encode_page(parallel_page).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn owned_builder_honors_cancellation_before_morton_sort() {
+        let source = fixture(257).iter().collect();
+        let result = build_planar_3d_lod_owned_cancelable(
+            source,
+            GaussianLodBuildSettings::default(),
+            &|| true,
+        )
+        .unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn owned_builder_honors_cancellation_after_parallel_work_begins() {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+        let source = fixture(4_097).iter().collect();
+        let polls = AtomicUsize::new(0);
+        let cancel_after = 384;
+        let result = build_planar_3d_lod_owned_cancelable(
+            source,
+            GaussianLodBuildSettings {
+                branching_factor: 8,
+                leaf_capacity: 128,
+                support_sigma: 3.0,
+            },
+            &|| polls.fetch_add(1, AtomicOrdering::Relaxed) >= cancel_after,
+        )
+        .unwrap();
+
+        assert!(result.is_none());
+        assert!(polls.load(AtomicOrdering::Relaxed) > cancel_after);
+    }
+
+    #[test]
+    fn large_balanced_reduction_polls_cancellation_in_bounded_chunks() {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+        let source = fixture(4_097).iter().collect::<Vec<_>>();
+        let polls = AtomicUsize::new(0);
+        let cancellation = LodBuildCancellation {
+            is_canceled: &|| polls.fetch_add(1, AtomicOrdering::Relaxed) >= 2,
+        };
+        let result =
+            balanced_progressive_moment_merge_representatives(&source, 1, 3.0, cancellation);
+
+        assert!(matches!(result, Err(CancelableLodBuildError::Canceled)));
+        assert!(polls.load(AtomicOrdering::Relaxed) <= 4);
+    }
+
+    #[test]
+    fn owned_builder_matches_planar_output_and_preserves_canonical_original_order() {
+        let settings = GaussianLodBuildSettings {
+            branching_factor: 4,
+            leaf_capacity: 16,
+            support_sigma: 3.0,
+        };
+        let mut source = fixture(37).iter().collect::<Vec<_>>();
+        source.rotate_left(11);
+        source[0].position_visibility.position[0] = -0.0;
+        *source[3]
+            .spherical_harmonic
+            .coefficients
+            .last_mut()
+            .expect("every SH profile has a DC coefficient") = -0.0;
+        source[9].rotation.rotation[2] = -0.0;
+        source[17].scale_opacity.opacity = -0.0;
+        let expected_fallback = source
+            .iter()
+            .copied()
+            .map(canonicalize_gaussian_zeros)
+            .collect::<Vec<_>>();
+        let planar = PlanarGaussian3d::from(source.clone());
+
+        let expected_lod = build_planar_3d_lod(&planar, settings).unwrap();
+        let (owned_lod, fallback) = build_planar_3d_lod_owned(source, settings).unwrap();
+
+        assert_eq!(owned_lod, expected_lod);
+        assert_eq!(fallback, expected_fallback);
+        assert_eq!(fallback[0].position_visibility.position[0].to_bits(), 0);
+        assert_eq!(
+            fallback[3]
+                .spherical_harmonic
+                .coefficients
+                .last()
+                .unwrap()
+                .to_bits(),
+            0
+        );
+        assert_eq!(fallback[9].rotation.rotation[2].to_bits(), 0);
+        assert_eq!(fallback[17].scale_opacity.opacity.to_bits(), 0);
+        assert_eq!(
+            owned_lod.manifest.build.builder_abi_version,
+            PROGRESSIVE_MOMENT_MERGE_BUILDER_ABI_VERSION
+        );
+    }
+
+    #[test]
+    fn compact_morton_index_sort_matches_full_record_reference_and_fingerprint() {
+        let mut source = fixture(LOD_MORTON_SORT_RUN_LEN + 257)
+            .iter()
+            .collect::<Vec<_>>();
+        // Force Morton collisions while leaving the full Gaussian comparator
+        // responsible for a deterministic order inside each cell.
+        for (index, gaussian) in source.iter_mut().enumerate() {
+            gaussian.position_visibility.position =
+                [(index % 3) as f32, ((index / 3) % 2) as f32, 0.0];
+            *gaussian = canonicalize_gaussian_zeros(*gaussian);
+        }
+        let bounds = source_center_bounds(&source, no_cancellation()).unwrap();
+        let mut compact = source
+            .iter()
+            .enumerate()
+            .map(|(source_index, gaussian)| MortonSourceIndex {
+                morton: canonical_lod_morton_code(gaussian.position_visibility.position, bounds),
+                source_index,
+            })
+            .collect::<Vec<_>>();
+        sort_morton_source_indices(&mut compact, &source, no_cancellation()).unwrap();
+
+        let mut full_record_reference = source
+            .iter()
+            .copied()
+            .map(|gaussian| {
+                (
+                    canonical_lod_morton_code(gaussian.position_visibility.position, bounds),
+                    gaussian,
+                )
+            })
+            .collect::<Vec<_>>();
+        full_record_reference.sort_unstable_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| compare_gaussians(&left.1, &right.1))
+        });
+
+        let compact_records = compact
+            .iter()
+            .map(|entry| (entry.morton, source[entry.source_index]))
+            .collect::<Vec<_>>();
+        assert_eq!(compact_records, full_record_reference);
+
+        let mut reference_hash = StableHasher::new();
+        reference_hash.write(&(full_record_reference.len() as u64).to_le_bytes());
+        for (morton, gaussian) in &full_record_reference {
+            reference_hash.write(&morton.to_le_bytes());
+            reference_hash.write(&stable_gaussian_hash(gaussian).to_le_bytes());
+        }
+        assert_eq!(
+            source_fingerprint(&compact, &source, no_cancellation()).unwrap(),
+            reference_hash.finish()
+        );
+        assert!(size_of::<MortonSourceIndex>() < size_of::<Gaussian3d>());
+
+        let host = include_str!("planar_3d_lod.rs");
+        assert!(host.contains(".par_chunks_mut(LOD_MORTON_SORT_RUN_LEN)"));
+        assert!(host.contains(".chunks_mut(LOD_MORTON_SORT_RUN_LEN)"));
+        assert!(!host.contains(concat!("struct Keyed", "Gaussian")));
+    }
+
+    #[test]
+    fn morton_merge_polls_cancellation_inside_a_large_sort() {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+        let source = fixture(LOD_MORTON_SORT_RUN_LEN * 2 + 1)
+            .iter()
+            .collect::<Vec<_>>();
+        let bounds = source_center_bounds(&source, no_cancellation()).unwrap();
+        let mut entries = source
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(source_index, gaussian)| MortonSourceIndex {
+                morton: canonical_lod_morton_code(gaussian.position_visibility.position, bounds),
+                source_index,
+            })
+            .collect::<Vec<_>>();
+        // Initial/run checks and scratch initialization consume about 520
+        // polls. Cancel just inside the first merge pass, whose inner loop
+        // checks at the tighter 256-record cadence.
+        let polls = AtomicUsize::new(0);
+        let cancel_after = 530;
+        let cancellation = LodBuildCancellation {
+            is_canceled: &|| polls.fetch_add(1, AtomicOrdering::Relaxed) >= cancel_after,
+        };
+
+        let result = sort_morton_source_indices(&mut entries, &source, cancellation);
+
+        assert!(matches!(result, Err(CancelableLodBuildError::Canceled)));
+        assert!(polls.load(AtomicOrdering::Relaxed) <= cancel_after + 16);
     }
 
     #[test]
@@ -4325,14 +8568,23 @@ mod tests {
             &source,
             representative_count,
             support_sigma,
+            no_cancellation(),
         )
         .unwrap();
-        let first =
-            progressive_moment_merge_representatives(&source, representative_count, support_sigma)
-                .unwrap();
-        let second =
-            progressive_moment_merge_representatives(&source, representative_count, support_sigma)
-                .unwrap();
+        let first = progressive_moment_merge_representatives(
+            &source,
+            representative_count,
+            support_sigma,
+            no_cancellation(),
+        )
+        .unwrap();
+        let second = progressive_moment_merge_representatives(
+            &source,
+            representative_count,
+            support_sigma,
+            no_cancellation(),
+        )
+        .unwrap();
 
         let balanced_certificate = balanced
             .iter()
@@ -4369,8 +8621,10 @@ mod tests {
         // no more permissive than the balanced partition: policy metadata is
         // enveloped by the same-count oracle rather than graded by the
         // optimized payload itself.
-        let balanced_envelope = progressive_selection_envelope(&balanced);
-        let emitted_envelope = progressive_selection_envelope(&first.representatives);
+        let balanced_envelope =
+            progressive_selection_envelope(&balanced, no_cancellation()).unwrap();
+        let emitted_envelope =
+            progressive_selection_envelope(&first.representatives, no_cancellation()).unwrap();
         assert_eq!(first.policy_envelope, balanced_envelope);
         assert_eq!(
             first.policy_envelope.high_fidelity_certificate_cap,
@@ -4388,12 +8642,28 @@ mod tests {
     }
 
     #[test]
+    fn risk_aware_host_bound_covers_stale_candidate_heap_growth() {
+        let source_count = 8 * 1024_usize;
+        let bound = progressive_risk_aware_host_bytes_upper_bound(source_count).unwrap();
+        let candidate_floor = u64::try_from(source_count * 4 + 1).unwrap()
+            * size_of::<ProgressiveAgglomerationCandidate>() as u64;
+        let other_floor = u64::try_from(source_count + 1).unwrap()
+            * (size_of::<Gaussian3d>()
+                + size_of::<ProgressiveAgglomerationCluster>()
+                + size_of::<MomentMergeResult>()) as u64;
+        assert!(bound >= candidate_floor + other_floor);
+    }
+
+    #[test]
     fn progressive_rung_retains_balanced_fallback_above_risk_aware_bound() {
         let source = (0..34)
             .map(|index| gaussian([index as f32, 0.0, 0.0], [0.01; 3], 0.25, 0.0))
             .collect::<Vec<_>>();
-        let expected = balanced_progressive_moment_merge_representatives(&source, 2, 3.0).unwrap();
-        let actual = progressive_moment_merge_representatives(&source, 2, 3.0).unwrap();
+        let expected =
+            balanced_progressive_moment_merge_representatives(&source, 2, 3.0, no_cancellation())
+                .unwrap();
+        let actual =
+            progressive_moment_merge_representatives(&source, 2, 3.0, no_cancellation()).unwrap();
 
         assert_eq!(source.len().div_ceil(actual.representatives.len()), 17);
         assert_eq!(actual.representatives, expected);
@@ -4671,6 +8941,47 @@ mod tests {
             stale.validate(),
             Err(LodValidationError::InvalidBuildVersion)
         ));
+
+        let mut stale_progressive_builder = output.manifest.clone();
+        stale_progressive_builder.build.builder_abi_version =
+            PROGRESSIVE_MOMENT_MERGE_BUILDER_ABI_VERSION - 1;
+        assert!(matches!(
+            stale_progressive_builder.validate(),
+            Err(LodValidationError::InvalidBuildVersion)
+        ));
+
+        let mut external_v2 = output.manifest.clone();
+        external_v2.build.builder_abi_version = EXTERNAL_CPU_MOMENT_MERGE_BUILDER_ABI_VERSION;
+        external_v2.build.reducer_version = EXTERNAL_MOMENT_MERGE_VERSION;
+        external_v2.build.config_fingerprint =
+            lod_config_fingerprint_for_reducer(settings, None, EXTERNAL_MOMENT_MERGE_VERSION);
+        assert!(external_v2.validate().is_ok());
+
+        let mut legacy_gpu_external_v2 = external_v2.clone();
+        legacy_gpu_external_v2.build.builder_abi_version =
+            EXTERNAL_GPU_MOMENT_MERGE_BUILDER_ABI_VERSION;
+        assert!(legacy_gpu_external_v2.validate().is_ok());
+
+        let mut external_with_progressive_reducer = external_v2;
+        external_with_progressive_reducer.build.reducer_version = MOMENT_MERGE_VERSION;
+        external_with_progressive_reducer.build.config_fingerprint =
+            lod_config_fingerprint(settings, None);
+        assert!(matches!(
+            external_with_progressive_reducer.validate(),
+            Err(LodValidationError::InvalidBuildVersion)
+        ));
+
+        let mut external_progressive = output.manifest.clone();
+        external_progressive.build.builder_abi_version =
+            EXTERNAL_PROGRESSIVE_MOMENT_MERGE_BUILDER_ABI_VERSION;
+        external_progressive.build.reducer_version = MOMENT_MERGE_VERSION;
+        external_progressive.build.config_fingerprint = lod_config_fingerprint(settings, None);
+        assert!(external_progressive.validate().is_ok());
+        assert!(
+            external_progressive
+                .build
+                .has_bounded_refinement_amplification()
+        );
 
         let mut unknown_builder = output.manifest.clone();
         unknown_builder.build.builder_abi_version = u32::MAX;

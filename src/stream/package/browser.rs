@@ -156,7 +156,7 @@ pub(super) fn package_page_transport(
 ) -> Result<PackagePageTransport, GaussianLodPackageError> {
     let identities = if streaming.persistent_cache {
         Some(
-            PersistentCachePageIdentities::from_manifest(manifest)
+            PersistentCachePageIdentities::from_validated_manifest(manifest)
                 .map_err(|error| GaussianLodPackageError::PersistentCache(error.to_string()))?,
         )
     } else {
@@ -168,7 +168,7 @@ pub(super) fn package_page_transport(
             Err(GaussianLodPackageError::NativeSourceUnsupportedInBrowser)
         }
         GaussianLodPackageSource::Url { base_url } => {
-            let locations = ManifestPageLocations::from_manifest(manifest)
+            let locations = ManifestPageLocations::from_validated_manifest(manifest)
                 .map_err(|error| GaussianLodPackageError::HttpTransport(error.to_string()))?;
             let http_config = package_http_config(base_url, streaming)?;
             let client =

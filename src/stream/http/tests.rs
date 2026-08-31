@@ -201,7 +201,7 @@ fn decoded_manifest_mismatch_retries_inside_authoritative_http_budget() {
 fn response_validation_rejects_full_object_for_pack_range() {
     let page = LodPageId(9);
     let location = ManifestPageLocation {
-        uri: "scene.pack".to_owned(),
+        uri: "scene.pack".into(),
         byte_range: Some((40, 4)),
         encoded_len: 4,
     };
@@ -253,7 +253,7 @@ fn byte_range_end_rejects_zero_length_and_overflow() {
 fn content_length_policy_is_enforced_above_the_bounded_client() {
     let page = LodPageId(5);
     let location = ManifestPageLocation {
-        uri: "page.gspage".to_owned(),
+        uri: "page.gspage".into(),
         byte_range: None,
         encoded_len: 4,
     };
@@ -311,7 +311,7 @@ fn retries_transient_status_and_preserves_exact_request_bound() {
 fn shared_pack_etag_change_is_typed() {
     let page = LodPageId(1);
     let location = ManifestPageLocation {
-        uri: "scene.pack".to_owned(),
+        uri: "scene.pack".into(),
         byte_range: None,
         encoded_len: 4,
     };

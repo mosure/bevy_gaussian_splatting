@@ -39,3 +39,13 @@ jobs:
         benchName: "io"
         branchName: ${{ github.base_ref }}
         token: ${{ secrets.GITHUB_TOKEN }}
+
+    # Keep this opt-in suite headless and CPU-only. In particular, do not run
+    # the separately gated `lod_gpu` benchmark or enable the viewer bundle.
+    - name: LoD CPU Criterion benchmark
+      env:
+        RUN_GPU_LOD_BENCHMARKS: "0"
+      run: >-
+        cargo bench --locked --no-default-features
+        --features "lod_build_sh3,lod,testing"
+        --bench lod -- --noplot

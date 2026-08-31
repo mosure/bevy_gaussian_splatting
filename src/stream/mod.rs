@@ -7,7 +7,19 @@ pub mod hierarchy;
 #[cfg(feature = "lod")]
 pub mod http;
 #[cfg(feature = "lod")]
+pub mod lodge;
+// The portable LODGE format and CPU pair planner remain available in every
+// `lod` build.  Resident ECS presentation additionally needs the storage-
+// buffer radix consumer; WebGL2/buffer-texture builds must not compile a
+// component which they cannot make drawable.
+#[cfg(lod_render_path)]
+pub mod lodge_resident;
+#[cfg(feature = "lod")]
+pub mod lodge_status;
+#[cfg(feature = "lod")]
 pub mod package;
+#[cfg(feature = "lod")]
+pub mod package_source;
 #[cfg(feature = "lod")]
 pub mod persistent_cache;
 #[cfg(feature = "lod")]

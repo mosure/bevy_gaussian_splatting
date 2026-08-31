@@ -10,6 +10,9 @@ pub mod hierarchy;
 
 use std::fmt;
 
+#[cfg(feature = "sort_rayon")]
+use rayon::prelude::*;
+
 use crate::gaussian::formats::{
     planar_3d::Gaussian3d,
     planar_3d_chunked::{LodBounds, LodBoundsError},
@@ -96,41 +99,70 @@ pub fn preprocess_lod_batch_cpu(
         support_sigma,
     )?;
 
-    let mut output = Vec::with_capacity(records.len());
-    for (local_index, gaussian) in records.iter().enumerate() {
-        let source_index = source_index_base + local_index as u64;
-        let status = validate_record(gaussian, normalization_bounds);
-        if !status.is_valid() {
-            output.push(LodPreprocessRecord {
-                source_index,
-                morton: 0,
-                support_bounds: None,
-                status,
-            });
-            continue;
-        }
-
-        let position = gaussian.position_visibility.position;
-        let mut status = status;
-        let support_bounds = match gaussian_support_bounds(gaussian, support_sigma) {
-            Ok(bounds) => Some(bounds),
-            Err(_) => {
-                status.insert(LodPreprocessStatus::DERIVED_NON_FINITE);
-                None
-            }
-        };
-        output.push(LodPreprocessRecord {
-            source_index,
-            morton: if status.is_valid() {
-                canonical_lod_morton_code(position, normalization_bounds)
-            } else {
-                0
-            },
-            support_bounds,
-            status,
-        });
-    }
+    #[cfg(feature = "sort_rayon")]
+    let output = records
+        .par_iter()
+        .enumerate()
+        .map(|(local_index, gaussian)| {
+            preprocess_lod_record(
+                gaussian,
+                source_index_base + local_index as u64,
+                normalization_bounds,
+                support_sigma,
+            )
+        })
+        .collect();
+    #[cfg(not(feature = "sort_rayon"))]
+    let output = records
+        .iter()
+        .enumerate()
+        .map(|(local_index, gaussian)| {
+            preprocess_lod_record(
+                gaussian,
+                source_index_base + local_index as u64,
+                normalization_bounds,
+                support_sigma,
+            )
+        })
+        .collect();
     Ok(LodPreprocessBatchOutput { records: output })
+}
+
+fn preprocess_lod_record(
+    gaussian: &Gaussian3d,
+    source_index: u64,
+    normalization_bounds: LodBounds,
+    support_sigma: f32,
+) -> LodPreprocessRecord {
+    let status = validate_record(gaussian, normalization_bounds);
+    if !status.is_valid() {
+        return LodPreprocessRecord {
+            source_index,
+            morton: 0,
+            support_bounds: None,
+            status,
+        };
+    }
+
+    let position = gaussian.position_visibility.position;
+    let mut status = status;
+    let support_bounds = match gaussian_support_bounds(gaussian, support_sigma) {
+        Ok(bounds) => Some(bounds),
+        Err(_) => {
+            status.insert(LodPreprocessStatus::DERIVED_NON_FINITE);
+            None
+        }
+    };
+    LodPreprocessRecord {
+        source_index,
+        morton: if status.is_valid() {
+            canonical_lod_morton_code(position, normalization_bounds)
+        } else {
+            0
+        },
+        support_bounds,
+        status,
+    }
 }
 
 fn validate_batch_inputs(

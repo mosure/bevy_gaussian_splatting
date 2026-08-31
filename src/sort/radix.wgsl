@@ -9,11 +9,6 @@
     output_entries,
     Entry,
 }
-#import bevy_gaussian_splatting::transform::{
-    world_to_clip,
-    in_frustum,
-}
-
 #ifdef PACKED_F32
 #import bevy_gaussian_splatting::packed::{get_position, get_visibility}
 #else
@@ -122,12 +117,14 @@ fn radix_sort_a(
         var key: u32 = 0xFFFFFFFFu;
         let position = vec4<f32>(get_position(entry_index), 1.0);
         let transformed_position = (gaussian_uniforms.transform * position).xyz;
-        let clip_space_pos = world_to_clip(transformed_position);
         let diff = transformed_position - view.world_position;
         let dist2 = dot(diff, diff);
         let dist_bits = bitcast<u32>(dist2);
         let key_distance = 0xFFFFFFFFu - dist_bits;
-        if (in_frustum(clip_space_pos.xyz) && get_visibility(entry_index) > 0.0) {
+        // Rotation-stable global pre-sort only: per-frame support-frustum
+        // culling belongs to the raster vertex stage. This is not per-pixel
+        // StopThePop ordering.
+        if (get_visibility(entry_index) > 0.0) {
             key = key_distance;
         }
         key = key >> #{RADIX_KEY_SHIFT}u;

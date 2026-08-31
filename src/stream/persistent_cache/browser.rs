@@ -882,7 +882,6 @@ impl<Upstream: LodPageTransport> SharedBrowserPersistentCachePageTransport<Upstr
         let identity = self
             .identities
             .get(page)
-            .cloned()
             .ok_or(PersistentCacheTransportError::MissingIdentity(page))?;
         self.invalidations
             .insert(page, BrowserCacheInvalidation::Queued(identity));

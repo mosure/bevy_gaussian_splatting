@@ -18,13 +18,25 @@ run() {
 run "${cargo_cmd[@]}" fmt --all -- --check
 run git diff --check
 
+# Keep the promoted documentation and viewer language aligned with the
+# persistent per-view edge renderer. Historical reports may retain measured
+# frame counts, but not the removed shared-clock contract.
+stale_lod_contract='12-render-frame optical-depth morph|12 visible morph frames|one shared morph over 12 render frames|without an aggregate publication barrier|do not yet have an aggregate barrier'
+if grep -En "${stale_lod_contract}" \
+  docs/lod.md docs/lod_garden_report.md viewer/viewer.rs src/stream/status.rs; then
+  printf 'stale shared-clock LoD presentation language detected\n' >&2
+  exit 1
+fi
+
 run "${cargo_cmd[@]}" check --locked --lib
 run "${cargo_cmd[@]}" check --locked --no-default-features \
-  --bin build_lod --features 'lod_build'
+  --bin build_lod --features 'lod_build_sh3'
+run "${cargo_cmd[@]}" check --locked --no-default-features \
+  --bin build_lod --features 'lod_build_sh0'
 run "${cargo_cmd[@]}" test --locked
-run "${cargo_cmd[@]}" test --locked --lib --features 'lod_build testing'
+run "${cargo_cmd[@]}" test --locked --lib --features 'lod_build_sh3 testing'
 run "${cargo_cmd[@]}" clippy --locked --all-targets \
-  --features 'lod_build testing' -- -D warnings
+  --features 'lod_build_sh3 testing' -- -D warnings
 
 supported='planar lod_render sh0 testing io_flexbuffers'
 precomputed="${supported} precompute_covariance_3d"
@@ -52,10 +64,10 @@ run "${cargo_cmd[@]}" test --locked --lib --target wasm32-unknown-unknown \
   --no-run --no-default-features \
   --features 'planar lod_render sh0 io_flexbuffers'
 run "${cargo_cmd[@]}" check --locked --target wasm32-unknown-unknown \
-  --no-default-features --features 'lod_build' --bin build_lod
+  --no-default-features --features 'lod_build_sh0' --bin build_lod
 
 run cargo +nightly check --locked --manifest-path fuzz/Cargo.toml --bins
 
-run "${cargo_cmd[@]}" doc --locked --lib --no-deps --features 'lod_build testing'
+run "${cargo_cmd[@]}" doc --locked --lib --no-deps --features 'lod_build_sh3 testing'
 run "${cargo_cmd[@]}" package --list --locked --allow-dirty
 run "${cargo_cmd[@]}" publish --dry-run --locked --allow-dirty

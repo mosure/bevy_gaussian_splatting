@@ -8,8 +8,6 @@
 
 const SH_PLANES: u32 = __SH_VEC4_PLANES__u;
 const SH_COEFFICIENTS: f32 = __SH_COEFF_COUNT__.0;
-const MORTON_BITS_PER_AXIS: u32 = __LOD_MORTON_BITS_PER_AXIS__u;
-const MORTON_AXIS_MAX: f32 = __LOD_MORTON_AXIS_MAX__.0;
 const EPSILON: f32 = 1.1920929e-7;
 
 const STATUS_POSITION_NON_FINITE: u32 = 1u;
@@ -180,34 +178,6 @@ fn validate_gaussian(gaussian: GaussianInput) -> u32 {
     return result;
 }
 
-fn quantize_axis(value: f32, lower: f32, upper: f32) -> u32 {
-    let extent = upper - lower;
-    if (extent <= 0.0) { return 0u; }
-    let normalized = clamp((value - lower) / extent, 0.0, 1.0);
-    return u32(floor(normalized * MORTON_AXIS_MAX));
-}
-
-fn morton_key(position: vec3<f32>) -> vec2<u32> {
-    let quantized = vec3<u32>(
-        quantize_axis(position.x, globals.normalization_min.x, globals.normalization_max.x),
-        quantize_axis(position.y, globals.normalization_min.y, globals.normalization_max.y),
-        quantize_axis(position.z, globals.normalization_min.z, globals.normalization_max.z),
-    );
-    var key = vec2<u32>(0u);
-    for (var bit = 0u; bit < MORTON_BITS_PER_AXIS; bit = bit + 1u) {
-        for (var axis = 0u; axis < 3u; axis = axis + 1u) {
-            let output_bit = 3u * bit + axis;
-            let source_bit = (quantized[axis] >> bit) & 1u;
-            if (output_bit < 32u) {
-                key.x = key.x | (source_bit << output_bit);
-            } else {
-                key.y = key.y | (source_bit << (output_bit - 32u));
-            }
-        }
-    }
-    return key;
-}
-
 fn compare_u32(left: u32, right: u32) -> i32 {
     if (left < right) { return -1; }
     if (left > right) { return 1; }
@@ -215,8 +185,10 @@ fn compare_u32(left: u32, right: u32) -> i32 {
 }
 
 fn ordered_float(value: f32) -> u32 {
-    var bits = bitcast<u32>(value);
-    if (value == 0.0) { bits = 0u; }
+    // The host canonicalizes signed zero before upload. Keep this comparison
+    // bit-only: arithmetic/equality on a subnormal may be flushed to zero by
+    // the device, collapsing distinct canonical CPU payload keys.
+    let bits = bitcast<u32>(value);
     return bits ^ select(0x80000000u, 0xffffffffu, (bits & 0x80000000u) != 0u);
 }
 
@@ -270,22 +242,11 @@ fn compare_entries(left: SortEntry, right: SortEntry) -> i32 {
 @compute @workgroup_size(256)
 fn initialize(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let index = invocation.x;
-    if (index >= globals.counts.y) { return; }
-    var entry: SortEntry;
-    entry.key_and_source = vec4<u32>(0xffffffffu);
-    entry.input_and_valid = vec4<u32>(index, 0u, 0u, 0u);
-    if (index < globals.counts.x) {
-        let source_low = globals.counts.z + index;
-        let carry = select(0u, 1u, source_low < globals.counts.z);
-        let source_high = globals.counts.w + carry;
-        let gaussian = inputs[index];
-        let status = validate_gaussian(gaussian);
-        statuses[index] = status;
-        let key = morton_key(gaussian.position_visibility.xyz);
-        entry.key_and_source = vec4<u32>(key, source_low, source_high);
-        entry.input_and_valid.y = 1u;
-    }
-    entries[index] = entry;
+    if (index >= globals.counts.x) { return; }
+    // Sort entries, including invalid padding, are initialized by the host.
+    // The GPU consumes only the uploaded integer Morton/source tuple and must
+    // never derive a package-ordering key from adapter floating-point math.
+    statuses[index] = validate_gaussian(inputs[index]);
 }
 
 @compute @workgroup_size(256)

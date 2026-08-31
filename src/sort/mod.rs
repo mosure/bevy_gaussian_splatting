@@ -23,7 +23,18 @@ use static_assertions::assert_cfg;
 use crate::{CloudSettings, camera::GaussianCamera, gaussian::interface::CommonCloud};
 
 #[cfg(feature = "lod")]
-use crate::stream::bridge::GaussianLodBridgeUpdate;
+use crate::stream::{
+    atlas_upload::LodTransientAtlasRegistry, bridge::GaussianLodBridgeUpdate,
+    package::GaussianLodPackageUpdate,
+};
+
+#[cfg(feature = "lod")]
+#[derive(SystemSet, Clone, Debug, Eq, Hash, PartialEq)]
+struct SortStorageResize;
+
+#[cfg(feature = "lod")]
+#[derive(SystemSet, Clone, Debug, Eq, Hash, PartialEq)]
+struct SortStorageCleanup;
 
 #[cfg(feature = "sort_bitonic")]
 pub mod bitonic;
@@ -115,7 +126,24 @@ where
         #[cfg(feature = "sort_std")]
         app.add_plugins(std_sort::StdSortPlugin::<R>::default());
 
-        app.add_systems(Update, auto_insert_sorted_entries::<R>);
+        app.add_systems(
+            Update,
+            (
+                auto_insert_sorted_entries::<R>,
+                update_sorted_entries_sizes::<R>,
+            ),
+        );
+
+        #[cfg(feature = "lod")]
+        app.add_systems(
+            PostUpdate,
+            (
+                auto_insert_sorted_entries::<R>,
+                update_sorted_entries_sizes::<R>,
+            )
+                .chain()
+                .in_set(SortStorageResize),
+        );
 
         if app.is_plugin_added::<SortPluginFlag>() {
             debug!("sort plugin flag already added");
@@ -136,15 +164,21 @@ where
 
         app.add_plugins(RenderAssetPlugin::<GpuSortedEntry>::default());
 
-        app.add_systems(
-            Update,
-            (update_sort_trigger, update_sorted_entries_sizes::<R>),
-        );
+        app.add_systems(Update, update_sort_trigger);
 
         #[cfg(feature = "lod")]
-        app.add_systems(
+        app.configure_sets(
             PostUpdate,
-            update_sorted_entries_sizes::<R>.after(GaussianLodBridgeUpdate),
+            (
+                SortStorageResize
+                    .after(GaussianLodBridgeUpdate)
+                    .after(GaussianLodPackageUpdate),
+                SortStorageCleanup.after(SortStorageResize),
+            ),
+        )
+        .add_systems(
+            PostUpdate,
+            cleanup_orphaned_sorted_entries.in_set(SortStorageCleanup),
         );
 
         #[cfg(feature = "buffer_texture")]
@@ -232,6 +266,7 @@ fn auto_insert_sorted_entries<R: PlanarSync>(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     gaussian_clouds_res: Res<Assets<R::PlanarType>>,
+    #[cfg(feature = "lod")] transient_atlases: Option<Res<LodTransientAtlasRegistry>>,
     mut sorted_entries_res: ResMut<Assets<SortedEntries>>,
     gaussian_clouds: Query<
         (Entity, &R::PlanarTypeHandle, &CloudSettings),
@@ -262,16 +297,19 @@ fn auto_insert_sorted_entries<R: PlanarSync>(
             continue;
         }
 
-        let cloud = gaussian_clouds_res.get(gaussian_cloud_handle.handle());
-        if cloud.is_none() {
+        let Some(required_entry_count) = required_sort_entry_capacity::<R>(
+            &gaussian_clouds_res,
+            gaussian_cloud_handle,
+            #[cfg(feature = "lod")]
+            transient_atlases.as_deref(),
+        ) else {
             debug!("cloud asset is not loaded");
             continue;
-        }
-        let cloud = cloud.unwrap();
+        };
 
         let sorted_entries = sorted_entries_res.add(SortedEntries::new(
             camera_count,
-            cloud.len_sqrt_ceil().pow(2),
+            required_entry_count,
             #[cfg(feature = "buffer_texture")]
             &mut images,
         ));
@@ -283,9 +321,11 @@ fn auto_insert_sorted_entries<R: PlanarSync>(
 }
 
 fn update_sorted_entries_sizes<R: PlanarSync>(
+    mut commands: Commands,
     gaussian_clouds_res: Res<Assets<R::PlanarType>>,
+    #[cfg(feature = "lod")] transient_atlases: Option<Res<LodTransientAtlasRegistry>>,
     mut sorted_entries_res: ResMut<Assets<SortedEntries>>,
-    sorted_entries: Query<(&R::PlanarTypeHandle, &SortedEntriesHandle)>,
+    sorted_entries: Query<(Entity, &R::PlanarTypeHandle, &SortedEntriesHandle)>,
     gaussian_cameras: Query<Entity, (With<Camera>, With<GaussianCamera>)>,
     #[cfg(feature = "buffer_texture")] mut images: ResMut<Assets<Image>>,
 ) where
@@ -293,16 +333,21 @@ fn update_sorted_entries_sizes<R: PlanarSync>(
 {
     let camera_count: usize = gaussian_cameras.iter().len();
 
-    for (cloud_handle, sorted_handle) in sorted_entries.iter() {
+    for (entity, cloud_handle, sorted_handle) in sorted_entries.iter() {
         if camera_count == 0 {
             sorted_entries_res.remove(sorted_handle);
+            commands.entity(entity).remove::<SortedEntriesHandle>();
             continue;
         }
 
-        let Some(cloud) = gaussian_clouds_res.get(cloud_handle.handle()) else {
+        let Some(required_entry_count) = required_sort_entry_capacity::<R>(
+            &gaussian_clouds_res,
+            cloud_handle,
+            #[cfg(feature = "lod")]
+            transient_atlases.as_deref(),
+        ) else {
             continue;
         };
-        let required_entry_count = cloud.len_sqrt_ceil().pow(2);
         if let Some(sorted_entries) = sorted_entries_res.get(sorted_handle)
             && (sorted_entries.camera_count != camera_count
                 || sorted_entries.entry_count < required_entry_count)
@@ -323,6 +368,59 @@ fn update_sorted_entries_sizes<R: PlanarSync>(
             let _ = sorted_entries_res.insert(sorted_handle, new_entry);
         }
     }
+}
+
+#[cfg(feature = "lod")]
+type OrphanedSortedEntriesQuery<'w, 's> = Query<
+    'w,
+    's,
+    (Entity, &'static SortedEntriesHandle),
+    (
+        Without<crate::PlanarGaussian3dHandle>,
+        Without<crate::PlanarGaussian4dHandle>,
+    ),
+>;
+
+#[cfg(feature = "lod")]
+/// Releases sort storage left behind when orchestration removes a cloud handle.
+/// Both built-in planar handles are excluded so one representation's maintenance
+/// can never tear down the other's live storage.
+fn cleanup_orphaned_sorted_entries(
+    mut commands: Commands,
+    mut sorted_entries_res: ResMut<Assets<SortedEntries>>,
+    orphaned: OrphanedSortedEntriesQuery<'_, '_>,
+) {
+    for (entity, sorted_handle) in &orphaned {
+        sorted_entries_res.remove(sorted_handle);
+        commands.entity(entity).remove::<SortedEntriesHandle>();
+    }
+}
+
+fn required_sort_entry_capacity<R: PlanarSync>(
+    gaussian_clouds: &Assets<R::PlanarType>,
+    cloud_handle: &R::PlanarTypeHandle,
+    #[cfg(feature = "lod")] transient_atlases: Option<&LodTransientAtlasRegistry>,
+) -> Option<usize>
+where
+    R::PlanarType: CommonCloud,
+{
+    let dense_count = gaussian_clouds.get(cloud_handle.handle()).map(Planar::len);
+    #[cfg(feature = "lod")]
+    let count = dense_count.or_else(|| {
+        transient_atlases
+            .and_then(|atlases| atlases.physical_gaussians(cloud_handle.handle().id().untyped()))
+            .and_then(|count| usize::try_from(count).ok())
+    });
+    #[cfg(not(feature = "lod"))]
+    let count = dense_count;
+    square_sort_entry_capacity(count?)
+}
+
+fn square_sort_entry_capacity(count: usize) -> Option<usize> {
+    let floor = count.isqrt();
+    let exact_square = floor.checked_mul(floor) == Some(count);
+    let side = floor.checked_add(usize::from(!exact_square))?;
+    side.checked_mul(side)
 }
 
 /// Returns the exact binding size for one camera's sort entries, or `None`
@@ -493,10 +591,19 @@ mod tests {
     use crate::gaussian::formats::planar_3d::{
         Gaussian3d, PlanarGaussian3d, PlanarGaussian3dHandle,
     };
+    use crate::gaussian::formats::planar_4d::{
+        Gaussian4d, PlanarGaussian4d, PlanarGaussian4dHandle,
+    };
+    #[cfg(feature = "lod")]
+    use crate::stream::atlas_upload::LodTransientAtlas;
 
     #[cfg(feature = "lod")]
     #[derive(Resource)]
     struct PendingCloudHandle(Handle<PlanarGaussian3d>);
+
+    #[cfg(feature = "lod")]
+    #[derive(Resource, Default)]
+    struct FailPackageHandle(bool);
 
     #[cfg(feature = "lod")]
     fn apply_pending_cloud_handle(
@@ -508,6 +615,490 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "lod")]
+    fn insert_pending_cloud_handle(
+        mut commands: Commands,
+        pending: Res<PendingCloudHandle>,
+        clouds: Query<Entity, (With<CloudSettings>, Without<PlanarGaussian3dHandle>)>,
+    ) {
+        for cloud in &clouds {
+            commands
+                .entity(cloud)
+                .insert(PlanarGaussian3dHandle(pending.0.clone()));
+        }
+    }
+
+    #[cfg(feature = "lod")]
+    fn remove_failed_package_handle(
+        failure: Res<FailPackageHandle>,
+        mut commands: Commands,
+        clouds: Query<Entity, With<PlanarGaussian3dHandle>>,
+    ) {
+        if !failure.0 {
+            return;
+        }
+        for cloud in &clouds {
+            commands.entity(cloud).remove::<PlanarGaussian3dHandle>();
+        }
+    }
+
+    #[cfg(feature = "lod")]
+    #[test]
+    fn reserved_transient_cloud_gets_sized_sort_storage_without_dense_asset() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(AssetPlugin::default())
+            .init_asset::<PlanarGaussian3d>()
+            .init_asset::<SortedEntries>()
+            .init_resource::<LodTransientAtlasRegistry>()
+            .add_systems(
+                Update,
+                (
+                    auto_insert_sorted_entries::<Gaussian3d>,
+                    update_sorted_entries_sizes::<Gaussian3d>,
+                )
+                    .chain(),
+            )
+            .add_systems(
+                PostUpdate,
+                insert_pending_cloud_handle.in_set(GaussianLodPackageUpdate),
+            )
+            .add_systems(
+                PostUpdate,
+                (
+                    auto_insert_sorted_entries::<Gaussian3d>,
+                    update_sorted_entries_sizes::<Gaussian3d>,
+                )
+                    .chain()
+                    .after(GaussianLodPackageUpdate),
+            );
+
+        let atlas = app
+            .world_mut()
+            .resource_mut::<Assets<PlanarGaussian3d>>()
+            .reserve_handle();
+        let transient = LodTransientAtlas::new_empty(65).unwrap();
+        app.world_mut()
+            .resource_mut::<LodTransientAtlasRegistry>()
+            .register(atlas.id(), atlas.id(), 65, 1, &transient)
+            .unwrap();
+        app.insert_resource(PendingCloudHandle(atlas.clone()));
+        assert!(
+            app.world()
+                .resource::<Assets<PlanarGaussian3d>>()
+                .get(&atlas)
+                .is_none(),
+            "the sparse transient path must not create a dense main-world cloud"
+        );
+
+        let cloud = app.world_mut().spawn(CloudSettings::default()).id();
+        app.world_mut()
+            .spawn((Camera::default(), GaussianCamera::default()));
+
+        app.update();
+
+        let sorted_handle = app
+            .world()
+            .get::<SortedEntriesHandle>(cloud)
+            .expect("a live transient cloud receives sort storage");
+        let sorted = app
+            .world()
+            .resource::<Assets<SortedEntries>>()
+            .get(sorted_handle)
+            .expect("the transient cloud sort storage remains live");
+        assert_eq!(sorted.camera_count, 1);
+        assert_eq!(sorted.entry_count, 81);
+
+        let old_atlas = app
+            .world()
+            .get::<PlanarGaussian3dHandle>(cloud)
+            .unwrap()
+            .0
+            .id();
+        assert!(
+            app.world_mut()
+                .resource_mut::<LodTransientAtlasRegistry>()
+                .unregister(old_atlas)
+        );
+        drop(transient);
+        let replacement = app
+            .world_mut()
+            .resource_mut::<Assets<PlanarGaussian3d>>()
+            .reserve_handle();
+        let replacement_transient = LodTransientAtlas::new_empty(130).unwrap();
+        app.world_mut()
+            .resource_mut::<LodTransientAtlasRegistry>()
+            .register(
+                replacement.id(),
+                replacement.id(),
+                130,
+                1,
+                &replacement_transient,
+            )
+            .unwrap();
+        app.world_mut()
+            .entity_mut(cloud)
+            .insert(PlanarGaussian3dHandle(replacement));
+
+        app.update();
+
+        let sorted_handle = app.world().get::<SortedEntriesHandle>(cloud).unwrap();
+        let sorted = app
+            .world()
+            .resource::<Assets<SortedEntries>>()
+            .get(sorted_handle)
+            .unwrap();
+        assert_eq!(sorted.camera_count, 1);
+        assert_eq!(sorted.entry_count, 144);
+    }
+
+    #[test]
+    fn sort_storage_is_recreated_after_the_last_camera_returns() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(AssetPlugin::default())
+            .init_asset::<PlanarGaussian3d>()
+            .init_asset::<SortedEntries>()
+            .add_systems(
+                Update,
+                (
+                    auto_insert_sorted_entries::<Gaussian3d>,
+                    update_sorted_entries_sizes::<Gaussian3d>,
+                )
+                    .chain(),
+            );
+
+        let cloud_asset = app
+            .world_mut()
+            .resource_mut::<Assets<PlanarGaussian3d>>()
+            .add(PlanarGaussian3d::from(vec![Gaussian3d::default(); 65]));
+        let cloud = app
+            .world_mut()
+            .spawn((
+                PlanarGaussian3dHandle(cloud_asset),
+                CloudSettings::default(),
+            ))
+            .id();
+        let camera = app
+            .world_mut()
+            .spawn((Camera::default(), GaussianCamera::default()))
+            .id();
+
+        app.update();
+        let first_sorted = app
+            .world()
+            .get::<SortedEntriesHandle>(cloud)
+            .expect("a live camera creates sort storage")
+            .0
+            .clone();
+        assert_eq!(
+            app.world()
+                .resource::<Assets<SortedEntries>>()
+                .get(&first_sorted)
+                .unwrap()
+                .entry_count,
+            81
+        );
+
+        assert!(app.world_mut().despawn(camera));
+        app.update();
+        assert!(app.world().get::<SortedEntriesHandle>(cloud).is_none());
+        assert!(
+            app.world()
+                .resource::<Assets<SortedEntries>>()
+                .get(&first_sorted)
+                .is_none(),
+            "the zero-camera lifecycle must release the old sort asset"
+        );
+
+        app.world_mut()
+            .spawn((Camera::default(), GaussianCamera::default()));
+        app.update();
+        let recreated = app
+            .world()
+            .get::<SortedEntriesHandle>(cloud)
+            .expect("camera recreation must recreate sort storage");
+        let recreated = app
+            .world()
+            .resource::<Assets<SortedEntries>>()
+            .get(recreated)
+            .expect("the recreated sort handle must address a live asset");
+        assert_eq!(recreated.camera_count, 1);
+        assert_eq!(recreated.entry_count, 81);
+    }
+
+    #[cfg(feature = "lod")]
+    #[test]
+    fn recreated_transient_sort_storage_uses_the_current_registry_capacity() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(AssetPlugin::default())
+            .init_asset::<PlanarGaussian3d>()
+            .init_asset::<SortedEntries>()
+            .init_resource::<LodTransientAtlasRegistry>()
+            .add_systems(
+                Update,
+                (
+                    auto_insert_sorted_entries::<Gaussian3d>,
+                    update_sorted_entries_sizes::<Gaussian3d>,
+                )
+                    .chain(),
+            );
+
+        let first_atlas = app
+            .world_mut()
+            .resource_mut::<Assets<PlanarGaussian3d>>()
+            .reserve_handle();
+        let first_owner = LodTransientAtlas::new_empty(65).unwrap();
+        app.world_mut()
+            .resource_mut::<LodTransientAtlasRegistry>()
+            .register(first_atlas.id(), first_atlas.id(), 65, 1, &first_owner)
+            .unwrap();
+        let cloud = app
+            .world_mut()
+            .spawn((
+                PlanarGaussian3dHandle(first_atlas.clone()),
+                CloudSettings::default(),
+            ))
+            .id();
+        let camera = app
+            .world_mut()
+            .spawn((Camera::default(), GaussianCamera::default()))
+            .id();
+
+        app.update();
+        let first_sorted = app
+            .world()
+            .get::<SortedEntriesHandle>(cloud)
+            .expect("the first transient atlas receives sort storage")
+            .0
+            .clone();
+        assert_eq!(
+            app.world()
+                .resource::<Assets<SortedEntries>>()
+                .get(&first_sorted)
+                .unwrap()
+                .entry_count,
+            81
+        );
+
+        assert!(app.world_mut().despawn(camera));
+        app.update();
+        assert!(app.world().get::<SortedEntriesHandle>(cloud).is_none());
+
+        assert!(
+            app.world_mut()
+                .resource_mut::<LodTransientAtlasRegistry>()
+                .unregister(first_atlas.id())
+        );
+        drop(first_owner);
+        let replacement = app
+            .world_mut()
+            .resource_mut::<Assets<PlanarGaussian3d>>()
+            .reserve_handle();
+        let replacement_owner = LodTransientAtlas::new_empty(130).unwrap();
+        app.world_mut()
+            .resource_mut::<LodTransientAtlasRegistry>()
+            .register(
+                replacement.id(),
+                replacement.id(),
+                130,
+                1,
+                &replacement_owner,
+            )
+            .unwrap();
+        app.world_mut()
+            .entity_mut(cloud)
+            .insert(PlanarGaussian3dHandle(replacement));
+        app.world_mut()
+            .spawn((Camera::default(), GaussianCamera::default()));
+
+        app.update();
+        let recreated = app
+            .world()
+            .get::<SortedEntriesHandle>(cloud)
+            .expect("the replacement transient atlas receives recreated sort storage");
+        let recreated = app
+            .world()
+            .resource::<Assets<SortedEntries>>()
+            .get(recreated)
+            .expect("the replacement sort asset remains live");
+        assert_eq!(recreated.camera_count, 1);
+        assert_eq!(recreated.entry_count, 144);
+    }
+
+    #[test]
+    fn reversed_representation_plugin_order_registers_both_sort_lifecycles() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(AssetPlugin::default())
+            .add_plugins(bevy::render::sync_world::SyncWorldPlugin)
+            .init_asset::<PlanarGaussian3d>()
+            .init_asset::<PlanarGaussian4d>()
+            .init_asset::<Shader>()
+            .add_plugins((
+                SortPlugin::<Gaussian4d>::default(),
+                SortPlugin::<Gaussian3d>::default(),
+            ));
+
+        let small_3d = app
+            .world_mut()
+            .resource_mut::<Assets<PlanarGaussian3d>>()
+            .add(PlanarGaussian3d::from(vec![Gaussian3d::default(); 4]));
+        let large_3d = app
+            .world_mut()
+            .resource_mut::<Assets<PlanarGaussian3d>>()
+            .add(PlanarGaussian3d::from(vec![Gaussian3d::default(); 65]));
+        let small_4d = app
+            .world_mut()
+            .resource_mut::<Assets<PlanarGaussian4d>>()
+            .add(PlanarGaussian4d::from(vec![Gaussian4d::default(); 9]));
+        let large_4d = app
+            .world_mut()
+            .resource_mut::<Assets<PlanarGaussian4d>>()
+            .add(PlanarGaussian4d::from(vec![Gaussian4d::default(); 130]));
+        let cloud_3d = app
+            .world_mut()
+            .spawn((
+                PlanarGaussian3dHandle(small_3d),
+                CloudSettings::default(),
+                GlobalTransform::IDENTITY,
+            ))
+            .id();
+        let cloud_4d = app
+            .world_mut()
+            .spawn((
+                PlanarGaussian4dHandle(small_4d),
+                CloudSettings::default(),
+                GlobalTransform::IDENTITY,
+            ))
+            .id();
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera::default(),
+                GaussianCamera::default(),
+                GlobalTransform::IDENTITY,
+            ))
+            .id();
+
+        app.update();
+        app.world_mut()
+            .entity_mut(cloud_3d)
+            .insert(PlanarGaussian3dHandle(large_3d));
+        app.world_mut()
+            .entity_mut(cloud_4d)
+            .insert(PlanarGaussian4dHandle(large_4d));
+        app.update();
+
+        let sort_assets = app.world().resource::<Assets<SortedEntries>>();
+        assert_eq!(
+            sort_assets
+                .get(app.world().get::<SortedEntriesHandle>(cloud_3d).unwrap())
+                .unwrap()
+                .entry_count,
+            81,
+            "3D must resize even when its sort plugin is registered second"
+        );
+        assert_eq!(
+            sort_assets
+                .get(app.world().get::<SortedEntriesHandle>(cloud_4d).unwrap())
+                .unwrap()
+                .entry_count,
+            144,
+            "4D must retain its independently registered resize lifecycle"
+        );
+
+        assert!(app.world_mut().despawn(camera));
+        app.update();
+        assert!(app.world().get::<SortedEntriesHandle>(cloud_3d).is_none());
+        assert!(app.world().get::<SortedEntriesHandle>(cloud_4d).is_none());
+
+        app.world_mut().spawn((
+            Camera::default(),
+            GaussianCamera::default(),
+            GlobalTransform::IDENTITY,
+        ));
+        app.update();
+        let sort_assets = app.world().resource::<Assets<SortedEntries>>();
+        assert_eq!(
+            sort_assets
+                .get(app.world().get::<SortedEntriesHandle>(cloud_3d).unwrap())
+                .unwrap()
+                .entry_count,
+            81
+        );
+        assert_eq!(
+            sort_assets
+                .get(app.world().get::<SortedEntriesHandle>(cloud_4d).unwrap())
+                .unwrap()
+                .entry_count,
+            144
+        );
+    }
+
+    #[cfg(feature = "lod")]
+    #[test]
+    fn failed_package_handle_cleanup_releases_orphaned_sort_storage() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(AssetPlugin::default())
+            .add_plugins(bevy::render::sync_world::SyncWorldPlugin)
+            .init_asset::<PlanarGaussian3d>()
+            .init_asset::<Shader>()
+            .init_resource::<FailPackageHandle>()
+            .add_plugins(SortPlugin::<Gaussian3d>::default())
+            .add_systems(
+                PostUpdate,
+                remove_failed_package_handle.in_set(GaussianLodPackageUpdate),
+            );
+
+        let cloud_asset = app
+            .world_mut()
+            .resource_mut::<Assets<PlanarGaussian3d>>()
+            .add(PlanarGaussian3d::from(vec![Gaussian3d::default(); 65]));
+        let cloud = app
+            .world_mut()
+            .spawn((
+                PlanarGaussian3dHandle(cloud_asset),
+                CloudSettings::default(),
+                GlobalTransform::IDENTITY,
+            ))
+            .id();
+        app.world_mut().spawn((
+            Camera::default(),
+            GaussianCamera::default(),
+            GlobalTransform::IDENTITY,
+        ));
+
+        app.update();
+        let sorted = app
+            .world()
+            .get::<SortedEntriesHandle>(cloud)
+            .expect("the live package handle receives sort storage")
+            .0
+            .clone();
+        assert!(
+            app.world()
+                .resource::<Assets<SortedEntries>>()
+                .get(&sorted)
+                .is_some()
+        );
+
+        app.world_mut().resource_mut::<FailPackageHandle>().0 = true;
+        app.update();
+
+        assert!(app.world().get::<PlanarGaussian3dHandle>(cloud).is_none());
+        assert!(app.world().get::<SortedEntriesHandle>(cloud).is_none());
+        assert!(
+            app.world()
+                .resource::<Assets<SortedEntries>>()
+                .get(&sorted)
+                .is_none(),
+            "a failed package must not retain its atlas-sized CPU/GPU sort asset"
+        );
+    }
+
     #[test]
     fn binding_size_rejects_an_older_smaller_entry_asset() {
         assert_eq!(sort_entry_binding_size(324, 2_048), None);
@@ -515,6 +1106,14 @@ mod tests {
             sort_entry_binding_size(2_116, 2_048),
             Some(2_048 * std::mem::size_of::<SortEntry>() as u64)
         );
+    }
+
+    #[test]
+    fn square_sort_capacity_uses_checked_integer_ceil_sqrt() {
+        assert_eq!(square_sort_entry_capacity(0), Some(0));
+        assert_eq!(square_sort_entry_capacity(64), Some(64));
+        assert_eq!(square_sort_entry_capacity(65), Some(81));
+        assert_eq!(square_sort_entry_capacity(usize::MAX), None);
     }
 
     #[test]

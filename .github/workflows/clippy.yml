@@ -32,7 +32,7 @@ jobs:
         enable-sccache: "false"
 
     - name: lint
-      run: cargo clippy --locked --all-targets --features="lod_build testing" -- -D warnings
+      run: cargo clippy --locked --all-targets --features="lod_build_sh3 testing" -- -D warnings
 
     - name: lint supported LoD profiles
       shell: bash

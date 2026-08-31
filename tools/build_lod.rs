@@ -1,5 +1,18 @@
 //! Build an atomically published, external-memory Gaussian LoD package.
 
+#[cfg(not(any(
+    feature = "sh0",
+    feature = "sh1",
+    feature = "sh2",
+    feature = "sh3",
+    feature = "sh4"
+)))]
+compile_error!(
+    "build_lod requires an explicit spherical-harmonic feature; use \
+     `--features lod_build_sh3` for canonical desktop assets or \
+     `--features lod_build_sh0` for the official web profile"
+);
+
 #[cfg(not(target_arch = "wasm32"))]
 use std::{error::Error, io, path::PathBuf, process::ExitCode};
 
@@ -9,10 +22,15 @@ use bevy_gaussian_splatting::{
         formats::planar_3d_lod::GaussianLodBuildSettings,
         lod_build_gpu::hierarchy::{GpuLodHierarchyBuilder, GpuLodHierarchyLimits},
     },
-    io::lod_build_external::{
-        CpuExternalLodBatchPreprocessor, ExternalLodBuildConfig, ExternalLodBuildLimits,
-        GpuHierarchyExternalLodBatchPreprocessor, PlyGaussianSource, build_external_lod_package,
+    io::{
+        lod::LodCodecLimits,
+        lod_build_external::{
+            CpuExternalLodBatchPreprocessor, ExternalLodBuildConfig, ExternalLodBuildLimits,
+            GpuHierarchyExternalLodBatchPreprocessor, PlyGaussianSource,
+            build_external_lod_package,
+        },
     },
+    material::spherical_harmonics::SH_DEGREE,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use clap::Parser;
@@ -27,12 +45,18 @@ type AnyResult<T> = Result<T, AnyError>;
 #[command(
     name = "build_lod",
     about = "Build a bounded external-memory Gaussian LoD package",
-    long_about = "Replays a PLY in bounded batches, creates deterministic Morton-sorted runs, performs bounded fan-in external merge, streams the canonical result into pages and a hierarchy, validates every artifact, and atomically publishes the completed package. --gpu-hierarchy performs per-run GPU canonical sort and then reduces the globally merged stream level-by-level on the GPU with bounded summary spills."
+    long_about = "Replays a PLY in bounded batches, creates deterministic Morton-sorted runs, performs bounded fan-in external merge, streams the canonical result into pages and a hierarchy, validates every artifact, and atomically publishes the completed package without replacing an existing or concurrently created output entry. --gpu-preprocess accelerates bounded canonical preprocessing and sorting; the quality-sensitive ABI 16 hierarchy remains on the deterministic CPU spatial MomentMerge v4 path."
 )]
 struct Args {
     /// Input 3D Gaussian Splatting PLY. The file must be replayable.
     #[arg(short, long)]
     input: PathBuf,
+
+    /// Allow higher-order PLY spherical-harmonic coefficients to be dropped
+    /// when the input degree exceeds the compiled SH profile. By default this
+    /// lossy conversion is rejected so exact leaves match their declared ABI.
+    #[arg(long)]
+    allow_sh_truncation: bool,
 
     /// New package directory. It must not already exist.
     #[arg(short, long)]
@@ -67,7 +91,7 @@ struct Args {
     max_merge_buffer_bytes: usize,
 
     /// Hard maximum logical source count.
-    #[arg(long, default_value_t = 250_000_000)]
+    #[arg(long, default_value_t = ExternalLodBuildLimits::DEFAULT_MAX_SOURCE_COUNT)]
     max_source_count: u64,
 
     /// Hard maximum number of initial spill runs.
@@ -79,15 +103,16 @@ struct Args {
     max_temporary_bytes: u64,
 
     /// Hard maximum hierarchy/page descriptors retained for the manifest.
-    #[arg(long, default_value_t = 2_000_000)]
+    #[arg(long, default_value_t = LodCodecLimits::DEFAULT_MAX_PAGES)]
     max_manifest_nodes: u32,
 
-    /// Hard encoded manifest byte limit.
-    #[arg(long, default_value_t = 512 * 1024 * 1024)]
+    /// Hard final encoded-manifest byte limit. A guaranteed minimum is checked
+    /// during planning; the exact Flexbuffers size is checked before publish.
+    #[arg(long, default_value_t = LodCodecLimits::DEFAULT_MAX_MANIFEST_BYTES)]
     max_manifest_bytes: u64,
 
     /// Hard encoded byte limit for any independently verified page.
-    #[arg(long, default_value_t = 256 * 1024 * 1024)]
+    #[arg(long, default_value_t = LodCodecLimits::DEFAULT_MAX_PAGE_BYTES)]
     max_page_bytes: u64,
 
     /// Hard maximum bytes in one immutable page shard, including its table.
@@ -107,20 +132,25 @@ struct Args {
     #[arg(long)]
     coarse_sh_degree: Option<u8>,
 
-    /// GPU-sort bounded runs, then GPU-reduce the globally merged hierarchy.
-    /// External I/O, exact topology, page encoding, fsync, and publication stay on CPU.
-    #[arg(long)]
-    gpu_hierarchy: bool,
+    /// GPU-accelerate bounded canonical preprocessing and run sorting. The
+    /// quality-sensitive progressive hierarchy, external I/O, page encoding,
+    /// fsync, and publication remain on CPU. `--gpu-hierarchy` is retained as
+    /// a compatibility alias for older build commands and automation.
+    #[arg(long, visible_alias = "gpu-hierarchy")]
+    gpu_preprocess: bool,
 
-    /// GPU hierarchy input-buffer safety bound; allocation remains batch-sized.
+    /// GPU canonical-sort input-buffer safety bound; allocation remains
+    /// batch-sized.
     #[arg(long, default_value_t = 256 * 1024 * 1024)]
     gpu_max_input_bytes: u64,
 
-    /// GPU hierarchy node-buffer safety bound; allocation remains batch-sized.
+    /// Compatibility scratch-node buffer bound reserved by the shared GPU sort
+    /// implementation. ABI 16 does not execute the legacy hierarchy reducer.
     #[arg(long, default_value_t = 64 * 1024 * 1024)]
     gpu_max_node_bytes: u64,
 
-    /// GPU input-plus-output summary capacity per global reduction batch.
+    /// Compatibility scratch-node capacity reserved by the shared GPU sort
+    /// implementation. ABI 16 does not execute a global reduction batch.
     #[arg(long, default_value_t = 131_072)]
     gpu_max_hierarchy_nodes: u32,
 
@@ -128,7 +158,8 @@ struct Args {
     #[arg(long, default_value_t = 1024)]
     gpu_max_hierarchy_commands: u32,
 
-    /// GPU sort/reduction readback safety bound per in-flight slot.
+    /// GPU canonical-sort readback safety bound per in-flight slot, including
+    /// compatibility scratch reserved by the shared implementation.
     #[arg(long, default_value_t = 256 * 1024 * 1024)]
     gpu_max_hierarchy_readback_bytes: u64,
 }
@@ -186,22 +217,22 @@ fn run(args: Args) -> AnyResult<()> {
         },
     }
     .validate()?;
-    let source = PlyGaussianSource::new(&args.input);
+    let source = PlyGaussianSource::new(&args.input).with_sh_truncation(args.allow_sh_truncation);
 
-    let report = if args.gpu_hierarchy {
+    let report = if args.gpu_preprocess {
         let instance = wgpu::Instance::default();
         let adapter = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(
             &instance, None,
         ))
         .map_err(|error| {
             invalid_input(format!(
-                "--gpu-hierarchy requested but no adapter is available: {error}"
+                "--gpu-preprocess requested but no adapter is available: {error}"
             ))
         })?;
-        eprintln!("GPU hierarchy adapter: {:?}", adapter.get_info());
+        eprintln!("GPU preprocessing adapter: {:?}", adapter.get_info());
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("external_gaussian_lod_hierarchy_builder"),
+                label: Some("external_gaussian_lod_preprocessor"),
                 ..Default::default()
             }))?;
         let limits = GpuLodHierarchyLimits {
@@ -228,8 +259,14 @@ fn run(args: Args) -> AnyResult<()> {
     };
 
     eprintln!(
-        "published '{}' via {} + {}: {} source Gaussians, {} initial runs/{} merge passes, {} nodes, {} pages in {} shards, {} stored records, largest encoded page {} bytes, largest shard {} bytes",
+        "published '{}' as SH{}{} via {} + {}: {} source Gaussians, {} initial runs/{} merge passes, {} nodes, {} pages in {} shards, {} stored records, largest encoded page {} bytes, largest shard {} bytes",
         args.output.display(),
+        SH_DEGREE,
+        if args.allow_sh_truncation {
+            " (input truncation allowed)"
+        } else {
+            ""
+        },
         report.preprocessing_stage,
         report.hierarchy_stage,
         report.source_count,
@@ -243,18 +280,36 @@ fn run(args: Args) -> AnyResult<()> {
         report.maximum_shard_bytes,
     );
     eprintln!(
-        "bounded working sets: spill host <= {} bytes, parallel merge host <= {} bytes, streamed merge/hierarchy handoff <= {} bytes, overlapping final merge+handoff <= {} bytes, reducer group <= {} records, global reduction batch <= {} records, page <= {} records, hierarchy level <= {} summaries, temporary runs <= {} bytes, summary spills <= {} bytes, aggregate temporary <= {} bytes",
+        "bounded working sets: spill host <= {} bytes, parallel merge host <= {} bytes, streamed merge/hierarchy handoff <= {} bytes, overlapping final merge+handoff <= {} bytes, streamed representative interval <= {} records, largest observed representative interval <= {} records, risk-aware domain <= {} records / {} host bytes, spatial sibling cohort <= {} source records / {} host bytes / {} node-pair checks / {} boundary probes, page <= {} records, hierarchy level <= {} nodes, morph runs <= {} records / {} bytes, overlapping morph source boundaries <= {} records / {} bytes, temporary runs+canonical spool <= {} bytes, compatibility summary scratch <= {} bytes, aggregate temporary <= {} bytes",
         report.maximum_spill_host_bytes,
         report.maximum_merge_host_bytes,
         report.maximum_stream_handoff_host_bytes,
         report.maximum_merge_hierarchy_overlap_host_bytes,
         report.maximum_reducer_input_records,
         report.maximum_global_reduction_batch_records,
+        report.maximum_risk_aware_source_records,
+        report.maximum_risk_aware_host_bytes,
+        report.maximum_spatial_cohort_source_records,
+        report.maximum_spatial_cohort_host_bytes,
+        report.maximum_spatial_node_pair_checks,
+        report.maximum_spatial_boundary_probes,
         report.maximum_page_records,
         report.maximum_hierarchy_level_summaries,
+        report.maximum_morph_run_records,
+        report.maximum_morph_run_bytes,
+        report.maximum_morph_source_boundary_records,
+        report.maximum_morph_source_boundary_bytes,
         report.maximum_temporary_run_bytes,
         report.maximum_temporary_summary_bytes,
         report.maximum_temporary_bytes,
+    );
+    eprintln!(
+        "spatial fit coverage: {} authored-support touching within-cohort node pairs ({} measured, {} source-less/unmeasured), <= {} cross-cohort same-depth pairs require image-oracle qualification, mixed-depth pairs jointly fitted: {}",
+        report.spatial_touching_node_pairs,
+        report.spatial_measured_touching_node_pairs,
+        report.spatial_unmeasured_touching_node_pairs,
+        report.spatial_cross_cohort_pair_upper_bound,
+        report.spatial_mixed_depth_pairs_jointly_fitted,
     );
     eprintln!(
         "stage timings: scan {:?}, read/preprocess/sort/spill {:?}, barrier merge {:?} (group work {:?}, true overlap {:?}), final streamed merge work {:?} (backpressure {:?}, hierarchy overlap {:?}), hierarchy/encode {:?}, shard pack {:?}, verify/publish {:?}, total {:?}; {} merge groups, peak {} concurrent, min stream buffer {} bytes, handoff {} records x {} queued batches, streamed final {}; bounded pipeline depth {}",

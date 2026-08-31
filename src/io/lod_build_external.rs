@@ -2,12 +2,13 @@
 //!
 //! The source is replayed twice: one bounded pass establishes the canonical
 //! normalization bounds, then bounded canonical preprocessing creates sorted
-//! runs. The promoted GPU route sorts those batches and reduces the global
-//! hierarchy on-device. Runs are merged with a configurable fan-in and the
-//! final stream is consumed directly into leaf pages. Only one source batch,
-//! merge heads and buffers, one hierarchy reduction group, and explicitly
-//! capped manifest metadata are resident at a time. Publication is a
-//! synchronized rename of a fully validated sibling staging directory.
+//! runs. The optional GPU route accelerates canonical batch sorting. Runs are
+//! merged with a configurable fan-in and the final stream is consumed directly
+//! into leaf pages plus one canonical replay spool. Each internal level then
+//! accumulates v4 representatives from original source intervals. Only bounded
+//! source/risk-aware batches, merge buffers, one output page, and explicitly
+//! capped manifest metadata are resident at a time. Publication uses a native
+//! atomic no-replace rename of a fully validated sibling staging directory.
 
 use std::{
     cmp::Ordering,
@@ -21,10 +22,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bevy_interleave::prelude::Planar;
+#[cfg(feature = "sort_rayon")]
+use rayon::prelude::*;
+
 use crate::{
     gaussian::{
         formats::{
-            planar_3d::Gaussian3d,
+            planar_3d::{Gaussian3d, PlanarGaussian3d},
             planar_3d_chunked::{
                 LOD_PAGE_SCHEMA_VERSION, LodBounds, LodIndexRange, LodNodeId, LodPageDescriptor,
                 LodPageEncoding, LodPageId, LodPageKind, LodPageRange, LodPageStorage,
@@ -32,50 +37,66 @@ use crate::{
                 validate_gaussian,
             },
             planar_3d_lod::{
+                EXTERNAL_MOMENT_MERGE_VERSION, EXTERNAL_SPATIAL_MOMENT_MERGE_BUILDER_ABI_VERSION,
                 GaussianLodBuildMetadata, GaussianLodBuildSettings, GaussianLodManifest,
-                GaussianLodManifestHeader, GaussianLodNode, GaussianLodQualityMetadata,
-                LOD_CURRENT_REQUIRED_FEATURES, LOD_MANIFEST_MAGIC, LOD_MANIFEST_VERSION,
-                LodBuildError, LodError, LodMortonRange, LodQualityInterval, LodReducerKind,
-                MOMENT_MERGE_VERSION, MomentMergeReducer, canonicalize_gaussian_zeros,
-                compare_gaussians, gaussian_support_bounds, lod_config_fingerprint,
+                GaussianLodManifestHeader, GaussianLodMorphMap, GaussianLodNode,
+                GaussianLodQualityMetadata, LOD_CURRENT_REQUIRED_FEATURES, LOD_MANIFEST_MAGIC,
+                LOD_MANIFEST_VERSION, LOD_MORPH_MAP_SCHEMA_VERSION,
+                LOD_REQUIRED_FEATURE_MONOTONE_MORPH_MAP, LodBuildError, LodError, LodMortonRange,
+                LodQualityInterval, LodReducerKind, MOMENT_MERGE_VERSION, MomentAccumulator,
+                SPATIAL_MOMENT_MERGE_VERSION, SpatialMomentMergeFitReport, SpatialMomentMergeNode,
+                appearance_error_certificate, build_progressive_moment_merge_rung,
+                canonicalize_gaussian_zeros, compare_gaussians,
+                fit_spatial_moment_merge_sibling_cohort, gaussian_oriented_support_bounds,
+                gaussian_support_bounds, lod_config_fingerprint_for_reducer,
+                progressive_risk_aware_host_bytes_upper_bound, spatial_moment_merge_fit_bounds,
+                validate_plane_lengths,
             },
         },
         lod_build_gpu::{
             LodPreprocessBatchOutput, LodPreprocessError, LodPreprocessRecord, LodPreprocessStatus,
-            hierarchy::{
-                GpuLodHierarchyBuilder, GpuLodHierarchyError, GpuLodHierarchyReductionGroup,
-                GpuLodHierarchyReductionInput, GpuLodHierarchyReductionOutput,
-            },
+            hierarchy::{GpuLodHierarchyBuilder, GpuLodHierarchyError},
             preprocess_lod_batch_cpu,
         },
     },
     io::{
         lod::{
             LOD_SHARD_ENTRY_LEN, LOD_SHARD_HEADER_LEN, LodCodecError, LodCodecLimits,
-            LodShardEntry, LodShardIndex, decode_lod_shard_index, decode_manifest,
-            decode_page_with_descriptor, encode_lod_shard_index, encode_manifest,
+            LodShardEntry, LodShardIndex, MANIFEST_HEADER_LEN, decode_lod_shard_index,
+            decode_manifest, decode_page_with_descriptor, encode_lod_shard_index, encode_manifest,
             encode_page_with_encoding, lod_shard_prefix_len,
         },
-        ply::{MAX_STREAM_BATCH_ALLOCATION_BYTES, stream_ply_3d},
+        ply::{
+            MAX_STREAM_BATCH_ALLOCATION_BYTES, PlyShCompatibility,
+            stream_ply_3d_with_sh_compatibility,
+        },
     },
     material::spherical_harmonics::SH_COEFF_COUNT,
 };
 
-/// The external hierarchy is a distinct deterministic builder topology. The
-/// The canonical Morton/support contract is builder ABI 3; ABI 4 adds
-/// external runs and bounded hierarchical reduction; ABI 5 emits the manifest
-/// v3 high-fidelity certificate (exact leaves only).
-pub const EXTERNAL_LOD_BUILDER_ABI_VERSION: u32 = 5;
-/// Global external topology with deterministic f32 GPU MomentMerge summaries.
-/// ABI 6 emits the manifest v3 high-fidelity certificate (exact leaves only).
+/// External-memory progressive hierarchy. ABI 16 retains ABI 15's bounded
+/// source-derived rungs and adds MomentMerge v4 spatial fitting plus the
+/// required monotone parent/child morph correspondence.
+pub const EXTERNAL_LOD_BUILDER_ABI_VERSION: u32 = EXTERNAL_SPATIAL_MOMENT_MERGE_BUILDER_ABI_VERSION;
+const EXTERNAL_PROGRESSIVE_LOD_BUILDER_ABI_VERSION: u32 = 15;
+/// Readable legacy ABI emitted by the removed singleton GPU hierarchy builder.
+///
+/// Kept for source compatibility and package-inspection tooling. New packages
+/// use [`EXTERNAL_LOD_BUILDER_ABI_VERSION`].
+#[deprecated(
+    since = "9.0.0",
+    note = "ABI 6 is read-only; use EXTERNAL_LOD_BUILDER_ABI_VERSION"
+)]
 pub const EXTERNAL_GPU_LOD_BUILDER_ABI_VERSION: u32 = 6;
-
 const RUN_MAGIC: [u8; 8] = *b"BGSRUN1\0";
-const SUMMARY_MAGIC: [u8; 8] = *b"BGSSUM1\0";
 const GAUSSIAN_FLOAT_COUNT: usize = 12 + SH_COEFF_COUNT;
 const RUN_RECORD_BYTES: usize = 16 + GAUSSIAN_FLOAT_COUNT * size_of::<f32>();
-const SUMMARY_RECORD_BYTES: usize = 80 + GAUSSIAN_FLOAT_COUNT * size_of::<f32>();
 const PAGE_CONTAINER_HEADER_BYTES: u64 = 44;
+/// The risk-aware adjacent agglomerator is linear in one source domain. Keep a
+/// fixed ABI-level cap so output never depends on external sort batch sizing
+/// and peak allocation remains explicit for every configuration.
+const EXTERNAL_RISK_AWARE_MAX_SOURCE_RECORDS: u64 = 8 * 1024;
+const EXTERNAL_RISK_AWARE_MAX_SOURCES_PER_REPRESENTATIVE: u64 = 16;
 
 /// Explicit allocation and work limits for an external package build.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,17 +132,27 @@ impl Default for ExternalLodBuildLimits {
             merge_fan_in: 32,
             run_buffer_bytes: 64 * 1024,
             max_merge_buffer_bytes: 4 * 1024 * 1024,
-            max_source_count: 250_000_000,
+            max_source_count: Self::DEFAULT_MAX_SOURCE_COUNT,
             max_run_count: 1_000_000,
             max_temporary_bytes: 256 * 1024 * 1024 * 1024,
-            max_manifest_nodes: 2_000_000,
-            max_manifest_bytes: 512 * 1024 * 1024,
-            max_encoded_page_bytes: 256 * 1024 * 1024,
+            // External packages must open under the default untrusted-input
+            // loader profile. The current writer emits one page descriptor per
+            // hierarchy node, so the loader's page cap is the tighter bound.
+            max_manifest_nodes: LodCodecLimits::DEFAULT_MAX_PAGES,
+            max_manifest_bytes: LodCodecLimits::DEFAULT_MAX_MANIFEST_BYTES,
+            max_encoded_page_bytes: LodCodecLimits::DEFAULT_MAX_PAGE_BYTES,
             max_shard_bytes: 512 * 1024 * 1024,
             max_pages_per_shard: 4096,
             pipeline_depth: 2,
         }
     }
+}
+
+impl ExternalLodBuildLimits {
+    /// Largest source admitted by the default 1024-way leaf packing and
+    /// eight-way hierarchy while keeping the one-page-per-node package inside
+    /// [`LodCodecLimits::DEFAULT_MAX_PAGES`].
+    pub const DEFAULT_MAX_SOURCE_COUNT: u64 = 234_881_024;
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -138,6 +169,12 @@ impl ExternalLodBuildConfig {
         self.settings
             .validate()
             .map_err(LodBuildError::InvalidSettings)?;
+        if self.settings.leaf_capacity > u32::from(u16::MAX) {
+            return Err(ExternalLodBuildError::InvalidConfig(format!(
+                "ABI {EXTERNAL_LOD_BUILDER_ABI_VERSION} morph maps require leaf_capacity <= {}",
+                u16::MAX
+            )));
+        }
         if self
             .compressed_representative_sh_degree
             .is_some_and(|degree| {
@@ -323,8 +360,47 @@ pub struct ExternalLodBuildPlan {
     /// Leaf-to-root node counts.
     pub hierarchy_level_counts: Vec<u64>,
     pub total_node_count: u64,
+    /// Guaranteed lower bound for the current Flexbuffers package manifest:
+    /// one node and one page value/type entry per external hierarchy node,
+    /// plus the fixed container header. This catches impossible byte budgets
+    /// before source scan/spill work; the exact encoded size remains a final
+    /// publication check because metadata values and shard URI widths vary.
+    pub minimum_encoded_manifest_bytes: u64,
+    /// Guaranteed lower bound on the number of ABI 16 u16 morph runs. The
+    /// exact count is data-dependent because each parent rounds its own
+    /// representative count, but every hierarchy rung reduces the aggregate
+    /// child count by no more than the configured branching factor.
+    pub minimum_morph_run_records: u64,
+    /// Conservative retained u16 sidecar capacity: every internal node can
+    /// contain at most one run per physical-page record.
+    pub maximum_morph_run_records: u64,
+    pub maximum_morph_run_bytes: u64,
+    /// Maximum u64 source-boundary payload which can coexist while one rung is
+    /// built. Current and next internal summaries overlap; exact leaf
+    /// boundaries remain implicit and consume no payload.
+    pub maximum_morph_source_boundary_records: u64,
+    pub maximum_morph_source_boundary_bytes: u64,
     pub maximum_records_per_batch_buffer: u64,
+    /// Maximum original-source records accumulated sequentially into one v4
+    /// representative. This is a work bound, not a resident batch bound.
     pub maximum_reducer_input_records: u64,
+    /// Fixed, batch-size-independent cap for a buffered risk-aware source
+    /// domain. Zero only when the hierarchy has no internal rung.
+    pub maximum_risk_aware_source_records: u64,
+    /// Conservative host bytes for that source buffer plus agglomeration
+    /// clusters, candidate heap, and output representatives.
+    pub maximum_risk_aware_host_bytes: u64,
+    /// Original records retained across one at-most-32-node spatial cohort.
+    pub maximum_spatial_cohort_source_records: u64,
+    /// Conservative coexistence of all per-node risk-aware allocations plus
+    /// deterministic spatial-fit scratch for one sibling cohort.
+    pub maximum_spatial_cohort_host_bytes: u64,
+    /// Bounded all-pairs sibling checks (`B*(B-1)/2`, at most 496).
+    pub maximum_spatial_node_pair_checks: u64,
+    /// Fixed-grid boundary probes (at most nine per touching node pair).
+    pub maximum_spatial_boundary_probes: u64,
+    /// Maximum compact node summaries resident for one hierarchy level. This
+    /// is bounded by `max_manifest_nodes`; Gaussian payloads remain on disk.
     pub maximum_hierarchy_level_summaries: u64,
     pub maximum_page_records: u64,
     /// Maximum merge groups which may execute concurrently. The configured
@@ -336,8 +412,8 @@ pub struct ExternalLodBuildPlan {
     pub merge_stream_buffer_bytes: u64,
     /// Aggregate reader/writer buffers across every parallel merge worker.
     pub merge_buffer_bytes: u64,
-    /// Conservative host allocation bound for PLY batch + canonical batch +
-    /// preprocess results + sortable run records.
+    /// Conservative host allocation bound for source/canonical/preprocess
+    /// batches plus producer, queued, and writer-owned sortable run batches.
     pub maximum_spill_host_bytes: u64,
     /// Configured merge buffers plus one full run-record heap head per reader.
     pub maximum_merge_host_bytes: u64,
@@ -348,10 +424,13 @@ pub struct ExternalLodBuildPlan {
     /// Final k-way merge state plus the bounded record handoff. This overlaps
     /// hierarchy/page work and is reported separately from barrier merges.
     pub maximum_merge_hierarchy_overlap_host_bytes: u64,
+    /// Peak coexistence of input/output Morton runs or a final run and the
+    /// canonical source replay spool.
     pub maximum_temporary_run_bytes: u64,
-    /// Peak coexistence of one input and one output GPU-summary level spill.
+    /// Reserved compatibility telemetry for the removed ABI 6 hierarchy
+    /// summary spill. ABI 16 always reports zero.
     pub maximum_temporary_summary_bytes: u64,
-    /// Aggregate peak of external Morton runs plus global hierarchy summaries.
+    /// Aggregate peak of external Morton runs and the canonical replay spool.
     pub maximum_temporary_bytes: u64,
 }
 
@@ -431,32 +510,148 @@ impl ExternalLodBuildPlan {
                 limit: u64::from(config.limits.max_manifest_nodes),
             });
         }
-        let maximum_reducer_input_records = u64::from(config.settings.leaf_capacity)
-            .max(u64::from(config.settings.branching_factor));
+        let branching_factor = u64::from(config.settings.branching_factor);
+        let leaf_capacity = u64::from(config.settings.leaf_capacity);
+        let mut minimum_level_representation_records = source_count;
+        let mut minimum_morph_run_records = 0_u64;
+        let mut maximum_morph_run_records = 0_u64;
+        let mut maximum_morph_source_boundary_records = 0_u64;
+        let mut previous_internal_boundary_records = 0_u64;
+        for level_node_count in hierarchy_level_counts.iter().copied().skip(1) {
+            minimum_level_representation_records = minimum_level_representation_records
+                .div_ceil(branching_factor)
+                .max(level_node_count);
+            minimum_morph_run_records = minimum_morph_run_records
+                .checked_add(minimum_level_representation_records)
+                .ok_or_else(|| {
+                    ExternalLodBuildError::InvalidConfig("minimum morph run count overflow".into())
+                })?;
+            let level_boundary_records =
+                level_node_count.checked_mul(leaf_capacity).ok_or_else(|| {
+                    ExternalLodBuildError::InvalidConfig(
+                        "morph boundary record bound overflow".into(),
+                    )
+                })?;
+            maximum_morph_run_records = maximum_morph_run_records
+                .checked_add(level_boundary_records)
+                .ok_or_else(|| {
+                    ExternalLodBuildError::InvalidConfig("morph run bound overflow".into())
+                })?;
+            maximum_morph_source_boundary_records = maximum_morph_source_boundary_records.max(
+                previous_internal_boundary_records
+                    .checked_add(level_boundary_records)
+                    .ok_or_else(|| {
+                        ExternalLodBuildError::InvalidConfig(
+                            "overlapping morph boundary bound overflow".into(),
+                        )
+                    })?,
+            );
+            previous_internal_boundary_records = level_boundary_records;
+        }
+        let maximum_morph_run_bytes = maximum_morph_run_records
+            .checked_mul(size_of::<u16>() as u64)
+            .ok_or_else(|| {
+                ExternalLodBuildError::InvalidConfig("morph run byte bound overflow".into())
+            })?;
+        let maximum_morph_source_boundary_bytes = maximum_morph_source_boundary_records
+            .checked_mul(size_of::<u64>() as u64)
+            .ok_or_else(|| {
+                ExternalLodBuildError::InvalidConfig(
+                    "morph source-boundary byte bound overflow".into(),
+                )
+            })?;
+        // A Flexbuffers vector stores at least one value byte and one type
+        // byte per element. External packages emit exactly one page descriptor
+        // per hierarchy node, so this is a format-guaranteed lower bound, not
+        // a heuristic average. Rejecting it early cannot reject an encodable
+        // package that would fit the configured output limit.
+        let minimum_encoded_manifest_bytes = total_node_count
+            .checked_mul(4)
+            // ABI 16 adds one range value/type pair per node plus at least one
+            // encoded value byte for every positive u16 run. These are format
+            // lower bounds, not estimates of the final Flexbuffers width.
+            .and_then(|bytes| total_node_count.checked_mul(2)?.checked_add(bytes))
+            .and_then(|bytes| bytes.checked_add(minimum_morph_run_records))
+            .and_then(|bytes| bytes.checked_add(MANIFEST_HEADER_LEN as u64))
+            .ok_or_else(|| {
+                ExternalLodBuildError::InvalidConfig(
+                    "minimum encoded manifest byte bound overflow".into(),
+                )
+            })?;
+        if minimum_encoded_manifest_bytes > config.limits.max_manifest_bytes {
+            return Err(ExternalLodBuildError::LimitExceeded {
+                field: "minimum encoded manifest bytes",
+                actual: minimum_encoded_manifest_bytes,
+                limit: config.limits.max_manifest_bytes,
+            });
+        }
+        // Each rung divides representation count by at most the branching
+        // factor, so one representative spans at most branching_factor^depth
+        // original records. Saturate at the source count to avoid overflow and
+        // retain a useful pure-plan work bound for enormous scenes.
+        let mut maximum_reducer_input_records = 1_u64;
+        for _ in 1..hierarchy_level_counts.len() {
+            maximum_reducer_input_records = maximum_reducer_input_records
+                .saturating_mul(u64::from(config.settings.branching_factor))
+                .min(source_count);
+        }
+        maximum_reducer_input_records = maximum_reducer_input_records
+            .max(source_count.min(EXTERNAL_RISK_AWARE_MAX_SOURCE_RECORDS));
+        let maximum_risk_aware_source_records = if hierarchy_level_counts.len() > 1 {
+            source_count.min(EXTERNAL_RISK_AWARE_MAX_SOURCE_RECORDS)
+        } else {
+            0
+        };
+        let maximum_risk_aware_host_bytes = if maximum_risk_aware_source_records == 0 {
+            0
+        } else {
+            progressive_risk_aware_host_bytes_upper_bound(
+                usize::try_from(maximum_risk_aware_source_records).map_err(|_| {
+                    ExternalLodBuildError::InvalidConfig(
+                        "risk-aware source bound exceeds usize".into(),
+                    )
+                })?,
+            )
+            .ok_or_else(|| {
+                ExternalLodBuildError::InvalidConfig(
+                    "risk-aware hierarchy host byte bound overflow".into(),
+                )
+            })?
+        };
+        let spatial_cohort_node_bound = if hierarchy_level_counts.len() > 1 {
+            usize::from(config.settings.branching_factor)
+        } else {
+            0
+        };
+        let spatial_fit_bounds = spatial_moment_merge_fit_bounds(spatial_cohort_node_bound)
+            .ok_or_else(|| {
+                ExternalLodBuildError::InvalidConfig(
+                    "spatial sibling fit allocation bound overflow".into(),
+                )
+            })?;
+        let maximum_spatial_cohort_source_records = maximum_risk_aware_source_records
+            .checked_mul(branching_factor)
+            .map(|records| records.min(source_count))
+            .ok_or_else(|| {
+                ExternalLodBuildError::InvalidConfig(
+                    "spatial sibling cohort source bound overflow".into(),
+                )
+            })?;
+        let maximum_spatial_cohort_host_bytes = maximum_risk_aware_host_bytes
+            .checked_mul(branching_factor)
+            .and_then(|bytes| bytes.checked_add(spatial_fit_bounds.scratch_host_bytes))
+            .ok_or_else(|| {
+                ExternalLodBuildError::InvalidConfig(
+                    "spatial sibling cohort host byte bound overflow".into(),
+                )
+            })?;
         let maximum_hierarchy_level_summaries =
             hierarchy_level_counts.iter().copied().max().unwrap_or(0);
-        let maximum_summary_level_bytes = maximum_hierarchy_level_summaries
-            .checked_mul(SUMMARY_RECORD_BYTES as u64)
-            .and_then(|bytes| bytes.checked_add(16))
-            .ok_or_else(|| {
-                ExternalLodBuildError::InvalidConfig(
-                    "temporary hierarchy summary byte bound overflow".into(),
-                )
-            })?;
-        let maximum_temporary_summary_bytes =
-            maximum_summary_level_bytes.checked_mul(2).ok_or_else(|| {
-                ExternalLodBuildError::InvalidConfig(
-                    "temporary hierarchy summary byte bound overflow".into(),
-                )
-            })?;
-        let maximum_temporary_bytes = maximum_temporary_run_bytes
-            .checked_add(maximum_temporary_summary_bytes)
-            .ok_or_else(|| {
-                ExternalLodBuildError::InvalidConfig("temporary byte bound overflow".into())
-            })?;
+        let maximum_temporary_summary_bytes = 0;
+        let maximum_temporary_bytes = maximum_temporary_run_bytes;
         if maximum_temporary_bytes > config.limits.max_temporary_bytes {
             return Err(ExternalLodBuildError::LimitExceeded {
-                field: "temporary run and hierarchy-summary bytes",
+                field: "temporary Morton run and canonical-spool bytes",
                 actual: maximum_temporary_bytes,
                 limit: config.limits.max_temporary_bytes,
             });
@@ -464,16 +659,32 @@ impl ExternalLodBuildPlan {
         let maximum_page_records = u64::from(config.settings.leaf_capacity);
         let merge_layout = merge_parallel_layout(initial_run_count, config)?;
         let merge_buffer_bytes = merge_layout.aggregate_buffer_bytes;
-        let spill_record_bytes = (size_of::<Gaussian3d>()
+        let spill_non_run_record_bytes = (size_of::<Gaussian3d>()
             .checked_add(size_of::<Gaussian3d>())
             .and_then(|bytes| bytes.checked_add(size_of::<LodPreprocessRecord>()))
-            .and_then(|bytes| bytes.checked_add(size_of::<RunRecord>()))
             .ok_or_else(|| {
                 ExternalLodBuildError::InvalidConfig("spill host byte bound overflow".into())
             })?) as u64;
-        let maximum_spill_host_bytes = batch.checked_mul(spill_record_bytes).ok_or_else(|| {
-            ExternalLodBuildError::InvalidConfig("spill host byte bound overflow".into())
-        })?;
+        let run_batches = (config.limits.pipeline_depth as u64)
+            .checked_add(2)
+            .ok_or_else(|| {
+                ExternalLodBuildError::InvalidConfig("spill pipeline depth overflow".into())
+            })?;
+        let spill_run_record_bytes = run_batches
+            .checked_mul(size_of::<RunRecord>() as u64)
+            .ok_or_else(|| {
+                ExternalLodBuildError::InvalidConfig("spill run byte bound overflow".into())
+            })?;
+        let spill_bytes_per_source_record = (spill_non_run_record_bytes as u64)
+            .checked_add(spill_run_record_bytes)
+            .ok_or_else(|| {
+                ExternalLodBuildError::InvalidConfig("spill host byte bound overflow".into())
+            })?;
+        let maximum_spill_host_bytes = batch
+            .checked_mul(spill_bytes_per_source_record)
+            .ok_or_else(|| {
+                ExternalLodBuildError::InvalidConfig("spill host byte bound overflow".into())
+            })?;
         let maximum_merge_host_bytes = merge_layout
             .head_records
             .checked_mul(size_of::<RunRecord>() as u64)
@@ -520,8 +731,20 @@ impl ExternalLodBuildPlan {
             merge_pass_count,
             hierarchy_level_counts,
             total_node_count,
+            minimum_encoded_manifest_bytes,
+            minimum_morph_run_records,
+            maximum_morph_run_records,
+            maximum_morph_run_bytes,
+            maximum_morph_source_boundary_records,
+            maximum_morph_source_boundary_bytes,
             maximum_records_per_batch_buffer: batch,
             maximum_reducer_input_records,
+            maximum_risk_aware_source_records,
+            maximum_risk_aware_host_bytes,
+            maximum_spatial_cohort_source_records,
+            maximum_spatial_cohort_host_bytes,
+            maximum_spatial_node_pair_checks: spatial_fit_bounds.node_pair_checks,
+            maximum_spatial_boundary_probes: spatial_fit_bounds.boundary_probes,
             maximum_hierarchy_level_summaries,
             maximum_page_records,
             merge_worker_limit: merge_layout.workers as u32,
@@ -569,12 +792,44 @@ pub struct ExternalLodBuildReport {
     pub maximum_merge_host_bytes: u64,
     pub maximum_stream_handoff_host_bytes: u64,
     pub maximum_merge_hierarchy_overlap_host_bytes: u64,
+    /// Pure-plan upper bound on original-source records accumulated
+    /// sequentially into one v4 representative. ABI 16 does not retain this
+    /// interval in memory outside the fixed-cap risk-aware near-leaf route.
     pub maximum_reducer_input_records: u64,
-    /// Effective host/GPU input records in one global reduction dispatch.
+    /// Largest risk-aware source domain actually buffered by this build.
+    pub maximum_risk_aware_source_records: u64,
+    /// Conservative host allocation for that actual domain.
+    pub maximum_risk_aware_host_bytes: u64,
+    pub maximum_spatial_cohort_source_records: u64,
+    pub maximum_spatial_cohort_host_bytes: u64,
+    pub maximum_spatial_node_pair_checks: u64,
+    pub maximum_spatial_boundary_probes: u64,
+    /// Exact authored-support touching pairs inside future-parent cohorts.
+    pub spatial_touching_node_pairs: u64,
+    /// Exact subset evaluated against retained source partitions.
+    pub spatial_measured_touching_node_pairs: u64,
+    /// Exact touching subset intentionally unmeasured on streamed coarse rungs.
+    pub spatial_unmeasured_touching_node_pairs: u64,
+    /// Conservative all-pairs upper bound across different future-parent
+    /// cohorts. It includes disjoint pairs because exact cross-cohort touching
+    /// classification would require a level-wide spatial index.
+    pub spatial_cross_cohort_pair_upper_bound: u64,
+    /// ABI 16 fits same-depth siblings only. Mixed-depth cut boundaries remain
+    /// an explicit image-oracle qualification surface.
+    pub spatial_mixed_depth_pairs_jointly_fitted: bool,
+    /// Largest original-source interval actually accumulated into one
+    /// representative. The legacy field name predates ABI 16's streaming CPU
+    /// hierarchy and no longer denotes a resident GPU dispatch.
     pub maximum_global_reduction_batch_records: u64,
+    /// Maximum compact node summaries resident for one hierarchy level.
     pub maximum_hierarchy_level_summaries: u64,
+    pub maximum_morph_run_records: u64,
+    pub maximum_morph_run_bytes: u64,
+    pub maximum_morph_source_boundary_records: u64,
+    pub maximum_morph_source_boundary_bytes: u64,
     pub maximum_page_records: u64,
     pub maximum_temporary_run_bytes: u64,
+    /// Compatibility field; ABI 16 does not create hierarchy summary spills.
     pub maximum_temporary_summary_bytes: u64,
     pub maximum_temporary_bytes: u64,
 }
@@ -621,18 +876,94 @@ pub trait ReplayableGaussianSource {
     ) -> Result<u64, ExternalLodBuildError>;
 }
 
+/// Bounded replay adapter for an already loaded planar 3D Gaussian asset.
+///
+/// This is the library path for converting resident `.gcloud`, glTF/GLB, or
+/// procedurally produced clouds into a preprocessed package. Each replay
+/// reconstructs at most `batch_records` interleaved values at a time; it never
+/// clones the complete source. The same adapter works with the CPU and opt-in
+/// GPU batch preprocessors accepted by [`build_external_lod_package`].
+#[derive(Clone, Copy, Debug)]
+pub struct PlanarGaussianSource<'a> {
+    cloud: &'a PlanarGaussian3d,
+}
+
+impl<'a> PlanarGaussianSource<'a> {
+    pub const fn new(cloud: &'a PlanarGaussian3d) -> Self {
+        Self { cloud }
+    }
+
+    pub const fn cloud(&self) -> &'a PlanarGaussian3d {
+        self.cloud
+    }
+}
+
+impl ReplayableGaussianSource for PlanarGaussianSource<'_> {
+    fn replay(
+        &self,
+        batch_records: usize,
+        consume: &mut dyn FnMut(&[Gaussian3d]) -> Result<(), ExternalLodBuildError>,
+    ) -> Result<u64, ExternalLodBuildError> {
+        if batch_records == 0 {
+            return Err(ExternalLodBuildError::InvalidConfig(
+                "batch_records must be greater than zero".into(),
+            ));
+        }
+        validate_plane_lengths(self.cloud)?;
+        let source_len = self.cloud.len();
+        let count = u64::try_from(source_len).map_err(|_| {
+            ExternalLodBuildError::InvalidConfig(
+                "planar source length exceeds the portable u64 count range".into(),
+            )
+        })?;
+        let batch_capacity = batch_records.min(source_len);
+        let mut batch = Vec::new();
+        batch.try_reserve_exact(batch_capacity).map_err(|_| {
+            ExternalLodBuildError::InvalidConfig(format!(
+                "failed to reserve bounded planar replay batch of {batch_capacity} records"
+            ))
+        })?;
+        for start in (0..source_len).step_by(batch_records) {
+            let end = start.saturating_add(batch_records).min(source_len);
+            batch.clear();
+            batch.extend((start..end).map(|index| self.cloud.get(index)));
+            consume(&batch)?;
+        }
+        Ok(count)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PlyGaussianSource {
     path: PathBuf,
+    sh_compatibility: PlyShCompatibility,
 }
 
 impl PlyGaussianSource {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            sh_compatibility: PlyShCompatibility::RequireRepresentable,
+        }
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Allow a higher-degree input PLY to be truncated to the compiled SH
+    /// profile. Higher-order `f_rest_*` coefficients are discarded.
+    pub const fn with_sh_truncation(mut self, allow: bool) -> Self {
+        self.sh_compatibility = if allow {
+            PlyShCompatibility::AllowTruncation
+        } else {
+            PlyShCompatibility::RequireRepresentable
+        };
+        self
+    }
+
+    pub const fn sh_compatibility(&self) -> PlyShCompatibility {
+        self.sh_compatibility
     }
 }
 
@@ -650,13 +981,18 @@ impl ReplayableGaussianSource for PlyGaussianSource {
         })?;
         let mut reader = BufReader::new(file);
         let mut callback_error = None;
-        let streamed = stream_ply_3d(&mut reader, batch_records, |batch| {
-            if let Err(error) = consume(batch) {
-                callback_error = Some(error);
-                return Err(io::Error::other("external LoD batch consumer failed"));
-            }
-            Ok(())
-        });
+        let streamed = stream_ply_3d_with_sh_compatibility(
+            &mut reader,
+            batch_records,
+            self.sh_compatibility,
+            |batch| {
+                if let Err(error) = consume(batch) {
+                    callback_error = Some(error);
+                    return Err(io::Error::other("external LoD batch consumer failed"));
+                }
+                Ok(())
+            },
+        );
         if let Some(error) = callback_error {
             return Err(error);
         }
@@ -664,36 +1000,9 @@ impl ReplayableGaussianSource for PlyGaussianSource {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ExternalLodGlobalReductionLimits {
-    pub max_records: usize,
-    pub max_nodes: usize,
-}
-
-/// Bounded post-merge MomentMerge dispatch surface. The production
-/// implementation delegates to wgpu; tests can supply a deterministic fake to
-/// verify external topology, spill, routing, and atomicity without an adapter.
-pub trait ExternalLodGlobalReducer {
-    fn limits(&self) -> ExternalLodGlobalReductionLimits;
-
-    fn reduce_leaf_groups(
-        &mut self,
-        records: &[Gaussian3d],
-        groups: &[GpuLodHierarchyReductionGroup],
-        support_sigma: f32,
-    ) -> Result<Vec<GpuLodHierarchyReductionOutput>, ExternalLodBuildError>;
-
-    fn reduce_summary_groups(
-        &mut self,
-        inputs: &[GpuLodHierarchyReductionInput],
-        groups: &[GpuLodHierarchyReductionGroup],
-        support_sigma: f32,
-    ) -> Result<Vec<GpuLodHierarchyReductionOutput>, ExternalLodBuildError>;
-}
-
-/// Pluggable bounded preprocessor. Implementations may additionally expose a
-/// global GPU reducer. Per-run preprocessing must never construct hierarchy
-/// products that are discarded by the later external merge.
+/// Pluggable bounded canonical preprocessor. Implementations may use the GPU
+/// for batch sorting, but ABI 16 hierarchy construction always consumes the
+/// globally merged source through the shared CPU v3 reducer.
 pub trait ExternalLodBatchPreprocessor {
     fn stage_name(&self) -> &'static str;
     fn output_order(&self) -> ExternalLodPreprocessorOutputOrder {
@@ -706,10 +1015,6 @@ pub trait ExternalLodBatchPreprocessor {
         normalization_bounds: LodBounds,
         support_sigma: f32,
     ) -> Result<LodPreprocessBatchOutput, ExternalLodBuildError>;
-
-    fn global_gpu_hierarchy(&mut self) -> Option<&mut dyn ExternalLodGlobalReducer> {
-        None
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -743,9 +1048,9 @@ impl ExternalLodBatchPreprocessor for CpuExternalLodBatchPreprocessor {
     }
 }
 
-/// Uses bounded GPU canonical sorting for external runs and exposes the same
-/// builder for the actual level-wise hierarchy reduction after the global
-/// external merge.
+/// Uses bounded GPU canonical sorting for external runs. ABI 16 still builds
+/// every hierarchy rung on the CPU from original canonical source intervals;
+/// the GPU builder is used only for its deterministic sort primitive.
 pub struct GpuHierarchyExternalLodBatchPreprocessor<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
@@ -771,7 +1076,7 @@ impl ExternalLodBatchPreprocessor for GpuHierarchyExternalLodBatchPreprocessor<'
     ) -> Result<LodPreprocessBatchOutput, ExternalLodBuildError> {
         if self.settings.support_sigma.to_bits() != support_sigma.to_bits() {
             return Err(ExternalLodBuildError::PreprocessorContract(
-                "GPU hierarchy support sigma differs from external build settings".into(),
+                "GPU canonical-sort support sigma differs from external build settings".into(),
             ));
         }
         let sorted = self
@@ -791,7 +1096,7 @@ impl ExternalLodBatchPreprocessor for GpuHierarchyExternalLodBatchPreprocessor<'
                 let support_bounds = gaussian_support_bounds(&record.gaussian, support_sigma)
                     .map_err(|error| {
                         ExternalLodBuildError::PreprocessorContract(format!(
-                            "GPU hierarchy support bounds failed for source {}: {error}",
+                            "GPU canonical-sort support bounds failed for source {}: {error}",
                             record.source_index
                         ))
                     })?;
@@ -805,53 +1110,12 @@ impl ExternalLodBatchPreprocessor for GpuHierarchyExternalLodBatchPreprocessor<'
             .collect::<Result<Vec<_>, ExternalLodBuildError>>()?;
         Ok(LodPreprocessBatchOutput { records })
     }
-
-    fn global_gpu_hierarchy(&mut self) -> Option<&mut dyn ExternalLodGlobalReducer> {
-        Some(self)
-    }
-}
-
-impl ExternalLodGlobalReducer for GpuHierarchyExternalLodBatchPreprocessor<'_> {
-    fn limits(&self) -> ExternalLodGlobalReductionLimits {
-        let limits = self.builder.limits();
-        ExternalLodGlobalReductionLimits {
-            max_records: limits.max_records as usize,
-            max_nodes: limits.max_nodes as usize,
-        }
-    }
-
-    fn reduce_leaf_groups(
-        &mut self,
-        records: &[Gaussian3d],
-        groups: &[GpuLodHierarchyReductionGroup],
-        support_sigma: f32,
-    ) -> Result<Vec<GpuLodHierarchyReductionOutput>, ExternalLodBuildError> {
-        Ok(self.builder.reduce_moment_merge_leaf_groups(
-            self.device,
-            self.queue,
-            records,
-            groups,
-            support_sigma,
-        )?)
-    }
-
-    fn reduce_summary_groups(
-        &mut self,
-        inputs: &[GpuLodHierarchyReductionInput],
-        groups: &[GpuLodHierarchyReductionGroup],
-        support_sigma: f32,
-    ) -> Result<Vec<GpuLodHierarchyReductionOutput>, ExternalLodBuildError> {
-        Ok(self.builder.reduce_moment_merge_summary_groups(
-            self.device,
-            self.queue,
-            inputs,
-            groups,
-            support_sigma,
-        )?)
-    }
 }
 
 /// Build and atomically publish one external-memory package.
+///
+/// Publication never replaces an existing filesystem entry, including one
+/// created by another process after the initial availability check.
 pub fn build_external_lod_package(
     source: &dyn ReplayableGaussianSource,
     output: &Path,
@@ -860,14 +1124,12 @@ pub fn build_external_lod_package(
 ) -> Result<ExternalLodBuildReport, ExternalLodBuildError> {
     let total_started = Instant::now();
     let config = config.validate()?;
-    if output.exists() {
-        return Err(ExternalLodBuildError::OutputExists(output.to_path_buf()));
-    }
     if output.file_name().is_none() {
         return Err(ExternalLodBuildError::InvalidConfig(
             "output must name a package directory".into(),
         ));
     }
+    ensure_output_absent(output)?;
 
     let stage_started = Instant::now();
     let (source_count, normalization_bounds, replay_fingerprint) = scan_source(source, config)?;
@@ -914,31 +1176,17 @@ pub fn build_external_lod_package(
     let stage_started = Instant::now();
     let ((hierarchy, hierarchy_stage), final_merge_stats) =
         consume_final_runs(final_runs, source_count, config, |reader| {
-            if let Some(gpu) = preprocessor.global_gpu_hierarchy() {
-                Ok((
-                    build_hierarchy_from_run_gpu(
-                        reader,
-                        source_count,
-                        &pages_directory,
-                        &work_directory,
-                        config,
-                        &plan,
-                        gpu,
-                    )?,
-                    "gpu-global-moment-merge-readback",
-                ))
-            } else {
-                Ok((
-                    build_hierarchy_from_run(
-                        reader,
-                        source_count,
-                        &pages_directory,
-                        config,
-                        &plan,
-                    )?,
-                    "cpu-moment-merge",
-                ))
-            }
+            Ok((
+                build_hierarchy_from_run(
+                    reader,
+                    source_count,
+                    &pages_directory,
+                    &work_directory,
+                    config,
+                    &plan,
+                )?,
+                "cpu-external-spatial-moment-merge-v4",
+            ))
         })?;
     let hierarchy_elapsed = stage_started.elapsed();
     let stage_started = Instant::now();
@@ -1028,8 +1276,23 @@ pub fn build_external_lod_package(
         maximum_stream_handoff_host_bytes: plan.maximum_stream_handoff_host_bytes,
         maximum_merge_hierarchy_overlap_host_bytes: plan.maximum_merge_hierarchy_overlap_host_bytes,
         maximum_reducer_input_records: plan.maximum_reducer_input_records,
+        maximum_risk_aware_source_records: hierarchy.maximum_risk_aware_source_records,
+        maximum_risk_aware_host_bytes: hierarchy.maximum_risk_aware_host_bytes,
+        maximum_spatial_cohort_source_records: plan.maximum_spatial_cohort_source_records,
+        maximum_spatial_cohort_host_bytes: plan.maximum_spatial_cohort_host_bytes,
+        maximum_spatial_node_pair_checks: plan.maximum_spatial_node_pair_checks,
+        maximum_spatial_boundary_probes: plan.maximum_spatial_boundary_probes,
+        spatial_touching_node_pairs: hierarchy.spatial_touching_node_pairs,
+        spatial_measured_touching_node_pairs: hierarchy.spatial_measured_touching_node_pairs,
+        spatial_unmeasured_touching_node_pairs: hierarchy.spatial_unmeasured_touching_node_pairs,
+        spatial_cross_cohort_pair_upper_bound: hierarchy.spatial_cross_cohort_pair_upper_bound,
+        spatial_mixed_depth_pairs_jointly_fitted: false,
         maximum_global_reduction_batch_records: hierarchy.maximum_reduction_batch_records,
         maximum_hierarchy_level_summaries: plan.maximum_hierarchy_level_summaries,
+        maximum_morph_run_records: plan.maximum_morph_run_records,
+        maximum_morph_run_bytes: plan.maximum_morph_run_bytes,
+        maximum_morph_source_boundary_records: plan.maximum_morph_source_boundary_records,
+        maximum_morph_source_boundary_bytes: plan.maximum_morph_source_boundary_bytes,
         maximum_page_records: plan.maximum_page_records,
         maximum_temporary_run_bytes: plan.maximum_temporary_run_bytes,
         maximum_temporary_summary_bytes: plan.maximum_temporary_summary_bytes,
@@ -1328,7 +1591,12 @@ fn prepare_canonical_run(
         ));
     }
     match output_order {
-        ExternalLodPreprocessorOutputOrder::Input => run.sort_unstable_by(run_record_cmp),
+        ExternalLodPreprocessorOutputOrder::Input => {
+            #[cfg(feature = "sort_rayon")]
+            run.par_sort_unstable_by(run_record_cmp);
+            #[cfg(not(feature = "sort_rayon"))]
+            run.sort_unstable_by(run_record_cmp);
+        }
         ExternalLodPreprocessorOutputOrder::CanonicalMergeKey => {
             if !run.is_sorted_by(|left, right| run_record_cmp(left, right).is_le()) {
                 return Err(ExternalLodBuildError::PreprocessorContract(
@@ -1345,16 +1613,62 @@ fn write_run(
     records: &[RunRecord],
     buffer_bytes: usize,
 ) -> Result<(), ExternalLodBuildError> {
-    let file = OpenOptions::new().write(true).create_new(true).open(path)?;
-    let mut writer = BufWriter::with_capacity(buffer_bytes, file);
-    writer.write_all(&RUN_MAGIC)?;
-    writer.write_all(&(records.len() as u64).to_le_bytes())?;
+    let mut writer = RunWriter::create(path, records.len() as u64, buffer_bytes)?;
     for record in records {
-        write_run_record(&mut writer, record)?;
+        writer.write(record)?;
     }
-    writer.flush()?;
-    writer.get_ref().sync_all()?;
-    Ok(())
+    writer.finish()
+}
+
+/// Streaming writer for a canonical run whose record count is known from the
+/// validated source scan. The hierarchy keeps one such spool so every
+/// internal level can replay original records without retaining the scene or
+/// recursively reducing already-lossy representatives.
+struct RunWriter {
+    writer: BufWriter<File>,
+    expected: u64,
+    written: u64,
+}
+
+impl RunWriter {
+    fn create(
+        path: &Path,
+        expected: u64,
+        buffer_bytes: usize,
+    ) -> Result<Self, ExternalLodBuildError> {
+        let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+        let mut writer = BufWriter::with_capacity(buffer_bytes, file);
+        writer.write_all(&RUN_MAGIC)?;
+        writer.write_all(&expected.to_le_bytes())?;
+        Ok(Self {
+            writer,
+            expected,
+            written: 0,
+        })
+    }
+
+    fn write(&mut self, record: &RunRecord) -> Result<(), ExternalLodBuildError> {
+        if self.written >= self.expected {
+            return Err(ExternalLodBuildError::RunCorrupt(
+                "canonical hierarchy spool exceeded its declared count".into(),
+            ));
+        }
+        write_run_record(&mut self.writer, record)?;
+        self.written += 1;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<(), ExternalLodBuildError> {
+        if self.written != self.expected {
+            return Err(ExternalLodBuildError::RunCorrupt(format!(
+                "canonical hierarchy spool wrote {}, expected {}",
+                self.written, self.expected
+            )));
+        }
+        self.writer.flush()?;
+        self.writer.get_ref().sync_all()?;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2114,244 +2428,15 @@ struct ReductionSummary {
     source: LodSourceRange,
     morton: LodMortonRange,
     bounds: LodBounds,
-    representative: Gaussian3d,
+    /// Exact union of original authored oriented supports. Representative
+    /// supports never enlarge this ABI 16 spatial-fit envelope.
+    authored_source_bounds: LodBounds,
+    representation_count: u32,
+    /// `None` denotes an exact leaf whose record boundaries are implicit unit
+    /// intervals over `source`; internal summaries retain one end per record.
+    representation_source_ends: Option<Vec<u64>>,
     reduction_error: LodError,
-}
-
-#[derive(Clone, Copy)]
-struct GpuReductionSummary {
-    draft_index: usize,
-    source: LodSourceRange,
-    morton: LodMortonRange,
-    bounds: LodBounds,
-    representative: Gaussian3d,
-    reduction_error: LodError,
-}
-
-struct SummaryWriter {
-    writer: BufWriter<File>,
-    expected: u64,
-    written: u64,
-}
-
-impl SummaryWriter {
-    fn create(
-        path: &Path,
-        expected: u64,
-        buffer_bytes: usize,
-    ) -> Result<Self, ExternalLodBuildError> {
-        let file = OpenOptions::new().write(true).create_new(true).open(path)?;
-        let mut writer = BufWriter::with_capacity(buffer_bytes, file);
-        writer.write_all(&SUMMARY_MAGIC)?;
-        writer.write_all(&expected.to_le_bytes())?;
-        Ok(Self {
-            writer,
-            expected,
-            written: 0,
-        })
-    }
-
-    fn write(&mut self, summary: &GpuReductionSummary) -> Result<(), ExternalLodBuildError> {
-        if self.written >= self.expected {
-            return Err(ExternalLodBuildError::RunCorrupt(
-                "hierarchy summary spill exceeded its planned count".into(),
-            ));
-        }
-        write_summary_record(&mut self.writer, summary)?;
-        self.written += 1;
-        Ok(())
-    }
-
-    fn finish(mut self) -> Result<(), ExternalLodBuildError> {
-        if self.written != self.expected {
-            return Err(ExternalLodBuildError::RunCorrupt(format!(
-                "hierarchy summary spill wrote {}, expected {}",
-                self.written, self.expected
-            )));
-        }
-        self.writer.flush()?;
-        self.writer.get_ref().sync_all()?;
-        Ok(())
-    }
-}
-
-struct SummaryReader {
-    reader: BufReader<File>,
-    remaining: u64,
-}
-
-impl SummaryReader {
-    fn open(
-        path: &Path,
-        expected: u64,
-        buffer_bytes: usize,
-    ) -> Result<Self, ExternalLodBuildError> {
-        let mut reader = BufReader::with_capacity(buffer_bytes, File::open(path)?);
-        let mut header = [0_u8; 16];
-        reader.read_exact(&mut header)?;
-        if header[0..8] != SUMMARY_MAGIC {
-            return Err(ExternalLodBuildError::RunCorrupt(format!(
-                "'{}' has an invalid hierarchy summary header",
-                path.display()
-            )));
-        }
-        let remaining = u64::from_le_bytes(header[8..16].try_into().unwrap());
-        if remaining != expected {
-            return Err(ExternalLodBuildError::RunCorrupt(format!(
-                "hierarchy summary declares {remaining} records, expected {expected}"
-            )));
-        }
-        Ok(Self { reader, remaining })
-    }
-
-    fn next(&mut self) -> Result<Option<GpuReductionSummary>, ExternalLodBuildError> {
-        if self.remaining == 0 {
-            return Ok(None);
-        }
-        let mut bytes = [0_u8; SUMMARY_RECORD_BYTES];
-        self.reader.read_exact(&mut bytes)?;
-        self.remaining -= 1;
-        Ok(Some(decode_summary_record(&bytes)?))
-    }
-
-    fn finish(mut self) -> Result<(), ExternalLodBuildError> {
-        if self.remaining != 0 {
-            return Err(ExternalLodBuildError::RunCorrupt(
-                "hierarchy summary reader was not fully consumed".into(),
-            ));
-        }
-        let mut trailing = [0_u8; 1];
-        if self.reader.read(&mut trailing)? != 0 {
-            return Err(ExternalLodBuildError::RunCorrupt(
-                "hierarchy summary contains trailing bytes".into(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-fn write_summary_record(
-    writer: &mut impl Write,
-    summary: &GpuReductionSummary,
-) -> Result<(), ExternalLodBuildError> {
-    let mut bytes = [0_u8; SUMMARY_RECORD_BYTES];
-    let mut offset = 0_usize;
-    for value in [
-        u64::try_from(summary.draft_index).map_err(|_| {
-            ExternalLodBuildError::InvalidConfig("summary draft index exceeds u64".into())
-        })?,
-        summary.source.start,
-        summary.source.count,
-        summary.morton.min,
-        summary.morton.max,
-    ] {
-        bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
-        offset += 8;
-    }
-    for value in summary
-        .bounds
-        .min
-        .into_iter()
-        .chain(summary.bounds.max)
-        .chain(gaussian_floats(&summary.representative))
-        .chain([
-            summary.reduction_error.geometric,
-            summary.reduction_error.appearance,
-            summary.reduction_error.opacity,
-            summary.reduction_error.combined,
-        ])
-    {
-        bytes[offset..offset + 4].copy_from_slice(&value.to_bits().to_le_bytes());
-        offset += 4;
-    }
-    debug_assert_eq!(offset, SUMMARY_RECORD_BYTES);
-    writer.write_all(&bytes)?;
-    Ok(())
-}
-
-fn decode_summary_record(
-    bytes: &[u8; SUMMARY_RECORD_BYTES],
-) -> Result<GpuReductionSummary, ExternalLodBuildError> {
-    let mut offset = 0_usize;
-    let mut integers = [0_u64; 5];
-    for value in &mut integers {
-        *value = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
-        offset += 8;
-    }
-    let draft_index = usize::try_from(integers[0]).map_err(|_| {
-        ExternalLodBuildError::RunCorrupt("summary draft index exceeds usize".into())
-    })?;
-    let source = LodSourceRange {
-        start: integers[1],
-        count: integers[2],
-    };
-    let morton = LodMortonRange {
-        min: integers[3],
-        max: integers[4],
-    };
-    let mut take_f32 = || {
-        let value = f32::from_bits(u32::from_le_bytes(
-            bytes[offset..offset + 4].try_into().unwrap(),
-        ));
-        offset += 4;
-        value
-    };
-    let bounds = LodBounds::new(
-        [take_f32(), take_f32(), take_f32()],
-        [take_f32(), take_f32(), take_f32()],
-    )
-    .map_err(|error| {
-        ExternalLodBuildError::RunCorrupt(format!("hierarchy summary has invalid bounds: {error}"))
-    })?;
-    let gaussian_values = std::array::from_fn(|_| take_f32());
-    let representative = gaussian_from_floats(gaussian_values);
-    validate_gaussian(&representative).map_err(|field| {
-        ExternalLodBuildError::RunCorrupt(format!(
-            "hierarchy summary has invalid representative {field:?}"
-        ))
-    })?;
-    let reduction_error = LodError {
-        geometric: take_f32(),
-        appearance: take_f32(),
-        opacity: take_f32(),
-        combined: take_f32(),
-    };
-    debug_assert_eq!(offset, SUMMARY_RECORD_BYTES);
-    validate_external_error(reduction_error)?;
-    if source.count == 0 || source.end().is_none() || morton.min > morton.max {
-        return Err(ExternalLodBuildError::RunCorrupt(
-            "hierarchy summary has an invalid source or Morton range".into(),
-        ));
-    }
-    Ok(GpuReductionSummary {
-        draft_index,
-        source,
-        morton,
-        bounds,
-        representative,
-        reduction_error,
-    })
-}
-
-fn validate_external_error(error: LodError) -> Result<(), ExternalLodBuildError> {
-    let values = [
-        error.geometric,
-        error.appearance,
-        error.opacity,
-        error.combined,
-    ];
-    if values
-        .iter()
-        .any(|value| !value.is_finite() || *value < 0.0)
-        || error.combined < error.geometric
-        || error.combined < error.appearance
-        || error.combined < error.opacity
-    {
-        return Err(ExternalLodBuildError::RunCorrupt(format!(
-            "hierarchy summary has invalid error {values:?}"
-        )));
-    }
-    Ok(())
+    high_fidelity_certificate: f32,
 }
 
 struct NodeDraft {
@@ -2362,584 +2447,152 @@ struct NodeDraft {
     page_id: LodPageId,
     page_count: u32,
     error: LodError,
+    high_fidelity_certificate: f32,
+    morph_child_run_lengths: Vec<u16>,
+}
+
+struct PendingInternalNode {
+    children: (usize, usize),
+    source: LodSourceRange,
+    morton: LodMortonRange,
+    inherited_bounds: LodBounds,
+    authored_source_bounds: LodBounds,
+    inherited_error: LodError,
+    inherited_high_fidelity_certificate: f32,
+    rung: ExternalProgressiveRung,
+    morph_child_run_lengths: Vec<u16>,
+    representation_source_ends: Vec<u64>,
 }
 
 struct HierarchyBuild {
     manifest: GaussianLodManifest,
     maximum_encoded_page_bytes: u64,
     maximum_reduction_batch_records: u64,
-}
-
-#[derive(Clone, Copy)]
-struct PendingGpuReduction {
-    draft_index: Option<usize>,
-    children: Option<(usize, usize)>,
-    source: LodSourceRange,
-    morton: LodMortonRange,
-    bounds: LodBounds,
+    maximum_risk_aware_source_records: u64,
+    maximum_risk_aware_host_bytes: u64,
+    spatial_touching_node_pairs: u64,
+    spatial_measured_touching_node_pairs: u64,
+    spatial_unmeasured_touching_node_pairs: u64,
+    spatial_cross_cohort_pair_upper_bound: u64,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_hierarchy_from_run_gpu(
-    mut reader: FinalRunInput,
-    source_count: u64,
+fn finalize_spatial_sibling_cohort(
+    pending: &mut Vec<PendingInternalNode>,
     pages_directory: &Path,
-    work_directory: &Path,
     config: ExternalLodBuildConfig,
-    plan: &ExternalLodBuildPlan,
-    gpu: &mut dyn ExternalLodGlobalReducer,
-) -> Result<HierarchyBuild, ExternalLodBuildError> {
-    let gpu_limits = gpu.limits();
-    let effective_max_records =
-        effective_gpu_batch_records(config.limits.batch_records, gpu_limits.max_records);
-    validate_gpu_reduction_group_capacity(
-        config.settings.leaf_capacity as usize,
-        true,
-        effective_max_records,
-        gpu_limits.max_nodes,
-    )?;
-    validate_gpu_reduction_group_capacity(
-        config.settings.branching_factor as usize,
-        false,
-        effective_max_records,
-        gpu_limits.max_nodes,
-    )?;
-
-    if reader.remaining() != source_count {
-        return Err(ExternalLodBuildError::RunCorrupt(format!(
-            "final run declares {} records, expected {source_count}",
-            reader.remaining()
-        )));
+    drafts: &mut Vec<NodeDraft>,
+    descriptors: &mut Vec<LodPageDescriptor>,
+    next: &mut Vec<ReductionSummary>,
+    stored_gaussian_count: &mut u64,
+    maximum_encoded_page_bytes: &mut u64,
+) -> Result<SpatialMomentMergeFitReport, ExternalLodBuildError> {
+    if pending.is_empty() {
+        return Ok(SpatialMomentMergeFitReport::default());
     }
-    let planned_nodes = usize::try_from(plan.total_node_count).map_err(|_| {
-        ExternalLodBuildError::InvalidConfig("planned node count exceeds usize".into())
-    })?;
-    let mut drafts = Vec::new();
-    let mut descriptors = Vec::new();
-    reserve_exact(&mut drafts, planned_nodes, "hierarchy drafts")?;
-    reserve_exact(&mut descriptors, planned_nodes, "page descriptors")?;
-    let mut levels = Vec::<(usize, usize)>::with_capacity(plan.hierarchy_level_counts.len());
-    let mut stored_gaussian_count = 0_u64;
-    let mut maximum_encoded_page_bytes = 0_u64;
-    let mut source_fingerprint = StableHasher::new();
-    source_fingerprint.write(&source_count.to_le_bytes());
+    let mut spatial_nodes = pending
+        .iter_mut()
+        .map(|node| SpatialMomentMergeNode {
+            representatives: std::mem::take(&mut node.rung.representatives),
+            source_records: node.rung.spatial_source_records.take(),
+            source_ranges: std::mem::take(&mut node.rung.spatial_source_ranges),
+            authored_support_bounds: node.authored_source_bounds,
+            spatial_certificate_cap: 1.0,
+            spatial_geometric_error_floor: 0.0,
+        })
+        .collect::<Vec<_>>();
+    let fit_report =
+        fit_spatial_moment_merge_sibling_cohort(&mut spatial_nodes, config.settings.support_sigma)?;
+    for (node, spatial) in pending.iter_mut().zip(spatial_nodes) {
+        node.rung.representatives = spatial.representatives;
+        node.rung.certificate_cap = node
+            .rung
+            .certificate_cap
+            .min(spatial.spatial_certificate_cap);
+        node.rung.policy_error.geometric = node
+            .rung
+            .policy_error
+            .geometric
+            .max(spatial.spatial_geometric_error_floor);
+        node.rung.policy_error.combined = node
+            .rung
+            .policy_error
+            .combined
+            .max(node.rung.policy_error.geometric);
+    }
 
-    let leaf_count = plan.hierarchy_level_counts[0];
-    let leaf_summary_path = work_directory.join("hierarchy-summary-000.bgssum");
-    let mut summary_writer = SummaryWriter::create(
-        &leaf_summary_path,
-        leaf_count,
-        config.limits.run_buffer_bytes,
-    )?;
-    let (leaf_base, leaf_remainder) = balanced_group_sizes(source_count, leaf_count);
-    let leaf_level_start = drafts.len();
-    let mut batch_gaussians = Vec::new();
-    let mut batch_groups = Vec::new();
-    let mut batch_pending = Vec::new();
-    reserve_exact(
-        &mut batch_gaussians,
-        config.limits.batch_records,
-        "GPU leaf reduction batch",
-    )?;
-    reserve_exact(
-        &mut batch_groups,
-        effective_max_records.min(gpu_limits.max_nodes),
-        "GPU leaf group descriptors",
-    )?;
-    reserve_exact(
-        &mut batch_pending,
-        effective_max_records.min(gpu_limits.max_nodes),
-        "GPU leaf output metadata",
-    )?;
-    let mut canonical_start = 0_u64;
-    for leaf_index in 0..leaf_count {
-        let count = leaf_base + u64::from(leaf_index < leaf_remainder);
-        let count_usize = usize::try_from(count)
-            .map_err(|_| ExternalLodBuildError::InvalidConfig("leaf count exceeds usize".into()))?;
-        if !batch_groups.is_empty()
-            && !gpu_batch_can_add(
-                batch_gaussians.len(),
-                batch_groups.len(),
-                count_usize,
-                true,
-                effective_max_records,
-                gpu_limits.max_nodes,
-            )
-        {
-            flush_gpu_leaf_batch(
-                gpu,
-                config.settings.support_sigma,
-                &mut batch_gaussians,
-                &mut batch_groups,
-                &mut batch_pending,
-                &mut summary_writer,
-            )?;
+    for node in pending.drain(..) {
+        let mut bounds = node.inherited_bounds;
+        if let Some(policy_bounds) = node.rung.policy_bounds {
+            bounds = bounds.union(policy_bounds);
         }
-        validate_gpu_reduction_group_capacity(
-            count_usize,
-            true,
-            effective_max_records,
-            gpu_limits.max_nodes,
-        )?;
-        let mut gaussians = Vec::new();
-        reserve_exact(&mut gaussians, count_usize, "leaf page records")?;
-        let mut morton_min = u64::MAX;
-        let mut morton_max = 0_u64;
-        let mut bounds: Option<LodBounds> = None;
-        for _ in 0..count {
-            let record = reader.next_record()?.ok_or_else(|| {
-                ExternalLodBuildError::RunCorrupt("final run ended inside a leaf".into())
-            })?;
-            source_fingerprint.write(&record.morton.to_le_bytes());
-            source_fingerprint.write(&stable_gaussian_hash(&record.gaussian).to_le_bytes());
-            morton_min = morton_min.min(record.morton);
-            morton_max = morton_max.max(record.morton);
-            let support = gaussian_support_bounds(&record.gaussian, config.settings.support_sigma)?;
-            bounds = Some(match bounds {
-                Some(current) => current.union(support),
-                None => support,
-            });
-            gaussians.push(record.gaussian);
+        let mut local_error = node.rung.policy_error;
+        let mut high_fidelity_certificate = node
+            .inherited_high_fidelity_certificate
+            .min(node.rung.certificate_cap);
+        for representative in &node.rung.representatives {
+            bounds = bounds.union(representative.support_bounds);
+            local_error = local_error.max(representative.error);
+            high_fidelity_certificate =
+                high_fidelity_certificate.min(representative.high_fidelity_certificate());
         }
-        let bounds = bounds.ok_or_else(|| {
-            ExternalLodBuildError::RunCorrupt("balanced hierarchy emitted an empty leaf".into())
-        })?;
-        let source = LodSourceRange {
-            start: canonical_start,
-            count,
-        };
-        let morton = LodMortonRange {
-            min: morton_min,
-            max: morton_max,
-        };
+        let error = node.inherited_error.max(local_error);
         let page_id = LodPageId(drafts.len() as u64 + 1);
-        batch_groups.push(GpuLodHierarchyReductionGroup {
-            start: batch_gaussians.len() as u32,
-            count: count as u32,
-        });
-        batch_gaussians.extend_from_slice(&gaussians);
         let (descriptor, encoded_bytes, encoding_error) = write_page(
             pages_directory,
             page_id,
-            LodPageKind::SourceLeaves,
-            gaussians,
+            LodPageKind::Representatives,
+            node.rung
+                .representatives
+                .into_iter()
+                .map(|representative| representative.gaussian)
+                .collect(),
             config,
         )?;
-        debug_assert_eq!(encoding_error, LodError::ZERO);
-        maximum_encoded_page_bytes = maximum_encoded_page_bytes.max(encoded_bytes);
-        stored_gaussian_count = stored_gaussian_count
+        let error = compose_hierarchical_error(error, encoding_error)?;
+        // Multiplication is conservative when the inherited certificate is
+        // already appearance-limited: 1/((1+a)(1+b)) <= 1/(1+a+b).
+        high_fidelity_certificate *= appearance_error_certificate(encoding_error.appearance);
+        *maximum_encoded_page_bytes = (*maximum_encoded_page_bytes).max(encoded_bytes);
+        *stored_gaussian_count = (*stored_gaussian_count)
             .checked_add(u64::from(descriptor.gaussian_count))
             .ok_or_else(|| {
                 ExternalLodBuildError::InvalidConfig("stored Gaussian count overflow".into())
             })?;
+        let representation_count = descriptor.gaussian_count;
         let draft_index = drafts.len();
         drafts.push(NodeDraft {
-            children: None,
-            source,
-            morton,
+            children: Some(node.children),
+            source: node.source,
+            morton: node.morton,
             bounds,
             page_id,
-            page_count: descriptor.gaussian_count,
-            error: LodError::ZERO,
+            page_count: representation_count,
+            error,
+            high_fidelity_certificate,
+            morph_child_run_lengths: node.morph_child_run_lengths,
         });
         descriptors.push(descriptor);
-        batch_pending.push(PendingGpuReduction {
-            draft_index: Some(draft_index),
-            children: None,
-            source,
-            morton,
+        next.push(ReductionSummary {
+            draft_index,
+            source: node.source,
+            morton: node.morton,
             bounds,
+            authored_source_bounds: node.authored_source_bounds,
+            representation_count,
+            representation_source_ends: Some(node.representation_source_ends),
+            reduction_error: error,
+            high_fidelity_certificate,
         });
-        canonical_start = canonical_start.checked_add(count).ok_or_else(|| {
-            ExternalLodBuildError::InvalidConfig("canonical source offset overflow".into())
-        })?;
     }
-    flush_gpu_leaf_batch(
-        gpu,
-        config.settings.support_sigma,
-        &mut batch_gaussians,
-        &mut batch_groups,
-        &mut batch_pending,
-        &mut summary_writer,
-    )?;
-    summary_writer.finish()?;
-    levels.push((leaf_level_start, drafts.len()));
-    reader.finish()?;
-    if canonical_start != source_count {
-        return Err(ExternalLodBuildError::RunCorrupt(
-            "leaf partition did not consume the canonical source".into(),
-        ));
-    }
-
-    let mut previous_path = leaf_summary_path;
-    let mut previous_count = leaf_count;
-    for (level_index, &next_count) in plan.hierarchy_level_counts.iter().enumerate().skip(1) {
-        let level_start = drafts.len();
-        let next_path = work_directory.join(format!("hierarchy-summary-{level_index:03}.bgssum"));
-        let mut previous = SummaryReader::open(
-            &previous_path,
-            previous_count,
-            config.limits.run_buffer_bytes,
-        )?;
-        let mut next =
-            SummaryWriter::create(&next_path, next_count, config.limits.run_buffer_bytes)?;
-        let (base, remainder) = balanced_group_sizes(previous_count, next_count);
-        let mut inputs = Vec::new();
-        let mut groups = Vec::new();
-        let mut pending = Vec::new();
-        reserve_exact(
-            &mut inputs,
-            effective_max_records,
-            "GPU internal reduction inputs",
-        )?;
-        reserve_exact(
-            &mut groups,
-            effective_max_records.min(gpu_limits.max_nodes),
-            "GPU internal group descriptors",
-        )?;
-        reserve_exact(
-            &mut pending,
-            effective_max_records.min(gpu_limits.max_nodes),
-            "GPU internal output metadata",
-        )?;
-        for group_index in 0..next_count {
-            let child_count = base + u64::from(group_index < remainder);
-            let child_count_usize = usize::try_from(child_count).map_err(|_| {
-                ExternalLodBuildError::InvalidConfig("hierarchy group exceeds usize".into())
-            })?;
-            if !groups.is_empty()
-                && !gpu_batch_can_add(
-                    inputs.len(),
-                    groups.len(),
-                    child_count_usize,
-                    false,
-                    effective_max_records,
-                    gpu_limits.max_nodes,
-                )
-            {
-                flush_gpu_internal_batch(
-                    gpu,
-                    config,
-                    pages_directory,
-                    &mut inputs,
-                    &mut groups,
-                    &mut pending,
-                    &mut next,
-                    &mut drafts,
-                    &mut descriptors,
-                    &mut stored_gaussian_count,
-                    &mut maximum_encoded_page_bytes,
-                )?;
-            }
-            validate_gpu_reduction_group_capacity(
-                child_count_usize,
-                false,
-                effective_max_records,
-                gpu_limits.max_nodes,
-            )?;
-            let mut children = Vec::new();
-            reserve_exact(
-                &mut children,
-                child_count_usize,
-                "hierarchy child summaries",
-            )?;
-            for _ in 0..child_count {
-                children.push(previous.next()?.ok_or_else(|| {
-                    ExternalLodBuildError::RunCorrupt(
-                        "hierarchy summary ended inside a planned group".into(),
-                    )
-                })?);
-            }
-            let first = children[0];
-            let last = *children.last().unwrap();
-            let first_child = first.draft_index;
-            if children
-                .iter()
-                .enumerate()
-                .any(|(offset, child)| child.draft_index != first_child + offset)
-            {
-                return Err(ExternalLodBuildError::Validation(
-                    "hierarchy child drafts are not contiguous".into(),
-                ));
-            }
-            let mut bounds = first.bounds;
-            for child in &children[1..] {
-                bounds = bounds.union(child.bounds);
-            }
-            let source_end = last.source.end().ok_or_else(|| {
-                ExternalLodBuildError::InvalidConfig("node source range overflow".into())
-            })?;
-            let source = LodSourceRange {
-                start: first.source.start,
-                count: source_end - first.source.start,
-            };
-            let morton = LodMortonRange {
-                min: first.morton.min,
-                max: last.morton.max,
-            };
-            let group_start = inputs.len() as u32;
-            inputs.extend(children.iter().map(|child| GpuLodHierarchyReductionInput {
-                representative: child.representative,
-                bounds: child.bounds,
-                inherited_error: child.reduction_error,
-            }));
-            groups.push(GpuLodHierarchyReductionGroup {
-                start: group_start,
-                count: child_count as u32,
-            });
-            pending.push(PendingGpuReduction {
-                draft_index: None,
-                children: Some((first_child, child_count_usize)),
-                source,
-                morton,
-                bounds,
-            });
-        }
-        flush_gpu_internal_batch(
-            gpu,
-            config,
-            pages_directory,
-            &mut inputs,
-            &mut groups,
-            &mut pending,
-            &mut next,
-            &mut drafts,
-            &mut descriptors,
-            &mut stored_gaussian_count,
-            &mut maximum_encoded_page_bytes,
-        )?;
-        previous.finish()?;
-        next.finish()?;
-        levels.push((level_start, drafts.len()));
-        fs::remove_file(&previous_path)?;
-        previous_path = next_path;
-        previous_count = next_count;
-    }
-
-    let mut root_reader = SummaryReader::open(&previous_path, 1, config.limits.run_buffer_bytes)?;
-    let root_summary = root_reader
-        .next()?
-        .ok_or_else(|| ExternalLodBuildError::RunCorrupt("missing root summary".into()))?;
-    root_reader.finish()?;
-    fs::remove_file(previous_path)?;
-    if root_summary.draft_index + 1 != drafts.len()
-        || root_summary.source.start != 0
-        || root_summary.source.count != source_count
-    {
-        return Err(ExternalLodBuildError::Validation(
-            "GPU hierarchy root does not span the canonical source".into(),
-        ));
-    }
-    if drafts.len() as u64 != plan.total_node_count {
-        return Err(ExternalLodBuildError::Validation(format!(
-            "built {} hierarchy nodes, planned {}",
-            drafts.len(),
-            plan.total_node_count
-        )));
-    }
-    let manifest = finalize_manifest(
-        drafts,
-        descriptors,
-        levels,
-        source_count,
-        stored_gaussian_count,
-        source_fingerprint.finish(),
-        config,
-        EXTERNAL_GPU_LOD_BUILDER_ABI_VERSION,
-    )?;
-    Ok(HierarchyBuild {
-        manifest,
-        maximum_encoded_page_bytes,
-        maximum_reduction_batch_records: effective_max_records as u64,
-    })
-}
-
-fn effective_gpu_batch_records(configured: usize, gpu_limit: usize) -> usize {
-    configured.min(gpu_limit)
-}
-
-fn gpu_batch_can_add(
-    input_count: usize,
-    group_count: usize,
-    next_input_count: usize,
-    leaf: bool,
-    max_records: usize,
-    max_nodes: usize,
-) -> bool {
-    let Some(next_inputs) = input_count.checked_add(next_input_count) else {
-        return false;
-    };
-    let Some(next_groups) = group_count.checked_add(1) else {
-        return false;
-    };
-    next_inputs <= max_records
-        && next_groups <= max_records
-        && if leaf {
-            next_groups <= max_nodes
-        } else {
-            next_inputs
-                .checked_add(next_groups)
-                .is_some_and(|required| required <= max_nodes)
-        }
-}
-
-fn validate_gpu_reduction_group_capacity(
-    input_count: usize,
-    leaf: bool,
-    max_records: usize,
-    max_nodes: usize,
-) -> Result<(), ExternalLodBuildError> {
-    if input_count > max_records {
-        return Err(GpuLodHierarchyError::BatchTooLarge {
-            actual: input_count,
-            limit: u32::try_from(max_records).unwrap_or(u32::MAX),
-        }
-        .into());
-    }
-    let required_nodes = input_count.checked_add(usize::from(!leaf)).ok_or_else(|| {
-        ExternalLodBuildError::InvalidConfig("GPU reduction node count overflow".into())
-    })?;
-    if required_nodes > max_nodes {
-        return Err(GpuLodHierarchyError::NodeCapacityExceeded {
-            required: u32::try_from(required_nodes).unwrap_or(u32::MAX),
-            limit: u32::try_from(max_nodes).unwrap_or(u32::MAX),
-        }
-        .into());
-    }
-    Ok(())
-}
-
-fn flush_gpu_leaf_batch(
-    gpu: &mut dyn ExternalLodGlobalReducer,
-    support_sigma: f32,
-    inputs: &mut Vec<Gaussian3d>,
-    groups: &mut Vec<GpuLodHierarchyReductionGroup>,
-    pending: &mut Vec<PendingGpuReduction>,
-    writer: &mut SummaryWriter,
-) -> Result<(), ExternalLodBuildError> {
-    if groups.is_empty() {
-        return Ok(());
-    }
-    let outputs = gpu.reduce_leaf_groups(inputs, groups, support_sigma)?;
-    if outputs.len() != pending.len() {
-        return Err(ExternalLodBuildError::PreprocessorContract(
-            "GPU leaf reducer output length differs from its planned groups".into(),
-        ));
-    }
-    for (pending, output) in pending.iter().copied().zip(outputs) {
-        writer.write(&GpuReductionSummary {
-            draft_index: pending.draft_index.ok_or_else(|| {
-                ExternalLodBuildError::Validation("leaf reduction lost its draft index".into())
-            })?,
-            source: pending.source,
-            morton: pending.morton,
-            bounds: pending.bounds.union(output.representative_support),
-            representative: output.representative,
-            reduction_error: output.accumulated_error,
-        })?;
-    }
-    inputs.clear();
-    groups.clear();
-    pending.clear();
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn flush_gpu_internal_batch(
-    gpu: &mut dyn ExternalLodGlobalReducer,
-    config: ExternalLodBuildConfig,
-    pages_directory: &Path,
-    inputs: &mut Vec<GpuLodHierarchyReductionInput>,
-    groups: &mut Vec<GpuLodHierarchyReductionGroup>,
-    pending: &mut Vec<PendingGpuReduction>,
-    writer: &mut SummaryWriter,
-    drafts: &mut Vec<NodeDraft>,
-    descriptors: &mut Vec<LodPageDescriptor>,
-    stored_gaussian_count: &mut u64,
-    maximum_encoded_page_bytes: &mut u64,
-) -> Result<(), ExternalLodBuildError> {
-    if groups.is_empty() {
-        return Ok(());
-    }
-    let outputs = gpu.reduce_summary_groups(inputs, groups, config.settings.support_sigma)?;
-    if outputs.len() != pending.len() {
-        return Err(ExternalLodBuildError::PreprocessorContract(
-            "GPU internal reducer output length differs from its planned groups".into(),
-        ));
-    }
-    for (pending, output) in pending.iter().copied().zip(outputs) {
-        append_gpu_internal_output(
-            pending,
-            output,
-            config,
-            pages_directory,
-            writer,
-            drafts,
-            descriptors,
-            stored_gaussian_count,
-            maximum_encoded_page_bytes,
-        )?;
-    }
-    inputs.clear();
-    groups.clear();
-    pending.clear();
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn append_gpu_internal_output(
-    pending: PendingGpuReduction,
-    output: GpuLodHierarchyReductionOutput,
-    config: ExternalLodBuildConfig,
-    pages_directory: &Path,
-    writer: &mut SummaryWriter,
-    drafts: &mut Vec<NodeDraft>,
-    descriptors: &mut Vec<LodPageDescriptor>,
-    stored_gaussian_count: &mut u64,
-    maximum_encoded_page_bytes: &mut u64,
-) -> Result<(), ExternalLodBuildError> {
-    let bounds = pending.bounds.union(output.representative_support);
-    let page_id = LodPageId(drafts.len() as u64 + 1);
-    let (descriptor, encoded_bytes, encoding_error) = write_page(
-        pages_directory,
-        page_id,
-        LodPageKind::Representatives,
-        vec![output.representative],
-        config,
-    )?;
-    let accumulated_error = compose_hierarchical_error(output.accumulated_error, encoding_error)?;
-    *maximum_encoded_page_bytes = (*maximum_encoded_page_bytes).max(encoded_bytes);
-    *stored_gaussian_count = stored_gaussian_count
-        .checked_add(u64::from(descriptor.gaussian_count))
-        .ok_or_else(|| {
-            ExternalLodBuildError::InvalidConfig("stored Gaussian count overflow".into())
-        })?;
-    let draft_index = drafts.len();
-    drafts.push(NodeDraft {
-        children: pending.children,
-        source: pending.source,
-        morton: pending.morton,
-        bounds,
-        page_id,
-        page_count: descriptor.gaussian_count,
-        error: accumulated_error,
-    });
-    descriptors.push(descriptor);
-    writer.write(&GpuReductionSummary {
-        draft_index,
-        source: pending.source,
-        morton: pending.morton,
-        bounds,
-        representative: output.representative,
-        reduction_error: accumulated_error,
-    })?;
-    Ok(())
+    Ok(fit_report)
 }
 
 fn build_hierarchy_from_run(
     mut reader: FinalRunInput,
     source_count: u64,
     pages_directory: &Path,
+    work_directory: &Path,
     config: ExternalLodBuildConfig,
     plan: &ExternalLodBuildPlan,
 ) -> Result<HierarchyBuild, ExternalLodBuildError> {
@@ -2959,8 +2612,21 @@ fn build_hierarchy_from_run(
     let mut levels = Vec::<(usize, usize)>::with_capacity(plan.hierarchy_level_counts.len());
     let mut stored_gaussian_count = 0_u64;
     let mut maximum_encoded_page_bytes = 0_u64;
+    let mut maximum_reduction_batch_records = 0_u64;
+    let mut maximum_risk_aware_source_records = 0_u64;
+    let mut maximum_risk_aware_host_bytes = 0_u64;
+    let mut spatial_touching_node_pairs = 0_u64;
+    let mut spatial_measured_touching_node_pairs = 0_u64;
+    let mut spatial_unmeasured_touching_node_pairs = 0_u64;
+    let mut spatial_cross_cohort_pair_upper_bound = 0_u64;
     let mut source_fingerprint = StableHasher::new();
     source_fingerprint.write(&source_count.to_le_bytes());
+    let canonical_spool_path = work_directory.join("canonical-source.bgsrun");
+    let mut canonical_spool = RunWriter::create(
+        &canonical_spool_path,
+        source_count,
+        config.limits.run_buffer_bytes,
+    )?;
 
     let leaf_count = plan.hierarchy_level_counts[0];
     let (leaf_base, leaf_remainder) = balanced_group_sizes(source_count, leaf_count);
@@ -2986,10 +2652,12 @@ fn build_hierarchy_from_run(
         let mut morton_min = u64::MAX;
         let mut morton_max = 0_u64;
         let mut bounds: Option<LodBounds> = None;
+        let mut authored_source_bounds: Option<LodBounds> = None;
         for _ in 0..count {
             let record = reader.next_record()?.ok_or_else(|| {
                 ExternalLodBuildError::RunCorrupt("final run ended inside a leaf".into())
             })?;
+            canonical_spool.write(&record)?;
             source_fingerprint.write(&record.morton.to_le_bytes());
             source_fingerprint.write(&stable_gaussian_hash(&record.gaussian).to_le_bytes());
             morton_min = morton_min.min(record.morton);
@@ -2999,12 +2667,20 @@ fn build_hierarchy_from_run(
                 Some(current) => current.union(support),
                 None => support,
             });
+            let authored_support =
+                gaussian_oriented_support_bounds(&record.gaussian, config.settings.support_sigma)?;
+            authored_source_bounds = Some(match authored_source_bounds {
+                Some(current) => current.union(authored_support),
+                None => authored_support,
+            });
             gaussians.push(record.gaussian);
         }
         let bounds = bounds.ok_or_else(|| {
             ExternalLodBuildError::RunCorrupt("balanced hierarchy emitted an empty leaf".into())
         })?;
-        let (representative, reduction_error) = reduce_bounded(&gaussians, config)?;
+        let authored_source_bounds = authored_source_bounds.ok_or_else(|| {
+            ExternalLodBuildError::RunCorrupt("balanced hierarchy emitted an empty leaf".into())
+        })?;
         let page_id = LodPageId(drafts.len() as u64 + 1);
         let (descriptor, encoded_bytes, encoding_error) = write_page(
             pages_directory,
@@ -3020,6 +2696,7 @@ fn build_hierarchy_from_run(
             .ok_or_else(|| {
                 ExternalLodBuildError::InvalidConfig("stored Gaussian count overflow".into())
             })?;
+        let representation_count = descriptor.gaussian_count;
         let source = LodSourceRange {
             start: canonical_start,
             count,
@@ -3035,8 +2712,10 @@ fn build_hierarchy_from_run(
             morton,
             bounds,
             page_id,
-            page_count: descriptor.gaussian_count,
+            page_count: representation_count,
             error: LodError::ZERO,
+            high_fidelity_certificate: 1.0,
+            morph_child_run_lengths: Vec::new(),
         });
         descriptors.push(descriptor);
         current.push(ReductionSummary {
@@ -3044,8 +2723,11 @@ fn build_hierarchy_from_run(
             source,
             morton,
             bounds,
-            representative,
-            reduction_error,
+            authored_source_bounds,
+            representation_count,
+            representation_source_ends: None,
+            reduction_error: LodError::ZERO,
+            high_fidelity_certificate: 1.0,
         });
         canonical_start = canonical_start.checked_add(count).ok_or_else(|| {
             ExternalLodBuildError::InvalidConfig("canonical source offset overflow".into())
@@ -3053,6 +2735,7 @@ fn build_hierarchy_from_run(
     }
     levels.push((leaf_level_start, drafts.len()));
     reader.finish()?;
+    canonical_spool.finish()?;
     if canonical_start != source_count {
         return Err(ExternalLodBuildError::RunCorrupt(
             "leaf partition did not consume the canonical source".into(),
@@ -3060,6 +2743,18 @@ fn build_hierarchy_from_run(
     }
 
     while current.len() > 1 {
+        // Every level replays the one canonical spool from the beginning. The
+        // nodes at a level form a complete ordered source partition, so this
+        // is one sequential read regardless of scene size. Crucially, no rung
+        // is reduced from a previous rung's lossy Gaussian payload.
+        let mut canonical_reader =
+            RunReader::open(&canonical_spool_path, config.limits.run_buffer_bytes)?;
+        if canonical_reader.remaining != source_count {
+            return Err(ExternalLodBuildError::RunCorrupt(format!(
+                "canonical hierarchy spool declares {} records, expected {source_count}",
+                canonical_reader.remaining
+            )));
+        }
         let level_start = drafts.len();
         let group_count = balanced_group_count(
             current.len() as u64,
@@ -3075,29 +2770,56 @@ fn build_hierarchy_from_run(
             })?,
             "hierarchy reduction summaries",
         )?;
+        let spatial_parent_count = balanced_group_count(
+            group_count,
+            u64::from(config.settings.branching_factor),
+            false,
+        );
+        let (spatial_cohort_base, spatial_cohort_remainder) =
+            balanced_group_sizes(group_count, spatial_parent_count);
+        spatial_cross_cohort_pair_upper_bound = spatial_cross_cohort_pair_upper_bound
+            .checked_add(spatial_cross_cohort_pair_upper_bound_for_level(
+                group_count,
+                spatial_parent_count,
+                spatial_cohort_base,
+                spatial_cohort_remainder,
+            )?)
+            .ok_or_else(|| {
+                ExternalLodBuildError::InvalidConfig(
+                    "spatial cross-cohort pair upper bound overflow".into(),
+                )
+            })?;
+        let mut spatial_cohort_index = 0_u64;
+        let mut spatial_cohort = Vec::new();
+        reserve_exact(
+            &mut spatial_cohort,
+            usize::from(config.settings.branching_factor),
+            "spatial sibling cohort",
+        )?;
         let mut child_offset = 0_usize;
+        let mut level_source_offset = 0_u64;
         for group_index in 0..group_count {
             let child_count = (base + u64::from(group_index < remainder)) as usize;
             let children = &current[child_offset..child_offset + child_count];
-            let mut reduction_input = Vec::new();
-            reserve_exact(
-                &mut reduction_input,
-                children.len(),
-                "hierarchy reducer input",
-            )?;
             let mut bounds = children[0].bounds;
+            let mut authored_source_bounds = children[0].authored_source_bounds;
             let mut inherited_error = LodError::ZERO;
+            let mut high_fidelity_certificate = 1.0_f32;
+            let mut child_representation_count = 0_u64;
             for child in children {
                 bounds = bounds.union(child.bounds);
+                authored_source_bounds = authored_source_bounds.union(child.authored_source_bounds);
                 inherited_error = inherited_error.max(child.reduction_error);
-                reduction_input.push(child.representative);
+                high_fidelity_certificate =
+                    high_fidelity_certificate.min(child.high_fidelity_certificate);
+                child_representation_count = child_representation_count
+                    .checked_add(u64::from(child.representation_count))
+                    .ok_or_else(|| {
+                        ExternalLodBuildError::InvalidConfig(
+                            "child representation count overflow".into(),
+                        )
+                    })?;
             }
-            let (representative, local_error) = reduce_bounded(&reduction_input, config)?;
-            let error = compose_hierarchical_error(inherited_error, local_error)?;
-            bounds = bounds.union(gaussian_support_bounds(
-                &representative,
-                config.settings.support_sigma,
-            )?);
             let first = &children[0];
             let last = children.last().unwrap();
             let source_end = last.source.end().ok_or_else(|| {
@@ -3107,6 +2829,79 @@ fn build_hierarchy_from_run(
                 start: first.source.start,
                 count: source_end - first.source.start,
             };
+            if source.start != level_source_offset {
+                return Err(ExternalLodBuildError::Validation(
+                    "hierarchy level is not a contiguous canonical source partition".into(),
+                ));
+            }
+            let representative_count = child_representation_count
+                .div_ceil(u64::from(config.settings.branching_factor))
+                .max(1);
+            let representative_count = u32::try_from(representative_count).map_err(|_| {
+                ExternalLodBuildError::InvalidConfig(
+                    "external rung representation count exceeds u32".into(),
+                )
+            })?;
+            if representative_count > config.settings.leaf_capacity {
+                return Err(ExternalLodBuildError::Validation(format!(
+                    "external rung requires {representative_count} records above leaf capacity {}",
+                    config.settings.leaf_capacity
+                )));
+            }
+            let rung = build_external_progressive_rung(
+                &mut canonical_reader,
+                source,
+                representative_count,
+                config.settings.support_sigma,
+            )?;
+            let child_representation_capacity = usize::try_from(child_representation_count)
+                .map_err(|_| {
+                    ExternalLodBuildError::InvalidConfig(
+                        "child representation count exceeds usize".into(),
+                    )
+                })?;
+            let mut child_representation_source_ends = Vec::new();
+            reserve_exact(
+                &mut child_representation_source_ends,
+                child_representation_capacity,
+                "morph child representation boundaries",
+            )?;
+            for child in children {
+                if let Some(source_ends) = &child.representation_source_ends {
+                    child_representation_source_ends.extend(source_ends.iter().copied());
+                } else {
+                    for offset in 1..=child.source.count {
+                        child_representation_source_ends.push(
+                            child.source.start.checked_add(offset).ok_or_else(|| {
+                                ExternalLodBuildError::InvalidConfig(
+                                    "leaf morph source boundary overflow".into(),
+                                )
+                            })?,
+                        );
+                    }
+                }
+            }
+            if child_representation_source_ends.len() != child_representation_capacity {
+                return Err(ExternalLodBuildError::Validation(
+                    "morph child boundary count disagrees with child representations".into(),
+                ));
+            }
+            let morph_child_run_lengths = monotone_morph_run_lengths(
+                source,
+                &rung.source_ranges,
+                &child_representation_source_ends,
+            )?;
+            let representation_source_ends = rung
+                .source_ranges
+                .iter()
+                .map(|range| range.end().unwrap())
+                .collect::<Vec<_>>();
+            maximum_reduction_batch_records =
+                maximum_reduction_batch_records.max(rung.maximum_partition_records);
+            maximum_risk_aware_source_records =
+                maximum_risk_aware_source_records.max(rung.risk_aware_source_records);
+            maximum_risk_aware_host_bytes =
+                maximum_risk_aware_host_bytes.max(rung.risk_aware_host_bytes);
             let morton = LodMortonRange {
                 min: first.morton.min,
                 max: last.morton.max,
@@ -3121,47 +2916,84 @@ fn build_hierarchy_from_run(
                     "hierarchy child drafts are not contiguous".into(),
                 ));
             }
-            let page_id = LodPageId(drafts.len() as u64 + 1);
-            let (descriptor, encoded_bytes, encoding_error) = write_page(
-                pages_directory,
-                page_id,
-                LodPageKind::Representatives,
-                vec![representative],
-                config,
-            )?;
-            let error = compose_hierarchical_error(error, encoding_error)?;
-            maximum_encoded_page_bytes = maximum_encoded_page_bytes.max(encoded_bytes);
-            stored_gaussian_count = stored_gaussian_count
-                .checked_add(u64::from(descriptor.gaussian_count))
-                .ok_or_else(|| {
-                    ExternalLodBuildError::InvalidConfig("stored Gaussian count overflow".into())
-                })?;
-            let draft_index = drafts.len();
-            drafts.push(NodeDraft {
-                children: Some((first_child, child_count)),
+            spatial_cohort.push(PendingInternalNode {
+                children: (first_child, child_count),
                 source,
                 morton,
-                bounds,
-                page_id,
-                page_count: descriptor.gaussian_count,
-                error,
+                inherited_bounds: bounds,
+                authored_source_bounds,
+                inherited_error,
+                inherited_high_fidelity_certificate: high_fidelity_certificate,
+                rung,
+                morph_child_run_lengths,
+                representation_source_ends,
             });
-            descriptors.push(descriptor);
-            next.push(ReductionSummary {
-                draft_index,
-                source,
-                morton,
-                bounds,
-                representative,
-                reduction_error: error,
-            });
+            level_source_offset = source_end;
             child_offset += child_count;
+
+            let spatial_cohort_target =
+                spatial_cohort_base + u64::from(spatial_cohort_index < spatial_cohort_remainder);
+            if spatial_cohort.len()
+                == usize::try_from(spatial_cohort_target).map_err(|_| {
+                    ExternalLodBuildError::InvalidConfig(
+                        "spatial sibling cohort count exceeds usize".into(),
+                    )
+                })?
+            {
+                let fit_report = finalize_spatial_sibling_cohort(
+                    &mut spatial_cohort,
+                    pages_directory,
+                    config,
+                    &mut drafts,
+                    &mut descriptors,
+                    &mut next,
+                    &mut stored_gaussian_count,
+                    &mut maximum_encoded_page_bytes,
+                )?;
+                spatial_touching_node_pairs = spatial_touching_node_pairs
+                    .checked_add(u64::from(fit_report.touching_node_pairs))
+                    .ok_or_else(|| {
+                        ExternalLodBuildError::InvalidConfig(
+                            "spatial touching-pair telemetry overflow".into(),
+                        )
+                    })?;
+                spatial_measured_touching_node_pairs = spatial_measured_touching_node_pairs
+                    .checked_add(u64::from(fit_report.overlapping_node_pairs))
+                    .ok_or_else(|| {
+                        ExternalLodBuildError::InvalidConfig(
+                            "spatial measured-pair telemetry overflow".into(),
+                        )
+                    })?;
+                spatial_unmeasured_touching_node_pairs = spatial_unmeasured_touching_node_pairs
+                    .checked_add(u64::from(fit_report.unmeasured_touching_node_pairs))
+                    .ok_or_else(|| {
+                        ExternalLodBuildError::InvalidConfig(
+                            "spatial unmeasured-pair telemetry overflow".into(),
+                        )
+                    })?;
+                spatial_cohort_index = spatial_cohort_index.checked_add(1).ok_or_else(|| {
+                    ExternalLodBuildError::InvalidConfig(
+                        "spatial sibling cohort index overflow".into(),
+                    )
+                })?;
+            }
         }
         if child_offset != current.len() {
             return Err(ExternalLodBuildError::Validation(
                 "hierarchy grouping did not consume its child level".into(),
             ));
         }
+        if level_source_offset != source_count {
+            return Err(ExternalLodBuildError::Validation(
+                "hierarchy level did not consume the canonical source partition".into(),
+            ));
+        }
+        if !spatial_cohort.is_empty() || spatial_cohort_index != spatial_parent_count {
+            return Err(ExternalLodBuildError::Validation(
+                "spatial sibling cohorts did not consume the parent level".into(),
+            ));
+        }
+        canonical_reader.finish()?;
         levels.push((level_start, drafts.len()));
         current = next;
     }
@@ -3186,23 +3018,192 @@ fn build_hierarchy_from_run(
     Ok(HierarchyBuild {
         manifest,
         maximum_encoded_page_bytes,
-        maximum_reduction_batch_records: plan.maximum_reducer_input_records,
+        maximum_reduction_batch_records,
+        maximum_risk_aware_source_records,
+        maximum_risk_aware_host_bytes,
+        spatial_touching_node_pairs,
+        spatial_measured_touching_node_pairs,
+        spatial_unmeasured_touching_node_pairs,
+        spatial_cross_cohort_pair_upper_bound,
     })
 }
 
-fn reduce_bounded(
-    input: &[Gaussian3d],
-    config: ExternalLodBuildConfig,
-) -> Result<(Gaussian3d, LodError), ExternalLodBuildError> {
-    let result = MomentMergeReducer::new(config.settings.support_sigma)
-        .map_err(LodBuildError::InvalidSettings)?
-        .reduce(input)?;
-    Ok((result.gaussian, result.error))
+struct ExternalProgressiveRung {
+    representatives: Vec<crate::gaussian::formats::planar_3d_lod::MomentMergeResult>,
+    source_ranges: Vec<LodSourceRange>,
+    spatial_source_records: Option<Vec<Gaussian3d>>,
+    spatial_source_ranges: Vec<std::ops::Range<usize>>,
+    policy_bounds: Option<LodBounds>,
+    policy_error: LodError,
+    certificate_cap: f32,
+    maximum_partition_records: u64,
+    risk_aware_source_records: u64,
+    risk_aware_host_bytes: u64,
 }
 
-/// A bounded external reducer sees child representatives rather than every
-/// descendant source. Component-wise addition preserves a conservative path
-/// bound (triangle inequality); `max` alone would hide accumulated levels.
+/// Build one deterministic external rung from original canonical intervals.
+/// Near the leaves, a fixed-cap source buffer reuses ABI 14's risk-aware
+/// adjacent agglomeration; coarse rungs stream balanced intervals through one
+/// additive accumulator. Neither route consumes previously emitted Gaussians.
+fn build_external_progressive_rung(
+    reader: &mut RunReader,
+    source: LodSourceRange,
+    representative_count: u32,
+    support_sigma: f32,
+) -> Result<ExternalProgressiveRung, ExternalLodBuildError> {
+    let representative_count = u64::from(representative_count);
+    if representative_count == 0 || representative_count > source.count {
+        return Err(ExternalLodBuildError::Validation(format!(
+            "invalid external rung cardinality {representative_count} for {} source records",
+            source.count
+        )));
+    }
+    let output_capacity = usize::try_from(representative_count).map_err(|_| {
+        ExternalLodBuildError::InvalidConfig(
+            "external rung representation count exceeds usize".into(),
+        )
+    })?;
+    if source.count.div_ceil(representative_count)
+        <= EXTERNAL_RISK_AWARE_MAX_SOURCES_PER_REPRESENTATIVE
+        && source.count <= EXTERNAL_RISK_AWARE_MAX_SOURCE_RECORDS
+    {
+        let source_capacity = usize::try_from(source.count).map_err(|_| {
+            ExternalLodBuildError::InvalidConfig(
+                "risk-aware external rung source count exceeds usize".into(),
+            )
+        })?;
+        let mut source_records = Vec::new();
+        reserve_exact(
+            &mut source_records,
+            source_capacity,
+            "risk-aware external rung source",
+        )?;
+        for _ in 0..source.count {
+            source_records.push(
+                reader
+                    .next_record()?
+                    .ok_or_else(|| {
+                        ExternalLodBuildError::RunCorrupt(
+                            "canonical hierarchy spool ended inside a risk-aware source domain"
+                                .into(),
+                        )
+                    })?
+                    .gaussian,
+            );
+        }
+        let rung =
+            build_progressive_moment_merge_rung(&source_records, output_capacity, support_sigma)?;
+        if rung.representatives.len() != output_capacity {
+            return Err(ExternalLodBuildError::Validation(format!(
+                "risk-aware external rung emitted {} representatives, expected {output_capacity}",
+                rung.representatives.len()
+            )));
+        }
+        let maximum_partition_records = rung
+            .representatives
+            .iter()
+            .map(|representative| representative.source_count)
+            .max()
+            .unwrap_or(0);
+        let risk_aware_host_bytes = progressive_risk_aware_host_bytes_upper_bound(source_capacity)
+            .ok_or_else(|| {
+                ExternalLodBuildError::InvalidConfig(
+                    "risk-aware hierarchy host byte bound overflow".into(),
+                )
+            })?;
+        let source_ranges = rung
+            .source_ranges
+            .iter()
+            .map(|range| {
+                let start = source
+                    .start
+                    .checked_add(range.start as u64)
+                    .ok_or_else(|| {
+                        ExternalLodBuildError::InvalidConfig(
+                            "risk-aware representative source start overflow".into(),
+                        )
+                    })?;
+                Ok(LodSourceRange {
+                    start,
+                    count: (range.end - range.start) as u64,
+                })
+            })
+            .collect::<Result<Vec<_>, ExternalLodBuildError>>()?;
+        let spatial_source_ranges = rung.source_ranges.clone();
+        return Ok(ExternalProgressiveRung {
+            representatives: rung.representatives,
+            source_ranges,
+            spatial_source_records: Some(source_records),
+            spatial_source_ranges,
+            policy_bounds: rung.policy_envelope.support_bounds,
+            policy_error: rung.policy_envelope.error,
+            certificate_cap: rung.policy_envelope.high_fidelity_certificate_cap,
+            maximum_partition_records,
+            risk_aware_source_records: source.count,
+            risk_aware_host_bytes,
+        });
+    }
+    let mut representatives = Vec::new();
+    let mut source_ranges = Vec::new();
+    reserve_exact(
+        &mut representatives,
+        output_capacity,
+        "external progressive rung",
+    )?;
+    reserve_exact(
+        &mut source_ranges,
+        output_capacity,
+        "external progressive rung source ranges",
+    )?;
+    let (base, remainder) = balanced_group_sizes(source.count, representative_count);
+    let mut maximum_partition_records = 0_u64;
+    let mut partition_source_start = source.start;
+    for representative_index in 0..representative_count {
+        let partition_count = base + u64::from(representative_index < remainder);
+        maximum_partition_records = maximum_partition_records.max(partition_count);
+        let mut accumulator = MomentAccumulator::new();
+        for _ in 0..partition_count {
+            let record = reader.next_record()?.ok_or_else(|| {
+                ExternalLodBuildError::RunCorrupt(
+                    "canonical hierarchy spool ended inside a representative interval".into(),
+                )
+            })?;
+            accumulator.add(&record.gaussian, support_sigma)?;
+        }
+        representatives.push(accumulator.finish(support_sigma)?);
+        source_ranges.push(LodSourceRange {
+            start: partition_source_start,
+            count: partition_count,
+        });
+        partition_source_start = partition_source_start
+            .checked_add(partition_count)
+            .ok_or_else(|| {
+                ExternalLodBuildError::InvalidConfig(
+                    "external representative source range overflow".into(),
+                )
+            })?;
+    }
+    if partition_source_start != source.end().unwrap() {
+        return Err(ExternalLodBuildError::Validation(
+            "external representative ranges do not cover the node source".into(),
+        ));
+    }
+    Ok(ExternalProgressiveRung {
+        representatives,
+        source_ranges,
+        spatial_source_records: None,
+        spatial_source_ranges: Vec::new(),
+        policy_bounds: None,
+        policy_error: LodError::ZERO,
+        certificate_cap: 1.0,
+        maximum_partition_records,
+        risk_aware_source_records: 0,
+        risk_aware_host_bytes: 0,
+    })
+}
+
+/// Page encoding is applied after source-derived reduction. Component-wise
+/// addition preserves a conservative error bound (triangle inequality).
 fn compose_hierarchical_error(
     inherited: LodError,
     local: LodError,
@@ -3420,7 +3421,7 @@ fn finalize_manifest(
             },
             error: draft.error,
             quality,
-            high_fidelity_certificate: if is_leaf { 1.0 } else { 0.0 },
+            high_fidelity_certificate: draft.high_fidelity_certificate,
         });
     }
     for parent_index in 0..nodes.len() {
@@ -3429,6 +3430,37 @@ fn finalize_manifest(
             nodes[child_index as usize].parent = Some(nodes[parent_index].id);
         }
     }
+    let morph_map = if builder_abi_version == EXTERNAL_LOD_BUILDER_ABI_VERSION {
+        let mut node_runs = Vec::new();
+        reserve_exact(&mut node_runs, drafts.len(), "morph node ranges")?;
+        let run_count = drafts.iter().try_fold(0_usize, |count, draft| {
+            count
+                .checked_add(draft.morph_child_run_lengths.len())
+                .ok_or_else(|| {
+                    ExternalLodBuildError::InvalidConfig("morph run count overflow".into())
+                })
+        })?;
+        let mut child_run_lengths = Vec::new();
+        reserve_exact(&mut child_run_lengths, run_count, "morph child run lengths")?;
+        for old_index in order.iter().copied() {
+            let start = u32::try_from(child_run_lengths.len()).map_err(|_| {
+                ExternalLodBuildError::InvalidConfig("morph run offset exceeds u32".into())
+            })?;
+            let count =
+                u32::try_from(drafts[old_index].morph_child_run_lengths.len()).map_err(|_| {
+                    ExternalLodBuildError::InvalidConfig("morph run count exceeds u32".into())
+                })?;
+            child_run_lengths.extend_from_slice(&drafts[old_index].morph_child_run_lengths);
+            node_runs.push(LodIndexRange { start, count });
+        }
+        Some(GaussianLodMorphMap {
+            schema_version: LOD_MORPH_MAP_SCHEMA_VERSION,
+            node_runs,
+            child_run_lengths,
+        })
+    } else {
+        None
+    };
     let root = nodes.first().ok_or(ExternalLodBuildError::EmptySource)?;
     let root_id = root.id;
     let root_bounds = root.bounds;
@@ -3441,12 +3473,23 @@ fn finalize_manifest(
             None
         }
     });
+    let reducer_version = match builder_abi_version {
+        EXTERNAL_LOD_BUILDER_ABI_VERSION => SPATIAL_MOMENT_MERGE_VERSION,
+        EXTERNAL_PROGRESSIVE_LOD_BUILDER_ABI_VERSION => MOMENT_MERGE_VERSION,
+        _ => EXTERNAL_MOMENT_MERGE_VERSION,
+    };
+    let required_features = LOD_CURRENT_REQUIRED_FEATURES
+        | if morph_map.is_some() {
+            LOD_REQUIRED_FEATURE_MONOTONE_MORPH_MAP
+        } else {
+            0
+        };
     let manifest = GaussianLodManifest {
         header: GaussianLodManifestHeader {
             magic: LOD_MANIFEST_MAGIC,
             manifest_version: LOD_MANIFEST_VERSION,
             page_schema_version: LOD_PAGE_SCHEMA_VERSION,
-            required_features: LOD_CURRENT_REQUIRED_FEATURES,
+            required_features,
             source_gaussian_count: source_count,
             stored_gaussian_count,
             node_count,
@@ -3460,11 +3503,12 @@ fn finalize_manifest(
             settings: config.settings,
             reducer: LodReducerKind::MomentMerge,
             builder_abi_version,
-            reducer_version: MOMENT_MERGE_VERSION,
+            reducer_version,
             source_fingerprint,
-            config_fingerprint: lod_config_fingerprint(
+            config_fingerprint: lod_config_fingerprint_for_reducer(
                 config.settings,
                 compressed_representative_sh_degree,
+                reducer_version,
             ),
         },
         quality: GaussianLodQualityMetadata {
@@ -3473,6 +3517,7 @@ fn finalize_manifest(
             finest_gaussian_count: source_count,
             max_error: root_error,
         },
+        morph_map,
     };
     manifest
         .validate()
@@ -3490,6 +3535,158 @@ fn balanced_group_count(len: u64, capacity: u64, force_multiple: bool) -> u64 {
 
 fn balanced_group_sizes(len: u64, group_count: u64) -> (u64, u64) {
     (len / group_count, len % group_count)
+}
+
+fn checked_unordered_pair_count(
+    count: u64,
+    overflow_context: &'static str,
+) -> Result<u64, ExternalLodBuildError> {
+    count
+        .checked_mul(count.saturating_sub(1))
+        .map(|product| product / 2)
+        .ok_or_else(|| ExternalLodBuildError::InvalidConfig(overflow_context.into()))
+}
+
+/// Counts every same-level node pair split across different future-parent
+/// cohorts. This is deliberately an upper bound on *touching* cross-cohort
+/// pairs: it requires only the balanced partition cardinalities already held
+/// by the streaming hierarchy and does not introduce a level-wide bounds
+/// buffer or spatial index.
+fn spatial_cross_cohort_pair_upper_bound_for_level(
+    level_node_count: u64,
+    cohort_count: u64,
+    cohort_base: u64,
+    cohort_remainder: u64,
+) -> Result<u64, ExternalLodBuildError> {
+    if cohort_count == 0
+        || cohort_remainder > cohort_count
+        || cohort_base
+            .checked_mul(cohort_count)
+            .and_then(|base| base.checked_add(cohort_remainder))
+            != Some(level_node_count)
+    {
+        return Err(ExternalLodBuildError::Validation(
+            "spatial cohort partition is inconsistent".into(),
+        ));
+    }
+    let larger_cohort_size = cohort_base.checked_add(1).ok_or_else(|| {
+        ExternalLodBuildError::InvalidConfig("spatial larger-cohort size overflow".into())
+    })?;
+    let larger_cohort_pairs = checked_unordered_pair_count(
+        larger_cohort_size,
+        "spatial larger-cohort pair-count overflow",
+    )?;
+    let smaller_cohort_pairs =
+        checked_unordered_pair_count(cohort_base, "spatial smaller-cohort pair-count overflow")?;
+    let within_cohort_pairs = cohort_remainder
+        .checked_mul(larger_cohort_pairs)
+        .and_then(|larger| {
+            (cohort_count - cohort_remainder)
+                .checked_mul(smaller_cohort_pairs)
+                .and_then(|smaller| larger.checked_add(smaller))
+        })
+        .ok_or_else(|| {
+            ExternalLodBuildError::InvalidConfig("spatial within-cohort pair-count overflow".into())
+        })?;
+    checked_unordered_pair_count(level_node_count, "spatial level pair-count overflow")?
+        .checked_sub(within_cohort_pairs)
+        .ok_or_else(|| {
+            ExternalLodBuildError::Validation(
+                "spatial within-cohort pairs exceed level pairs".into(),
+            )
+        })
+}
+
+fn validate_representation_source_partition(
+    domain: LodSourceRange,
+    ranges: &[LodSourceRange],
+    label: &str,
+) -> Result<(), ExternalLodBuildError> {
+    let mut expected_start = domain.start;
+    for range in ranges {
+        if range.count == 0 || range.start != expected_start {
+            return Err(ExternalLodBuildError::Validation(format!(
+                "{label} is not a positive contiguous source partition"
+            )));
+        }
+        expected_start = range.end().ok_or_else(|| {
+            ExternalLodBuildError::InvalidConfig(format!("{label} source range overflow"))
+        })?;
+    }
+    if expected_start != domain.end().unwrap() {
+        return Err(ExternalLodBuildError::Validation(format!(
+            "{label} does not cover its node source range"
+        )));
+    }
+    Ok(())
+}
+
+/// Map ordered child records onto ordered parent records without storing one
+/// parent index per child. Each chosen run boundary is the child-record
+/// boundary nearest the corresponding canonical parent-source boundary.
+/// Clamping reserves at least one child for every remaining parent, making the
+/// implicit parent sequence monotone and surjective. Equal-distance ties keep
+/// the lower child boundary for byte-stable output.
+fn monotone_morph_run_lengths(
+    domain: LodSourceRange,
+    parent_ranges: &[LodSourceRange],
+    child_source_ends: &[u64],
+) -> Result<Vec<u16>, ExternalLodBuildError> {
+    validate_representation_source_partition(domain, parent_ranges, "morph parent records")?;
+    let mut previous_child_end = domain.start;
+    for &child_end in child_source_ends {
+        if child_end <= previous_child_end || child_end > domain.end().unwrap() {
+            return Err(ExternalLodBuildError::Validation(
+                "morph child boundaries are not a positive ordered source partition".into(),
+            ));
+        }
+        previous_child_end = child_end;
+    }
+    if previous_child_end != domain.end().unwrap() {
+        return Err(ExternalLodBuildError::Validation(
+            "morph child boundaries do not cover the node source range".into(),
+        ));
+    }
+    if parent_ranges.is_empty() || child_source_ends.len() < parent_ranges.len() {
+        return Err(ExternalLodBuildError::Validation(
+            "morph map requires at least one child record per parent record".into(),
+        ));
+    }
+    if parent_ranges.len() > usize::from(u16::MAX) {
+        return Err(ExternalLodBuildError::InvalidConfig(
+            "morph parent record count exceeds u16".into(),
+        ));
+    }
+
+    let mut runs = Vec::new();
+    reserve_exact(&mut runs, parent_ranges.len(), "morph run lengths")?;
+    let mut previous_split = 0_usize;
+    for parent_index in 0..parent_ranges.len().saturating_sub(1) {
+        let target = parent_ranges[parent_index].end().unwrap();
+        let minimum_split = previous_split + 1;
+        let remaining_parents = parent_ranges.len() - parent_index - 1;
+        let maximum_split = child_source_ends.len() - remaining_parents;
+        let mut split = minimum_split;
+        let mut distance = child_source_ends[split - 1].abs_diff(target);
+        while split < maximum_split {
+            let next_distance = child_source_ends[split].abs_diff(target);
+            if next_distance >= distance {
+                break;
+            }
+            split += 1;
+            distance = next_distance;
+        }
+        let run_length = split - previous_split;
+        runs.push(u16::try_from(run_length).map_err(|_| {
+            ExternalLodBuildError::InvalidConfig("morph run length exceeds u16".into())
+        })?);
+        previous_split = split;
+    }
+    let final_run = child_source_ends.len() - previous_split;
+    runs.push(u16::try_from(final_run).map_err(|_| {
+        ExternalLodBuildError::InvalidConfig("morph run length exceeds u16".into())
+    })?);
+    Ok(runs)
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -3952,6 +4149,102 @@ fn nonempty_parent(path: &Path) -> &Path {
         .unwrap_or_else(|| Path::new("."))
 }
 
+fn ensure_output_absent(output: &Path) -> Result<(), ExternalLodBuildError> {
+    match fs::symlink_metadata(output) {
+        Ok(_) => Err(ExternalLodBuildError::OutputExists(output.to_path_buf())),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos",
+    target_os = "redox",
+))]
+fn rename_directory_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
+    use rustix::{
+        fs::{CWD, RenameFlags, renameat_with},
+        io::Errno,
+    };
+
+    match renameat_with(CWD, source, CWD, destination, RenameFlags::NOREPLACE) {
+        Ok(()) => Ok(()),
+        Err(Errno::EXIST) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "publication destination already exists",
+        )),
+        Err(Errno::NOSYS | Errno::INVAL) => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "the filesystem does not support atomic no-replace directory publication",
+        )),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(windows)]
+fn rename_directory_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{
+        Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS},
+        Storage::FileSystem::MoveFileExW,
+    };
+
+    fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
+        let mut encoded = path.as_os_str().encode_wide().collect::<Vec<_>>();
+        if encoded.contains(&0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "publication path contains a NUL code unit",
+            ));
+        }
+        encoded.push(0);
+        Ok(encoded)
+    }
+
+    let source = wide_path(source)?;
+    let destination = wide_path(destination)?;
+    // SAFETY: both buffers are NUL-terminated and remain alive for the call.
+    if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), 0) } != 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if matches!(
+        error.raw_os_error().map(|code| code as u32),
+        Some(ERROR_ALREADY_EXISTS | ERROR_FILE_EXISTS)
+    ) {
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "publication destination already exists",
+        ))
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(not(any(
+    windows,
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos",
+    target_os = "redox",
+)))]
+fn rename_directory_no_replace(_source: &Path, _destination: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "atomic no-replace directory publication is unsupported on this platform",
+    ))
+}
+
 struct StagingDirectory {
     path: PathBuf,
     published: bool,
@@ -3990,12 +4283,19 @@ impl StagingDirectory {
     }
 
     fn publish(&mut self, output: &Path) -> Result<(), ExternalLodBuildError> {
-        if output.exists() {
-            return Err(ExternalLodBuildError::OutputExists(output.to_path_buf()));
+        match rename_directory_no_replace(&self.path, output) {
+            Ok(()) => {
+                self.published = true;
+                Ok(())
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                Err(ExternalLodBuildError::OutputExists(output.to_path_buf()))
+            }
+            Err(_) if fs::symlink_metadata(output).is_ok() => {
+                Err(ExternalLodBuildError::OutputExists(output.to_path_buf()))
+            }
+            Err(error) => Err(error.into()),
         }
-        fs::rename(&self.path, output)?;
-        self.published = true;
-        Ok(())
     }
 }
 
@@ -4139,14 +4439,13 @@ mod tests {
     use super::*;
     use crate::{
         gaussian::f32::{PositionVisibility, Rotation, ScaleOpacity},
+        gaussian::formats::planar_3d_lod::LodValidationError,
         material::spherical_harmonics::SphericalHarmonicCoefficients,
         stream::transport::{
             LodPageTransport, NativeFilePageTransport, PagePoll, PageRequest, PageRequestPriority,
         },
     };
 
-    const GPU_F32_ABSOLUTE_TOLERANCE: f32 = 1e-5;
-    const GPU_F32_RELATIVE_TOLERANCE: f32 = 1e-4;
     use std::{
         cell::Cell,
         sync::{Arc, Barrier},
@@ -4160,12 +4459,7 @@ mod tests {
 
     struct FailingPreprocessor;
 
-    struct FakeGlobalPreprocessor {
-        limits: ExternalLodGlobalReductionLimits,
-        leaf_dispatches: usize,
-        summary_dispatches: usize,
-        fail_reduction: bool,
-    }
+    struct FakeCanonicalPreprocessor;
 
     struct ChangingSource {
         source: MemorySource,
@@ -4218,7 +4512,7 @@ mod tests {
         }
     }
 
-    impl ExternalLodBatchPreprocessor for FakeGlobalPreprocessor {
+    impl ExternalLodBatchPreprocessor for FakeCanonicalPreprocessor {
         fn stage_name(&self) -> &'static str {
             "fake-canonical-sort"
         }
@@ -4236,89 +4530,6 @@ mod tests {
                 normalization_bounds,
                 support_sigma,
             )?)
-        }
-
-        fn global_gpu_hierarchy(&mut self) -> Option<&mut dyn ExternalLodGlobalReducer> {
-            Some(self)
-        }
-    }
-
-    impl ExternalLodGlobalReducer for FakeGlobalPreprocessor {
-        fn limits(&self) -> ExternalLodGlobalReductionLimits {
-            self.limits
-        }
-
-        fn reduce_leaf_groups(
-            &mut self,
-            records: &[Gaussian3d],
-            groups: &[GpuLodHierarchyReductionGroup],
-            support_sigma: f32,
-        ) -> Result<Vec<GpuLodHierarchyReductionOutput>, ExternalLodBuildError> {
-            self.leaf_dispatches += 1;
-            if self.fail_reduction {
-                return Err(ExternalLodBuildError::PreprocessorContract(
-                    "injected global leaf reduction failure".into(),
-                ));
-            }
-            let reducer =
-                MomentMergeReducer::new(support_sigma).map_err(LodBuildError::InvalidSettings)?;
-            groups
-                .iter()
-                .map(|group| {
-                    let result = reducer.reduce(
-                        &records[group.start as usize..(group.start + group.count) as usize],
-                    )?;
-                    Ok(GpuLodHierarchyReductionOutput {
-                        representative: result.gaussian,
-                        representative_support: gaussian_support_bounds(
-                            &result.gaussian,
-                            support_sigma,
-                        )?,
-                        local_error: result.error,
-                        accumulated_error: result.error,
-                    })
-                })
-                .collect()
-        }
-
-        fn reduce_summary_groups(
-            &mut self,
-            inputs: &[GpuLodHierarchyReductionInput],
-            groups: &[GpuLodHierarchyReductionGroup],
-            support_sigma: f32,
-        ) -> Result<Vec<GpuLodHierarchyReductionOutput>, ExternalLodBuildError> {
-            self.summary_dispatches += 1;
-            if self.fail_reduction {
-                return Err(ExternalLodBuildError::PreprocessorContract(
-                    "injected global summary reduction failure".into(),
-                ));
-            }
-            let reducer =
-                MomentMergeReducer::new(support_sigma).map_err(LodBuildError::InvalidSettings)?;
-            groups
-                .iter()
-                .map(|group| {
-                    let children =
-                        &inputs[group.start as usize..(group.start + group.count) as usize];
-                    let representatives = children
-                        .iter()
-                        .map(|child| child.representative)
-                        .collect::<Vec<_>>();
-                    let result = reducer.reduce(&representatives)?;
-                    let inherited = children.iter().fold(LodError::ZERO, |error, child| {
-                        error.max(child.inherited_error)
-                    });
-                    Ok(GpuLodHierarchyReductionOutput {
-                        representative: result.gaussian,
-                        representative_support: gaussian_support_bounds(
-                            &result.gaussian,
-                            support_sigma,
-                        )?,
-                        local_error: result.error,
-                        accumulated_error: compose_hierarchical_error(inherited, result.error)?,
-                    })
-                })
-                .collect()
         }
     }
 
@@ -4374,6 +4585,43 @@ mod tests {
         )
     }
 
+    #[test]
+    fn planar_source_replays_exact_order_in_bounded_batches() {
+        let expected = fixture(11).0;
+        let cloud = PlanarGaussian3d::from(expected.clone());
+        let source = PlanarGaussianSource::new(&cloud);
+        let mut replayed = Vec::new();
+        let mut batch_lengths = Vec::new();
+        let count = source
+            .replay(4, &mut |batch| {
+                batch_lengths.push(batch.len());
+                replayed.extend_from_slice(batch);
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(count, expected.len() as u64);
+        assert_eq!(batch_lengths, [4, 4, 3]);
+        assert_eq!(replayed, expected);
+        assert!(matches!(
+            source.replay(0, &mut |_| Ok(())),
+            Err(ExternalLodBuildError::InvalidConfig(_))
+        ));
+
+        let mut malformed = cloud.clone();
+        malformed.rotation.pop();
+        assert!(matches!(
+            PlanarGaussianSource::new(&malformed).replay(4, &mut |_| Ok(())),
+            Err(ExternalLodBuildError::LodBuild(
+                LodBuildError::PlaneLengthMismatch {
+                    plane: "rotation",
+                    expected: 11,
+                    actual: 10,
+                }
+            ))
+        ));
+    }
+
     fn config(batch_records: usize) -> ExternalLodBuildConfig {
         ExternalLodBuildConfig {
             settings: GaussianLodBuildSettings {
@@ -4408,6 +4656,187 @@ mod tests {
         ))
     }
 
+    #[test]
+    fn monotone_morph_runs_choose_nearest_ordered_child_boundaries() {
+        let domain = LodSourceRange {
+            start: 100,
+            count: 20,
+        };
+        let parents = [
+            LodSourceRange {
+                start: 100,
+                count: 7,
+            },
+            LodSourceRange {
+                start: 107,
+                count: 7,
+            },
+            LodSourceRange {
+                start: 114,
+                count: 6,
+            },
+        ];
+        let child_ends = [102, 105, 109, 111, 116, 118, 120];
+
+        // The first parent boundary (107) is equally distant from 105 and 109,
+        // so the deterministic lower-boundary tie rule keeps the first run at
+        // two records. The second boundary is nearest 116.
+        let runs = monotone_morph_run_lengths(domain, &parents, &child_ends).unwrap();
+        assert_eq!(runs, [2, 3, 2]);
+        assert!(runs.iter().all(|run| *run > 0));
+        assert_eq!(
+            runs.iter().map(|run| usize::from(*run)).sum::<usize>(),
+            child_ends.len()
+        );
+
+        let mut mapped = Vec::new();
+        for (parent, run) in runs.iter().copied().enumerate() {
+            mapped.extend(std::iter::repeat_n(parent, usize::from(run)));
+        }
+        assert_eq!(mapped, [0, 0, 1, 1, 1, 2, 2]);
+    }
+
+    #[test]
+    fn abi16_package_proves_monotone_morph_map_and_abi15_read_compatibility() {
+        let output = temporary_output("abi16-morph-map");
+        remove_if_present(&output);
+        let build_config = config(11);
+        let mut cpu = CpuExternalLodBatchPreprocessor;
+        build_external_lod_package(&fixture(97), &output, build_config, &mut cpu)
+            .expect("ABI 16 morph fixture should build");
+        let limits = LodCodecLimits {
+            max_manifest_bytes: 4 * 1024 * 1024,
+            max_nodes: 1_000,
+            max_pages: 1_000,
+            max_page_bytes: 1024 * 1024,
+            max_page_gaussians: 1_000,
+        };
+        let encoded = fs::read(output.join("scene.gsplatlod")).unwrap();
+        let manifest = decode_manifest(&encoded, limits).unwrap();
+
+        assert_eq!(
+            manifest.build.builder_abi_version,
+            EXTERNAL_LOD_BUILDER_ABI_VERSION
+        );
+        assert_eq!(manifest.build.reducer_version, SPATIAL_MOMENT_MERGE_VERSION);
+        assert_ne!(
+            manifest.header.required_features & LOD_REQUIRED_FEATURE_MONOTONE_MORPH_MAP,
+            0
+        );
+        let morph = manifest
+            .morph_map
+            .as_ref()
+            .expect("ABI 16 requires a morph map");
+        assert_eq!(morph.schema_version, LOD_MORPH_MAP_SCHEMA_VERSION);
+        assert_eq!(morph.node_runs.len(), manifest.nodes.len());
+
+        let mut expected_global_start = 0_u32;
+        for (node_index, node) in manifest.nodes.iter().enumerate() {
+            let range = manifest.morph_child_run_range_at(node_index).unwrap();
+            assert_eq!(range.start, expected_global_start);
+            expected_global_start = range.end().unwrap();
+            assert_eq!(manifest.morph_child_run_range(node.id), Some(range));
+            let runs = manifest.morph_child_run_lengths_at(node_index).unwrap();
+            if node.is_leaf() {
+                assert!(runs.is_empty());
+                continue;
+            }
+
+            assert_eq!(runs.len(), node.representation.count as usize);
+            assert!(runs.iter().all(|run| *run > 0));
+            let child_record_count = node.children.start..node.children.end().unwrap();
+            let child_record_count = child_record_count
+                .map(|child| manifest.nodes[child as usize].representation.count)
+                .sum::<u32>();
+            assert_eq!(
+                runs.iter().map(|run| u32::from(*run)).sum::<u32>(),
+                child_record_count
+            );
+
+            let mut previous_parent = None;
+            let mut visited_parents = vec![false; runs.len()];
+            for child_record in 0..child_record_count {
+                let parent = manifest
+                    .morph_parent_record_at(node_index, child_record)
+                    .expect("every immediate-child record must map to a parent record");
+                assert_eq!(
+                    manifest.morph_parent_record(node.id, child_record),
+                    Some(parent)
+                );
+                if let Some(previous) = previous_parent {
+                    assert!(parent >= previous, "morph correspondence is not monotone");
+                }
+                visited_parents[usize::from(parent)] = true;
+                previous_parent = Some(parent);
+            }
+            assert!(visited_parents.into_iter().all(|visited| visited));
+            assert_eq!(
+                manifest.morph_parent_record_at(node_index, child_record_count),
+                None
+            );
+        }
+        assert_eq!(
+            expected_global_start as usize,
+            morph.child_run_lengths.len()
+        );
+        assert_eq!(
+            decode_manifest(&encode_manifest(&manifest).unwrap(), limits).unwrap(),
+            manifest
+        );
+
+        let mut missing_feature = manifest.clone();
+        missing_feature.header.required_features &= !LOD_REQUIRED_FEATURE_MONOTONE_MORPH_MAP;
+        assert!(matches!(
+            missing_feature.validate(),
+            Err(LodValidationError::MissingMonotoneMorphMapFeature)
+        ));
+
+        let mut missing_map = manifest.clone();
+        missing_map.morph_map = None;
+        assert!(matches!(
+            missing_map.validate(),
+            Err(LodValidationError::MissingMorphMap)
+        ));
+
+        let mut zero_run = manifest.clone();
+        zero_run.morph_map.as_mut().unwrap().child_run_lengths[0] = 0;
+        assert!(matches!(
+            zero_run.validate(),
+            Err(LodValidationError::ZeroMorphRun(_))
+        ));
+
+        let mut bad_coverage = manifest.clone();
+        bad_coverage.morph_map.as_mut().unwrap().child_run_lengths[0] += 1;
+        assert!(matches!(
+            bad_coverage.validate(),
+            Err(LodValidationError::MorphChildCoverageMismatch { .. })
+        ));
+
+        // ABI 15 remains readable with its original v3 reducer fingerprint and
+        // no ABI 16 feature or sidecar. This is an in-memory compatibility
+        // fixture; the production writer never relabels an existing package.
+        let mut legacy = manifest.clone();
+        legacy.build.builder_abi_version = EXTERNAL_PROGRESSIVE_LOD_BUILDER_ABI_VERSION;
+        legacy.build.reducer_version = MOMENT_MERGE_VERSION;
+        legacy.build.config_fingerprint =
+            lod_config_fingerprint_for_reducer(legacy.build.settings, None, MOMENT_MERGE_VERSION);
+        legacy.header.required_features &= !LOD_REQUIRED_FEATURE_MONOTONE_MORPH_MAP;
+        legacy.morph_map = None;
+        legacy.validate().unwrap();
+        assert_eq!(
+            decode_manifest(&encode_manifest(&legacy).unwrap(), limits).unwrap(),
+            legacy
+        );
+
+        let mut unexpected_map = legacy;
+        unexpected_map.morph_map = manifest.morph_map.clone();
+        assert!(matches!(
+            unexpected_map.validate(),
+            Err(LodValidationError::UnexpectedMorphMap)
+        ));
+        remove_if_present(&output);
+    }
+
     /// Reads exactly the page object named by a manifest descriptor. External
     /// builds range-pack pages into `.bgslodpack` shards, so reading the URI as
     /// a standalone page would feed the shard header to the page decoder.
@@ -4431,67 +4860,47 @@ mod tests {
     }
 
     fn remove_if_present(path: &Path) {
-        if path.exists() {
-            fs::remove_dir_all(path).unwrap();
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                fs::remove_dir_all(path).unwrap();
+            }
+            Ok(_) => fs::remove_file(path).unwrap(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => panic!(
+                "could not inspect test output '{}': {error}",
+                path.display()
+            ),
         }
     }
 
-    fn assert_gpu_f32_close(label: &str, gpu: f32, cpu: f32) {
-        let tolerance =
-            GPU_F32_ABSOLUTE_TOLERANCE + GPU_F32_RELATIVE_TOLERANCE * gpu.abs().max(cpu.abs());
-        assert!(
-            (gpu - cpu).abs() <= tolerance,
-            "{label}: GPU {gpu} differs from CPU {cpu} by {}, tolerance {tolerance}",
-            (gpu - cpu).abs()
-        );
+    #[test]
+    fn default_builder_artifacts_fit_default_loader_limits() {
+        let builder = ExternalLodBuildLimits::default();
+        let loader = LodCodecLimits::default();
+        assert!(builder.max_manifest_nodes <= loader.max_nodes);
+        // The current external writer emits one page descriptor per node.
+        assert!(builder.max_manifest_nodes <= loader.max_pages);
+        assert!(builder.max_manifest_bytes <= loader.max_manifest_bytes);
+        assert!(builder.max_encoded_page_bytes <= loader.max_page_bytes);
+        let plan =
+            ExternalLodBuildPlan::new(builder.max_source_count, ExternalLodBuildConfig::default())
+                .expect("the advertised default source maximum must be internally attainable");
+        assert_eq!(plan.total_node_count, u64::from(builder.max_manifest_nodes));
+        assert!(plan.minimum_encoded_manifest_bytes <= builder.max_manifest_bytes);
     }
 
-    fn assert_gpu_representative_close(gpu: &Gaussian3d, cpu: &Gaussian3d) {
-        for axis in 0..3 {
-            assert_gpu_f32_close(
-                &format!("representative position[{axis}]"),
-                gpu.position_visibility.position[axis],
-                cpu.position_visibility.position[axis],
-            );
-        }
-        assert_gpu_f32_close(
-            "representative visibility",
-            gpu.position_visibility.visibility,
-            cpu.position_visibility.visibility,
-        );
-        for coefficient in 0..SH_COEFF_COUNT {
-            assert_gpu_f32_close(
-                &format!("representative SH[{coefficient}]"),
-                gpu.spherical_harmonic.coefficients[coefficient],
-                cpu.spherical_harmonic.coefficients[coefficient],
-            );
-        }
-        for component in 0..4 {
-            assert_gpu_f32_close(
-                &format!("representative rotation[{component}]"),
-                gpu.rotation.rotation[component],
-                cpu.rotation.rotation[component],
-            );
-        }
-        for axis in 0..3 {
-            assert_gpu_f32_close(
-                &format!("representative scale[{axis}]"),
-                gpu.scale_opacity.scale[axis],
-                cpu.scale_opacity.scale[axis],
-            );
-        }
-        assert_gpu_f32_close(
-            "representative opacity",
-            gpu.scale_opacity.opacity,
-            cpu.scale_opacity.opacity,
-        );
-    }
-
-    fn assert_gpu_error_close(gpu: LodError, cpu: LodError) {
-        assert_gpu_f32_close("geometric error", gpu.geometric, cpu.geometric);
-        assert_gpu_f32_close("appearance error", gpu.appearance, cpu.appearance);
-        assert_gpu_f32_close("opacity error", gpu.opacity, cpu.opacity);
-        assert_gpu_f32_close("combined error", gpu.combined, cpu.combined);
+    #[test]
+    fn planner_rejects_impossible_manifest_byte_budget_before_source_work() {
+        let mut config = ExternalLodBuildConfig::default();
+        config.limits.max_manifest_bytes = 45;
+        assert!(matches!(
+            ExternalLodBuildPlan::new(1, config),
+            Err(ExternalLodBuildError::LimitExceeded {
+                field: "minimum encoded manifest bytes",
+                actual: 46,
+                limit: 45,
+            })
+        ));
     }
 
     #[test]
@@ -4516,10 +4925,10 @@ mod tests {
                 > plan.maximum_stream_handoff_host_bytes
         );
         assert!(plan.maximum_temporary_run_bytes > source_count * RUN_RECORD_BYTES as u64);
-        assert!(plan.maximum_temporary_summary_bytes > 0);
+        assert_eq!(plan.maximum_temporary_summary_bytes, 0);
         assert_eq!(
             plan.maximum_temporary_bytes,
-            plan.maximum_temporary_run_bytes + plan.maximum_temporary_summary_bytes
+            plan.maximum_temporary_run_bytes
         );
 
         let mut disk_limited = ExternalLodBuildConfig::default();
@@ -4527,10 +4936,28 @@ mod tests {
         assert!(matches!(
             ExternalLodBuildPlan::new(source_count, disk_limited),
             Err(ExternalLodBuildError::LimitExceeded {
-                field: "temporary run and hierarchy-summary bytes",
+                field: "temporary Morton run and canonical-spool bytes",
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn spill_host_bound_accounts_for_every_pipeline_run_batch() {
+        let mut shallow = ExternalLodBuildConfig::default();
+        shallow.limits.batch_records = 1_024;
+        shallow.limits.pipeline_depth = 1;
+        let mut deep = shallow;
+        deep.limits.pipeline_depth = 4;
+
+        let shallow = ExternalLodBuildPlan::new(4_096, shallow).unwrap();
+        let deep = ExternalLodBuildPlan::new(4_096, deep).unwrap();
+        let added_queued_batches = 3_u64;
+        let expected_delta = added_queued_batches * 1_024 * size_of::<RunRecord>() as u64;
+        assert_eq!(
+            deep.maximum_spill_host_bytes - shallow.maximum_spill_host_bytes,
+            expected_delta
+        );
     }
 
     #[test]
@@ -4554,12 +4981,55 @@ mod tests {
     }
 
     #[test]
-    fn global_reduction_batch_respects_both_host_and_gpu_caps() {
-        assert_eq!(effective_gpu_batch_records(65_536, 8_192), 8_192);
-        assert_eq!(effective_gpu_batch_records(4_096, 65_536), 4_096);
-        assert!(gpu_batch_can_add(3_000, 300, 1_000, false, 4_096, 4_500));
-        assert!(!gpu_batch_can_add(3_500, 300, 700, false, 4_096, 4_500));
-        assert!(!gpu_batch_can_add(4_000, 4, 97, true, 4_096, 4_500));
+    fn external_risk_aware_rung_preserves_separated_morton_morphology() {
+        let path = temporary_output("risk-aware-gap-rung").with_extension("bgsrun");
+        remove_if_present(&path);
+        let template = fixture(1).0[0];
+        let mut records = Vec::new();
+        for (position, count) in [(0.0_f32, 3_usize), (10.0, 6), (20.0, 3)] {
+            for _ in 0..count {
+                let mut gaussian = template;
+                gaussian.position_visibility.position = [position, 0.0, 0.0];
+                let index = records.len() as u64;
+                records.push(RunRecord {
+                    morton: index,
+                    source_index: index,
+                    gaussian,
+                });
+            }
+        }
+        write_run(&path, &records, 512).unwrap();
+        let mut reader = RunReader::open(&path, 512).unwrap();
+        let rung = build_external_progressive_rung(
+            &mut reader,
+            LodSourceRange {
+                start: 0,
+                count: records.len() as u64,
+            },
+            3,
+            3.0,
+        )
+        .unwrap();
+        reader.finish().unwrap();
+
+        assert_eq!(rung.representatives.len(), 3);
+        assert_eq!(
+            rung.representatives
+                .iter()
+                .map(|representative| representative.source_count)
+                .collect::<Vec<_>>(),
+            [3, 6, 3]
+        );
+        assert_eq!(
+            rung.representatives
+                .iter()
+                .map(|representative| representative.gaussian.position_visibility.position[0])
+                .collect::<Vec<_>>(),
+            [0.0, 10.0, 20.0]
+        );
+        assert_eq!(rung.maximum_partition_records, 6);
+        assert!(rung.certificate_cap < 0.01);
+        remove_if_present(&path);
     }
 
     #[test]
@@ -4701,18 +5171,101 @@ mod tests {
             first_manifest.build.builder_abi_version,
             EXTERNAL_LOD_BUILDER_ABI_VERSION
         );
+        assert_eq!(
+            first_manifest.build.reducer_version,
+            SPATIAL_MOMENT_MERGE_VERSION
+        );
+        assert!(first_manifest.build.has_bounded_refinement_amplification());
+        assert!(
+            first_manifest.header.stored_gaussian_count
+                > first_manifest.header.source_gaussian_count
+        );
+        assert!(
+            first.maximum_global_reduction_batch_records <= first.maximum_reducer_input_records
+        );
+        let first_plan = ExternalLodBuildPlan::new(source.0.len() as u64, first_config).unwrap();
+        assert!(
+            first.maximum_risk_aware_source_records > first_config.limits.batch_records as u64,
+            "risk-aware hierarchy memory must be accounted independently of sort batches"
+        );
+        assert!(first.maximum_risk_aware_host_bytes > 0);
+        assert!(
+            first.maximum_risk_aware_source_records <= first_plan.maximum_risk_aware_source_records
+        );
+        assert!(first.maximum_risk_aware_host_bytes <= first_plan.maximum_risk_aware_host_bytes);
+        assert_eq!(
+            first.maximum_spatial_cohort_source_records,
+            first_plan.maximum_spatial_cohort_source_records
+        );
+        assert_eq!(
+            first.maximum_spatial_cohort_host_bytes,
+            first_plan.maximum_spatial_cohort_host_bytes
+        );
+        assert!(first.maximum_spatial_node_pair_checks <= 496);
+        assert!(first.maximum_spatial_boundary_probes <= 496 * 9);
+        assert_eq!(
+            first.spatial_touching_node_pairs,
+            first.spatial_measured_touching_node_pairs
+                + first.spatial_unmeasured_touching_node_pairs
+        );
+        assert!(!first.spatial_mixed_depth_pairs_jointly_fitted);
+        for node in &first_manifest.nodes {
+            assert!(node.high_fidelity_certificate > 0.0);
+            if node.is_leaf() {
+                continue;
+            }
+            let children = &first_manifest.nodes
+                [node.children.start as usize..node.children.end().unwrap() as usize];
+            let child_representations = children
+                .iter()
+                .map(|child| u64::from(child.representation.count))
+                .sum::<u64>();
+            assert_eq!(
+                u64::from(node.representation.count),
+                child_representations
+                    .div_ceil(u64::from(first_manifest.build.settings.branching_factor))
+            );
+            assert!(node.representation.count > 1);
+            assert!(children.iter().all(|child| {
+                node.high_fidelity_certificate <= child.high_fidelity_certificate + f32::EPSILON
+            }));
+            let descriptor = &first_manifest.pages[(node.representation.page.0 - 1) as usize];
+            assert_eq!(descriptor.gaussian_count, node.representation.count);
+            assert_eq!(descriptor.kind, LodPageKind::Representatives);
+        }
         remove_if_present(&first_output);
         remove_if_present(&second_output);
     }
 
     #[test]
+    fn spatial_cross_cohort_telemetry_is_a_bounded_cardinality_upper_bound() {
+        // Nine same-level nodes split into three future-parent cohorts of
+        // three: 36 total pairs - 9 within-cohort pairs = 27 cross-cohort.
+        assert_eq!(
+            spatial_cross_cohort_pair_upper_bound_for_level(9, 3, 3, 0).unwrap(),
+            27
+        );
+        // Balanced 10 -> [4, 3, 3]: 45 - (6 + 3 + 3) = 33.
+        assert_eq!(
+            spatial_cross_cohort_pair_upper_bound_for_level(10, 3, 3, 1).unwrap(),
+            33
+        );
+        assert!(spatial_cross_cohort_pair_upper_bound_for_level(10, 3, 3, 0).is_err());
+    }
+
+    #[test]
     fn compressed_representatives_are_f16_but_source_leaves_remain_exact_f32() {
+        fn retained_degree(compiled_degree: usize) -> u8 {
+            compiled_degree.min(1) as u8
+        }
+
         let source = fixture(97);
         let output = temporary_output("compressed-sh");
         remove_if_present(&output);
         let mut build_config = config(11);
-        build_config.compressed_representative_sh_degree =
-            Some(crate::material::spherical_harmonics::SH_DEGREE.min(1) as u8);
+        build_config.compressed_representative_sh_degree = Some(retained_degree(
+            crate::material::spherical_harmonics::SH_DEGREE,
+        ));
         let mut cpu = CpuExternalLodBatchPreprocessor;
         let report = build_external_lod_package(&source, &output, build_config, &mut cpu)
             .expect("compressed representative package should build");
@@ -4797,46 +5350,40 @@ mod tests {
         assert_eq!(&encoded[..8], b"BGSPAGE\0");
         let decoded = decode_page_with_descriptor(&encoded, descriptor, limits).unwrap();
         assert_eq!(decoded.id, root.representation.page);
-        assert_eq!(decoded.gaussians.len(), 1);
+        let child_representations = root.children.start..root.children.end().unwrap();
+        let child_representations = child_representations
+            .map(|index| manifest.nodes[index as usize].representation.count as u64)
+            .sum::<u64>();
+        let expected =
+            child_representations.div_ceil(u64::from(manifest.build.settings.branching_factor));
+        assert_eq!(decoded.gaussians.len() as u64, expected);
+        assert!(decoded.gaussians.len() > 1);
         remove_if_present(&output);
     }
 
     #[test]
-    fn fake_global_reducer_runs_after_merge_and_is_partition_invariant() {
+    fn gpu_sort_preprocessor_uses_partition_invariant_cpu_v3_hierarchy() {
         let source = fixture(97);
         let first_output = temporary_output("global-fake-a");
         let second_output = temporary_output("global-fake-b");
         remove_if_present(&first_output);
         remove_if_present(&second_output);
-        let limits = ExternalLodGlobalReductionLimits {
-            max_records: 19,
-            max_nodes: 23,
-        };
-        let mut first_reducer = FakeGlobalPreprocessor {
-            limits,
-            leaf_dispatches: 0,
-            summary_dispatches: 0,
-            fail_reduction: false,
-        };
+        let mut first_reducer = FakeCanonicalPreprocessor;
         let first =
             build_external_lod_package(&source, &first_output, config(11), &mut first_reducer)
-                .expect("fake global hierarchy succeeds");
+                .expect("fake canonical sorter succeeds");
         assert_eq!(first.preprocessing_stage, "fake-canonical-sort");
-        assert_eq!(first.hierarchy_stage, "gpu-global-moment-merge-readback");
-        assert!(first_reducer.leaf_dispatches > 1);
-        assert!(first_reducer.summary_dispatches > 0);
+        assert_eq!(
+            first.hierarchy_stage,
+            "cpu-external-spatial-moment-merge-v4"
+        );
 
         let mut reversed = source.clone();
         reversed.0.reverse();
         let mut second_config = config(17);
         second_config.limits.merge_fan_in = 4;
         second_config.limits.max_merge_buffer_bytes = 5 * 512;
-        let mut second_reducer = FakeGlobalPreprocessor {
-            limits,
-            leaf_dispatches: 0,
-            summary_dispatches: 0,
-            fail_reduction: false,
-        };
+        let mut second_reducer = FakeCanonicalPreprocessor;
         let second = build_external_lod_package(
             &FragmentedSource(reversed),
             &second_output,
@@ -4845,8 +5392,6 @@ mod tests {
         )
         .expect("repartitioned fake global hierarchy succeeds");
         assert_ne!(first.initial_run_count, second.initial_run_count);
-        assert!(second_reducer.leaf_dispatches > 1);
-        assert!(second_reducer.summary_dispatches > 0);
 
         let codec_limits = LodCodecLimits {
             max_manifest_bytes: 4 * 1024 * 1024,
@@ -4868,7 +5413,11 @@ mod tests {
         assert_eq!(first_manifest, second_manifest);
         assert_eq!(
             first_manifest.build.builder_abi_version,
-            EXTERNAL_GPU_LOD_BUILDER_ABI_VERSION
+            EXTERNAL_LOD_BUILDER_ABI_VERSION
+        );
+        assert_eq!(
+            first_manifest.build.reducer_version,
+            SPATIAL_MOMENT_MERGE_VERSION
         );
         first_manifest.validate().unwrap();
         assert_eq!(first_manifest.nodes[0].source.start, 0);
@@ -4878,7 +5427,17 @@ mod tests {
                 assert!(node.source.count <= 8);
                 assert_eq!(node.representation.count as u64, node.source.count);
             } else {
-                assert_eq!(node.representation.count, 1);
+                let child_representations = node.children.start..node.children.end().unwrap();
+                let child_representations = child_representations
+                    .map(|index| {
+                        u64::from(first_manifest.nodes[index as usize].representation.count)
+                    })
+                    .sum::<u64>();
+                assert_eq!(
+                    u64::from(node.representation.count),
+                    child_representations
+                        .div_ceil(u64::from(first_manifest.build.settings.branching_factor))
+                );
                 for child in node.children.start..node.children.end().unwrap() {
                     let child = &first_manifest.nodes[child as usize];
                     assert!(node.bounds.contains_with_epsilon(&child.bounds, 1e-5));
@@ -4893,34 +5452,11 @@ mod tests {
         remove_if_present(&second_output);
     }
 
-    #[test]
-    fn global_reduction_failure_is_typed_and_never_publishes() {
-        let output = temporary_output("global-reducer-failure");
-        remove_if_present(&output);
-        let mut reducer = FakeGlobalPreprocessor {
-            limits: ExternalLodGlobalReductionLimits {
-                max_records: 19,
-                max_nodes: 23,
-            },
-            leaf_dispatches: 0,
-            summary_dispatches: 0,
-            fail_reduction: true,
-        };
-        let error = build_external_lod_package(&fixture(31), &output, config(11), &mut reducer)
-            .expect_err("injected global reduction must fail");
-        assert!(matches!(
-            error,
-            ExternalLodBuildError::PreprocessorContract(_)
-        ));
-        assert_eq!(reducer.leaf_dispatches, 1);
-        assert!(!output.exists());
-    }
-
     /// Opt in with:
-    /// `RUN_GPU_LOD_HIERARCHY_TESTS=1 cargo test --features lod_build gpu_global_external_multi_run_matches_cpu_topology -- --ignored --nocapture`
+    /// `RUN_GPU_LOD_HIERARCHY_TESTS=1 cargo test --features lod_build gpu_sorted_external_multi_run_matches_cpu_package -- --ignored --nocapture`
     #[test]
     #[ignore = "requires an explicitly requested wgpu adapter"]
-    fn gpu_global_external_multi_run_matches_cpu_topology() {
+    fn gpu_sorted_external_multi_run_matches_cpu_package() {
         if std::env::var("RUN_GPU_LOD_HIERARCHY_TESTS").as_deref() != Ok("1") {
             eprintln!("set RUN_GPU_LOD_HIERARCHY_TESTS=1 to execute the adapter test");
             return;
@@ -4936,7 +5472,17 @@ mod tests {
             ..Default::default()
         }))
         .expect("global external GPU test could not create a device");
-        let source = fixture(97);
+        let mut source = fixture(97);
+        // Exercise the production package path with an equal-Morton span whose
+        // exact payload order cannot rely on device subnormal comparisons.
+        let collision_base = source.0[0];
+        let mut subnormal_first = collision_base;
+        subnormal_first.spherical_harmonic.coefficients[0] = f32::from_bits(1);
+        let mut subnormal_second = collision_base;
+        subnormal_second.spherical_harmonic.coefficients[1] = f32::from_bits(1);
+        source.0[0] = subnormal_first;
+        source.0[1] = subnormal_second;
+        source.0[2] = collision_base;
         let gpu_output = temporary_output("global-real-gpu");
         let cpu_output = temporary_output("global-real-cpu");
         remove_if_present(&gpu_output);
@@ -4969,9 +5515,12 @@ mod tests {
         );
         assert_eq!(
             gpu_report.hierarchy_stage,
-            "gpu-global-moment-merge-readback"
+            "cpu-external-spatial-moment-merge-v4"
         );
-        assert_eq!(gpu_report.maximum_global_reduction_batch_records, 17);
+        assert!(
+            gpu_report.maximum_global_reduction_batch_records
+                <= gpu_report.maximum_reducer_input_records
+        );
 
         let mut cpu = CpuExternalLodBatchPreprocessor;
         build_external_lod_package(&source, &cpu_output, build_config, &mut cpu)
@@ -4996,68 +5545,20 @@ mod tests {
         gpu_manifest.validate().unwrap();
         assert_eq!(
             gpu_manifest.build.builder_abi_version,
-            EXTERNAL_GPU_LOD_BUILDER_ABI_VERSION
+            EXTERNAL_LOD_BUILDER_ABI_VERSION
         );
         assert_eq!(
-            gpu_manifest.header.node_count,
-            cpu_manifest.header.node_count
+            gpu_manifest.build.reducer_version,
+            SPATIAL_MOMENT_MERGE_VERSION
         );
-        assert_eq!(
-            gpu_manifest.quality.max_depth,
-            cpu_manifest.quality.max_depth
+        assert_eq!(gpu_manifest, cpu_manifest);
+        assert!(
+            gpu_manifest
+                .nodes
+                .iter()
+                .filter(|node| !node.is_leaf())
+                .all(|node| node.representation.count > 1 && node.high_fidelity_certificate > 0.0)
         );
-        assert_eq!(
-            gpu_manifest.build.source_fingerprint,
-            cpu_manifest.build.source_fingerprint
-        );
-        for (gpu_node, cpu_node) in gpu_manifest.nodes.iter().zip(&cpu_manifest.nodes) {
-            assert_eq!(gpu_node.source, cpu_node.source);
-            assert_eq!(gpu_node.morton, cpu_node.morton);
-            assert_eq!(gpu_node.children, cpu_node.children);
-            if gpu_node.is_leaf() {
-                assert_eq!(gpu_node.bounds, cpu_node.bounds);
-                let gpu_page = &gpu_manifest.pages[(gpu_node.representation.page.0 - 1) as usize];
-                let cpu_page = &cpu_manifest.pages[(cpu_node.representation.page.0 - 1) as usize];
-                assert_eq!(gpu_page.content_hash, cpu_page.content_hash);
-                assert_eq!(
-                    read_packaged_page_for_oracle(&gpu_output, gpu_page),
-                    read_packaged_page_for_oracle(&cpu_output, cpu_page)
-                );
-            } else {
-                assert_gpu_error_close(gpu_node.error, cpu_node.error);
-                let gpu_descriptor =
-                    &gpu_manifest.pages[(gpu_node.representation.page.0 - 1) as usize];
-                let cpu_descriptor =
-                    &cpu_manifest.pages[(cpu_node.representation.page.0 - 1) as usize];
-                assert_eq!(gpu_descriptor.kind, LodPageKind::Representatives);
-                assert_eq!(cpu_descriptor.kind, LodPageKind::Representatives);
-                assert_eq!(gpu_descriptor.gaussian_count, 1);
-                assert_eq!(cpu_descriptor.gaussian_count, 1);
-                let gpu_page = decode_page_with_descriptor(
-                    &read_packaged_page_for_oracle(&gpu_output, gpu_descriptor),
-                    gpu_descriptor,
-                    codec_limits,
-                )
-                .unwrap();
-                let cpu_page = decode_page_with_descriptor(
-                    &read_packaged_page_for_oracle(&cpu_output, cpu_descriptor),
-                    cpu_descriptor,
-                    codec_limits,
-                )
-                .unwrap();
-                assert_eq!(gpu_page.gaussians.len(), 1);
-                assert_eq!(cpu_page.gaussians.len(), 1);
-                assert_gpu_representative_close(&gpu_page.gaussians[0], &cpu_page.gaussians[0]);
-                for child in gpu_node.children.start..gpu_node.children.end().unwrap() {
-                    let child = &gpu_manifest.nodes[child as usize];
-                    assert!(gpu_node.bounds.contains_with_epsilon(&child.bounds, 1e-5));
-                    assert!(gpu_node.error.geometric >= child.error.geometric);
-                    assert!(gpu_node.error.appearance >= child.error.appearance);
-                    assert!(gpu_node.error.opacity >= child.error.opacity);
-                    assert!(gpu_node.error.combined >= child.error.combined);
-                }
-            }
-        }
         remove_if_present(&gpu_output);
         remove_if_present(&cpu_output);
     }
@@ -5087,6 +5588,112 @@ mod tests {
                     .starts_with(&staging_prefix)),
             "failed build leaked its private staging directory"
         );
+    }
+
+    #[test]
+    fn publication_refuses_empty_directory_created_after_preflight() {
+        let output = temporary_output("publish-racing-directory");
+        remove_if_present(&output);
+        ensure_output_absent(&output).unwrap();
+        let mut staging = StagingDirectory::new(&output).unwrap();
+        fs::write(staging.path().join("complete-package"), b"staged").unwrap();
+
+        // Simulate an unrelated publisher winning after the advisory check but
+        // immediately before the atomic publication operation.
+        fs::create_dir(&output).unwrap();
+        let error = staging
+            .publish(&output)
+            .expect_err("publication must not replace the racing directory");
+        assert!(matches!(
+            error,
+            ExternalLodBuildError::OutputExists(ref path) if path == &output
+        ));
+        assert!(fs::read_dir(&output).unwrap().next().is_none());
+        assert!(staging.path().join("complete-package").is_file());
+
+        drop(staging);
+        remove_if_present(&output);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_refuses_dangling_symlink_created_after_preflight() {
+        use std::os::unix::fs::symlink;
+
+        let output = temporary_output("publish-racing-symlink");
+        let missing_target = output.with_extension("missing-target");
+        remove_if_present(&output);
+        remove_if_present(&missing_target);
+        ensure_output_absent(&output).unwrap();
+        let mut staging = StagingDirectory::new(&output).unwrap();
+        fs::write(staging.path().join("complete-package"), b"staged").unwrap();
+
+        symlink(&missing_target, &output).unwrap();
+        assert!(!output.exists(), "fixture must be a dangling symlink");
+        let error = staging
+            .publish(&output)
+            .expect_err("publication must not replace the racing symlink");
+        assert!(matches!(
+            error,
+            ExternalLodBuildError::OutputExists(ref path) if path == &output
+        ));
+        assert!(
+            fs::symlink_metadata(&output)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(staging.path().join("complete-package").is_file());
+
+        drop(staging);
+        remove_if_present(&output);
+    }
+
+    #[test]
+    fn concurrent_publishers_have_one_atomic_winner() {
+        let output = temporary_output("concurrent-publishers");
+        remove_if_present(&output);
+        let first = StagingDirectory::new(&output).unwrap();
+        let second = StagingDirectory::new(&output).unwrap();
+        fs::write(first.path().join("publisher"), b"first").unwrap();
+        fs::write(second.path().join("publisher"), b"second").unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+
+        let first_output = output.clone();
+        let first_barrier = Arc::clone(&barrier);
+        let first = std::thread::spawn(move || {
+            let mut first = first;
+            first_barrier.wait();
+            match first.publish(&first_output) {
+                Ok(()) => true,
+                Err(ExternalLodBuildError::OutputExists(path)) => {
+                    assert_eq!(path, first_output);
+                    false
+                }
+                Err(error) => panic!("unexpected first publication error: {error}"),
+            }
+        });
+
+        let second_output = output.clone();
+        let second_barrier = Arc::clone(&barrier);
+        let second = std::thread::spawn(move || {
+            let mut second = second;
+            second_barrier.wait();
+            match second.publish(&second_output) {
+                Ok(()) => true,
+                Err(ExternalLodBuildError::OutputExists(path)) => {
+                    assert_eq!(path, second_output);
+                    false
+                }
+                Err(error) => panic!("unexpected second publication error: {error}"),
+            }
+        });
+
+        let winners = usize::from(first.join().unwrap()) + usize::from(second.join().unwrap());
+        assert_eq!(winners, 1);
+        let publisher = fs::read(output.join("publisher")).unwrap();
+        assert!(publisher == b"first" || publisher == b"second");
+        remove_if_present(&output);
     }
 
     #[test]

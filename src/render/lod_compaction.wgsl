@@ -5,10 +5,17 @@
     view,
     Entry,
 }
+#import bevy_gaussian_splatting::helpers::gaussian_mip_support_radius_world
+#ifdef LOD_MORPH_COMPACTION
+#import bevy_gaussian_splatting::lod_morph::{
+    lod_morph_position,
+    lod_morph_sample,
+    lod_morph_support_max_scale,
+}
+#endif
 #ifdef PACKED_F32
 #import bevy_gaussian_splatting::packed::{
     get_position,
-    get_visibility,
     get_scale,
 }
 #else
@@ -16,7 +23,6 @@
 #ifdef BUFFER_STORAGE
 #import bevy_gaussian_splatting::planar::{
     get_position,
-    get_visibility,
     get_scale,
 }
 #endif
@@ -62,6 +68,25 @@ struct LodIndirectArgs {
 struct LodCandidateEvaluation {
     entry: Entry,
     accepted: u32,
+}
+
+struct LodCandidateSource {
+    index: u32,
+    residency: u32,
+    presentation_class: u32,
+}
+
+const LOD_ENTRY_SOURCE_INDEX_MASK: u32 = 0x0fffffffu;
+const LOD_ENTRY_PRESENTATION_CLASS_SHIFT: u32 = 28u;
+const LOD_ENTRY_PRESENTATION_CLASS_MASK: u32 = 3u << LOD_ENTRY_PRESENTATION_CLASS_SHIFT;
+const LOD_ENTRY_RESIDENCY_SHIFT: u32 = 30u;
+const LOD_EXTERNAL_ACTIVE_SET_FIRST_ONLY: u32 = 1u;
+
+fn pack_lod_entry_value(source: LodCandidateSource) -> u32 {
+    return (source.index & LOD_ENTRY_SOURCE_INDEX_MASK)
+        | ((source.presentation_class << LOD_ENTRY_PRESENTATION_CLASS_SHIFT)
+            & LOD_ENTRY_PRESENTATION_CLASS_MASK)
+        | ((source.residency & 3u) << LOD_ENTRY_RESIDENCY_SHIFT);
 }
 
 @group(3) @binding(0) var<uniform> lod_config: LodCompactionUniform;
@@ -112,7 +137,7 @@ fn load_candidate_evaluation(candidate_offset: u32) -> LodCandidateEvaluation {
     );
 }
 
-fn candidate_from_physical_ranges(candidate_offset: u32) -> u32 {
+fn candidate_from_physical_ranges(candidate_offset: u32) -> LodCandidateSource {
     var low = 0u;
     var high = lod_config.candidate_range_count;
     while low < high {
@@ -125,7 +150,7 @@ fn candidate_from_physical_ranges(candidate_offset: u32) -> u32 {
         }
     }
     if low == 0u {
-        return 0xFFFFFFFFu;
+        return LodCandidateSource(0xFFFFFFFFu, 0u, 0u);
     }
     let descriptor = low - 1u;
     let word = descriptor * 4u;
@@ -134,9 +159,15 @@ fn candidate_from_physical_ranges(candidate_offset: u32) -> u32 {
     let count = candidate_and_scan_words[word + 2u];
     let relative = candidate_offset - candidate_start;
     if relative >= count {
-        return 0xFFFFFFFFu;
+        return LodCandidateSource(0xFFFFFFFFu, 0u, 0u);
     }
-    return physical_start + relative;
+    // Range metadata word: low two bits Residency, bits 2..3 presentation
+    // class. The shared header mode disambiguates ABI-16 morph class 1 from
+    // external first-active-set-only class 1.
+    let range_metadata = candidate_and_scan_words[word + 3u];
+    let residency = range_metadata & 3u;
+    let presentation_class = (range_metadata >> 2u) & 3u;
+    return LodCandidateSource(physical_start + relative, residency, presentation_class);
 }
 
 fn scan_record_count(record_index: u32) -> u32 {
@@ -155,17 +186,39 @@ fn store_scan_record_offset(record_index: u32, value: u32) {
     candidate_and_scan_words[scan_record_word_index(record_index, 1u)] = value;
 }
 
-// The renderer's non-adaptive Gaussian cutoff is 3 sigma. A sphere using the
-// largest local scale, expanded by an upper bound on the cloud transform's
-// largest singular value, conservatively contains the transformed ellipsoid
-// even under non-uniform scale or shear.
-fn support_radius_world(index: u32) -> f32 {
-    let scale = abs(get_scale(index));
-    let local_radius = 3.0 * abs(gaussian_uniforms.global_scale) * max(
-        scale.x,
-        max(scale.y, scale.z),
+// Every LoD candidate uses its authored 3-sigma cutoff, including portable
+// records whose finite opacity is greater than one. A sphere using the largest
+// local scale, expanded by an upper bound on the cloud transform's largest
+// singular value, conservatively contains the transformed ellipsoid even under
+// non-uniform scale or shear.
+fn support_radius_world(
+    index: u32,
+    morph_parent_index: u32,
+    morph_blend_t: f32,
+    morph_active: bool,
+    position_world: vec3<f32>,
+) -> f32 {
+    let child_scale = get_scale(index);
+    var max_scale = max(
+        abs(child_scale.x),
+        max(abs(child_scale.y), abs(child_scale.z)),
     );
-    return local_radius * lod_config.transform_scale_bound;
+    #ifdef LOD_MORPH_COMPACTION
+        if morph_active {
+            max_scale = lod_morph_support_max_scale(
+                get_scale(morph_parent_index),
+                child_scale,
+                morph_blend_t,
+            );
+        }
+    #endif
+    let local_radius = 3.0 * abs(gaussian_uniforms.global_scale) * max_scale;
+    let authored_radius_world = local_radius * lod_config.transform_scale_bound;
+    let mip_radius_world = gaussian_mip_support_radius_world(position_world, 3.0);
+    if !(mip_radius_world >= 0.0) {
+        return mip_radius_world;
+    }
+    return authored_radius_world + mip_radius_world;
 }
 
 fn support_sphere_in_frustum(center: vec3<f32>, support_radius: f32) -> bool {
@@ -208,27 +261,55 @@ fn evaluate_candidate(candidate_offset: u32) -> LodCandidateEvaluation {
     if candidate_offset >= lod_config.candidate_count {
         return rejected;
     }
-    var source_index = candidate_offset;
+    var source = LodCandidateSource(candidate_offset, 0u, 0u);
     if lod_config.candidate_source_mode == 2u {
-        source_index = candidate_from_physical_ranges(candidate_offset);
+        source = candidate_from_physical_ranges(candidate_offset);
     }
+    let source_index = source.index;
     if (source_index >= lod_config.source_count || source_index >= gaussian_uniforms.count) {
         return rejected;
     }
 
-    let position = vec4<f32>(get_position(source_index), 1.0);
+    var position_local = get_position(source_index);
+    var morph_parent_index = source_index;
+    var morph_blend_t = 1.0;
+    var morph_active = false;
+    #ifdef LOD_MORPH_COMPACTION
+        if source.presentation_class == LOD_EXTERNAL_ACTIVE_SET_FIRST_ONLY {
+            let morph = lod_morph_sample(source_index, lod_config.source_count);
+            morph_parent_index = morph.parent_physical_index;
+            morph_blend_t = morph.blend_t;
+            morph_active = morph.enabled;
+            if morph_active {
+                position_local = lod_morph_position(
+                    get_position(morph_parent_index),
+                    position_local,
+                    morph_blend_t,
+                );
+            }
+        }
+    #endif
+    let position = vec4<f32>(position_local, 1.0);
     let transformed_position = (gaussian_uniforms.transform * position).xyz;
-    let support_radius = support_radius_world(source_index);
-    let visibility = get_visibility(source_index);
-    if ((lod_config.frustum_culling != 0u &&
-            !support_sphere_in_frustum(transformed_position, support_radius)) ||
-        visibility <= 0.0) {
+    let support_radius = support_radius_world(
+        source_index,
+        morph_parent_index,
+        morph_blend_t,
+        morph_active,
+        transformed_position,
+    );
+    // Per-Gaussian visibility is selection/classification metadata, not an
+    // opacity or universal draw gate. The shared compaction output serves All,
+    // Selected, and HighlightSelected; only their raster specialization may
+    // interpret that metadata.
+    if (lod_config.frustum_culling != 0u &&
+        !support_sphere_in_frustum(transformed_position, support_radius)) {
         return rejected;
     }
     let diff = transformed_position - view.world_position;
     let dist2 = dot(diff, diff);
     let key = (0xFFFFFFFFu - bitcast<u32>(dist2)) >> #{RADIX_KEY_SHIFT}u;
-    return LodCandidateEvaluation(Entry(key, source_index), 1u);
+    return LodCandidateEvaluation(Entry(key, pack_lod_entry_value(source)), 1u);
 }
 
 // Inclusive Hillis-Steele scan. Every caller invokes this uniformly with one

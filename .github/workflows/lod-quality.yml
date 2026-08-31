@@ -94,7 +94,7 @@ jobs:
           set -o pipefail
           cargo "+${RUST_TOOLCHAIN}" test --locked \
             --test lod_real_scene_quality \
-            --features "lod_build testing headless" \
+            --features "lod_build_sh3 testing headless" \
             canonical_trellis_high_quality_color_and_covariance_audit -- \
             --ignored --nocapture --test-threads=1 \
             2>&1 | tee "${RUNNER_TEMP}/trellis-lod-quality.log"

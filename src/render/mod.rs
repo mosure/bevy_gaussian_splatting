@@ -31,7 +31,7 @@ use bevy::{
             RenderCommandResult, SetItemPipeline, TrackedRenderPass, ViewSortedRenderPhases,
         },
         render_resource::*,
-        renderer::RenderDevice,
+        renderer::{RenderDevice, RenderQueue},
         sync_world::RenderEntity,
         view::{
             ExtractedView, RenderVisibilityRanges, RenderVisibleEntities,
@@ -47,8 +47,9 @@ use crate::{
     camera::GaussianCamera,
     gaussian::{
         cloud::CloudVisibilityClass,
+        formats::planar_3d_chunked::LodPageId,
         interface::CommonCloud,
-        lod_debug::{LodDebugMetadata, LodDebugRecord, LodDebugSettings},
+        lod_debug::{LodDebugMetadata, LodDebugRecord, LodDebugSettings, LodDebugSparseMetadata},
         lod_settings::{GaussianLodSettings, LodQualityTarget},
         settings::{
             CloudSettings, DrawMode, GaussianColorSpace, GaussianMode, RadixSortDepthBits,
@@ -62,6 +63,9 @@ use crate::{
     morph::MorphPlugin,
     sort::{GpuSortedEntry, SortPlugin, SortTrigger, SortedEntriesHandle, sort_entry_binding_size},
 };
+
+#[cfg(lod_render_path)]
+use crate::stream::render_commit::LodRenderCandidates;
 
 #[cfg(feature = "morph_interpolate")]
 use crate::morph::interpolate::GaussianInterpolateBindGroups;
@@ -94,11 +98,81 @@ const GAUSSIAN_4D_SHADER_HANDLE: Handle<Shader> =
 const HELPERS_SHADER_HANDLE: Handle<Shader> = uuid_handle!("9ca57ab0-07de-4a43-94f8-547c38e292cb");
 const LOD_DEBUG_SHADER_HANDLE: Handle<Shader> =
     uuid_handle!("4d449c34-2e1e-48c4-9561-d04fed7c5f2b");
+const LOD_MORPH_SHADER_HANDLE: Handle<Shader> =
+    uuid_handle!("872c7fd3-9f1f-4ad5-81dc-1cf33090e715");
 const PACKED_SHADER_HANDLE: Handle<Shader> = uuid_handle!("5bb62086-7004-4575-9972-274dc8acccf1");
 const PLANAR_SHADER_HANDLE: Handle<Shader> = uuid_handle!("d6a3f978-f795-4786-8475-26366f28d852");
 const TEXTURE_SHADER_HANDLE: Handle<Shader> = uuid_handle!("500e2ebf-51a8-402e-9c88-e0d5152c3486");
 const TRANSFORM_SHADER_HANDLE: Handle<Shader> =
     uuid_handle!("648516b2-87cc-4937-ae1c-d986952e9fa7");
+
+/// Intended 3DGS/Mip-style screen-space variance in physical-pixel units. The
+/// WGSL projection uses two internal coordinate units per physical pixel and
+/// therefore adds four times this value before converting its bounds back to
+/// NDC. That multiplication corrects the prior shader's accidental 0.075
+/// physical-pixel variance; determinant normalization preserves integrated
+/// alpha while the corrected footprint changes the old projected extent.
+pub const GAUSSIAN_MIP_FILTER_VARIANCE_2D: f32 = 0.3;
+
+/// Authored Gaussian support used by hierarchy representatives. A candidate
+/// LoD cut must not shrink this support as opacity decreases because a merged
+/// representative's low peak can still encode substantial spatial mass.
+pub const GAUSSIAN_AUTHORED_SUPPORT_SIGMA: f32 = 3.0;
+
+const GAUSSIAN_OPACITY_RADIUS_LOG_FLOOR: f32 = 0.000_001;
+
+/// A filtered screen-space covariance and the peak-opacity multiplier that
+/// preserves its integrated alpha over the plane.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GaussianMipFilter2d {
+    pub covariance: [f32; 3],
+    pub opacity_scale: f32,
+}
+
+/// Applies the renderer's 0.3-pixel covariance footprint with determinant
+/// normalization. For a valid area covariance,
+/// `opacity_scale * sqrt(det(filtered)) == sqrt(det(original))`.
+#[inline]
+pub fn gaussian_mip_filter_covariance_2d(covariance: [f32; 3]) -> GaussianMipFilter2d {
+    let filtered = [
+        covariance[0] + GAUSSIAN_MIP_FILTER_VARIANCE_2D,
+        covariance[1],
+        covariance[2] + GAUSSIAN_MIP_FILTER_VARIANCE_2D,
+    ];
+    let original_determinant = covariance[0] * covariance[2] - covariance[1] * covariance[1];
+    let filtered_determinant = filtered[0] * filtered[2] - filtered[1] * filtered[1];
+    let determinant_ratio = original_determinant / filtered_determinant;
+    let opacity_scale =
+        if original_determinant > 0.0 && filtered_determinant > 0.0 && determinant_ratio >= 0.0 {
+            determinant_ratio.clamp(0.0, 1.0).sqrt()
+        } else {
+            0.0
+        };
+
+    GaussianMipFilter2d {
+        covariance: filtered,
+        opacity_scale,
+    }
+}
+
+/// Returns the raster support cutoff while preserving the historical adaptive
+/// flat-cloud policy. LoD candidates always use their authored 3-sigma support:
+/// this matches offline support accounting and GPU compaction for every finite
+/// portable opacity, including values greater than one.
+#[inline]
+pub fn gaussian_support_cutoff(
+    opacity: f32,
+    opacity_adaptive_radius: bool,
+    lod_candidate: bool,
+) -> f32 {
+    if lod_candidate || !opacity_adaptive_radius {
+        return GAUSSIAN_AUTHORED_SUPPORT_SIGMA;
+    }
+    (GAUSSIAN_AUTHORED_SUPPORT_SIGMA * GAUSSIAN_AUTHORED_SUPPORT_SIGMA
+        + 2.0 * opacity.max(GAUSSIAN_OPACITY_RADIUS_LOG_FLOOR).ln())
+    .max(GAUSSIAN_OPACITY_RADIUS_LOG_FLOOR)
+    .sqrt()
+}
 
 // TODO: consider refactor to bind via bevy's mesh (dynamic vertex planes) + shared batching/instancing/preprocessing
 //       utilize RawBufferVec<T> for gaussian data?
@@ -139,6 +213,7 @@ where
             render_app
                 .add_render_command::<Transparent3d, DrawGaussians<R>>()
                 .init_gpu_resource::<GaussianUniformBindGroups>()
+                .init_resource::<LodDebugGpuUploadStats>()
                 .init_resource::<PlanarStorageRebindQueue<R>>()
                 .add_systems(
                     ExtractSchedule,
@@ -153,7 +228,13 @@ where
                         refresh_planar_storage_bind_groups::<R>
                             .in_set(RenderSystems::PrepareBindGroups),
                         queue_gaussian_bind_group::<R>.in_set(RenderSystems::PrepareBindGroups),
-                        prepare_lod_debug_bind_group::<R>.in_set(RenderSystems::PrepareBindGroups),
+                        // Queue specializes the pipeline from debug readiness,
+                        // while the draw command later reads the same binding.
+                        // Prepare it after every GPU asset producer but before
+                        // Queue so both observe one immutable readiness epoch.
+                        prepare_lod_debug_bind_group::<R>
+                            .after(RenderSystems::PrepareAssets)
+                            .before(RenderSystems::Queue),
                         queue_gaussian_view_bind_groups::<R>
                             .in_set(RenderSystems::PrepareBindGroups),
                         queue_gaussian_compute_view_bind_groups::<R>
@@ -215,6 +296,13 @@ where
             app,
             LOD_DEBUG_SHADER_HANDLE,
             "lod_debug.wgsl",
+            Shader::from_wgsl
+        );
+
+        load_internal_asset!(
+            app,
+            LOD_MORPH_SHADER_HANDLE,
+            "lod_morph.wgsl",
             Shader::from_wgsl
         );
 
@@ -460,6 +548,21 @@ pub struct GpuCloudBundle<R: PlanarSync> {
     pub transform: GlobalTransform,
 }
 
+#[cfg(lod_render_path)]
+#[allow(type_alias_bounds)]
+type GpuCloudBundleQuery<R: bevy_interleave::prelude::PlanarSync> = (
+    Entity,
+    &'static <R as bevy_interleave::prelude::PlanarSync>::PlanarTypeHandle,
+    &'static Aabb,
+    &'static SortedEntriesHandle,
+    &'static CloudSettings,
+    Option<&'static GaussianLodSettings>,
+    &'static GlobalTransform,
+    Option<&'static LodDebugBindGroup<R>>,
+    Option<&'static LodRenderCandidates>,
+);
+
+#[cfg(not(lod_render_path))]
 #[allow(type_alias_bounds)]
 type GpuCloudBundleQuery<R: bevy_interleave::prelude::PlanarSync> = (
     Entity,
@@ -490,10 +593,142 @@ pub struct LodDebugBindGroup<R: PlanarSync> {
     // snapshot look unchanged.
     _source_metadata: Option<LodDebugMetadata>,
     source_pointer: usize,
+    sparse_identity: Option<u64>,
+    sparse_slot_invariant_revisions: Vec<u64>,
+    sparse_slot_payload_revisions: Vec<u64>,
     record_count: usize,
+    ready: bool,
+    current_invariant_ready: bool,
+    current_payload_ready: bool,
+    pending_invariants_ready: bool,
+    upload_complete: bool,
     settings: LodDebugSettings,
     lod_settings: Option<GaussianLodSettings>,
     marker: std::marker::PhantomData<fn() -> R>,
+}
+
+/// Render-frame ownership of the compaction output relative to the extracted
+/// debug sidecar. LoD render preparation updates this after candidate commit
+/// decisions and before annotation bind-group preparation.
+#[derive(Component, Clone, Debug, Default)]
+pub(crate) struct LodDebugCandidateEpoch {
+    pub(crate) candidates_are_current: bool,
+    pub(crate) retained_current: bool,
+    pub(crate) debug_metadata_staged: bool,
+    pub(crate) pending_candidate_active: bool,
+    pub(crate) pending_activation_armed: bool,
+    pub(crate) required_slots: Vec<(LodPageId, u32, u32)>,
+}
+
+#[cfg(feature = "testing")]
+impl<R: PlanarSync> LodDebugBindGroup<R> {
+    pub const fn preset_for_testing(&self) -> crate::LodDebugPreset {
+        self.settings.preset
+    }
+
+    pub const fn ready_for_testing(&self) -> bool {
+        self.ready
+    }
+
+    pub const fn sparse_identity_for_testing(&self) -> Option<u64> {
+        self.sparse_identity
+    }
+
+    pub const fn record_count_for_testing(&self) -> usize {
+        self.record_count
+    }
+}
+
+#[cfg(lod_render_path)]
+impl<R: PlanarSync> LodDebugBindGroup<R> {
+    pub(crate) fn candidate_invariants_ready(
+        &self,
+        metadata: Option<&LodDebugMetadata>,
+        candidates: &LodRenderCandidates,
+    ) -> bool {
+        let Some(metadata) = metadata else {
+            return false;
+        };
+        if let Some(sparse) = metadata.sparse() {
+            lod_debug_sparse_identity_matches(self.sparse_identity, sparse.identity())
+                && lod_debug_candidate_revisions_ready(
+                    sparse,
+                    candidates,
+                    &self.sparse_slot_invariant_revisions,
+                    LodDebugRevisionKind::Invariant,
+                )
+        } else {
+            let records = metadata.records();
+            let source_pointer = if records.is_empty() {
+                0
+            } else {
+                records.as_ptr() as usize
+            };
+            self.sparse_identity.is_none() && self.source_pointer == source_pointer && self.ready
+        }
+    }
+}
+
+#[cfg(lod_render_path)]
+pub(crate) const fn lod_debug_sparse_identity_matches(
+    binding_identity: Option<u64>,
+    metadata_identity: u64,
+) -> bool {
+    matches!(binding_identity, Some(identity) if identity == metadata_identity)
+}
+
+/// Cumulative render-world counters for LoD debug allocation and upload work.
+///
+/// These counters are intentionally monotonic so headless qualification can
+/// sample deltas around a camera, preset, or quality mutation without relying
+/// on wall-clock timing. A config-only change must advance
+/// [`Self::config_bytes_written`] without advancing record bytes or record
+/// buffer allocations.
+#[derive(Resource, Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LodDebugGpuUploadStats {
+    record_buffer_allocations: u64,
+    record_bytes_written: u64,
+    config_bytes_written: u64,
+    ready_bind_group_queues: u64,
+    specialized_pipeline_queues: u64,
+}
+
+impl LodDebugGpuUploadStats {
+    pub const fn record_buffer_allocations(self) -> u64 {
+        self.record_buffer_allocations
+    }
+
+    pub const fn record_bytes_written(self) -> u64 {
+        self.record_bytes_written
+    }
+
+    pub const fn config_bytes_written(self) -> u64 {
+        self.config_bytes_written
+    }
+
+    /// Visible cloud/view queues that had a requested and upload-ready debug
+    /// binding. This is a render-world diagnostic, not a draw-count estimate.
+    pub const fn ready_bind_group_queues(self) -> u64 {
+        self.ready_bind_group_queues
+    }
+
+    /// Visible cloud/view queues whose specialized pipeline key enabled the
+    /// `LOD_DEBUG` shader definition.
+    pub const fn specialized_pipeline_queues(self) -> u64 {
+        self.specialized_pipeline_queues
+    }
+
+    pub const fn max_sparse_record_bytes_per_frame() -> u64 {
+        LOD_DEBUG_MAX_SPARSE_UPLOAD_BYTES_PER_FRAME
+    }
+
+    pub const fn max_sparse_record_slots_per_frame() -> usize {
+        LOD_DEBUG_MAX_SPARSE_UPLOAD_SLOTS_PER_FRAME
+    }
+
+    pub const fn config_bytes_per_write() -> u64 {
+        std::mem::size_of::<LodDebugGpuUniform>() as u64
+    }
 }
 
 #[allow(type_alias_bounds)]
@@ -503,7 +738,8 @@ type LodDebugPrepareQuery<R: PlanarSync> = (
     &'static CloudSettings,
     Option<&'static GaussianLodSettings>,
     Option<&'static LodDebugMetadata>,
-    Option<&'static LodDebugBindGroup<R>>,
+    Option<&'static LodDebugCandidateEpoch>,
+    Option<&'static mut LodDebugBindGroup<R>>,
 );
 
 /// Group-4 uniform. Keeping it separate preserves the baseline CloudUniform
@@ -554,15 +790,17 @@ impl LodDebugGpuUniform {
 fn prepare_lod_debug_bind_group<R: PlanarSync>(
     mut commands: Commands,
     render_device: Res<RenderDevice>,
+    render_queue: Res<RenderQueue>,
     pipeline: Res<CloudPipeline<R>>,
     gpu_clouds: Res<RenderAssets<R::GpuPlanarType>>,
-    clouds: Query<LodDebugPrepareQuery<R>>,
+    mut stats: ResMut<LodDebugGpuUploadStats>,
+    mut clouds: Query<LodDebugPrepareQuery<R>>,
 ) where
     R::GpuPlanarType: GpuPlanarStorage,
 {
     let pipeline_changed = pipeline.is_changed();
     let Some(layout) = pipeline.lod_debug_layout.as_ref() else {
-        for (entity, _, _, _, _, existing) in &clouds {
+        for (entity, _, _, _, _, _, existing) in &mut clouds {
             if existing.is_some() {
                 commands.entity(entity).remove::<LodDebugBindGroup<R>>();
             }
@@ -571,7 +809,8 @@ fn prepare_lod_debug_bind_group<R: PlanarSync>(
     };
 
     let fallback = [LodDebugRecord::default()];
-    for (entity, handle, settings, lod_settings, metadata, existing) in &clouds {
+    for (entity, handle, settings, lod_settings, metadata, candidate_epoch, existing) in &mut clouds
+    {
         if !settings.lod_debug.requires_metadata() {
             if existing.is_some() {
                 commands.entity(entity).remove::<LodDebugBindGroup<R>>();
@@ -582,31 +821,23 @@ fn prepare_lod_debug_bind_group<R: PlanarSync>(
         let Some(gpu_cloud) = gpu_clouds.get(handle.handle()) else {
             continue;
         };
+        let sparse = metadata.and_then(LodDebugMetadata::sparse);
         let records = metadata.map(LodDebugMetadata::records).unwrap_or_default();
-        let record_count = records.len().min(gpu_cloud.len());
-        let source_pointer = if record_count == 0 {
-            0
-        } else {
+        let record_count = sparse
+            .map(LodDebugSparseMetadata::record_count)
+            .unwrap_or(records.len())
+            .min(gpu_cloud.len());
+        let source_pointer = if sparse.is_none() && record_count != 0 {
             records.as_ptr() as usize
-        };
-        if !pipeline_changed
-            && existing.is_some_and(|existing| {
-                existing.source_pointer == source_pointer
-                    && existing.record_count == record_count
-                    && existing.settings == settings.lod_debug
-                    && existing.lod_settings.as_ref() == lod_settings
-            })
-        {
-            continue;
-        }
-
-        let upload_records = if record_count == 0 {
-            &fallback[..]
         } else {
-            &records[..record_count]
+            0
         };
-        let contents = bytemuck::cast_slice(upload_records);
-        let byte_len = contents.len() as u64;
+        let sparse_identity = sparse.map(LodDebugSparseMetadata::identity);
+        let byte_len = record_count
+            .max(1)
+            .checked_mul(std::mem::size_of::<LodDebugRecord>())
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .unwrap_or(u64::MAX);
         let limits = render_device.limits();
         if byte_len > limits.max_storage_buffer_binding_size || byte_len > limits.max_buffer_size {
             warn!(
@@ -618,43 +849,529 @@ fn prepare_lod_debug_bind_group<R: PlanarSync>(
             continue;
         }
 
-        let buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
-            label: Some("lod_debug_records"),
-            contents,
-            usage: BufferUsages::STORAGE,
-        });
+        if let Some(mut existing) = existing
+            && existing.source_pointer == source_pointer
+            && existing.sparse_identity == sparse_identity
+            && existing.record_count == record_count
+        {
+            let existing: &mut LodDebugBindGroup<R> = existing.as_mut();
+            if let Some(sparse) = sparse {
+                let upload = apply_lod_debug_sparse_uploads(
+                    &render_queue,
+                    &existing._buffer,
+                    sparse,
+                    record_count,
+                    candidate_epoch,
+                    &mut existing.sparse_slot_invariant_revisions,
+                    &mut existing.sparse_slot_payload_revisions,
+                );
+                stats.record_bytes_written = stats
+                    .record_bytes_written
+                    .saturating_add(upload.bytes_written);
+                existing.upload_complete = upload.complete;
+                existing.ready = update_lod_debug_sparse_binding_readiness(
+                    sparse,
+                    candidate_epoch,
+                    &existing.sparse_slot_invariant_revisions,
+                    &existing.sparse_slot_payload_revisions,
+                    upload.complete,
+                    &mut existing.current_invariant_ready,
+                    &mut existing.current_payload_ready,
+                    &mut existing.pending_invariants_ready,
+                );
+            } else {
+                let candidate_epoch_ready = candidate_epoch.is_none_or(|epoch| {
+                    lod_debug_candidate_epoch_ready(
+                        epoch.candidates_are_current,
+                        epoch.pending_candidate_active,
+                        epoch.pending_activation_armed,
+                    )
+                });
+                existing.ready = record_count != 0 && candidate_epoch_ready;
+                existing.current_invariant_ready = existing.ready;
+                existing.current_payload_ready = existing.ready;
+                existing.pending_invariants_ready = existing.ready;
+                existing.upload_complete = true;
+            }
+
+            if existing.settings != settings.lod_debug
+                || existing.lod_settings.as_ref() != lod_settings
+            {
+                let config =
+                    LodDebugGpuUniform::new(&settings.lod_debug, lod_settings, record_count);
+                render_queue.write_buffer(&existing._config_buffer, 0, bytemuck::bytes_of(&config));
+                stats.config_bytes_written = stats
+                    .config_bytes_written
+                    .saturating_add(std::mem::size_of::<LodDebugGpuUniform>() as u64);
+                existing.settings = settings.lod_debug;
+                existing.lod_settings = lod_settings.cloned();
+            }
+            if pipeline_changed {
+                existing.bind_group = create_lod_debug_bind_group(
+                    &render_device,
+                    layout,
+                    &existing._buffer,
+                    &existing._config_buffer,
+                );
+            }
+            existing._source_metadata = metadata.cloned();
+            continue;
+        }
+
+        let (
+            buffer,
+            mut sparse_slot_invariant_revisions,
+            mut sparse_slot_payload_revisions,
+            ready,
+            current_invariant_ready,
+            current_payload_ready,
+            pending_invariants_ready,
+            upload_complete,
+        ) = if let Some(sparse) = sparse {
+            let buffer = render_device.create_buffer(&BufferDescriptor {
+                label: Some("lod_debug_records_sparse"),
+                size: byte_len,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let mut invariant_revisions = vec![0; sparse.slots().len()];
+            let mut payload_revisions = vec![0; sparse.slots().len()];
+            let upload = apply_lod_debug_sparse_uploads(
+                &render_queue,
+                &buffer,
+                sparse,
+                record_count,
+                candidate_epoch,
+                &mut invariant_revisions,
+                &mut payload_revisions,
+            );
+            stats.record_bytes_written = stats
+                .record_bytes_written
+                .saturating_add(upload.bytes_written);
+            let mut current_invariant_ready = false;
+            let mut current_payload_ready = false;
+            let mut pending_invariants_ready = false;
+            let ready = update_lod_debug_sparse_binding_readiness(
+                sparse,
+                candidate_epoch,
+                &invariant_revisions,
+                &payload_revisions,
+                upload.complete,
+                &mut current_invariant_ready,
+                &mut current_payload_ready,
+                &mut pending_invariants_ready,
+            );
+            (
+                buffer,
+                invariant_revisions,
+                payload_revisions,
+                ready,
+                current_invariant_ready,
+                current_payload_ready,
+                pending_invariants_ready,
+                upload.complete,
+            )
+        } else {
+            let upload_records = if record_count == 0 {
+                &fallback[..]
+            } else {
+                &records[..record_count]
+            };
+            let contents = bytemuck::cast_slice(upload_records);
+            let buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+                label: Some("lod_debug_records"),
+                contents,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            });
+            stats.record_bytes_written = stats
+                .record_bytes_written
+                .saturating_add(contents.len() as u64);
+            let candidate_epoch_ready = candidate_epoch.is_none_or(|epoch| {
+                lod_debug_candidate_epoch_ready(
+                    epoch.candidates_are_current,
+                    epoch.pending_candidate_active,
+                    epoch.pending_activation_armed,
+                )
+            });
+            let ready = record_count != 0 && candidate_epoch_ready;
+            (
+                buffer,
+                Vec::new(),
+                Vec::new(),
+                ready,
+                ready,
+                ready,
+                ready,
+                true,
+            )
+        };
+        stats.record_buffer_allocations = stats.record_buffer_allocations.saturating_add(1);
         let config = LodDebugGpuUniform::new(&settings.lod_debug, lod_settings, record_count);
         let config_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("lod_debug_config"),
             contents: bytemuck::bytes_of(&config),
-            usage: BufferUsages::UNIFORM,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
-        let bind_group = render_device.create_bind_group(
-            "lod_debug_bind_group",
-            layout,
-            &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: buffer.as_entire_binding(),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: config_buffer.as_entire_binding(),
-                },
-            ],
-        );
+        stats.config_bytes_written = stats
+            .config_bytes_written
+            .saturating_add(std::mem::size_of::<LodDebugGpuUniform>() as u64);
+        let bind_group =
+            create_lod_debug_bind_group(&render_device, layout, &buffer, &config_buffer);
         commands.entity(entity).insert(LodDebugBindGroup::<R> {
             bind_group,
             _buffer: buffer,
             _config_buffer: config_buffer,
             _source_metadata: metadata.cloned(),
             source_pointer,
+            sparse_identity,
+            sparse_slot_invariant_revisions: std::mem::take(&mut sparse_slot_invariant_revisions),
+            sparse_slot_payload_revisions: std::mem::take(&mut sparse_slot_payload_revisions),
             record_count,
+            ready,
+            current_invariant_ready,
+            current_payload_ready,
+            pending_invariants_ready,
+            upload_complete,
             settings: settings.lod_debug,
             lod_settings: lod_settings.cloned(),
             marker: std::marker::PhantomData,
         });
     }
+}
+
+const LOD_DEBUG_MAX_SPARSE_UPLOAD_BYTES_PER_FRAME: u64 = 64 * 1024 * 1024;
+const LOD_DEBUG_MAX_SPARSE_UPLOAD_SLOTS_PER_FRAME: usize = 256;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct LodDebugSparseUploadResult {
+    bytes_written: u64,
+    slots_written: usize,
+    complete: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LodDebugRevisionKind {
+    Invariant,
+    Payload,
+}
+
+#[cfg(lod_render_path)]
+fn lod_debug_candidate_revisions_ready(
+    sparse: &LodDebugSparseMetadata,
+    candidates: &LodRenderCandidates,
+    applied_revisions: &[u64],
+    kind: LodDebugRevisionKind,
+) -> bool {
+    candidates.by_camera.values().all(|candidate| {
+        candidate.required_atlas_ranges().iter().all(|range| {
+            let Some(slot) = sparse.slots().get(range.slot.index as usize) else {
+                return false;
+            };
+            let revision = match kind {
+                LodDebugRevisionKind::Invariant => slot.invariant_revision(),
+                LodDebugRevisionKind::Payload => slot.payload_revision(),
+            };
+            slot.key() == Some((range.page, range.slot.generation))
+                && slot.records().is_some()
+                && applied_revisions.get(range.slot.index as usize).copied() == Some(revision)
+        })
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_lod_debug_sparse_binding_readiness(
+    sparse: &LodDebugSparseMetadata,
+    candidate_epoch: Option<&LodDebugCandidateEpoch>,
+    applied_invariant_revisions: &[u64],
+    applied_payload_revisions: &[u64],
+    upload_complete: bool,
+    current_invariant_ready: &mut bool,
+    current_payload_ready: &mut bool,
+    pending_invariants_ready: &mut bool,
+) -> bool {
+    let globally_ready = sparse.is_complete() && upload_complete;
+    let Some(candidate_epoch) = candidate_epoch else {
+        *current_invariant_ready = globally_ready;
+        *current_payload_ready = globally_ready;
+        *pending_invariants_ready = false;
+        return globally_ready;
+    };
+
+    let target_invariants_ready = candidate_epoch.debug_metadata_staged
+        && lod_debug_epoch_revisions_ready(
+            sparse,
+            candidate_epoch,
+            applied_invariant_revisions,
+            LodDebugRevisionKind::Invariant,
+        );
+    let target_payload_ready = candidate_epoch.debug_metadata_staged
+        && lod_debug_epoch_revisions_ready(
+            sparse,
+            candidate_epoch,
+            applied_payload_revisions,
+            LodDebugRevisionKind::Payload,
+        );
+
+    if candidate_epoch.candidates_are_current {
+        *current_invariant_ready = target_invariants_ready;
+        *current_payload_ready = target_payload_ready;
+        *pending_invariants_ready = false;
+    } else {
+        *pending_invariants_ready = target_invariants_ready;
+        if !candidate_epoch.retained_current {
+            *current_invariant_ready = false;
+            *current_payload_ready = false;
+        } else if globally_ready {
+            // Covers enabling debug while a replacement is already pending:
+            // the pending component does not duplicate retained-current ranges,
+            // so a complete whole-sidecar upload is the conservative proof.
+            *current_invariant_ready = true;
+            *current_payload_ready = true;
+        }
+    }
+
+    let replacement_may_draw = !candidate_epoch.candidates_are_current
+        && (candidate_epoch.pending_candidate_active || candidate_epoch.pending_activation_armed);
+    // Every compacted entry now carries the exact per-view Residency code that
+    // belongs to its own candidate epoch. Consequently Residency, like the
+    // invariant presets, can remain specialized while current and replacement
+    // outputs overlap; mutable record payload uploads continue in the
+    // background for flat/legacy entries whose packed code is zero.
+    lod_debug_sparse_candidate_epoch_ready(
+        candidate_epoch.candidates_are_current,
+        candidate_epoch.retained_current,
+        replacement_may_draw,
+        *current_invariant_ready,
+        *pending_invariants_ready,
+    )
+}
+
+#[inline]
+const fn lod_debug_sparse_candidate_epoch_ready(
+    candidates_are_current: bool,
+    retained_current: bool,
+    replacement_may_draw: bool,
+    current_invariants_ready: bool,
+    pending_invariants_ready: bool,
+) -> bool {
+    if candidates_are_current {
+        current_invariants_ready
+    } else if replacement_may_draw {
+        pending_invariants_ready && (!retained_current || current_invariants_ready)
+    } else if retained_current {
+        current_invariants_ready
+    } else {
+        pending_invariants_ready
+    }
+}
+
+fn lod_debug_epoch_revisions_ready(
+    sparse: &LodDebugSparseMetadata,
+    candidate_epoch: &LodDebugCandidateEpoch,
+    applied_revisions: &[u64],
+    kind: LodDebugRevisionKind,
+) -> bool {
+    candidate_epoch
+        .required_slots
+        .iter()
+        .all(|&(page, index, generation)| {
+            let Some(slot) = sparse.slots().get(index as usize) else {
+                return false;
+            };
+            let revision = match kind {
+                LodDebugRevisionKind::Invariant => slot.invariant_revision(),
+                LodDebugRevisionKind::Payload => slot.payload_revision(),
+            };
+            slot.key() == Some((page, generation))
+                && slot.records().is_some()
+                && applied_revisions.get(index as usize).copied() == Some(revision)
+        })
+}
+
+fn apply_lod_debug_sparse_uploads(
+    render_queue: &RenderQueue,
+    buffer: &Buffer,
+    sparse: &LodDebugSparseMetadata,
+    record_count: usize,
+    priority_epoch: Option<&LodDebugCandidateEpoch>,
+    applied_invariant_revisions: &mut [u64],
+    applied_payload_revisions: &mut [u64],
+) -> LodDebugSparseUploadResult {
+    let record_size = std::mem::size_of::<LodDebugRecord>();
+    let mut result = LodDebugSparseUploadResult {
+        complete: true,
+        ..default()
+    };
+
+    if let Some(candidate_epoch) = priority_epoch {
+        let invariant_only = !candidate_epoch.candidates_are_current;
+        for &(_, slot_index, _) in &candidate_epoch.required_slots {
+            let index = slot_index as usize;
+            let Some(slot) = sparse.slots().get(index) else {
+                continue;
+            };
+            let already_applied = if invariant_only {
+                applied_invariant_revisions.get(index).copied() == Some(slot.invariant_revision())
+            } else {
+                applied_payload_revisions.get(index).copied() == Some(slot.payload_revision())
+            };
+            if already_applied {
+                continue;
+            }
+            if !apply_lod_debug_sparse_slot_upload(
+                render_queue,
+                buffer,
+                sparse,
+                record_count,
+                index,
+                record_size,
+                applied_invariant_revisions,
+                applied_payload_revisions,
+                &mut result,
+            ) {
+                result.complete = false;
+                return result;
+            }
+        }
+    }
+
+    for index in 0..sparse.slots().len() {
+        let slot = &sparse.slots()[index];
+        if applied_payload_revisions.get(index).copied() == Some(slot.payload_revision()) {
+            continue;
+        }
+        if !apply_lod_debug_sparse_slot_upload(
+            render_queue,
+            buffer,
+            sparse,
+            record_count,
+            index,
+            record_size,
+            applied_invariant_revisions,
+            applied_payload_revisions,
+            &mut result,
+        ) {
+            result.complete = false;
+            return result;
+        }
+    }
+    result.complete = sparse.slots().iter().enumerate().all(|(index, slot)| {
+        applied_payload_revisions.get(index).copied() == Some(slot.payload_revision())
+    });
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_lod_debug_sparse_slot_upload(
+    render_queue: &RenderQueue,
+    buffer: &Buffer,
+    sparse: &LodDebugSparseMetadata,
+    record_count: usize,
+    index: usize,
+    record_size: usize,
+    applied_invariant_revisions: &mut [u64],
+    applied_payload_revisions: &mut [u64],
+    result: &mut LodDebugSparseUploadResult,
+) -> bool {
+    let slot = &sparse.slots()[index];
+    let Some(records) = slot.records() else {
+        if let Some(applied) = applied_invariant_revisions.get_mut(index) {
+            *applied = slot.invariant_revision();
+        }
+        if let Some(applied) = applied_payload_revisions.get_mut(index) {
+            *applied = slot.payload_revision();
+        }
+        return true;
+    };
+    let start = match index.checked_mul(sparse.records_per_slot()) {
+        Some(start) => start,
+        None => {
+            return false;
+        }
+    };
+    let end = match start.checked_add(records.len()) {
+        Some(end) => end,
+        None => {
+            return false;
+        }
+    };
+    if end > record_count {
+        // The GPU cloud can be smaller than the metadata's physical
+        // address space after adapter-side clamping. Such a tail is never
+        // drawable and therefore needs no upload.
+        if let Some(applied) = applied_invariant_revisions.get_mut(index) {
+            *applied = slot.invariant_revision();
+        }
+        if let Some(applied) = applied_payload_revisions.get_mut(index) {
+            *applied = slot.payload_revision();
+        }
+        return true;
+    }
+    let contents = bytemuck::cast_slice(records);
+    let bytes = contents.len() as u64;
+    if result.slots_written >= LOD_DEBUG_MAX_SPARSE_UPLOAD_SLOTS_PER_FRAME
+        || result.bytes_written.saturating_add(bytes) > LOD_DEBUG_MAX_SPARSE_UPLOAD_BYTES_PER_FRAME
+    {
+        return false;
+    }
+    let offset = start
+        .checked_mul(record_size)
+        .and_then(|offset| u64::try_from(offset).ok())
+        .unwrap_or(u64::MAX);
+    render_queue.write_buffer(buffer, offset, contents);
+    if let Some(applied) = applied_invariant_revisions.get_mut(index) {
+        *applied = slot.invariant_revision();
+    }
+    if let Some(applied) = applied_payload_revisions.get_mut(index) {
+        *applied = slot.payload_revision();
+    }
+    result.bytes_written = result.bytes_written.saturating_add(bytes);
+    result.slots_written += 1;
+    true
+}
+
+fn create_lod_debug_bind_group(
+    render_device: &RenderDevice,
+    layout: &BindGroupLayout,
+    records: &Buffer,
+    config: &Buffer,
+) -> BindGroup {
+    render_device.create_bind_group(
+        "lod_debug_bind_group",
+        layout,
+        &[
+            BindGroupEntry {
+                binding: 0,
+                resource: records.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: config.as_entire_binding(),
+            },
+        ],
+    )
+}
+
+#[inline]
+const fn lod_debug_shader_enabled(
+    requested: bool,
+    binding_present: bool,
+    binding_ready: bool,
+    layout_available: bool,
+) -> bool {
+    requested && binding_present && binding_ready && layout_available
+}
+
+/// A pending render candidate and the live annotation sidecar are separate
+/// transactions. Once replacement output is armed (or has activated before the
+/// next main-world poll), the retained sidecar must not be bound to that output.
+#[inline]
+const fn lod_debug_candidate_epoch_ready(
+    candidates_are_current: bool,
+    pending_candidate_active: bool,
+    pending_activation_armed: bool,
+) -> bool {
+    candidates_are_current || (!pending_candidate_active && !pending_activation_armed)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -664,6 +1381,7 @@ fn queue_gaussians<R: PlanarSync>(
     custom_pipeline: Res<CloudPipeline<R>>,
     mut pipelines: ResMut<SpecializedRenderPipelines<CloudPipeline<R>>>,
     pipeline_cache: Res<PipelineCache>,
+    mut debug_stats: ResMut<LodDebugGpuUploadStats>,
     gaussian_clouds: Res<RenderAssets<R::GpuPlanarType>>,
     sorted_entries: Res<RenderAssets<GpuSortedEntry>>,
     mut transparent_render_phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
@@ -712,6 +1430,20 @@ fn queue_gaussians<R: PlanarSync>(
                 continue;
             }
 
+            #[cfg(lod_render_path)]
+            let (
+                _entity,
+                cloud_handle,
+                aabb,
+                sorted_entries_handle,
+                settings,
+                _lod_settings,
+                transform,
+                lod_debug_bind_group,
+                render_candidates,
+            ) = gaussian_splatting_bundles.get(*render_entity).unwrap();
+
+            #[cfg(not(lod_render_path))]
             let (
                 _entity,
                 cloud_handle,
@@ -722,6 +1454,42 @@ fn queue_gaussians<R: PlanarSync>(
                 transform,
                 lod_debug_bind_group,
             ) = gaussian_splatting_bundles.get(*render_entity).unwrap();
+
+            #[cfg(lod_render_path)]
+            let lod_candidate =
+                render_candidates.is_some_and(|candidates| candidates.candidate_draw_required);
+            #[cfg(not(lod_render_path))]
+            let lod_candidate = false;
+
+            #[cfg(lod_render_path)]
+            let external_active_set = render_candidates
+                .and_then(|candidates| {
+                    candidates
+                        .by_camera
+                        .get(&view.retained_view_entity.main_entity.id())
+                })
+                .is_some_and(|candidate| candidate.is_external_active_set());
+            #[cfg(not(lod_render_path))]
+            let external_active_set = false;
+
+            if !gaussian_rasterization_is_supported(settings.gaussian_mode, settings.rasterize_mode)
+            {
+                error!(
+                    gaussian_mode = ?settings.gaussian_mode,
+                    rasterize_mode = ?settings.rasterize_mode,
+                    "unsupported Gaussian/rasterization mode pair; skipping draw"
+                );
+                #[cfg(lod_render_path)]
+                if let Some(candidates) = render_candidates {
+                    for candidate in candidates.by_camera.values() {
+                        candidate.phase.store(
+                            crate::stream::render_commit::LOD_RENDER_FAILED,
+                            std::sync::atomic::Ordering::Release,
+                        );
+                    }
+                }
+                continue;
+            }
 
             debug!("queue gaussians clouds");
             if gaussian_clouds.get(cloud_handle.handle()).is_none() {
@@ -736,20 +1504,35 @@ fn queue_gaussians<R: PlanarSync>(
 
             let msaa = msaa.cloned().unwrap_or_default();
 
-            let key = CloudPipelineKey {
-                aabb: settings.aabb,
-                binary_gaussian_op: false,
-                opacity_adaptive_radius: settings.opacity_adaptive_radius,
-                visualize_bounding_box: settings.visualize_bounding_box,
-                draw_mode: settings.draw_mode,
-                gaussian_mode: settings.gaussian_mode,
-                rasterize_mode: settings.rasterize_mode,
-                lod_debug: settings.lod_debug.requires_metadata()
-                    && lod_debug_bind_group.is_some()
-                    && custom_pipeline.lod_debug_layout_desc.is_some(),
-                sample_count: msaa.samples(),
-                hdr: view.target_format == TextureFormat::Rgba16Float,
-            };
+            // Hierarchy Page/Level/Residency records do not describe a LODGE
+            // resident catalog. Even a stale binding from an earlier entity
+            // state must not enable that shader permutation for an external
+            // candidate.
+            let lod_debug_requested =
+                settings.lod_debug.requires_metadata() && !external_active_set;
+            let debug_binding_ready =
+                lod_debug_requested && lod_debug_bind_group.is_some_and(|debug| debug.ready);
+            let debug_pipeline_active = lod_debug_shader_enabled(
+                lod_debug_requested,
+                lod_debug_bind_group.is_some(),
+                lod_debug_bind_group.is_some_and(|debug| debug.ready),
+                custom_pipeline.lod_debug_layout_desc.is_some(),
+            );
+            let key = cloud_pipeline_key(
+                settings,
+                debug_pipeline_active,
+                lod_candidate,
+                msaa.samples(),
+                view.target_format == TextureFormat::Rgba16Float,
+            );
+            if debug_binding_ready {
+                debug_stats.ready_bind_group_queues =
+                    debug_stats.ready_bind_group_queues.saturating_add(1);
+            }
+            if key.lod_debug {
+                debug_stats.specialized_pipeline_queues =
+                    debug_stats.specialized_pipeline_queues.saturating_add(1);
+            }
 
             let pipeline = pipelines.specialize(&pipeline_cache, &custom_pipeline, key);
 
@@ -794,6 +1577,10 @@ pub struct CloudPipeline<R: PlanarSync> {
     pub compute_view_layout_desc: BindGroupLayoutDescriptor,
     pub sorted_layout: BindGroupLayout,
     pub sorted_layout_desc: BindGroupLayoutDescriptor,
+    #[cfg(lod_render_path)]
+    pub(crate) lod_sorted_layout: BindGroupLayout,
+    #[cfg(lod_render_path)]
+    pub(crate) lod_sorted_layout_desc: BindGroupLayoutDescriptor,
     pub lod_debug_layout: Option<BindGroupLayout>,
     pub lod_debug_layout_desc: Option<BindGroupLayoutDescriptor>,
     phantom: std::marker::PhantomData<R>,
@@ -1028,6 +1815,39 @@ where
         #[cfg(feature = "buffer_storage")]
         let sorted_layout =
             render_device.create_bind_group_layout(Some("sorted_layout"), &sorted_layout_entries);
+        #[cfg(lod_render_path)]
+        let lod_sorted_layout_entries = [
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::VERTEX_FRAGMENT | ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: true,
+                    min_binding_size: BufferSize::new(std::mem::size_of::<SortEntry>() as u64),
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::VERTEX,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: BufferSize::new(8 * std::mem::size_of::<u32>() as u64),
+                },
+                count: None,
+            },
+        ];
+        #[cfg(lod_render_path)]
+        let lod_sorted_layout_desc = BindGroupLayoutDescriptor::new(
+            "gaussian_lod_sorted_morph_layout",
+            &lod_sorted_layout_entries,
+        );
+        #[cfg(lod_render_path)]
+        let lod_sorted_layout = render_device.create_bind_group_layout(
+            Some("gaussian_lod_sorted_morph_layout"),
+            &lod_sorted_layout_entries,
+        );
         #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
         let sorted_layout = texture::get_sorted_bind_group_layout(render_device);
         #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
@@ -1105,6 +1925,10 @@ where
             shader: GAUSSIAN_SHADER_HANDLE,
             sorted_layout,
             sorted_layout_desc,
+            #[cfg(lod_render_path)]
+            lod_sorted_layout,
+            #[cfg(lod_render_path)]
+            lod_sorted_layout_desc,
             lod_debug_layout,
             lod_debug_layout_desc,
             phantom: std::marker::PhantomData,
@@ -1127,8 +1951,6 @@ pub struct ShaderDefines {
     pub workgroup_entries_a: u32,
     pub workgroup_entries_c: u32,
     pub sorting_buffer_size: u32,
-
-    pub temporal_sort_window_size: u32,
 }
 
 impl ShaderDefines {
@@ -1158,8 +1980,6 @@ impl ShaderDefines {
             workgroup_entries_a,
             workgroup_entries_c,
             sorting_buffer_size,
-
-            temporal_sort_window_size: 16,
         }
     }
 
@@ -1184,6 +2004,25 @@ impl Default for ShaderDefines {
 
 pub fn shader_defs(key: CloudPipelineKey) -> Vec<ShaderDefVal> {
     shader_defs_with_defines(key, ShaderDefines::default())
+}
+
+/// Returns whether the selected public raster mode has a complete shader
+/// implementation for the Gaussian representation. Unsupported pairs are
+/// rejected before pipeline specialization so they cannot surface later as an
+/// asynchronous Naga failure (and, for LoD, cannot replace a drawable source).
+pub(crate) const fn gaussian_rasterization_is_supported(
+    gaussian_mode: GaussianMode,
+    rasterize_mode: RasterizeMode,
+) -> bool {
+    match rasterize_mode {
+        RasterizeMode::Normal => !matches!(gaussian_mode, GaussianMode::Gaussian4d),
+        RasterizeMode::Velocity => matches!(gaussian_mode, GaussianMode::Gaussian4d),
+        RasterizeMode::Classification
+        | RasterizeMode::Color
+        | RasterizeMode::Depth
+        | RasterizeMode::OpticalFlow
+        | RasterizeMode::Position => true,
+    }
 }
 
 pub fn shader_defs_with_defines(
@@ -1218,10 +2057,6 @@ pub fn shader_defs_with_defines(
             defines.workgroup_invocations_c,
         ),
         ShaderDefVal::UInt("WORKGROUP_ENTRIES_C".into(), defines.workgroup_entries_c),
-        ShaderDefVal::UInt(
-            "TEMPORAL_SORT_WINDOW_SIZE".into(),
-            defines.temporal_sort_window_size,
-        ),
     ];
 
     if key.aabb {
@@ -1246,6 +2081,17 @@ pub fn shader_defs_with_defines(
 
     if key.lod_debug {
         shader_defs.push("LOD_DEBUG".into());
+    }
+
+    if key.lod_candidate {
+        shader_defs.push("LOD_CANDIDATE".into());
+        #[cfg(lod_render_path)]
+        if key.gaussian_mode == GaussianMode::Gaussian3d {
+            // The ABI-16 parent map and interpolation helpers currently encode
+            // the canonical planar 3D representation only. Other Gaussian
+            // modes still use the exact hard-cut candidate path.
+            shader_defs.push("LOD_MORPH".into());
+        }
     }
 
     #[cfg(feature = "morph_particles")]
@@ -1330,8 +2176,36 @@ pub struct CloudPipelineKey {
     pub gaussian_mode: GaussianMode,
     pub rasterize_mode: RasterizeMode,
     pub lod_debug: bool,
+    pub lod_candidate: bool,
     pub sample_count: u32,
     pub hdr: bool,
+}
+
+/// Builds the exact Gaussian raster specialization shared by draw queuing and
+/// the LoD two-phase commit. A cold source-to-atlas handoff may publish
+/// `PREPARED` only after this same `LOD_CANDIDATE` variant is compiled; keeping
+/// the key construction centralized prevents a supposedly ready candidate
+/// from switching to a different, still-queued MSAA/HDR/debug permutation.
+pub(crate) fn cloud_pipeline_key(
+    settings: &CloudSettings,
+    lod_debug: bool,
+    lod_candidate: bool,
+    sample_count: u32,
+    hdr: bool,
+) -> CloudPipelineKey {
+    CloudPipelineKey {
+        aabb: settings.aabb,
+        binary_gaussian_op: false,
+        opacity_adaptive_radius: settings.opacity_adaptive_radius,
+        visualize_bounding_box: settings.visualize_bounding_box,
+        draw_mode: settings.draw_mode,
+        gaussian_mode: settings.gaussian_mode,
+        rasterize_mode: settings.rasterize_mode,
+        lod_debug,
+        lod_candidate,
+        sample_count,
+        hdr,
+    }
 }
 
 impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
@@ -1348,11 +2222,19 @@ impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
 
         debug!("specializing cloud pipeline");
 
+        #[cfg(lod_render_path)]
+        let sorted_layout = if key.lod_candidate {
+            self.lod_sorted_layout_desc.clone()
+        } else {
+            self.sorted_layout_desc.clone()
+        };
+        #[cfg(not(lod_render_path))]
+        let sorted_layout = self.sorted_layout_desc.clone();
         let mut layout = vec![
             self.view_layout_desc.clone(),
             self.gaussian_uniform_layout_desc.clone(),
             self.gaussian_cloud_layout_desc.clone(),
-            self.sorted_layout_desc.clone(),
+            sorted_layout,
         ];
         if key.lod_debug {
             layout.push(
@@ -1957,6 +2839,27 @@ pub struct DrawGaussianInstanced<R: PlanarSync> {
 
 #[allow(type_alias_bounds)]
 #[cfg(lod_render_path)]
+type DrawGaussianItemQuery<R: PlanarSync> = (
+    Read<R::PlanarTypeHandle>,
+    Read<PlanarStorageBindGroup<R>>,
+    Read<SortBindGroup>,
+    Read<CloudSettings>,
+    Option<Read<LodDebugBindGroup<R>>>,
+    Option<Read<LodRenderCandidates>>,
+);
+
+#[allow(type_alias_bounds)]
+#[cfg(not(lod_render_path))]
+type DrawGaussianItemQuery<R: PlanarSync> = (
+    Read<R::PlanarTypeHandle>,
+    Read<PlanarStorageBindGroup<R>>,
+    Read<SortBindGroup>,
+    Read<CloudSettings>,
+    Option<Read<LodDebugBindGroup<R>>>,
+);
+
+#[allow(type_alias_bounds)]
+#[cfg(lod_render_path)]
 type DrawGaussianParam<R: PlanarSync> = (
     SRes<RenderAssets<R::GpuPlanarType>>,
     SRes<lod::LodCompactionBuffers<R>>,
@@ -1965,6 +2868,14 @@ type DrawGaussianParam<R: PlanarSync> = (
 #[allow(type_alias_bounds)]
 #[cfg(not(lod_render_path))]
 type DrawGaussianParam<R: PlanarSync> = SRes<RenderAssets<R::GpuPlanarType>>;
+
+#[cfg(lod_render_path)]
+const fn skip_unready_candidate_required_draw(
+    candidate_draw_required: bool,
+    lod_output_ready: bool,
+) -> bool {
+    candidate_draw_required && !lod_output_ready
+}
 
 impl<R: PlanarSync> Default for DrawGaussianInstanced<R> {
     fn default() -> Self {
@@ -1980,25 +2891,13 @@ where
 {
     type Param = DrawGaussianParam<R>;
     type ViewQuery = (Read<SortTrigger>, Read<ExtractedView>);
-    type ItemQuery = (
-        Read<R::PlanarTypeHandle>,
-        Read<PlanarStorageBindGroup<R>>,
-        Read<SortBindGroup>,
-        Read<CloudSettings>,
-        Option<Read<LodDebugBindGroup<R>>>,
-    );
+    type ItemQuery = DrawGaussianItemQuery<R>;
 
     #[inline]
     fn render<'w>(
         item: &P,
         (view, _extracted_view): ROQueryItem<'w, 'w, Self::ViewQuery>,
-        entity: Option<(
-            &'w R::PlanarTypeHandle,
-            &'w PlanarStorageBindGroup<R>,
-            &'w SortBindGroup,
-            &'w CloudSettings,
-            Option<&'w LodDebugBindGroup<R>>,
-        )>,
+        entity: Option<ROQueryItem<'w, 'w, Self::ItemQuery>>,
         gaussian_params: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
@@ -2010,6 +2909,16 @@ where
         #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
         let _ = view;
 
+        #[cfg(lod_render_path)]
+        let (
+            handle,
+            planar_bind_groups,
+            sort_bind_groups,
+            _cloud_settings,
+            lod_debug_bind_group,
+            render_candidates,
+        ) = entity.expect("gaussian cloud entity not found");
+        #[cfg(not(lod_render_path))]
         let (handle, planar_bind_groups, sort_bind_groups, _cloud_settings, lod_debug_bind_group) =
             entity.expect("gaussian cloud entity not found");
 
@@ -2036,6 +2945,28 @@ where
             item.entity(),
             handle.handle().id(),
         );
+
+        #[cfg(lod_render_path)]
+        let external_active_set = render_candidates
+            .and_then(|candidates| {
+                candidates
+                    .by_camera
+                    .get(&_extracted_view.retained_view_entity.main_entity.id())
+            })
+            .is_some_and(|candidate| candidate.is_external_active_set());
+        #[cfg(not(lod_render_path))]
+        let external_active_set = false;
+
+        #[cfg(lod_render_path)]
+        if skip_unready_candidate_required_draw(
+            render_candidates.is_some_and(|candidates| candidates.candidate_draw_required),
+            lod_state.is_some(),
+        ) {
+            // A package atlas is a page cache. Drawing it without a validated
+            // per-view candidate would expose a parent/child union or a
+            // partially staged transaction, so cold/new views stay loading.
+            return RenderCommandResult::Skip;
+        }
 
         debug!("drawing indirect");
 
@@ -2077,7 +3008,9 @@ where
         }
 
         if _cloud_settings.lod_debug.requires_metadata()
+            && !external_active_set
             && let Some(lod_debug_bind_group) = lod_debug_bind_group
+            && lod_debug_bind_group.ready
         {
             pass.set_bind_group(4, &lod_debug_bind_group.bind_group, &[]);
         }
@@ -2110,13 +3043,39 @@ where
 #[cfg(test)]
 mod shader_contract_tests {
     use super::{
-        CloudPipelineKey, LodDebugGpuUniform, planar_storage_binding_needs_refresh, shader_defs,
+        CloudPipelineKey, GAUSSIAN_AUTHORED_SUPPORT_SIGMA, GAUSSIAN_MIP_FILTER_VARIANCE_2D,
+        LodDebugGpuUniform, LodDebugGpuUploadStats, gaussian_mip_filter_covariance_2d,
+        gaussian_rasterization_is_supported, gaussian_support_cutoff,
+        lod_debug_candidate_epoch_ready, lod_debug_shader_enabled,
+        lod_debug_sparse_candidate_epoch_ready, planar_storage_binding_needs_refresh, shader_defs,
     };
+
+    #[cfg(lod_render_path)]
+    use super::skip_unready_candidate_required_draw;
+
+    #[test]
+    fn lod_morph_sample_avoids_wgsl_reserved_field_names() {
+        let shader = include_str!("lod_morph.wgsl");
+        assert!(shader.contains("enabled: bool"));
+        assert!(!shader.contains("active: bool"));
+    }
+
+    #[cfg(lod_render_path)]
+    #[test]
+    fn package_page_cache_never_falls_through_to_full_atlas_draw() {
+        assert!(skip_unready_candidate_required_draw(true, false));
+        assert!(!skip_unready_candidate_required_draw(true, true));
+        assert!(!skip_unready_candidate_required_draw(false, false));
+    }
 
     #[cfg(feature = "precompute_covariance_3d")]
     use super::gaussian_storage_layout_descriptor;
+    use crate::LodPageId;
     #[cfg(feature = "precompute_covariance_3d")]
     use crate::gaussian::formats::planar_3d::Gaussian3d;
+    use crate::gaussian::lod_debug::{
+        LOD_DEBUG_PAGE_LINEAR_LUMINANCE, lod_debug_page_color, stable_page_color_key,
+    };
 
     #[test]
     fn planar_storage_rebinds_handle_swap_without_an_asset_event() {
@@ -2127,11 +3086,1045 @@ mod shader_contract_tests {
     }
 
     #[test]
+    fn mip_filter_preserves_integrated_alpha_while_retaining_the_authored_footprint() {
+        for covariance in [
+            [4.0_f32, 0.0, 9.0],
+            [2.0, 0.75, 1.0],
+            [0.0004, 0.0001, 0.0003],
+        ] {
+            let filtered = gaussian_mip_filter_covariance_2d(covariance);
+            assert_eq!(
+                filtered.covariance,
+                [
+                    covariance[0] + GAUSSIAN_MIP_FILTER_VARIANCE_2D,
+                    covariance[1],
+                    covariance[2] + GAUSSIAN_MIP_FILTER_VARIANCE_2D,
+                ]
+            );
+            assert!(filtered.opacity_scale > 0.0 && filtered.opacity_scale <= 1.0);
+
+            let original_determinant =
+                covariance[0] * covariance[2] - covariance[1] * covariance[1];
+            let filtered_determinant = filtered.covariance[0] * filtered.covariance[2]
+                - filtered.covariance[1] * filtered.covariance[1];
+            let original_integrated_alpha = original_determinant.sqrt();
+            let filtered_integrated_alpha = filtered.opacity_scale * filtered_determinant.sqrt();
+            let relative_error = (filtered_integrated_alpha - original_integrated_alpha).abs()
+                / original_integrated_alpha.max(f32::MIN_POSITIVE);
+            assert!(
+                relative_error <= 2.0e-6,
+                "covariance={covariance:?} filtered={filtered:?} relative_error={relative_error}"
+            );
+        }
+
+        let degenerate = gaussian_mip_filter_covariance_2d([1.0, 1.0, 1.0]);
+        assert_eq!(degenerate.covariance, [1.3, 1.0, 1.3]);
+        assert_eq!(degenerate.opacity_scale, 0.0);
+    }
+
+    #[test]
+    fn lod_candidate_support_is_authored_three_sigma_without_changing_flat_policy() {
+        for opacity in [
+            -4.0_f32,
+            0.0,
+            1.0e-8,
+            1.0e-4,
+            0.001,
+            0.01,
+            0.1,
+            1.0,
+            2.0,
+            f32::MAX,
+        ] {
+            let legacy_flat = (9.0 + 2.0 * opacity.max(0.000_001_f32).ln())
+                .max(0.000_001)
+                .sqrt();
+            assert_eq!(
+                gaussian_support_cutoff(opacity, true, false).to_bits(),
+                legacy_flat.to_bits(),
+                "flat cutoff drifted for opacity={opacity}"
+            );
+            assert_eq!(
+                gaussian_support_cutoff(opacity, true, true),
+                GAUSSIAN_AUTHORED_SUPPORT_SIGMA,
+                "LoD support diverged from authored three sigma for opacity={opacity}"
+            );
+            assert_eq!(
+                gaussian_support_cutoff(opacity, false, false),
+                GAUSSIAN_AUTHORED_SUPPORT_SIGMA
+            );
+        }
+        let flat_cutoff = gaussian_support_cutoff(0.001, true, false);
+        let lod_cutoff = gaussian_support_cutoff(0.001, true, true);
+        assert!(flat_cutoff < 0.0011);
+        let flat_modeled_mass = 1.0 - (-0.5 * flat_cutoff * flat_cutoff).exp();
+        let lod_modeled_mass = 1.0 - (-0.5 * lod_cutoff * lod_cutoff).exp();
+        assert!(flat_modeled_mass < 1.0e-6);
+        assert!(lod_modeled_mass > 0.98);
+    }
+
+    #[test]
+    fn mip_filter_and_lod_support_shader_contract_match_the_cpu_oracle() {
+        const SHADER_COORDINATE_UNITS_PER_PIXEL: f32 = 2.0;
+        const SHADER_COVARIANCE_UNITS_PER_PIXEL_SQUARED: f32 =
+            SHADER_COORDINATE_UNITS_PER_PIXEL * SHADER_COORDINATE_UNITS_PER_PIXEL;
+        const SHADER_FILTER_VARIANCE: f32 =
+            GAUSSIAN_MIP_FILTER_VARIANCE_2D * SHADER_COVARIANCE_UNITS_PER_PIXEL_SQUARED;
+
+        fn shader_filter_model(physical_covariance: [f32; 3]) -> ([f32; 3], f32) {
+            let covariance =
+                physical_covariance.map(|value| value * SHADER_COVARIANCE_UNITS_PER_PIXEL_SQUARED);
+            let filtered = [
+                covariance[0] + SHADER_FILTER_VARIANCE,
+                covariance[1],
+                covariance[2] + SHADER_FILTER_VARIANCE,
+            ];
+            let original_determinant =
+                covariance[0] * covariance[2] - covariance[1] * covariance[1];
+            let filtered_determinant = filtered[0] * filtered[2] - filtered[1] * filtered[1];
+            let determinant_ratio = original_determinant / filtered_determinant;
+            let opacity_scale = if original_determinant > 0.0
+                && filtered_determinant > 0.0
+                && determinant_ratio >= 0.0
+            {
+                determinant_ratio.clamp(0.0, 1.0).sqrt()
+            } else {
+                0.0
+            };
+            (
+                filtered.map(|value| value / SHADER_COVARIANCE_UNITS_PER_PIXEL_SQUARED),
+                opacity_scale,
+            )
+        }
+
+        fn mip_support_radius_world(
+            cutoff: f32,
+            min_shader_focal: f32,
+            projection_w: f32,
+            view_z: f32,
+        ) -> Option<f32> {
+            if !cutoff.is_finite()
+                || cutoff < 0.0
+                || !min_shader_focal.is_finite()
+                || min_shader_focal <= 0.0
+            {
+                return None;
+            }
+            let mut radius = cutoff * SHADER_FILTER_VARIANCE.sqrt() / min_shader_focal;
+            if projection_w == 0.0 {
+                let depth = view_z.abs();
+                if !depth.is_finite() || depth <= 0.0 {
+                    return None;
+                }
+                radius *= depth;
+            } else if projection_w != 1.0 {
+                return None;
+            }
+            radius.is_finite().then_some(radius)
+        }
+
+        assert_eq!(GAUSSIAN_MIP_FILTER_VARIANCE_2D, 0.3);
+        assert_eq!(SHADER_FILTER_VARIANCE, 1.2);
+        assert_eq!(GAUSSIAN_AUTHORED_SUPPORT_SIGMA, 3.0);
+        let mip_radius_shader = GAUSSIAN_AUTHORED_SUPPORT_SIGMA * SHADER_FILTER_VARIANCE.sqrt();
+        assert!((mip_radius_shader / SHADER_COORDINATE_UNITS_PER_PIXEL - 1.643_167_6).abs() < 1e-6);
+        let perspective_margin = mip_support_radius_world(3.0, 300.0, 0.0, -5.0).unwrap();
+        let orthographic_margin = mip_support_radius_world(3.0, 300.0, 1.0, f32::NAN).unwrap();
+        assert!((perspective_margin - 0.054_772_26).abs() < 1e-7);
+        assert!((orthographic_margin - 0.010_954_452).abs() < 1e-8);
+        assert!(mip_support_radius_world(3.0, 0.0, 0.0, -5.0).is_none());
+        assert!(mip_support_radius_world(3.0, 300.0, 0.0, 0.0).is_none());
+        assert!(mip_support_radius_world(f32::NAN, 300.0, 1.0, 0.0).is_none());
+        assert!(mip_support_radius_world(3.0, 300.0, 0.5, -5.0).is_none());
+        assert!(mip_support_radius_world(3.0, 300.0, f32::NAN, -5.0).is_none());
+        let tiny_authored_radius = 3.0 * 0.001;
+        let center_distance_outside = 0.015;
+        assert!(tiny_authored_radius < center_distance_outside);
+        assert!(tiny_authored_radius + perspective_margin > center_distance_outside);
+        for covariance in [
+            [4.0_f32, 0.0, 9.0],
+            [2.0, 0.75, 1.0],
+            [0.0004, 0.0001, 0.0003],
+            [1.0, 1.0, 1.0],
+        ] {
+            let cpu = gaussian_mip_filter_covariance_2d(covariance);
+            let shader = shader_filter_model(covariance);
+            assert_eq!(cpu.covariance, shader.0);
+            assert_eq!(cpu.opacity_scale.to_bits(), shader.1.to_bits());
+        }
+
+        let helpers = include_str!("helpers.wgsl");
+        assert!(helpers.contains("GAUSSIAN_SHADER_COORDINATE_UNITS_PER_PIXEL: f32 = 2.0"));
+        assert!(helpers.contains("GAUSSIAN_MIP_FILTER_VARIANCE_2D_PHYSICAL: f32 = 0.3"));
+        assert!(helpers.contains("GAUSSIAN_MIP_FILTER_VARIANCE_2D_SHADER"));
+        assert!(helpers.contains("fn gaussian_mip_support_radius_world("));
+        assert!(helpers.contains("let mip_radius_shader = cutoff * sqrt("));
+        assert!(helpers.contains("let min_focal = min(focal.x, focal.y);"));
+        assert!(helpers.contains("if projection_w == 0.0"));
+        assert!(helpers.contains("else if projection_w != 1.0"));
+        assert!(helpers.contains("radius_world = radius_world * depth;"));
+        assert!(helpers.contains("return -1.0;"));
+        assert!(helpers.contains("* GAUSSIAN_SHADER_COORDINATE_UNITS_PER_PIXEL"));
+        assert!(helpers.contains("fn gaussian_mip_filter_covariance_2d"));
+        assert!(helpers.contains("original_determinant / filtered_determinant"));
+        assert!(helpers.contains("sqrt(clamp(determinant_ratio, 0.0, 1.0))"));
+        assert!(!helpers.contains("cov[0][0] += 0.3f"));
+        assert!(helpers.contains("if view.clip_from_view[3].w == 1.0"));
+        assert!(helpers.contains(
+            "focal.x, 0.0, 0.0,\n            0.0, -focal.y, 0.0,\n            0.0, 0.0, 0.0"
+        ));
+        assert!(helpers.contains("focal.x / t.z, 0.0, -(focal.x * t.x) * s"));
+        assert!(helpers.contains("0.0, -focal.y / t.z, (focal.y * t.y) * s"));
+
+        let gaussian_3d = include_str!("gaussian_3d.wgsl");
+        assert!(gaussian_3d.contains("struct GaussianMipCovariance2d"));
+        assert!(gaussian_3d.contains("filtered: vec4<f32>"));
+
+        let gaussian = include_str!("gaussian.wgsl");
+        assert!(gaussian.contains("fn gaussian_support_cutoff"));
+        assert!(gaussian.contains(
+            "#ifdef LOD_CANDIDATE\n    // Portable pages accept every finite authored opacity."
+        ));
+        assert!(gaussian.contains("return GAUSSIAN_AUTHORED_SUPPORT_SIGMA;"));
+        assert!(gaussian.contains("gaussian_mip_support_radius_world("));
+        assert!(gaussian.contains("authored_radius_world + mip_radius_world"));
+        let compaction = include_str!("lod_compaction.wgsl");
+        assert!(
+            compaction.contains(
+                "let local_radius = 3.0 * abs(gaussian_uniforms.global_scale) * max_scale;"
+            )
+        );
+        assert!(compaction.contains("gaussian_mip_support_radius_world(position_world, 3.0)"));
+        assert!(compaction.contains("authored_radius_world + mip_radius_world"));
+        assert!(gaussian.contains("opacity = opacity * gaussian_mip.filtered.w;"));
+        assert!(gaussian.contains("opacity = opacity * gaussian_mip.w;"));
+        assert!(gaussian.contains("lod_morph_fragment_color("));
+    }
+
+    #[test]
+    fn cov2d_projection_and_filter_units_match_physical_pixels() {
+        const SHADER_COORDINATE_UNITS_PER_PIXEL: f32 = 2.0;
+        const SHADER_COVARIANCE_SCALE: f32 =
+            SHADER_COORDINATE_UNITS_PER_PIXEL * SHADER_COORDINATE_UNITS_PER_PIXEL;
+
+        fn covariance_bilinear(left: [f32; 3], covariance: [f32; 6], right: [f32; 3]) -> f32 {
+            left[0]
+                * (covariance[0] * right[0] + covariance[1] * right[1] + covariance[2] * right[2])
+                + left[1]
+                    * (covariance[1] * right[0]
+                        + covariance[3] * right[1]
+                        + covariance[4] * right[2])
+                + left[2]
+                    * (covariance[2] * right[0]
+                        + covariance[4] * right[1]
+                        + covariance[5] * right[2])
+        }
+
+        fn projected_covariance(
+            derivative_x: [f32; 3],
+            derivative_y: [f32; 3],
+            covariance: [f32; 6],
+        ) -> [f32; 3] {
+            [
+                covariance_bilinear(derivative_x, covariance, derivative_x),
+                covariance_bilinear(derivative_x, covariance, derivative_y),
+                covariance_bilinear(derivative_y, covariance, derivative_y),
+            ]
+        }
+
+        fn assert_covariance_close(actual: [f32; 3], expected: [f32; 3]) {
+            for (actual, expected) in actual.into_iter().zip(expected) {
+                let tolerance = 2.0e-6 * expected.abs().max(1.0);
+                assert!(
+                    (actual - expected).abs() <= tolerance,
+                    "actual={actual} expected={expected} tolerance={tolerance}"
+                );
+            }
+        }
+
+        let covariance_3d = [0.04_f32, 0.01, 0.005, 0.09, -0.003, 0.16];
+
+        // Perspective uses the historical full-viewport focal. Its two shader
+        // units per physical pixel scale every Jacobian component by two and
+        // every projected covariance component by four.
+        let shader_focal = [1.25_f32 * 800.0, 1.5 * 600.0];
+        let view_position = [2.0_f32, -1.0, -10.0];
+        let inverse_depth_squared = 1.0 / (view_position[2] * view_position[2]);
+        let perspective_shader_j = [
+            [
+                shader_focal[0] / view_position[2],
+                0.0,
+                -(shader_focal[0] * view_position[0]) * inverse_depth_squared,
+            ],
+            [
+                0.0,
+                -shader_focal[1] / view_position[2],
+                (shader_focal[1] * view_position[1]) * inverse_depth_squared,
+            ],
+        ];
+        let perspective_physical_j = perspective_shader_j
+            .map(|derivative| derivative.map(|value| value / SHADER_COORDINATE_UNITS_PER_PIXEL));
+        let perspective_shader = projected_covariance(
+            perspective_shader_j[0],
+            perspective_shader_j[1],
+            covariance_3d,
+        );
+        let perspective_physical = projected_covariance(
+            perspective_physical_j[0],
+            perspective_physical_j[1],
+            covariance_3d,
+        );
+        assert_covariance_close(perspective_physical, [121.0, -12.825, 186.705]);
+        assert_covariance_close(
+            perspective_shader.map(|value| value / SHADER_COVARIANCE_SCALE),
+            perspective_physical,
+        );
+
+        // Orthographic projection is affine: the same full-viewport focal is
+        // used, but it has no inverse-depth or view-z coupling at any depth.
+        let orthographic_shader_j = [
+            [0.02_f32 * 800.0, 0.0, 0.0],
+            [0.0, -(0.03_f32 * 600.0), 0.0],
+        ];
+        let orthographic_physical_j = orthographic_shader_j
+            .map(|derivative| derivative.map(|value| value / SHADER_COORDINATE_UNITS_PER_PIXEL));
+        let orthographic_shader = projected_covariance(
+            orthographic_shader_j[0],
+            orthographic_shader_j[1],
+            covariance_3d,
+        );
+        let orthographic_physical = projected_covariance(
+            orthographic_physical_j[0],
+            orthographic_physical_j[1],
+            covariance_3d,
+        );
+        assert_covariance_close(orthographic_physical, [2.56, -0.72, 7.29]);
+        for _view_depth in [-2.0_f32, -20.0] {
+            assert_covariance_close(
+                orthographic_shader.map(|value| value / SHADER_COVARIANCE_SCALE),
+                orthographic_physical,
+            );
+        }
+
+        let shader_filtered = [
+            orthographic_shader[0] + 1.2,
+            orthographic_shader[1],
+            orthographic_shader[2] + 1.2,
+        ]
+        .map(|value| value / SHADER_COVARIANCE_SCALE);
+        assert_covariance_close(
+            shader_filtered,
+            [
+                orthographic_physical[0] + GAUSSIAN_MIP_FILTER_VARIANCE_2D,
+                orthographic_physical[1],
+                orthographic_physical[2] + GAUSSIAN_MIP_FILTER_VARIANCE_2D,
+            ],
+        );
+    }
+
+    #[test]
+    fn gaussian_bounds_math_is_finite_and_matches_the_covariance_inverse() {
+        fn obb_axes(covariance: [f32; 3]) -> ([f32; 2], [f32; 2]) {
+            let determinant = covariance[0] * covariance[2] - covariance[1] * covariance[1];
+            let midpoint = 0.5 * (covariance[0] + covariance[2]);
+            let discriminant = (midpoint * midpoint - determinant).max(0.0);
+            let lambda1 = midpoint + discriminant.sqrt();
+            let candidate = [-covariance[1], lambda1 - covariance[0]];
+            let candidate_l1 = candidate[0].abs() + candidate[1].abs();
+            let major = if candidate_l1 > 1.0e-12 {
+                let inverse_length =
+                    1.0 / (candidate[0] * candidate[0] + candidate[1] * candidate[1]).sqrt();
+                [candidate[0] * inverse_length, candidate[1] * inverse_length]
+            } else {
+                [1.0, 0.0]
+            };
+            (major, [major[1], -major[0]])
+        }
+
+        for covariance in [
+            [9.0_f32, 0.0, 4.0],
+            [4.0, 0.0, 9.0],
+            [4.0, 0.0, 4.0],
+            [4.0, 1.0e-7, 4.0],
+        ] {
+            let (major, minor) = obb_axes(covariance);
+            assert!(major.into_iter().chain(minor).all(f32::is_finite));
+            assert!((major[0] * major[0] + major[1] * major[1] - 1.0).abs() <= 1.0e-6);
+            assert!((minor[0] * minor[0] + minor[1] * minor[1] - 1.0).abs() <= 1.0e-6);
+            assert!((major[0] * minor[0] + major[1] * minor[1]).abs() <= 1.0e-6);
+            let handedness = major[0] * minor[1] - major[1] * minor[0];
+            assert!((handedness + 1.0).abs() <= 1.0e-6);
+        }
+        assert_eq!(obb_axes([9.0, 0.0, 4.0]).0, [1.0, 0.0]);
+        assert_eq!(obb_axes([4.0, 0.0, 9.0]).0, [0.0, 1.0]);
+
+        let covariance = [4.0_f32, 1.0, 2.0];
+        let delta = [2.0_f32, 1.0];
+        let determinant = covariance[0] * covariance[2] - covariance[1] * covariance[1];
+        let conic = [
+            covariance[2] / determinant,
+            -covariance[1] / determinant,
+            covariance[0] / determinant,
+        ];
+        let shader_power = -0.5
+            * (conic[0] * delta[0] * delta[0]
+                + 2.0 * conic[1] * delta[0] * delta[1]
+                + conic[2] * delta[1] * delta[1]);
+        let inverse_covariance_power = -0.5
+            * (covariance[2] * delta[0] * delta[0] - 2.0 * covariance[1] * delta[0] * delta[1]
+                + covariance[0] * delta[1] * delta[1])
+            / determinant;
+        assert!((shader_power - inverse_covariance_power).abs() <= 1.0e-7);
+
+        for cutoff in [0.5_f32, 1.0, 3.0] {
+            let power_at_unit_radius = -0.5 * cutoff * cutoff;
+            assert_eq!(
+                (-0.5 * (cutoff * cutoff) * 1.0).to_bits(),
+                power_at_unit_radius.to_bits()
+            );
+        }
+
+        let helpers = include_str!("helpers.wgsl");
+        assert!(helpers.contains("let major_axis_candidate = vec2<f32>"));
+        assert!(helpers.contains("var eigvec1 = vec2<f32>(1.0, 0.0)"));
+        assert!(
+            helpers.contains("abs(major_axis_candidate.x) + abs(major_axis_candidate.y) > 1.0e-12")
+        );
+        assert!(helpers.contains("eigvec1.y,\n        -eigvec1.x"));
+
+        let gaussian = include_str!("gaussian.wgsl");
+        assert_eq!(gaussian.matches("cutoff_squared: f32").count(), 6);
+        assert_eq!(
+            gaussian
+                .matches("output.cutoff_squared = cutoff * cutoff")
+                .count(),
+            1
+        );
+        assert!(gaussian.contains("@location(8) cutoff_squared: f32"));
+        assert!(gaussian.contains("@location(8) @interpolate(flat) cutoff_squared: f32"));
+        assert!(gaussian.contains("let power = -0.5 * input.cutoff_squared * distance_squared"));
+        assert!(!gaussian.contains("distance_squared > 3.0 * 3.0"));
+        assert_eq!(gaussian.matches("+ 2.0 * conic.y * d.x * d.y").count(), 2);
+    }
+
+    #[test]
+    fn lod_candidate_pipeline_key_is_explicit_and_opt_in() {
+        let disabled = shader_defs(CloudPipelineKey::default());
+        assert!(
+            !disabled
+                .iter()
+                .any(|define| format!("{define:?}").contains("LOD_CANDIDATE"))
+        );
+
+        let enabled = shader_defs(CloudPipelineKey {
+            lod_candidate: true,
+            ..Default::default()
+        });
+        assert!(
+            enabled
+                .iter()
+                .any(|define| format!("{define:?}").contains("LOD_CANDIDATE"))
+        );
+        #[cfg(lod_render_path)]
+        assert!(
+            enabled
+                .iter()
+                .any(|define| format!("{define:?}").contains("LOD_MORPH"))
+        );
+    }
+
+    #[test]
+    fn lod_morph_fragment_radiance_preserves_both_filtered_endpoints_per_pixel() {
+        const ALPHA_LIMIT: f32 = 0.999_999;
+        const FRAGMENT_ALPHA_LIMIT: f32 = 0.999;
+
+        fn optical_depth(opacity: f32) -> f32 {
+            let bounded = opacity.clamp(0.0, ALPHA_LIMIT);
+            -(1.0 - bounded).max(1.0 - ALPHA_LIMIT).ln()
+        }
+
+        fn fragment_color(
+            parent: (f32, f32, [f32; 3]),
+            child: (f32, f32, [f32; 3]),
+            gaussian_weight: f32,
+            morph_blend_t: f32,
+        ) -> ([f32; 3], f32) {
+            let (parent_peak_alpha, parent_coefficient, parent_linear_rgb) = parent;
+            let (child_peak_alpha, child_coefficient, child_linear_rgb) = child;
+            let parent_alpha =
+                (gaussian_weight * parent_peak_alpha).clamp(0.0, FRAGMENT_ALPHA_LIMIT);
+            let child_alpha = (gaussian_weight * child_peak_alpha).clamp(0.0, FRAGMENT_ALPHA_LIMIT);
+            if morph_blend_t >= 1.0 && parent_coefficient <= 0.0 && child_coefficient >= 1.0 {
+                return (
+                    child_linear_rgb.map(|channel| channel * child_alpha),
+                    child_alpha,
+                );
+            }
+            if morph_blend_t <= 0.0 && child_coefficient <= 0.0 && parent_coefficient >= 1.0 {
+                return (
+                    parent_linear_rgb.map(|channel| channel * parent_alpha),
+                    parent_alpha,
+                );
+            }
+            let parent_tau = parent_coefficient.max(0.0) * optical_depth(parent_alpha);
+            let child_tau = child_coefficient.max(0.0) * optical_depth(child_alpha);
+            let total_tau = parent_tau + child_tau;
+            if total_tau <= 0.0 {
+                return ([0.0; 3], 0.0);
+            }
+            let alpha = (1.0 - (-total_tau).exp()).min(FRAGMENT_ALPHA_LIMIT);
+            let linear_rgb = std::array::from_fn(|channel| {
+                (parent_linear_rgb[channel] * parent_tau + child_linear_rgb[channel] * child_tau)
+                    / total_tau
+            });
+            (linear_rgb.map(|channel| channel * alpha), alpha)
+        }
+
+        fn srgb_to_linear(channel: f32) -> f32 {
+            if channel <= 0.040_45 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
+        }
+
+        let parent_opacity = 0.73_f32;
+        let child_opacity = 0.19_f32;
+        let parent_linear_rgb = [0.8_f32, 0.13, 0.04];
+        let child_linear_rgb = [0.03_f32, 0.37, 0.91];
+        let parent_mip = gaussian_mip_filter_covariance_2d([0.018, 0.004, 3.7]).opacity_scale;
+        let child_mip = gaussian_mip_filter_covariance_2d([1.4, -0.12, 0.8]).opacity_scale;
+        assert!(parent_mip < 1.0 && child_mip < 1.0);
+
+        for global_opacity in [0.0_f32, 0.25, 1.0] {
+            let parent_peak = (global_opacity * parent_opacity * parent_mip).clamp(0.0, 1.0);
+            let child_peak = (global_opacity * child_opacity * child_mip).clamp(0.0, 1.0);
+            for run_length in [1_u32, 3, 17] {
+                for gaussian_weight in [1.0_f32, 0.75, 0.25, 0.01, 0.000_01] {
+                    let (parent_premultiplied, parent_share) = fragment_color(
+                        (parent_peak, 1.0 / run_length as f32, parent_linear_rgb),
+                        (child_peak, 0.0, child_linear_rgb),
+                        gaussian_weight,
+                        0.0,
+                    );
+                    let recomposed = 1.0 - (1.0 - parent_share).powi(run_length as i32);
+                    let expected_parent =
+                        (gaussian_weight * parent_peak).clamp(0.0, FRAGMENT_ALPHA_LIMIT);
+                    assert!(
+                        (recomposed - expected_parent).abs() <= 2.0e-6,
+                        "g={global_opacity} weight={gaussian_weight} run={run_length} share={parent_share} recomposed={recomposed} expected={expected_parent}"
+                    );
+                    if parent_share > 0.0 {
+                        for channel in 0..3 {
+                            assert!(
+                                (parent_premultiplied[channel] / parent_share
+                                    - parent_linear_rgb[channel])
+                                    .abs()
+                                    <= 2.0e-6,
+                                "parent endpoint changed linear radiance"
+                            );
+                        }
+                    }
+
+                    let (child_premultiplied, child_endpoint) = fragment_color(
+                        (parent_peak, 0.0, parent_linear_rgb),
+                        (child_peak, 1.0, child_linear_rgb),
+                        gaussian_weight,
+                        1.0,
+                    );
+                    assert_eq!(
+                        child_endpoint.to_bits(),
+                        (gaussian_weight * child_peak)
+                            .clamp(0.0, FRAGMENT_ALPHA_LIMIT)
+                            .to_bits()
+                    );
+                    assert_eq!(
+                        child_premultiplied.map(f32::to_bits),
+                        child_linear_rgb
+                            .map(|channel| channel * child_endpoint)
+                            .map(f32::to_bits),
+                    );
+                }
+            }
+        }
+
+        for (parent, child) in [(0.000_01, 0.000_001), (0.001, 0.000_1)] {
+            let (premultiplied, alpha) = fragment_color(
+                (parent, 0.3 / 11.0, parent_linear_rgb),
+                (child, 0.7, child_linear_rgb),
+                0.01,
+                0.7,
+            );
+            assert!(alpha.is_finite() && alpha >= 0.0);
+            assert!(premultiplied.into_iter().all(f32::is_finite));
+        }
+
+        // An open-interval projected-area correction may exceed one when an
+        // endpoint and the interpolated proxy have substantially different
+        // depths/areas. Selected can gate the other endpoint to zero; that is
+        // still an interior optical-depth scale, never an endpoint fast path.
+        let child_peak = 0.42_f32;
+        let gaussian_weight = 0.8_f32;
+        let child_area_coefficient = 3.25_f32;
+        let (interior_premultiplied, interior_alpha) = fragment_color(
+            (0.77, 0.0, parent_linear_rgb),
+            (child_peak, child_area_coefficient, child_linear_rgb),
+            gaussian_weight,
+            0.25,
+        );
+        let child_alpha = (gaussian_weight * child_peak).clamp(0.0, FRAGMENT_ALPHA_LIMIT);
+        let expected_interior_alpha = (1.0
+            - (-child_area_coefficient * optical_depth(child_alpha)).exp())
+        .min(FRAGMENT_ALPHA_LIMIT);
+        assert!((interior_alpha - expected_interior_alpha).abs() <= 2.0e-6);
+        assert!((interior_alpha - child_alpha).abs() > 0.1);
+        for channel in 0..3 {
+            assert!(
+                (interior_premultiplied[channel] - child_linear_rgb[channel] * interior_alpha)
+                    .abs()
+                    <= 2.0e-6
+            );
+        }
+
+        // Convert endpoint SH results to linear light independently. Applying
+        // the nonlinear transfer after mixing encoded endpoint colors is not
+        // equivalent and would bias interior LoD radiance.
+        let parent_srgb = [0.05_f32, 0.25, 0.8];
+        let child_srgb = [0.9_f32, 0.1, 0.02];
+        let parent_linear = parent_srgb.map(srgb_to_linear);
+        let child_linear = child_srgb.map(srgb_to_linear);
+        let (premultiplied, alpha) = fragment_color(
+            (0.72, 0.4, parent_linear),
+            (0.31, 0.6, child_linear),
+            0.63,
+            0.6,
+        );
+        let correct_linear = premultiplied.map(|channel| channel / alpha);
+        let wrong_encoded_then_linear: [f32; 3] = std::array::from_fn(|channel| {
+            srgb_to_linear(parent_srgb[channel] * 0.4 + child_srgb[channel] * 0.6)
+        });
+        assert!(
+            correct_linear
+                .into_iter()
+                .zip(wrong_encoded_then_linear)
+                .any(|(correct, wrong)| (correct - wrong).abs() > 0.02),
+            "test colors did not expose nonlinear sRGB interpolation bias"
+        );
+
+        // For a fixed normalized support, integrating optical depth over a
+        // projected Gaussian contributes its sqrt(det(covariance)) area. The
+        // endpoint/current area ratios therefore cancel the interpolated area
+        // exactly and leave a linear parent/child mass blend.
+        let parent_area = 7.0_f32;
+        let child_area = 2.5_f32;
+        let parent_unit_tau = 1.7_f32;
+        let child_unit_tau = 0.4_f32;
+        let run_length = 5.0_f32;
+        for (t, current_area) in [(0.0_f32, 7.0_f32), (0.2, 5.8), (0.5, 4.0), (1.0, 2.5)] {
+            let parent_coefficient = if t <= 0.0 {
+                1.0 / run_length
+            } else if t >= 1.0 {
+                0.0
+            } else {
+                (1.0 - t) * parent_area / current_area / run_length
+            };
+            let child_coefficient = if t <= 0.0 {
+                0.0
+            } else if t >= 1.0 {
+                1.0
+            } else {
+                t * child_area / current_area
+            };
+            let integrated_proxy_mass = current_area
+                * (parent_coefficient * parent_unit_tau + child_coefficient * child_unit_tau);
+            let expected = (1.0 - t) * parent_area * parent_unit_tau / run_length
+                + t * child_area * child_unit_tau;
+            assert!((integrated_proxy_mass - expected).abs() <= 2.0e-6);
+        }
+
+        let shader = include_str!("lod_morph.wgsl");
+        assert!(shader.contains("fn lod_morph_fragment_color"));
+        assert!(shader.contains("gaussian_weight * parent_peak_alpha"));
+        assert!(shader.contains("gaussian_weight * child_peak_alpha"));
+        assert!(shader.contains("morph_blend_t >= 1.0"));
+        assert!(shader.contains("morph_blend_t <= 0.0"));
+        assert!(shader.contains("parent_optical_depth_coefficient"));
+        assert!(shader.contains("parent_linear_rgb * parent_tau"));
+        assert!(shader.contains("child_linear_rgb * child_tau"));
+        assert!(shader.contains("double-density halo"));
+        assert!(!shader.contains("fn lod_morph_spherical_harmonics"));
+
+        let gaussian = include_str!("gaussian.wgsl");
+        assert!(gaussian.contains("@interpolate(flat) lod_morph_alpha: vec4<f32>"));
+        assert!(
+            gaussian.contains("@location(9) @interpolate(flat) lod_morph_parent_color: vec4<f32>")
+        );
+        assert_eq!(gaussian.matches("@location(9)").count(), 2);
+        const LOD_MORPH_INTER_STAGE_LOCATION_COUNT: u32 = 10;
+        const WEBGPU_MIN_MAX_INTER_STAGE_SHADER_VARIABLES: u32 = 16;
+        const WEBGL2_MIN_MAX_VARYING_VECTORS: u32 = 15;
+        const {
+            assert!(
+                LOD_MORPH_INTER_STAGE_LOCATION_COUNT <= WEBGPU_MIN_MAX_INTER_STAGE_SHADER_VARIABLES
+            );
+            assert!(LOD_MORPH_INTER_STAGE_LOCATION_COUNT <= WEBGL2_MIN_MAX_VARYING_VECTORS);
+        }
+        assert!(gaussian.contains("gaussian_mip.parent_opacity_scale"));
+        assert!(gaussian.contains("gaussian_mip.child_opacity_scale"));
+        assert!(gaussian.contains("gaussian_mip.parent_projected_area_ratio"));
+        assert!(gaussian.contains("gaussian_mip.child_projected_area_ratio"));
+        assert!(gaussian.contains("return lod_morph_fragment_color("));
+        assert!(gaussian.contains("input.lod_morph_parent_color.w"));
+        assert!(gaussian.contains("input.lod_morph_parent_color.rgb"));
+        assert!(gaussian.contains("gaussian_render_color_at("));
+        assert!(gaussian.contains("parent_transformed_position"));
+        assert!(gaussian.contains("child_transformed_position"));
+        assert!(!gaussian.contains("lod_morph_spherical_harmonics"));
+
+        let gaussian_3d = include_str!("gaussian_3d.wgsl");
+        assert!(gaussian_3d.contains("fn projected_area_ratio"));
+        assert!(gaussian_3d.contains("endpoint_determinant / current_determinant"));
+    }
+
+    #[test]
+    fn lod_morph_support_cutoff_preserves_endpoint_union_and_candidate_three_sigma_policy() {
+        // Keep the standalone union helper endpoint-exact and conservative for
+        // unequal inputs even though production LoD candidate inputs are both
+        // the fixed authored cutoff.
+        let parent = 1.75_f32;
+        let child = 3.5_f32;
+        assert_ne!(parent.to_bits(), child.to_bits());
+        let cutoff = |t: f32| {
+            if t <= 0.0 {
+                parent
+            } else if t >= 1.0 {
+                child
+            } else {
+                parent.max(child)
+            }
+        };
+        assert_eq!(cutoff(0.0).to_bits(), parent.to_bits());
+        assert_eq!(cutoff(1.0).to_bits(), child.to_bits());
+        for t in [f32::MIN_POSITIVE, 0.25, 0.5, 0.75, 1.0 - f32::EPSILON] {
+            assert_eq!(cutoff(t).to_bits(), parent.max(child).to_bits());
+        }
+        for opacity in [0.08_f32, 0.91, 2.0, f32::MAX] {
+            assert_eq!(
+                gaussian_support_cutoff(opacity, true, true),
+                GAUSSIAN_AUTHORED_SUPPORT_SIGMA
+            );
+        }
+
+        let morph = include_str!("lod_morph.wgsl");
+        assert!(morph.contains("fn lod_morph_support_cutoff"));
+        assert!(morph.contains("return max(parent_cutoff, child_cutoff)"));
+        let shader = include_str!("gaussian.wgsl");
+        assert!(shader.contains("var cutoff = gaussian_support_cutoff(opacity)"));
+        assert!(shader.contains("let parent_cutoff = gaussian_support_cutoff("));
+        assert!(shader.contains("cutoff = lod_morph_support_cutoff("));
+        assert!(!shader.contains("cutoff = mix(parent_cutoff, cutoff, morph_blend_t)"));
+        assert!(shader.contains("output.cutoff_squared = cutoff * cutoff"));
+        assert!(shader.contains("gaussian_support_radius_world("));
+        assert!(shader.contains("get_bounding_box_clip("));
+    }
+
+    #[test]
+    fn lod_morph_visibility_is_endpoint_exact_and_retains_the_open_interval_union() {
+        fn visibility(parent: f32, child: f32, t: f32) -> f32 {
+            if t <= 0.0 {
+                parent
+            } else if t >= 1.0 {
+                child
+            } else {
+                parent.max(child)
+            }
+        }
+
+        for (parent, child) in [(1.0_f32, 0.0_f32), (0.0, 1.0), (4.0, 2.0)] {
+            assert_eq!(visibility(parent, child, 0.0).to_bits(), parent.to_bits());
+            assert_eq!(visibility(parent, child, 1.0).to_bits(), child.to_bits());
+            for t in [f32::MIN_POSITIVE, 0.25, 0.5, 0.75, 1.0 - f32::EPSILON] {
+                assert_eq!(
+                    visibility(parent, child, t).to_bits(),
+                    parent.max(child).to_bits()
+                );
+            }
+        }
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        enum DrawPolicy {
+            All,
+            Selected,
+            HighlightSelected,
+        }
+        let contributes =
+            |policy: DrawPolicy, value: f32| policy != DrawPolicy::Selected || value >= 0.5;
+        let base_coefficients = |t: f32| {
+            if t <= 0.0 {
+                (1.0_f32, 0.0_f32)
+            } else if t >= 1.0 {
+                (0.0, 1.0)
+            } else {
+                (0.4, 0.6)
+            }
+        };
+        let coefficients = |policy: DrawPolicy, parent: f32, child: f32, t: f32| {
+            let (parent_base, child_base) = base_coefficients(t);
+            (
+                parent_base
+                    * if contributes(policy, parent) {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                child_base * if contributes(policy, child) { 1.0 } else { 0.0 },
+            )
+        };
+
+        // All and HighlightSelected render zero-valued selection metadata at
+        // both exact cuts and throughout the open interval. Highlight is a
+        // color annotation only.
+        for policy in [DrawPolicy::All, DrawPolicy::HighlightSelected] {
+            for (parent, child) in [(0.0_f32, 0.0_f32), (0.0, 1.0), (1.0, 0.0)] {
+                for t in [0.0_f32, 0.4, 1.0] {
+                    assert_eq!(coefficients(policy, parent, child, t), base_coefficients(t));
+                }
+            }
+        }
+
+        // Selected alone gates each optical-depth endpoint at the established
+        // inclusive 0.5 threshold while the open-interval proxy retains their
+        // endpoint visibility union.
+        for (parent, child, expected_open) in [
+            (0.0_f32, 1.0_f32, (0.0_f32, 0.6_f32)),
+            (1.0, 0.0, (0.4, 0.0)),
+            (0.25, 0.5, (0.0, 0.6)),
+            (0.5, 0.49, (0.4, 0.0)),
+        ] {
+            assert_eq!(
+                coefficients(DrawPolicy::Selected, parent, child, 0.4),
+                expected_open
+            );
+            assert_eq!(
+                visibility(parent, child, 0.4) >= 0.5,
+                parent >= 0.5 || child >= 0.5
+            );
+            assert_eq!(
+                coefficients(DrawPolicy::Selected, parent, child, 0.0).0 > 0.0,
+                parent >= 0.5
+            );
+            assert_eq!(
+                coefficients(DrawPolicy::Selected, parent, child, 1.0).1 > 0.0,
+                child >= 0.5
+            );
+        }
+
+        let morph = include_str!("lod_morph.wgsl");
+        assert!(morph.contains("fn lod_morph_visibility"));
+        assert!(morph.contains("return max(parent_visibility, child_visibility)"));
+
+        let compaction = include_str!("lod_compaction.wgsl");
+        assert!(!compaction.contains("get_visibility"));
+        assert!(!compaction.contains("visibility <= 0.0"));
+        assert!(!compaction.contains("lod_morph_visibility"));
+
+        let gaussian = include_str!("gaussian.wgsl");
+        assert!(gaussian.contains("displayed_visibility = lod_morph_visibility("));
+        assert!(gaussian.contains("fn lod_morph_visibility_contributes"));
+        assert!(gaussian.contains("return visibility >= 0.5"));
+        assert!(gaussian.contains("return true;"));
+        assert!(!gaussian.contains("return visibility > 0.0"));
+        assert!(gaussian.contains("lod_morph_visibility_contributes(parent_visibility)"));
+        assert!(gaussian.contains("lod_morph_visibility_contributes(child_visibility)"));
+        assert!(gaussian.contains("discard_quad |= displayed_visibility < 0.5"));
+        assert!(gaussian.contains("if parent_visibility > 0.5"));
+        assert!(gaussian.contains("if child_visibility > 0.5"));
+        assert!(!gaussian.contains("if (displayed_visibility > 0.5)"));
+    }
+
+    #[test]
+    fn lod_morph_covariance_and_support_are_representation_independent() {
+        fn interpolate_covariance(parent: [f32; 6], child: [f32; 6], t: f32) -> [f32; 6] {
+            std::array::from_fn(|index| parent[index] + (child[index] - parent[index]) * t)
+        }
+
+        // These are endpoint local covariances produced by the standard
+        // scale/rotation path and persisted by the precompute path.
+        let parent = [4.0_f32, 0.3, -0.2, 1.5, 0.1, 0.7];
+        let child = [0.8_f32, -0.15, 0.05, 2.7, -0.4, 3.2];
+        for t in [0.0_f32, 0.125, 0.5, 0.875, 1.0] {
+            let standard = interpolate_covariance(parent, child, t);
+            let precomputed = interpolate_covariance(parent, child, t);
+            assert_eq!(standard.map(f32::to_bits), precomputed.map(f32::to_bits));
+        }
+
+        let parent_max_scale = 4.0_f32;
+        let child_max_scale = 2.5_f32;
+        for t in [0.0_f32, 0.2, 0.5, 0.9, 1.0] {
+            let support =
+                ((1.0 - t) * parent_max_scale.powi(2) + t * child_max_scale.powi(2)).sqrt();
+            let covariance_spectral_bound =
+                (1.0 - t) * parent_max_scale.powi(2) + t * child_max_scale.powi(2);
+            assert!(support * support + 1.0e-5 >= covariance_spectral_bound);
+        }
+
+        let shader = include_str!("gaussian_3d.wgsl");
+        assert!(shader.contains("let child_local_cov3d"));
+        assert!(shader.contains("parent_local_cov3d"));
+        assert!(shader.contains("local_cov3d = lod_morph_covariance("));
+        assert!(shader.contains("transform_local_cov3d(local_cov3d)"));
+        assert!(!shader.contains("scale = lod_morph_log_scale("));
+
+        let morph = include_str!("lod_morph.wgsl");
+        assert!(morph.contains("fn lod_morph_support_max_scale"));
+        assert!(morph.contains("parent_max * parent_max"));
+        assert!(morph.contains("child_max * child_max"));
+    }
+
+    #[test]
+    fn lod_morph_table_uses_one_bounded_per_view_weight_for_compaction_and_raster() {
+        let morph = include_str!("lod_morph.wgsl");
+        for contract in [
+            "arrayLength(&lod_morph_words)",
+            "lod_presentation_mode() != LOD_PRESENTATION_MODE_MORPH",
+            "descriptor_count > descriptor_capacity",
+            "mapping_record_count > mapping_capacity",
+            "weight_count > weight_capacity",
+            "parent_physical_index >= source_count",
+            "edge_index >= weight_count",
+            "bitcast<f32>(lod_morph_words[weight_start + edge_index])",
+        ] {
+            assert!(
+                morph.contains(contract),
+                "missing morph contract: {contract}"
+            );
+        }
+
+        let gaussian = include_str!("gaussian.wgsl");
+        assert!(gaussian.contains("const LOD_ENTRY_SOURCE_INDEX_MASK: u32 = 0x0fffffffu;"));
+        assert!(gaussian.contains("const LOD_ENTRY_PRESENTATION_CLASS_SHIFT: u32 = 28u;"));
+        assert!(gaussian.contains("const LOD_ENTRY_PRESENTATION_CLASS_MASK: u32 = 3u << LOD_ENTRY_PRESENTATION_CLASS_SHIFT;"));
+        assert!(gaussian.contains("if lod_morph_from_entry(entry)"));
+        assert!(gaussian.contains("let morph = lod_morph_sample("));
+        let compaction = include_str!("lod_compaction.wgsl");
+        assert!(compaction.contains("const LOD_ENTRY_SOURCE_INDEX_MASK: u32 = 0x0fffffffu;"));
+        assert!(compaction.contains("const LOD_ENTRY_PRESENTATION_CLASS_SHIFT: u32 = 28u;"));
+        assert!(compaction.contains("let range_metadata = candidate_and_scan_words[word + 3u];"));
+        assert!(compaction.contains("let residency = range_metadata & 3u;"));
+        assert!(compaction.contains("let presentation_class = (range_metadata >> 2u) & 3u;"));
+        assert!(compaction.contains("let morph = lod_morph_sample("));
+        assert!(!morph.contains("progress_bits"));
+        assert!(!morph.contains("COARSEN_BIT"));
+    }
+
+    #[test]
+    fn external_active_set_presentation_scales_only_final_peak_opacity() {
+        let morph = include_str!("lod_morph.wgsl");
+        for contract in [
+            "const LOD_PRESENTATION_MODE_MORPH: u32 = 1u;",
+            "const LOD_PRESENTATION_MODE_EXTERNAL_ACTIVE_SET: u32 = 2u;",
+            "fn lod_external_active_set_opacity_coefficient(active_set_class: u32) -> f32",
+            "if lod_presentation_mode() != LOD_PRESENTATION_MODE_EXTERNAL_ACTIVE_SET",
+            "lod_morph_words[LOD_PRESENTATION_FIRST_WEIGHT_WORD]",
+            "lod_morph_words[LOD_PRESENTATION_SECOND_WEIGHT_WORD]",
+        ] {
+            assert!(
+                morph.contains(contract),
+                "missing presentation contract: {contract}"
+            );
+        }
+        let sample = morph
+            .split("fn lod_morph_sample(")
+            .nth(1)
+            .expect("morph sampler");
+        let mode_guard = sample
+            .find("lod_presentation_mode() != LOD_PRESENTATION_MODE_MORPH")
+            .expect("morph mode guard");
+        let table_parse = sample
+            .find("let descriptor_count = lod_morph_words[0u]")
+            .expect("morph descriptor parse");
+        assert!(
+            mode_guard < table_parse,
+            "external class 1 must never parse as morph"
+        );
+
+        let gaussian = include_str!("gaussian.wgsl");
+        let authored = gaussian
+            .find("var output_opacity = clamp(opacity * gaussian_uniforms.global_opacity")
+            .expect("final authored/global/Mip opacity");
+        let external = gaussian
+            .find("output_opacity = output_opacity * lod_external_active_set_opacity_coefficient(")
+            .expect("external opacity coefficient");
+        let output = gaussian
+            .find("output.color = vec4<f32>(rgb, output_opacity)")
+            .expect("vertex output opacity");
+        assert!(authored < external && external < output);
+        assert_eq!(
+            gaussian
+                .matches("lod_external_active_set_opacity_coefficient(")
+                .count(),
+            1,
+            "the external coefficient is applied exactly once to final peak opacity"
+        );
+
+        let coefficient = |class: u32, first: f32, second: f32| match class {
+            0 => 1.0,
+            1 => first,
+            2 => second,
+            _ => 0.0,
+        };
+        for (first, second) in [(1.0, 0.0), (0.5, 0.5), (0.0, 1.0)] {
+            assert_eq!(coefficient(0, first, second), 1.0);
+            assert_eq!(coefficient(1, first, second), first);
+            assert_eq!(coefficient(2, first, second), second);
+            assert_eq!(coefficient(3, first, second), 0.0);
+        }
+
+        let render = include_str!("mod.rs");
+        let queue = render
+            .split("fn queue_gaussians")
+            .nth(1)
+            .and_then(|body| body.split("pub struct CloudPipeline").next())
+            .expect("Gaussian queue path");
+        assert!(queue.contains("candidate.is_external_active_set()"));
+        assert!(queue.contains("settings.lod_debug.requires_metadata() && !external_active_set"));
+        let draw = render
+            .split(
+                "impl<P: PhaseItem, R: PlanarSync> RenderCommand<P> for DrawGaussianInstanced<R>",
+            )
+            .nth(1)
+            .expect("Gaussian indirect draw path");
+        assert!(draw.contains("candidate.is_external_active_set()"));
+        assert!(draw.contains("&& !external_active_set"));
+
+        let compaction = include_str!("lod_compaction.wgsl");
+        assert!(compaction.contains("active_entries[output_index] = evaluation.entry;"));
+        assert_eq!(
+            compaction.matches("pack_lod_entry_value(source)").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn precomputed_debug_morph_stays_within_webgpu_vertex_storage_minimum() {
+        const PRECOMPUTED_GAUSSIAN_PLANES: u32 = 5;
+        const SORTED_AND_MORPH_BINDINGS: u32 = 2;
+        const DEBUG_STORAGE_BINDINGS: u32 = 1;
+        const WEBGPU_MIN_STORAGE_BUFFERS_PER_SHADER_STAGE: u32 = 8;
+        assert_eq!(
+            PRECOMPUTED_GAUSSIAN_PLANES + SORTED_AND_MORPH_BINDINGS + DEBUG_STORAGE_BINDINGS,
+            WEBGPU_MIN_STORAGE_BUFFERS_PER_SHADER_STAGE
+        );
+    }
+
+    #[test]
     fn raster_frustum_culling_uses_gaussian_support_not_only_its_center() {
         let shader = include_str!("gaussian.wgsl");
         assert!(shader.contains("fn gaussian_support_radius_world"));
         assert!(shader.contains("fn gaussian_support_sphere_in_frustum"));
         assert!(shader.contains("gaussian_uniforms.transform_scale_bound"));
+        assert!(shader.contains("gaussian_mip_support_radius_world("));
+        assert!(shader.contains("authored_radius_world + mip_radius_world"));
         assert!(!shader.contains("let gram_xx"));
         assert!(!shader.contains("length(plane.xyz)"));
         assert!(shader.contains("let projected_position = world_to_clip(transformed_position);"));
@@ -2140,7 +4133,63 @@ mod shader_contract_tests {
     }
 
     #[test]
+    fn lod_debug_page_palette_is_rec709_luma_equalized_in_cpu_and_wgsl() {
+        assert_eq!(
+            LOD_DEBUG_PAGE_LINEAR_LUMINANCE.to_bits(),
+            0.30_f32.to_bits()
+        );
+        for page in [1_u64, 2, 42, 0xffff, 0x1_0000_0001, u64::MAX] {
+            let color = lod_debug_page_color(stable_page_color_key(LodPageId(page)));
+            let luminance = color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722;
+            assert!(
+                (luminance - LOD_DEBUG_PAGE_LINEAR_LUMINANCE).abs() <= 2.0e-6,
+                "Page {page} has nonuniform linear luma: color={color:?}, luma={luminance}"
+            );
+            assert!(
+                color
+                    .into_iter()
+                    .all(|channel| (0.0..=1.0).contains(&channel))
+            );
+        }
+
+        let shader = include_str!("lod_debug.wgsl");
+        for contract in [
+            "const LOD_DEBUG_PAGE_LINEAR_LUMINANCE: f32 = 0.30;",
+            "const REC709_LINEAR_LUMINANCE: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);",
+            "let base = lod_debug_hsv_to_rgb(hue, 0.72, 0.95);",
+            "let luminance = dot(base, REC709_LINEAR_LUMINANCE);",
+            "base * (LOD_DEBUG_PAGE_LINEAR_LUMINANCE / luminance)",
+        ] {
+            assert!(
+                shader.contains(contract),
+                "missing Page-palette contract: {contract}"
+            );
+        }
+    }
+
+    #[test]
     fn lod_debug_shader_is_opt_in_and_bounds_checks_metadata() {
+        let requires_authored_color_contract =
+            |mode: u32, metadata_in_bounds: bool, quality_policy_valid: bool| {
+                if !metadata_in_bounds || mode == 0 {
+                    return true;
+                }
+                match mode {
+                    1..=3 => false,
+                    4 => true,
+                    5 => !quality_policy_valid,
+                    _ => true,
+                }
+            };
+        for mode in 1..=3 {
+            assert!(!requires_authored_color_contract(mode, true, true));
+        }
+        assert!(requires_authored_color_contract(4, true, true));
+        assert!(!requires_authored_color_contract(5, true, true));
+        assert!(requires_authored_color_contract(5, true, false));
+        assert!(requires_authored_color_contract(1, false, true));
+        assert!(requires_authored_color_contract(0, true, true));
+
         let disabled = shader_defs(CloudPipelineKey::default());
         assert!(
             !disabled
@@ -2165,9 +4214,15 @@ mod shader_contract_tests {
         assert!(shader.contains("LOD_DEBUG_RESIDENCY_MASK: u32 = 0x0000ffffu"));
         assert!(shader.contains("fn lod_debug_high_fidelity_certificate"));
         assert!(shader.contains("record.residency >> LOD_DEBUG_CERTIFICATE_SHIFT"));
-        assert!(shader.contains("lod_debug_residency(record)"));
+        assert!(shader.contains("lod_debug_residency(record, entry_residency)"));
         assert!(shader.contains("let distance = bitcast<f32>(distance_bits);"));
         assert!(shader.contains("fn apply_lod_debug_annotation"));
+        assert!(shader.contains("fn apply_lod_debug_morph_annotation"));
+        assert!(shader.contains("fn lod_debug_requires_authored_color(splat_index: u32) -> bool"));
+        assert!(shader.contains("fn lod_debug_morph_requires_authored_color"));
+        assert!(shader.contains("case 1u, 2u, 3u: { return false; }"));
+        assert!(shader.contains("case 4u: { return true; }"));
+        assert!(shader.contains("case 5u: { return lod_debug_uniforms.quality_params.x < 0.0; }"));
         for mode_case in ["case 1u", "case 2u", "case 3u", "case 4u", "case 5u"] {
             assert!(
                 shader.contains(mode_case),
@@ -2186,6 +4241,7 @@ mod shader_contract_tests {
         assert!(shader.contains("2.0 * projected.support_radius_px / viewport_height_px"));
         assert!(shader.contains("HIGH_QUALITY_FIDELITY_GUARD_START: f32 = 0.90"));
         assert!(shader.contains("HIGH_QUALITY_FIDELITY_GUARD_FULL: f32 = 0.99"));
+        assert!(shader.contains("HIGH_QUALITY_CERTIFICATE_GUARD_START: f32 = 0.90"));
         assert!(shader.contains("HIGH_QUALITY_CERTIFICATE_GUARD_FULL: f32 = 0.95"));
         assert!(shader.contains("PROJECTED_ERROR_AUTHORITY_FULL: f32 = 0.99"));
         assert!(shader.contains("fn lod_debug_high_quality_fidelity_guard"));
@@ -2193,7 +4249,7 @@ mod shader_contract_tests {
         assert!(shader.contains("fn lod_debug_high_quality_certificate_demand"));
         assert!(shader.contains("fn lod_debug_projected_error_authority"));
         assert!(shader.contains("/ PROJECTED_ERROR_AUTHORITY_FULL"));
-        assert!(shader.contains("normalized * normalized * normalized"));
+        assert!(shader.contains("return normalized * normalized * normalized"));
         assert!(shader.contains("let effective_coverage = projected_coverage"));
         assert!(shader.contains("+ (1.0 - projected_coverage) * fidelity_guard"));
         assert!(shader.contains("structural_demand = requested_detail * effective_coverage"));
@@ -2204,6 +4260,7 @@ mod shader_contract_tests {
         assert!(shader.contains("error_authority * error_pressure"));
         assert!(!shader.contains("if fidelity_guard <= 0.0"));
         assert!(shader.contains("let base_demand = detail * normalized;"));
+        assert!(shader.contains("lod_debug_high_quality_certificate_guard(detail)"));
         assert!(!shader.contains("let base_demand = detail * normalized * normalized"));
         assert!(shader.contains("if certificate <= 1.0 / LOD_DEBUG_CERTIFICATE_MAX"));
         assert!(
@@ -2218,10 +4275,96 @@ mod shader_contract_tests {
         assert!(shader.contains("fn lod_debug_level_color"));
         assert!(shader.contains("record.geometric_error"));
         assert!(!shader.contains("record.errors"));
+        assert!(shader.contains("if lod_debug_uniforms.flags.x == 3u"));
+        assert!(shader.contains("return mix(parent, child, blend_t);"));
+
+        let parent_annotation = [0.9_f32, 0.1, 0.3];
+        let child_annotation = [0.1_f32, 0.8, 0.6];
+        let interpolate_annotation = |blend_t: f32| {
+            std::array::from_fn::<_, 3, _>(|channel| {
+                if blend_t <= 0.0 {
+                    parent_annotation[channel]
+                } else if blend_t >= 1.0 {
+                    child_annotation[channel]
+                } else {
+                    parent_annotation[channel]
+                        + (child_annotation[channel] - parent_annotation[channel]) * blend_t
+                }
+            })
+        };
+        assert_eq!(interpolate_annotation(0.0), parent_annotation);
+        assert_eq!(interpolate_annotation(1.0), child_annotation);
+        let midpoint = interpolate_annotation(0.5);
+        for (actual, expected) in midpoint.into_iter().zip([0.5, 0.45, 0.45]) {
+            assert!((actual - expected).abs() <= 1.0e-6);
+        }
 
         let gaussian = include_str!("gaussian.wgsl");
         assert!(gaussian.contains("#ifdef LOD_DEBUG"));
-        assert!(gaussian.contains("rgb = apply_lod_debug_annotation(splat_index, rgb)"));
+        assert!(gaussian.contains("lod_debug_requires_authored_color,"));
+        assert_eq!(
+            gaussian
+                .matches("var debug_requires_authored_color = lod_debug_requires_authored_color")
+                .count(),
+            2,
+            "classification and authored-color raster paths must both skip SH when debug fully overwrites it"
+        );
+        assert!(gaussian.contains("lod_debug_morph_requires_authored_color("));
+        assert!(gaussian.contains("rgb = apply_lod_debug_morph_annotation("));
+        assert!(gaussian.contains("lod_residency_from_entry(entry)"));
+        assert!(gaussian.contains("const LOD_ENTRY_SOURCE_INDEX_MASK: u32 = 0x0fffffffu;"));
+        assert!(gaussian.contains("const LOD_ENTRY_PRESENTATION_CLASS_SHIFT: u32 = 28u;"));
+        assert!(gaussian.contains("let splat_index = source_index_from_entry(entry);"));
+    }
+
+    #[test]
+    fn sparse_debug_stays_ready_across_candidate_activation_epochs() {
+        assert!(lod_debug_sparse_candidate_epoch_ready(
+            true, true, false, true, false,
+        ));
+        assert!(lod_debug_sparse_candidate_epoch_ready(
+            false, true, false, true, false,
+        ));
+        assert!(lod_debug_sparse_candidate_epoch_ready(
+            false, true, true, true, true,
+        ));
+        assert!(lod_debug_sparse_candidate_epoch_ready(
+            false, false, true, false, true,
+        ));
+        assert!(!lod_debug_sparse_candidate_epoch_ready(
+            false, true, true, true, false,
+        ));
+        assert!(!lod_debug_sparse_candidate_epoch_ready(
+            false, true, true, false, true,
+        ));
+    }
+
+    #[test]
+    fn incomplete_sparse_debug_uses_authored_color_until_uploads_are_ready() {
+        assert!(!lod_debug_shader_enabled(true, true, false, true));
+        assert!(!lod_debug_shader_enabled(true, false, true, true));
+        assert!(!lod_debug_shader_enabled(true, true, true, false));
+        assert!(!lod_debug_shader_enabled(false, true, true, true));
+        assert!(lod_debug_shader_enabled(true, true, true, true));
+        assert_eq!(LodDebugGpuUploadStats::config_bytes_per_write(), 32);
+        assert_eq!(
+            LodDebugGpuUploadStats::max_sparse_record_bytes_per_frame(),
+            64 * 1024 * 1024
+        );
+        assert_eq!(
+            LodDebugGpuUploadStats::max_sparse_record_slots_per_frame(),
+            256
+        );
+    }
+
+    #[test]
+    fn lod_debug_sidecar_is_never_bound_across_candidate_epochs() {
+        assert!(lod_debug_candidate_epoch_ready(true, false, false));
+        assert!(lod_debug_candidate_epoch_ready(true, true, true));
+        assert!(lod_debug_candidate_epoch_ready(false, false, false));
+        assert!(!lod_debug_candidate_epoch_ready(false, false, true));
+        assert!(!lod_debug_candidate_epoch_ready(false, true, false));
+        assert!(!lod_debug_candidate_epoch_ready(false, true, true));
     }
 
     #[test]
@@ -2298,6 +4441,7 @@ mod shader_contract_tests {
 
         const HIGH_QUALITY_FIDELITY_GUARD_START: f32 = 0.90;
         const HIGH_QUALITY_FIDELITY_GUARD_FULL: f32 = 0.99;
+        const HIGH_QUALITY_CERTIFICATE_GUARD_START: f32 = 0.90;
         const HIGH_QUALITY_CERTIFICATE_GUARD_FULL: f32 = 0.95;
         const PROJECTED_ERROR_AUTHORITY_FULL: f32 = 0.99;
         const MIN_QUANTIZED_HIGH_FIDELITY_CERTIFICATE: f32 = 1.0 / u16::MAX as f32;
@@ -2326,8 +4470,15 @@ mod shader_contract_tests {
             let detail = detail.clamp(0.0, 1.0);
             let normalized = (detail / HIGH_QUALITY_CERTIFICATE_GUARD_FULL).clamp(0.0, 1.0);
             let base = detail * normalized;
-            let authority = shader_cubic_authority(detail, HIGH_QUALITY_CERTIFICATE_GUARD_FULL);
-            base * (coverage.clamp(0.0, 1.0) + (1.0 - coverage.clamp(0.0, 1.0)) * authority)
+            let coverage_authority =
+                shader_cubic_authority(detail, HIGH_QUALITY_CERTIFICATE_GUARD_FULL);
+            let gate = shader_guard(
+                detail,
+                HIGH_QUALITY_CERTIFICATE_GUARD_START,
+                HIGH_QUALITY_CERTIFICATE_GUARD_FULL,
+            );
+            gate * base
+                * (coverage.clamp(0.0, 1.0) + (1.0 - coverage.clamp(0.0, 1.0)) * coverage_authority)
         }
 
         fn shader_ratio(numerator: f32, denominator: f32) -> f32 {
@@ -2366,8 +4517,11 @@ mod shader_contract_tests {
                 HIGH_QUALITY_FIDELITY_GUARD_FULL,
             );
             let error_authority = shader_error_authority(detail);
-            let certificate_guard =
-                shader_cubic_authority(detail, HIGH_QUALITY_CERTIFICATE_GUARD_FULL);
+            let certificate_guard = shader_guard(
+                detail,
+                HIGH_QUALITY_CERTIFICATE_GUARD_START,
+                HIGH_QUALITY_CERTIFICATE_GUARD_FULL,
+            );
             assert!((structural_guard - high_quality_fidelity_guard(detail)).abs() < 1e-7);
             assert!((error_authority - projected_error_authority(detail)).abs() < 1e-7);
             assert!((certificate_guard - high_quality_certificate_guard(detail)).abs() < 1e-7);
@@ -2446,7 +4600,171 @@ mod shader_contract_tests {
             bindings.contains("@group(2) @binding(4) var<storage, read> covariance_3d_opacity")
         );
         assert!(planar.contains("fn get_cov3d(index: u32)"));
-        assert!(gaussian_3d.contains("transform_precomputed_cov3d(get_cov3d(index))"));
+        assert!(planar.contains("fn get_rotation(index: u32)"));
+        assert!(gaussian_3d.contains("let child_local_cov3d = get_cov3d(index);"));
+        assert!(gaussian_3d.contains("transform_local_cov3d(local_cov3d)"));
+        assert!(gaussian_3d.contains("fn covariance_storage_scale_squared() -> f32"));
+        assert!(
+            gaussian_3d.contains("gaussian_uniforms.global_scale * gaussian_uniforms.global_scale")
+        );
+        assert_eq!(gaussian_3d.matches("* storage_scale_squared").count(), 3);
+        let storage_scale_helper = gaussian_3d
+            .split("fn covariance_storage_scale_squared() -> f32")
+            .nth(1)
+            .and_then(|source| source.split("fn transform_local_cov3d").next())
+            .expect("representation-specific covariance storage scale helper");
+        assert!(storage_scale_helper.contains("#ifdef PRECOMPUTE_COVARIANCE_3D"));
+        assert!(storage_scale_helper.contains("return 1.0;"));
+
+        let gaussian = include_str!("gaussian.wgsl");
+        let precomputed_storage_import = gaussian
+            .split("#else ifdef BUFFER_STORAGE")
+            .nth(1)
+            .and_then(|storage| storage.split("#else ifdef BUFFER_TEXTURE").next())
+            .expect("precomputed planar storage import block");
+        assert!(precomputed_storage_import.contains("get_cov3d,"));
+        assert!(precomputed_storage_import.contains("get_rotation,"));
+
+        let defs = shader_defs(CloudPipelineKey {
+            gaussian_mode: crate::gaussian::settings::GaussianMode::Gaussian3d,
+            rasterize_mode: crate::gaussian::settings::RasterizeMode::Normal,
+            ..Default::default()
+        });
+        for required in [
+            "PRECOMPUTE_COVARIANCE_3D",
+            "GAUSSIAN_3D",
+            "RASTERIZE_NORMAL",
+        ] {
+            assert!(
+                defs.iter()
+                    .any(|define| format!("{define:?}").contains(required)),
+                "missing specialization definition {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn standard_and_precomputed_covariance_apply_dynamic_global_scale_once() {
+        use bevy::math::{EulerRot, Mat3, Quat, Vec3};
+
+        let local_scale = Vec3::new(0.35, 1.25, 2.75);
+        let rotation = Mat3::from_quat(Quat::from_euler(EulerRot::XYZ, 0.37, -0.81, 1.13));
+        let cloud_transform = Mat3::from_cols(
+            Vec3::new(1.2, 0.15, -0.05),
+            Vec3::new(-0.2, 0.8, 0.1),
+            Vec3::new(0.3, -0.25, 1.6),
+        );
+        let raw_m = Mat3::from_diagonal(local_scale) * rotation;
+        let raw_covariance = raw_m.transpose() * raw_m;
+
+        for global_scale in [-2.0_f32, -0.5, 0.0, 0.5, 2.0] {
+            let runtime_m = Mat3::from_diagonal(local_scale * global_scale) * rotation;
+            let runtime_covariance = runtime_m.transpose() * runtime_m;
+            // The standard shader branch obtains this covariance from
+            // `get_scale_matrix`, which has already applied global_scale. Its
+            // storage multiplier must therefore be exactly one.
+            let standard_world = cloud_transform * runtime_covariance * cloud_transform.transpose();
+
+            let scale_squared = global_scale * global_scale;
+            let precomputed_local = Mat3::from_cols(
+                raw_covariance.x_axis * scale_squared,
+                raw_covariance.y_axis * scale_squared,
+                raw_covariance.z_axis * scale_squared,
+            );
+            let precomputed_world =
+                cloud_transform * precomputed_local * cloud_transform.transpose();
+
+            for (standard, precomputed) in standard_world
+                .to_cols_array()
+                .into_iter()
+                .zip(precomputed_world.to_cols_array())
+            {
+                let tolerance = 2.0e-5 * standard.abs().max(1.0);
+                assert!(
+                    (standard - precomputed).abs() <= tolerance,
+                    "global_scale={global_scale} standard={standard} precomputed={precomputed}"
+                );
+            }
+
+            // Applying the storage-plane multiplier to the standard branch as
+            // well would produce g^4 covariance. Non-unit values must make that
+            // failure observably different from the expected standard result.
+            if scale_squared != 0.0 && scale_squared != 1.0 {
+                let double_scaled = cloud_transform
+                    * Mat3::from_cols(
+                        runtime_covariance.x_axis * scale_squared,
+                        runtime_covariance.y_axis * scale_squared,
+                        runtime_covariance.z_axis * scale_squared,
+                    )
+                    * cloud_transform.transpose();
+                assert!(
+                    standard_world
+                        .to_cols_array()
+                        .into_iter()
+                        .zip(double_scaled.to_cols_array())
+                        .any(|(standard, wrong)| (standard - wrong).abs() > 1.0e-4)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gaussian_and_rasterization_modes_fail_closed_before_specialization() {
+        use crate::gaussian::settings::{GaussianMode, RasterizeMode};
+
+        for gaussian_mode in [
+            GaussianMode::Gaussian2d,
+            GaussianMode::Gaussian3d,
+            GaussianMode::Gaussian4d,
+        ] {
+            for rasterize_mode in [
+                RasterizeMode::Classification,
+                RasterizeMode::Color,
+                RasterizeMode::Depth,
+                RasterizeMode::Normal,
+                RasterizeMode::OpticalFlow,
+                RasterizeMode::Position,
+                RasterizeMode::Velocity,
+            ] {
+                let expected = match rasterize_mode {
+                    RasterizeMode::Normal => gaussian_mode != GaussianMode::Gaussian4d,
+                    RasterizeMode::Velocity => gaussian_mode == GaussianMode::Gaussian4d,
+                    _ => true,
+                };
+                assert_eq!(
+                    gaussian_rasterization_is_supported(gaussian_mode, rasterize_mode),
+                    expected,
+                    "gaussian={gaussian_mode:?} raster={rasterize_mode:?}"
+                );
+            }
+        }
+
+        let lod_3d = shader_defs(CloudPipelineKey {
+            gaussian_mode: GaussianMode::Gaussian3d,
+            lod_candidate: true,
+            ..Default::default()
+        });
+        let lod_4d = shader_defs(CloudPipelineKey {
+            gaussian_mode: GaussianMode::Gaussian4d,
+            lod_candidate: true,
+            ..Default::default()
+        });
+        let lod_3d_has_morph = lod_3d
+            .iter()
+            .any(|define| format!("{define:?}").contains("LOD_MORPH"));
+        let lod_4d_has_morph = lod_4d
+            .iter()
+            .any(|define| format!("{define:?}").contains("LOD_MORPH"));
+        #[cfg(lod_render_path)]
+        {
+            assert!(lod_3d_has_morph);
+            assert!(!lod_4d_has_morph);
+        }
+        #[cfg(not(lod_render_path))]
+        {
+            assert!(!lod_3d_has_morph);
+            assert!(!lod_4d_has_morph);
+        }
     }
 
     #[cfg(feature = "precompute_covariance_3d")]

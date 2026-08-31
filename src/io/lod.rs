@@ -1,13 +1,16 @@
 //! Fallible, versioned codecs and Bevy asset loaders for virtual Gaussian scenes.
 
-use std::{error::Error, fmt, mem::size_of};
+use std::{error::Error, fmt, mem::size_of, sync::Arc};
 
 use bevy::{
     asset::{AssetLoader, AsyncReadExt, LoadContext, io::Reader},
     prelude::*,
     reflect::TypePath,
 };
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize, Serialize,
+    de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor},
+};
 
 use crate::{
     gaussian::formats::{
@@ -16,7 +19,7 @@ use crate::{
             LOD_PAGE_SCHEMA_VERSION, LodPageDescriptor, LodPageEncoding, LodPageId,
             PlanarGaussian3dPage, validate_gaussian,
         },
-        planar_3d_lod::GaussianLodManifest,
+        planar_3d_lod::{GaussianLodManifest, LodValidationError},
     },
     material::spherical_harmonics::{SH_CHANNELS, SH_COEFF_COUNT, SH_DEGREE},
 };
@@ -35,7 +38,7 @@ const PAGE_CONTAINER_MAGIC: [u8; 8] = *b"BGSPAGE\0";
 const MANIFEST_CONTAINER_VERSION: u16 = 2;
 const PAGE_CONTAINER_VERSION: u16 = 1;
 const F16_SH_PAGE_CONTAINER_VERSION: u16 = 2;
-const MANIFEST_HEADER_LEN: usize = 40;
+pub(crate) const MANIFEST_HEADER_LEN: usize = 40;
 const PAGE_HEADER_LEN: usize = 44;
 const FLOATS_PER_GAUSSIAN: usize = 4 + SH_COEFF_COUNT + 4 + 4;
 const PAGE_SH_COEFFICIENT_COUNT: u32 = SH_COEFF_COUNT as u32;
@@ -246,22 +249,29 @@ pub struct LodCodecLimits {
 impl Default for LodCodecLimits {
     fn default() -> Self {
         Self {
-            // This encoded-size gate is the hard pre-deserialization bound for
-            // untrusted containers; declared record counts are cross-checked
-            // but cannot themselves be trusted before decoding.
-            max_manifest_bytes: 64 * 1024 * 1024,
+            // The encoded-size gate and fixed-header counts are the first
+            // untrusted-input bounds. `decode_manifest` additionally scans
+            // every checksummed roots/nodes/pages collection before serde is
+            // allowed to allocate its Vec storage.
+            max_manifest_bytes: Self::DEFAULT_MAX_MANIFEST_BYTES,
             // These defaults comfortably cover practical >100M-Gaussian
             // packages while preventing multi-million-record allocations
             // unless callers explicitly opt into larger limits.
-            max_nodes: 1_000_000,
-            max_pages: 262_144,
-            max_page_bytes: 64 * 1024 * 1024,
-            max_page_gaussians: 1_000_000,
+            max_nodes: Self::DEFAULT_MAX_NODES,
+            max_pages: Self::DEFAULT_MAX_PAGES,
+            max_page_bytes: Self::DEFAULT_MAX_PAGE_BYTES,
+            max_page_gaussians: Self::DEFAULT_MAX_PAGE_GAUSSIANS,
         }
     }
 }
 
 impl LodCodecLimits {
+    pub const DEFAULT_MAX_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
+    pub const DEFAULT_MAX_NODES: u32 = 1_000_000;
+    pub const DEFAULT_MAX_PAGES: u32 = 262_144;
+    pub const DEFAULT_MAX_PAGE_BYTES: u64 = 64 * 1024 * 1024;
+    pub const DEFAULT_MAX_PAGE_GAUSSIANS: u32 = 1_000_000;
+
     pub fn validate(self) -> Result<Self, LodCodecError> {
         if self.max_manifest_bytes < MANIFEST_HEADER_LEN as u64
             || self.max_nodes == 0
@@ -278,7 +288,35 @@ impl LodCodecLimits {
 
 #[derive(Asset, Clone, Debug, TypePath)]
 pub struct GaussianLodAsset {
-    pub manifest: GaussianLodManifest,
+    manifest: Arc<GaussianLodManifest>,
+}
+
+impl GaussianLodAsset {
+    /// Creates an asset from an owned portable manifest after validating its
+    /// complete semantic contract.
+    pub fn new(manifest: GaussianLodManifest) -> Result<Self, LodValidationError> {
+        manifest.validate()?;
+        Ok(Self::from_validated_manifest(manifest))
+    }
+
+    /// Borrows the immutable validated manifest owned by this asset.
+    pub fn manifest(&self) -> &GaussianLodManifest {
+        self.manifest.as_ref()
+    }
+
+    /// Shares the immutable validated manifest without cloning its hierarchy
+    /// or page descriptor vectors.
+    pub fn shared_manifest(&self) -> Arc<GaussianLodManifest> {
+        Arc::clone(&self.manifest)
+    }
+
+    /// The asset loader calls this only after [`decode_manifest`] has applied
+    /// the same complete semantic validation used by [`Self::new`].
+    fn from_validated_manifest(manifest: GaussianLodManifest) -> Self {
+        Self {
+            manifest: Arc::new(manifest),
+        }
+    }
 }
 
 #[derive(Component, Clone, Debug, Default, Reflect)]
@@ -325,9 +363,8 @@ impl AssetLoader for GaussianLodManifestLoader {
             max_pages: settings.max_pages,
             ..Default::default()
         };
-        Ok(GaussianLodAsset {
-            manifest: decode_manifest(&bytes, limits)?,
-        })
+        let manifest = decode_manifest(&bytes, limits)?;
+        Ok(GaussianLodAsset::from_validated_manifest(manifest))
     }
 
     fn extensions(&self) -> &[&str] {
@@ -474,6 +511,10 @@ pub fn decode_manifest(
             {
                 let reader = flexbuffers::Reader::get_root(payload)
                     .map_err(|error| LodCodecError::Deserialize(error.to_string()))?;
+                let map = reader
+                    .get_map()
+                    .map_err(|error| LodCodecError::Deserialize(error.to_string()))?;
+                validate_flexbuffer_manifest_collection_limits(&map, limits)?;
                 GaussianLodManifest::deserialize(reader)
                     .map_err(|error| LodCodecError::Deserialize(error.to_string()))?
             }
@@ -482,9 +523,17 @@ pub fn decode_manifest(
                 return Err(LodCodecError::EncodingUnavailable(encoding));
             }
         }
-        ManifestEncoding::Json => serde_json::from_slice(payload)
-            .map_err(|error| LodCodecError::Deserialize(error.to_string()))?,
+        ManifestEncoding::Json => {
+            validate_json_manifest_collection_limits(payload, limits)?;
+            serde_json::from_slice(payload)
+                .map_err(|error| LodCodecError::Deserialize(error.to_string()))?
+        }
     };
+    enforce_limit(
+        "manifest roots",
+        manifest.roots.len() as u64,
+        u64::from(limits.max_nodes),
+    )?;
     enforce_limit(
         "manifest nodes",
         manifest.nodes.len() as u64,
@@ -511,6 +560,209 @@ pub fn decode_manifest(
         .validate()
         .map_err(|error| LodCodecError::ManifestValidation(error.to_string()))?;
     Ok(manifest)
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ManifestCollection {
+    Roots,
+    Nodes,
+    Pages,
+}
+
+impl ManifestCollection {
+    const fn field(self) -> &'static str {
+        match self {
+            Self::Roots => "manifest roots",
+            Self::Nodes => "manifest nodes",
+            Self::Pages => "manifest pages",
+        }
+    }
+}
+
+#[cfg(feature = "io_flexbuffers")]
+fn validate_flexbuffer_manifest_collection_limits(
+    map: &flexbuffers::MapReader<&[u8]>,
+    limits: LodCodecLimits,
+) -> Result<(), LodCodecError> {
+    let keys = map.keys_vector();
+    let mut previous_key = None;
+
+    // String lookup on MapReader is a binary search and therefore trusts the
+    // encoded key vector to be sorted. Walk positions instead so malformed
+    // duplicate or unsorted keys cannot hide a collection from this preflight.
+    for index in 0..map.len() {
+        let key = keys
+            .index(index)
+            .and_then(|reader| reader.get_key())
+            .map_err(|error| LodCodecError::Deserialize(error.to_string()))?;
+        if previous_key.is_some_and(|previous| previous >= key) {
+            return Err(LodCodecError::InvalidManifestMapKeys);
+        }
+        previous_key = Some(key);
+
+        let (collection, limit) = match key {
+            "roots" => (ManifestCollection::Roots, u64::from(limits.max_nodes)),
+            "nodes" => (ManifestCollection::Nodes, u64::from(limits.max_nodes)),
+            "pages" => (ManifestCollection::Pages, u64::from(limits.max_pages)),
+            _ => continue,
+        };
+        let values = map
+            .index(index)
+            .and_then(|reader| reader.get_vector())
+            .map_err(|error| LodCodecError::Deserialize(error.to_string()))?;
+        enforce_limit(collection.field(), values.len() as u64, limit)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ManifestCollectionOverflow {
+    collection: ManifestCollection,
+    actual: u64,
+    limit: u64,
+}
+
+struct ManifestShapeSeed<'a> {
+    limits: LodCodecLimits,
+    overflow: &'a std::cell::Cell<Option<ManifestCollectionOverflow>>,
+}
+
+impl<'de> DeserializeSeed<'de> for ManifestShapeSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_map(ManifestShapeVisitor {
+            limits: self.limits,
+            overflow: self.overflow,
+        })
+    }
+}
+
+struct ManifestShapeVisitor<'a> {
+    limits: LodCodecLimits,
+    overflow: &'a std::cell::Cell<Option<ManifestCollectionOverflow>>,
+}
+
+impl<'de> Visitor<'de> for ManifestShapeVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a Gaussian LoD manifest map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "roots" => map.next_value_seed(BoundedSequenceSeed {
+                    collection: ManifestCollection::Roots,
+                    limit: u64::from(self.limits.max_nodes),
+                    overflow: self.overflow,
+                })?,
+                "nodes" => map.next_value_seed(BoundedSequenceSeed {
+                    collection: ManifestCollection::Nodes,
+                    limit: u64::from(self.limits.max_nodes),
+                    overflow: self.overflow,
+                })?,
+                "pages" => map.next_value_seed(BoundedSequenceSeed {
+                    collection: ManifestCollection::Pages,
+                    limit: u64::from(self.limits.max_pages),
+                    overflow: self.overflow,
+                })?,
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+struct BoundedSequenceSeed<'a> {
+    collection: ManifestCollection,
+    limit: u64,
+    overflow: &'a std::cell::Cell<Option<ManifestCollectionOverflow>>,
+}
+
+impl<'de> DeserializeSeed<'de> for BoundedSequenceSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(BoundedSequenceVisitor {
+            collection: self.collection,
+            limit: self.limit,
+            overflow: self.overflow,
+        })
+    }
+}
+
+struct BoundedSequenceVisitor<'a> {
+    collection: ManifestCollection,
+    limit: u64,
+    overflow: &'a std::cell::Cell<Option<ManifestCollectionOverflow>>,
+}
+
+impl<'de> Visitor<'de> for BoundedSequenceVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a bounded manifest collection")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut count = 0_u64;
+        while sequence.next_element::<IgnoredAny>()?.is_some() {
+            count = count.checked_add(1).ok_or_else(|| {
+                <A::Error as de::Error>::custom("manifest collection length overflow")
+            })?;
+            if count > self.limit {
+                self.overflow.set(Some(ManifestCollectionOverflow {
+                    collection: self.collection,
+                    actual: count,
+                    limit: self.limit,
+                }));
+                return Err(<A::Error as de::Error>::custom(
+                    "manifest collection exceeds its limit",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_json_manifest_collection_limits(
+    payload: &[u8],
+    limits: LodCodecLimits,
+) -> Result<(), LodCodecError> {
+    let overflow = std::cell::Cell::new(None);
+    let mut deserializer = serde_json::Deserializer::from_slice(payload);
+    let result = ManifestShapeSeed {
+        limits,
+        overflow: &overflow,
+    }
+    .deserialize(&mut deserializer);
+    if let Some(overflow) = overflow.get() {
+        return Err(LodCodecError::LimitExceeded {
+            field: overflow.collection.field(),
+            actual: overflow.actual,
+            limit: overflow.limit,
+        });
+    }
+    result.map_err(|error| LodCodecError::Deserialize(error.to_string()))?;
+    deserializer
+        .end()
+        .map_err(|error| LodCodecError::Deserialize(error.to_string()))
 }
 
 pub fn encode_page(page: &PlanarGaussian3dPage) -> Result<Vec<u8>, LodCodecError> {
@@ -842,6 +1094,7 @@ pub enum LodCodecError {
         payload_header: u32,
         decoded: u64,
     },
+    InvalidManifestMapKeys,
     ChecksumMismatch {
         expected: u64,
         actual: u64,
@@ -923,6 +1176,10 @@ impl fmt::Display for LodCodecError {
             } => write!(
                 f,
                 "LoD manifest {field} count is {encoded} in the container, {payload_header} in the payload header, and {decoded} after decoding"
+            ),
+            Self::InvalidManifestMapKeys => write!(
+                f,
+                "Flexbuffers manifest top-level map keys must be strictly sorted and unique"
             ),
             Self::ChecksumMismatch { expected, actual } => write!(
                 f,
@@ -1011,6 +1268,25 @@ mod tests {
         .unwrap()
     }
 
+    #[cfg(feature = "io_flexbuffers")]
+    fn flexbuffer_manifest_key_offset(encoded: &[u8], key: &[u8]) -> usize {
+        let payload = &encoded[MANIFEST_HEADER_LEN..];
+        let mut matches = payload
+            .windows(key.len())
+            .enumerate()
+            .filter_map(|(offset, candidate)| (candidate == key).then_some(offset));
+        let offset = matches.next().expect("fixture key must be encoded");
+        assert!(matches.next().is_none(), "fixture key must be unique");
+        MANIFEST_HEADER_LEN + offset
+    }
+
+    #[cfg(feature = "io_flexbuffers")]
+    fn refresh_manifest_checksum(encoded: &mut [u8]) {
+        let checksum = checksum64(&encoded[MANIFEST_HEADER_LEN..]);
+        let checksum_offset = MANIFEST_HEADER_LEN - std::mem::size_of::<u64>();
+        encoded[checksum_offset..MANIFEST_HEADER_LEN].copy_from_slice(&checksum.to_le_bytes());
+    }
+
     #[test]
     fn manifest_round_trips_with_strict_validation() {
         let built = fixture();
@@ -1031,6 +1307,40 @@ mod tests {
             let decoded = decode_manifest(&encoded, LodCodecLimits::default()).unwrap();
             assert_eq!(decoded, built.manifest);
         }
+    }
+
+    #[cfg(feature = "io_flexbuffers")]
+    #[test]
+    fn flexbuffer_manifest_rejects_duplicate_top_level_keys() {
+        let built = fixture();
+        let mut encoded =
+            encode_manifest_with_encoding(&built.manifest, ManifestEncoding::Flexbuffers).unwrap();
+        let nodes = flexbuffer_manifest_key_offset(&encoded, b"nodes\0");
+        encoded[nodes..nodes + b"pages\0".len()].copy_from_slice(b"pages\0");
+        refresh_manifest_checksum(&mut encoded);
+
+        assert_eq!(
+            decode_manifest(&encoded, LodCodecLimits::default()),
+            Err(LodCodecError::InvalidManifestMapKeys)
+        );
+    }
+
+    #[cfg(feature = "io_flexbuffers")]
+    #[test]
+    fn flexbuffer_manifest_rejects_unsorted_top_level_keys() {
+        let built = fixture();
+        let mut encoded =
+            encode_manifest_with_encoding(&built.manifest, ManifestEncoding::Flexbuffers).unwrap();
+        let nodes = flexbuffer_manifest_key_offset(&encoded, b"nodes\0");
+        let pages = flexbuffer_manifest_key_offset(&encoded, b"pages\0");
+        encoded[nodes..nodes + b"pages\0".len()].copy_from_slice(b"pages\0");
+        encoded[pages..pages + b"nodes\0".len()].copy_from_slice(b"nodes\0");
+        refresh_manifest_checksum(&mut encoded);
+
+        assert_eq!(
+            decode_manifest(&encoded, LodCodecLimits::default()),
+            Err(LodCodecError::InvalidManifestMapKeys)
+        );
     }
 
     #[test]
@@ -1187,6 +1497,108 @@ mod tests {
                 limit: u64::from(limits.max_nodes),
             })
         );
+    }
+
+    #[test]
+    fn manifest_payload_collections_are_bounded_before_vec_deserialization() {
+        let built = fixture();
+        assert!(built.manifest.header.node_count > 1);
+        assert!(built.manifest.header.page_count > 1);
+
+        let mut encodings = vec![ManifestEncoding::Json];
+        #[cfg(feature = "io_flexbuffers")]
+        encodings.push(ManifestEncoding::Flexbuffers);
+
+        for encoding in encodings {
+            for collection in [ManifestCollection::Nodes, ManifestCollection::Pages] {
+                let mut encoded = encode_manifest_with_encoding(&built.manifest, encoding).unwrap();
+                let mut limits = LodCodecLimits::default();
+                let (offset, decoded_count, limit) = match collection {
+                    ManifestCollection::Roots => {
+                        unreachable!("this fixture loop covers header-counted collections")
+                    }
+                    ManifestCollection::Nodes => {
+                        let limit = built.manifest.header.node_count - 1;
+                        limits.max_nodes = limit;
+                        (16, built.manifest.header.node_count, limit)
+                    }
+                    ManifestCollection::Pages => {
+                        let limit = built.manifest.header.page_count - 1;
+                        limits.max_pages = limit;
+                        (20, built.manifest.header.page_count, limit)
+                    }
+                };
+                // The trusted fixed header claims a legal count, while the
+                // checksummed payload attempts to deserialize a larger Vec.
+                // The collection probe must stop that allocation before serde
+                // constructs the manifest.
+                encoded[offset..offset + 4].copy_from_slice(&limit.to_le_bytes());
+                let error = decode_manifest(&encoded, limits).unwrap_err();
+                match error {
+                    LodCodecError::LimitExceeded {
+                        field,
+                        actual,
+                        limit: reported_limit,
+                    } => {
+                        assert_eq!(field, collection.field());
+                        assert!(actual > u64::from(limit));
+                        assert!(actual <= u64::from(decoded_count));
+                        assert_eq!(reported_limit, u64::from(limit));
+                    }
+                    other => panic!("unexpected collection-limit error: {other}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn manifest_roots_are_bounded_before_vec_deserialization() {
+        let built = fixture();
+        let mut manifest = built.manifest.clone();
+        let root = *manifest.roots.first().unwrap();
+        while manifest.roots.len() <= manifest.header.node_count as usize {
+            manifest.roots.push(root);
+        }
+
+        let mut encodings = vec![ManifestEncoding::Json];
+        #[cfg(feature = "io_flexbuffers")]
+        encodings.push(ManifestEncoding::Flexbuffers);
+        for encoding in encodings {
+            let payload = match encoding {
+                ManifestEncoding::Json => serde_json::to_vec(&manifest).unwrap(),
+                ManifestEncoding::Flexbuffers => {
+                    #[cfg(feature = "io_flexbuffers")]
+                    {
+                        let mut serializer = flexbuffers::FlexbufferSerializer::new();
+                        manifest.serialize(&mut serializer).unwrap();
+                        serializer.take_buffer()
+                    }
+                    #[cfg(not(feature = "io_flexbuffers"))]
+                    unreachable!()
+                }
+            };
+            let mut encoded = Vec::with_capacity(MANIFEST_HEADER_LEN + payload.len());
+            encoded.extend_from_slice(&MANIFEST_CONTAINER_MAGIC);
+            encoded.extend_from_slice(&MANIFEST_CONTAINER_VERSION.to_le_bytes());
+            encoded.push(encoding as u8);
+            encoded.extend_from_slice(&[0; 5]);
+            encoded.extend_from_slice(&manifest.header.node_count.to_le_bytes());
+            encoded.extend_from_slice(&manifest.header.page_count.to_le_bytes());
+            encoded.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+            encoded.extend_from_slice(&checksum64(&payload).to_le_bytes());
+            encoded.extend_from_slice(&payload);
+
+            let mut limits = LodCodecLimits::default();
+            limits.max_nodes = manifest.header.node_count;
+            assert_eq!(
+                decode_manifest(&encoded, limits),
+                Err(LodCodecError::LimitExceeded {
+                    field: "manifest roots",
+                    actual: u64::from(manifest.header.node_count) + 1,
+                    limit: u64::from(limits.max_nodes),
+                })
+            );
+        }
     }
 
     #[test]

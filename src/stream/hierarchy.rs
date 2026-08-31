@@ -7,23 +7,26 @@
 
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BTreeSet, BinaryHeap},
+    collections::{BTreeMap, BinaryHeap, HashMap, HashSet},
     fmt::Debug,
     hash::Hash,
     sync::Arc,
 };
+
+#[cfg(any(feature = "lod", test))]
+use std::collections::BTreeSet;
 
 use bevy::math::{Mat4, Vec3, Vec4};
 
 use crate::{
     gaussian::{
         formats::{
-            planar_3d_chunked::{LodNodeId, LodPageId, LodPageRange},
+            planar_3d_chunked::{LodIndexRange, LodNodeId, LodPageId, LodPageRange},
             planar_3d_lod::GaussianLodManifest,
         },
         lod_settings::{
             GaussianLodSettings, LodDegradation, LodEffectiveStatus, LodQualityEndpoint,
-            LodSettingsError,
+            LodQualityTarget, LodSettingsError,
         },
     },
     stream::cache::LodPageCache,
@@ -104,7 +107,7 @@ pub trait LodResidency<NodeId> {
 pub struct ManifestLodHierarchy<'a> {
     manifest: &'a GaussianLodManifest,
     node_indices: BTreeMap<LodNodeId, usize>,
-    children: Vec<Vec<LodNodeId>>,
+    node_ids: Vec<LodNodeId>,
 }
 
 /// Owned, shareable form used by long-lived streaming/runtime state.
@@ -113,34 +116,118 @@ pub struct ManifestLodHierarchy<'a> {
 #[derive(Clone, Debug)]
 pub struct CompiledManifestLodHierarchy {
     manifest: Arc<GaussianLodManifest>,
-    node_indices: BTreeMap<LodNodeId, usize>,
-    children: Vec<Vec<LodNodeId>>,
+    node_indices: CompiledManifestNodeIndices,
+    #[cfg(any(feature = "lod", test))]
+    page_indices: CompiledManifestPageIndices,
+    /// Manifest-order node identifiers. A node's already-validated
+    /// `children` range indexes this single flat allocation directly.
+    node_ids: Vec<LodNodeId>,
+}
+
+#[derive(Clone, Debug)]
+enum CompiledManifestNodeIndices {
+    /// Promoted manifests assign `LodNodeId(index + 1)` in manifest order.
+    /// Keep that common path arithmetic-only during per-camera traversal.
+    DenseOneBased,
+    /// Portable manifests only promise unique, valid identifiers, so retain a
+    /// lookup table for external producers that use arbitrary node IDs.
+    Sparse(HashMap<LodNodeId, usize>),
+}
+
+#[cfg(any(feature = "lod", test))]
+#[derive(Clone, Debug)]
+enum CompiledManifestPageIndices {
+    /// Canonical packages assign `LodPageId(index + 1)` in manifest order.
+    /// Avoid allocating and populating a second descriptor map for that common
+    /// web/streaming path.
+    DenseOneBased,
+    /// The portable format permits arbitrary nonzero page identifiers.
+    Sparse(HashMap<LodPageId, usize>),
 }
 
 impl CompiledManifestLodHierarchy {
     pub fn new(manifest: GaussianLodManifest) -> Result<Self, ManifestHierarchyError> {
-        let manifest = Arc::new(manifest);
-        let borrowed = ManifestLodHierarchy::new(&manifest)?;
-        let node_indices = borrowed.node_indices;
-        let children = borrowed.children;
-        Ok(Self {
-            manifest: Arc::clone(&manifest),
+        manifest
+            .validate()
+            .map_err(|error| ManifestHierarchyError::InvalidManifest(error.to_string()))?;
+        Ok(Self::from_validated_shared_manifest(Arc::new(manifest)))
+    }
+
+    /// Compiles traversal indexes for an immutable manifest whose complete
+    /// semantic contract has already been validated by an in-crate owner.
+    ///
+    /// Keeping this constructor crate-private preserves validation on the
+    /// public owned API while allowing package startup to share its asset Arc.
+    pub(crate) fn from_validated_shared_manifest(manifest: Arc<GaussianLodManifest>) -> Self {
+        let dense_one_based = manifest.nodes.iter().enumerate().all(|(index, node)| {
+            u64::try_from(index)
+                .ok()
+                .and_then(|index| index.checked_add(1))
+                .is_some_and(|expected| node.id == LodNodeId(expected))
+        });
+        let node_indices = if dense_one_based {
+            CompiledManifestNodeIndices::DenseOneBased
+        } else {
+            CompiledManifestNodeIndices::Sparse(
+                manifest
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, node)| (node.id, index))
+                    .collect(),
+            )
+        };
+        #[cfg(any(feature = "lod", test))]
+        let dense_pages_one_based = manifest.pages.iter().enumerate().all(|(index, page)| {
+            u64::try_from(index)
+                .ok()
+                .and_then(|index| index.checked_add(1))
+                .is_some_and(|expected| page.id == LodPageId(expected))
+        });
+        #[cfg(any(feature = "lod", test))]
+        let page_indices = if dense_pages_one_based {
+            CompiledManifestPageIndices::DenseOneBased
+        } else {
+            CompiledManifestPageIndices::Sparse(
+                manifest
+                    .pages
+                    .iter()
+                    .enumerate()
+                    .map(|(index, page)| (page.id, index))
+                    .collect(),
+            )
+        };
+        let node_ids = manifest.nodes.iter().map(|node| node.id).collect();
+        Self {
+            manifest,
             node_indices,
-            children,
-        })
+            #[cfg(any(feature = "lod", test))]
+            page_indices,
+            node_ids,
+        }
     }
 
     pub fn manifest(&self) -> &GaussianLodManifest {
         &self.manifest
     }
 
+    #[inline]
+    pub(crate) fn node_index(&self, node: LodNodeId) -> Option<usize> {
+        match &self.node_indices {
+            CompiledManifestNodeIndices::DenseOneBased => {
+                let index = usize::try_from(node.0.checked_sub(1)?).ok()?;
+                (index < self.manifest.nodes.len()).then_some(index)
+            }
+            CompiledManifestNodeIndices::Sparse(node_indices) => node_indices.get(&node).copied(),
+        }
+    }
+
     pub fn node(
         &self,
         node: LodNodeId,
     ) -> Option<&crate::gaussian::formats::planar_3d_lod::GaussianLodNode> {
-        self.node_indices
-            .get(&node)
-            .and_then(|index| self.manifest.nodes.get(*index))
+        self.node_index(node)
+            .and_then(|index| self.manifest.nodes.get(index))
     }
 
     pub fn representation(&self, node: LodNodeId) -> Option<LodPageRange> {
@@ -149,6 +236,29 @@ impl CompiledManifestLodHierarchy {
 
     pub fn page(&self, node: LodNodeId) -> Option<LodPageId> {
         self.representation(node).map(|range| range.page)
+    }
+
+    #[inline]
+    #[cfg(any(feature = "lod", test))]
+    fn page_index(&self, page: LodPageId) -> Option<usize> {
+        match &self.page_indices {
+            CompiledManifestPageIndices::DenseOneBased => {
+                let index = usize::try_from(page.0.checked_sub(1)?).ok()?;
+                (index < self.manifest.pages.len()).then_some(index)
+            }
+            CompiledManifestPageIndices::Sparse(page_indices) => page_indices.get(&page).copied(),
+        }
+    }
+
+    /// Looks up one validated descriptor without cloning the manifest's page
+    /// table into a second map at package-open time.
+    #[cfg(any(feature = "lod", test))]
+    pub(crate) fn page_descriptor(
+        &self,
+        page: LodPageId,
+    ) -> Option<&crate::gaussian::formats::planar_3d_chunked::LodPageDescriptor> {
+        self.page_index(page)
+            .and_then(|index| self.manifest.pages.get(index))
     }
 }
 
@@ -164,10 +274,8 @@ impl LodHierarchy for CompiledManifestLodHierarchy {
     }
 
     fn children(&self, node: Self::NodeId) -> &[Self::NodeId] {
-        self.node_indices
-            .get(&node)
-            .and_then(|index| self.children.get(*index))
-            .map(Vec::as_slice)
+        self.node(node)
+            .and_then(|node| manifest_child_ids(&self.node_ids, node.children))
             .unwrap_or(&[])
     }
 
@@ -198,23 +306,11 @@ impl<'a> ManifestLodHierarchy<'a> {
             .enumerate()
             .map(|(index, node)| (node.id, index))
             .collect::<BTreeMap<_, _>>();
-        let mut children = Vec::with_capacity(manifest.nodes.len());
-        for node in &manifest.nodes {
-            let start = node.children.start as usize;
-            let end = node
-                .children
-                .end()
-                .ok_or(ManifestHierarchyError::ChildRangeOverflow)? as usize;
-            let child_nodes = manifest
-                .nodes
-                .get(start..end)
-                .ok_or(ManifestHierarchyError::ChildRangeOutOfBounds(node.id))?;
-            children.push(child_nodes.iter().map(|child| child.id).collect());
-        }
+        let node_ids = compile_manifest_node_ids(manifest)?;
         Ok(Self {
             manifest,
             node_indices,
-            children,
+            node_ids,
         })
     }
 
@@ -252,10 +348,8 @@ impl LodHierarchy for ManifestLodHierarchy<'_> {
     }
 
     fn children(&self, node: Self::NodeId) -> &[Self::NodeId] {
-        self.node_indices
-            .get(&node)
-            .and_then(|index| self.children.get(*index))
-            .map(Vec::as_slice)
+        self.node(node)
+            .and_then(|node| manifest_child_ids(&self.node_ids, node.children))
             .unwrap_or(&[])
     }
 
@@ -273,6 +367,33 @@ impl LodHierarchy for ManifestLodHierarchy<'_> {
             representative_count: node.representation.count,
         })
     }
+}
+
+fn compile_manifest_node_ids(
+    manifest: &GaussianLodManifest,
+) -> Result<Vec<LodNodeId>, ManifestHierarchyError> {
+    let node_ids = manifest
+        .nodes
+        .iter()
+        .map(|node| node.id)
+        .collect::<Vec<_>>();
+    for node in &manifest.nodes {
+        let start = node.children.start as usize;
+        let end = node
+            .children
+            .end()
+            .ok_or(ManifestHierarchyError::ChildRangeOverflow)? as usize;
+        node_ids
+            .get(start..end)
+            .ok_or(ManifestHierarchyError::ChildRangeOutOfBounds(node.id))?;
+    }
+    Ok(node_ids)
+}
+
+fn manifest_child_ids(node_ids: &[LodNodeId], range: LodIndexRange) -> Option<&[LodNodeId]> {
+    let start = range.start as usize;
+    let end = range.end()? as usize;
+    node_ids.get(start..end)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -404,6 +525,21 @@ struct LodProjectedNode {
     error_px: f32,
     support_radius_px: f32,
     coverage: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LodViewEvaluatorProjection {
+    Perspective { focal_length_px: f32 },
+    Orthographic { scale_px_per_world: f32 },
+}
+
+/// Validated, per-selection projection state. Expensive view-only quantities
+/// are computed once and reused for every hierarchy node in the traversal.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LodViewEvaluator {
+    view: LodView,
+    world_scale_upper_bound: f32,
+    projection: LodViewEvaluatorProjection,
 }
 
 impl LodView {
@@ -539,30 +675,32 @@ impl LodView {
         self.projected_node(metrics).coverage
     }
 
+    /// Evaluates the exact stateless selector pressure for one hierarchy node.
+    ///
+    /// Camera-continuous presentation uses this same calculation in the render
+    /// world so a parent/child blend boundary cannot drift away from the CPU
+    /// selector's quality boundary. Hysteresis and residency are deliberately
+    /// absent: they control topology preparation, not the view-conditioned
+    /// presentation weight.
+    #[cfg_attr(not(lod_render_path), allow(dead_code))]
+    pub(crate) fn selection_pressure(
+        self,
+        metrics: LodNodeMetrics,
+        target: LodQualityTarget,
+        is_original_representation: bool,
+    ) -> f32 {
+        let projected = self.projected_node(metrics);
+        target.node_pressure(
+            metrics.quality_threshold(),
+            projected.error_px,
+            projected.coverage,
+            metrics.high_fidelity_certificate,
+            is_original_representation,
+        )
+    }
+
     fn projected_node(self, metrics: LodNodeMetrics) -> LodProjectedNode {
-        let transform_scale = self.world_scale_upper_bound();
-        let center = self.world_from_local.transform_point3(metrics.center);
-        let radius = metrics.radius.max(0.0) * transform_scale;
-        let projection_scale_px_per_world = match self.projection {
-            LodViewProjection::Perspective {
-                vertical_fov_radians,
-            } => {
-                let focal_length_px =
-                    0.5 * self.viewport_height_px / (0.5 * vertical_fov_radians).tan();
-                let distance_to_surface =
-                    (self.camera_position.distance(center) - radius).max(self.near_plane);
-                focal_length_px / distance_to_surface
-            }
-            LodViewProjection::Orthographic {
-                vertical_world_size,
-            } => self.viewport_height_px / vertical_world_size,
-        };
-        let support_radius_px = radius * projection_scale_px_per_world;
-        LodProjectedNode {
-            error_px: metrics.geometric_error * transform_scale * projection_scale_px_per_world,
-            support_radius_px,
-            coverage: (2.0 * support_radius_px / self.viewport_height_px).clamp(0.0, 1.0),
-        }
+        LodViewEvaluator::from_view(self).projected_node(metrics)
     }
 
     /// Returns the projected-error part of the balanced selection target.
@@ -600,13 +738,153 @@ impl LodView {
     }
 }
 
+impl LodViewEvaluator {
+    fn from_validated(view: LodView) -> Result<Self, LodSelectionError<()>> {
+        view.validate()?;
+        Ok(Self::from_view(view))
+    }
+
+    fn from_view(view: LodView) -> Self {
+        let projection = match view.projection {
+            LodViewProjection::Perspective {
+                vertical_fov_radians,
+            } => LodViewEvaluatorProjection::Perspective {
+                focal_length_px: 0.5 * view.viewport_height_px / (0.5 * vertical_fov_radians).tan(),
+            },
+            LodViewProjection::Orthographic {
+                vertical_world_size,
+            } => LodViewEvaluatorProjection::Orthographic {
+                scale_px_per_world: view.viewport_height_px / vertical_world_size,
+            },
+        };
+        Self {
+            view,
+            world_scale_upper_bound: view.world_scale_upper_bound(),
+            projection,
+        }
+    }
+
+    #[cfg(test)]
+    fn node_is_visible(self, metrics: LodNodeMetrics, margin: f32) -> bool {
+        let (center, radius) = self.world_support_sphere(metrics);
+        self.view.frustum.is_none_or(|frustum| {
+            frustum.intersects_sphere(center, (radius + margin.max(0.0)).max(0.0))
+        })
+    }
+
+    #[cfg(test)]
+    fn distance_to_center(self, metrics: LodNodeMetrics) -> f32 {
+        self.view
+            .camera_position
+            .distance(self.view.world_from_local.transform_point3(metrics.center))
+    }
+
+    #[cfg(test)]
+    fn distance_to_surface(self, metrics: LodNodeMetrics) -> f32 {
+        let (center, radius) = self.world_support_sphere(metrics);
+        (self.view.camera_position.distance(center) - radius).max(self.view.near_plane)
+    }
+
+    fn projected_node(self, metrics: LodNodeMetrics) -> LodProjectedNode {
+        let (center, radius) = self.world_support_sphere(metrics);
+        let projection_scale_px_per_world = match self.projection {
+            LodViewEvaluatorProjection::Perspective { focal_length_px } => {
+                let distance_to_surface =
+                    (self.view.camera_position.distance(center) - radius).max(self.view.near_plane);
+                focal_length_px / distance_to_surface
+            }
+            LodViewEvaluatorProjection::Orthographic { scale_px_per_world } => scale_px_per_world,
+        };
+        let support_radius_px = radius * projection_scale_px_per_world;
+        LodProjectedNode {
+            error_px: metrics.geometric_error
+                * self.world_scale_upper_bound
+                * projection_scale_px_per_world,
+            support_radius_px,
+            coverage: (2.0 * support_radius_px / self.view.viewport_height_px).clamp(0.0, 1.0),
+        }
+    }
+
+    fn selection_error_limit_px(
+        self,
+        _metrics: LodNodeMetrics,
+        settings: &GaussianLodSettings,
+    ) -> f32 {
+        settings.screen_space_error_limit_px()
+    }
+
+    fn world_support_sphere(self, metrics: LodNodeMetrics) -> (Vec3, f32) {
+        (
+            self.view.world_from_local.transform_point3(metrics.center),
+            metrics.radius.max(0.0) * self.world_scale_upper_bound,
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LodFrontier<NodeId> {
-    /// A stable node-id-ordered complete cut.
+    /// A stable node-id-ordered complete global cut. Frustum visibility may
+    /// limit refinement, but never removes source coverage from this cut.
     pub nodes: Vec<NodeId>,
     /// Missing desired nodes, deduplicated and ordered for deterministic requests.
     pub requested_nodes: Vec<NodeId>,
     pub status: LodEffectiveStatus,
+}
+
+/// Direction of one density-correct temporal hierarchy substitution.
+///
+/// A substitution always replaces a parent with all of its immediate children,
+/// or all of those children with their parent. The old and new cohorts are
+/// never present in the same cut, so this seam cannot introduce double density.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum LodTemporalDirection {
+    Coarsen,
+    Refine,
+}
+
+/// Stable identity used to debounce one hierarchy boundary independently from
+/// unrelated branches whose canonical target may still be changing.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct LodTemporalSubstitutionKey<NodeId> {
+    pub parent: NodeId,
+    pub direction: LodTemporalDirection,
+}
+
+/// One parent-to-children (or children-to-parent) topology transaction.
+///
+/// `previous_gaussians + next_gaussians` is the conservative transition-energy
+/// charge. ABI 16 packages consume this explicit transaction together with
+/// their authored monotone parent-record runs; legacy packages or adapters
+/// without the morph capability retain the bounded categorical endpoint.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LodTemporalSubstitution<NodeId> {
+    pub key: LodTemporalSubstitutionKey<NodeId>,
+    pub previous_nodes: Vec<NodeId>,
+    pub next_nodes: Vec<NodeId>,
+    pub previous_gaussians: u64,
+    pub next_gaussians: u64,
+}
+
+impl<NodeId> LodTemporalSubstitution<NodeId> {
+    pub fn changed_gaussians(&self) -> u64 {
+        self.previous_gaussians.saturating_add(self.next_gaussians)
+    }
+}
+
+/// One bounded complete-cut advance toward the canonical stateless target.
+#[cfg(any(feature = "lod", test))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LodTemporalFrontierStep<NodeId> {
+    pub nodes: Vec<NodeId>,
+    pub substitutions: Vec<LodTemporalSubstitution<NodeId>>,
+    /// Nonresident nodes needed by the next topology transaction. The current
+    /// complete cut remains unchanged while these pages stream.
+    pub requested_nodes: Vec<NodeId>,
+    pub changed_gaussians: u64,
+    /// One topology cohort is indivisible. This is the amount by which that
+    /// single cohort exceeded the ordinary per-frame energy budget.
+    pub atomic_budget_overshoot: u64,
+    pub reached_target: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -620,22 +898,28 @@ pub enum LodSelectionError<NodeId> {
 }
 
 struct PreviousCut<NodeId> {
-    accepted: BTreeSet<NodeId>,
-    refined: BTreeSet<NodeId>,
+    accepted: HashSet<NodeId>,
+    refined: HashSet<NodeId>,
+    /// Previously refined nodes held temporarily during a fine-to-coarse
+    /// handoff. This is deliberately separate from error hysteresis: a hold
+    /// only delays coarsening and can never make the rendered cut less
+    /// detailed than the requested selector result.
+    held_refined: HashSet<NodeId>,
     traversal_nodes_visited: u32,
 }
 
 impl<NodeId> Default for PreviousCut<NodeId> {
     fn default() -> Self {
         Self {
-            accepted: BTreeSet::new(),
-            refined: BTreeSet::new(),
+            accepted: HashSet::new(),
+            refined: HashSet::new(),
+            held_refined: HashSet::new(),
             traversal_nodes_visited: 0,
         }
     }
 }
 
-impl<NodeId: Copy + Ord> PreviousCut<NodeId> {
+impl<NodeId: Copy + Hash + Ord> PreviousCut<NodeId> {
     fn compile<H: LodHierarchy<NodeId = NodeId>>(
         hierarchy: &H,
         previous_frontier: &[NodeId],
@@ -659,13 +943,19 @@ impl<NodeId: Copy + Ord> PreviousCut<NodeId> {
             cut.traversal_nodes_visited += 1;
             cut.accepted.insert(node);
             let mut cursor = node;
-            let mut chain = BTreeSet::new();
+            let mut chain = HashSet::new();
             while remaining_work > 0 {
                 let Some(parent) = hierarchy.parent(cursor) else {
                     break;
                 };
                 if !chain.insert(parent) {
                     return Err(LodSelectionError::HierarchyCycle(parent));
+                }
+                // A prior frontier node already validated this ancestor and
+                // every node above it. Stop at the shared suffix instead of
+                // walking the same root path once per selected leaf.
+                if cut.refined.contains(&parent) {
+                    break;
                 }
                 checked_metrics(hierarchy, parent)?;
                 remaining_work -= 1;
@@ -736,8 +1026,10 @@ where
     select_frontier_internal(hierarchy, residency, view, settings, &previous, |_, _| true)
 }
 
-/// Selects a camera-aware hierarchy cut with a conservative caller-supplied
-/// visibility predicate. Missing descendants never replace a resident ancestor.
+/// Selects a camera-aware global hierarchy cut with a conservative
+/// caller-supplied visibility predicate. Visibility gates refinement only;
+/// missing descendants never replace a resident ancestor and off-screen
+/// branches retain complete coarse coverage for arbitrary camera motion.
 pub fn select_frontier_with_visibility<H, R, V>(
     hierarchy: &H,
     residency: &R,
@@ -760,7 +1052,8 @@ where
     )
 }
 
-/// Stateful camera-aware selector with caller-supplied conservative visibility.
+/// Stateful camera-aware global selector with caller-supplied conservative
+/// visibility. Visibility gates refinement only, never coverage.
 pub fn select_frontier_with_previous_and_visibility<H, R, V>(
     hierarchy: &H,
     residency: &R,
@@ -784,6 +1077,330 @@ where
     select_frontier_internal(hierarchy, residency, view, settings, &previous, visible)
 }
 
+/// Stateful camera-aware selector with a bounded set of fine-to-coarse holds.
+///
+/// Runtime orchestration uses this narrow hook to stagger whole-subtree merges
+/// over a few frames. Every result is still one complete hierarchy cut; no
+/// old/new union, opacity cross-fade, or additional GPU candidate storage is
+/// introduced. Refinement is never held.
+#[cfg(test)]
+pub(crate) fn select_frontier_with_previous_holds_and_visibility<H, R, V>(
+    hierarchy: &H,
+    residency: &R,
+    view: LodView,
+    settings: &GaussianLodSettings,
+    previous_frontier: &[H::NodeId],
+    held_refined: &BTreeSet<H::NodeId>,
+    visible: V,
+) -> Result<LodFrontier<H::NodeId>, LodSelectionError<H::NodeId>>
+where
+    H: LodHierarchy,
+    R: LodResidency<H::NodeId>,
+    V: FnMut(H::NodeId, LodNodeMetrics) -> bool,
+{
+    let mut previous = if settings.quality_endpoint() == LodQualityEndpoint::Continuous
+        && settings.hysteresis > 0.0
+    {
+        PreviousCut::compile(hierarchy, previous_frontier, settings)?
+    } else {
+        PreviousCut::default()
+    };
+    if settings.quality_endpoint() == LodQualityEndpoint::Continuous {
+        previous.held_refined.extend(held_refined.iter().copied());
+    }
+    select_frontier_internal(hierarchy, residency, view, settings, &previous, visible)
+}
+
+/// Finds the next one-level topology transactions between two complete cuts.
+///
+/// Coarsening candidates are bottom-up: all immediate children must be in the
+/// current cut and a target ancestor must cover the same branch. Refinement
+/// candidates are top-down: the current parent must contain target descendants.
+/// Consequently every returned transaction can be applied independently while
+/// preserving a complete source-space antichain.
+#[cfg(any(feature = "lod", test))]
+pub(crate) fn temporal_substitution_candidates<H>(
+    hierarchy: &H,
+    current_frontier: &[H::NodeId],
+    target_frontier: &[H::NodeId],
+) -> Result<Vec<LodTemporalSubstitution<H::NodeId>>, LodSelectionError<H::NodeId>>
+where
+    H: LodHierarchy,
+{
+    if current_frontier == target_frontier {
+        return Ok(Vec::new());
+    }
+
+    let current = current_frontier.iter().copied().collect::<HashSet<_>>();
+    let target = target_frontier.iter().copied().collect::<HashSet<_>>();
+    let mut coarsening_parents = BTreeSet::new();
+    for &node in current_frontier {
+        checked_metrics(hierarchy, node)?;
+        let Some(parent) = hierarchy.parent(node) else {
+            continue;
+        };
+        if hierarchy.children(parent).is_empty()
+            || !hierarchy
+                .children(parent)
+                .iter()
+                .all(|child| current.contains(child))
+        {
+            continue;
+        }
+        let mut cursor = Some(parent);
+        let mut covered_by_target_ancestor = false;
+        let mut chain = HashSet::new();
+        while let Some(candidate) = cursor {
+            if !chain.insert(candidate) {
+                return Err(LodSelectionError::HierarchyCycle(candidate));
+            }
+            if target.contains(&candidate) {
+                covered_by_target_ancestor = true;
+                break;
+            }
+            cursor = hierarchy.parent(candidate);
+        }
+        if covered_by_target_ancestor {
+            coarsening_parents.insert(parent);
+        }
+    }
+
+    let mut refinement_parents = BTreeSet::new();
+    for &target_node in target_frontier {
+        checked_metrics(hierarchy, target_node)?;
+        let mut cursor = target_node;
+        let mut chain = HashSet::new();
+        while let Some(parent) = hierarchy.parent(cursor) {
+            if !chain.insert(parent) {
+                return Err(LodSelectionError::HierarchyCycle(parent));
+            }
+            if current.contains(&parent) {
+                refinement_parents.insert(parent);
+                break;
+            }
+            cursor = parent;
+        }
+    }
+
+    let mut substitutions = Vec::with_capacity(
+        coarsening_parents
+            .len()
+            .saturating_add(refinement_parents.len()),
+    );
+    for parent in coarsening_parents {
+        // Preserve the hierarchy's validated child order: ABI16 morph runs
+        // address the concatenated child representations in this order.
+        let children = hierarchy.children(parent).to_vec();
+        let previous_gaussians = children.iter().try_fold(0_u64, |count, child| {
+            count
+                .checked_add(u64::from(
+                    checked_metrics(hierarchy, *child)?.representative_count,
+                ))
+                .ok_or(LodSelectionError::CountOverflow)
+        })?;
+        let next_gaussians = u64::from(checked_metrics(hierarchy, parent)?.representative_count);
+        substitutions.push(LodTemporalSubstitution {
+            key: LodTemporalSubstitutionKey {
+                parent,
+                direction: LodTemporalDirection::Coarsen,
+            },
+            previous_nodes: children,
+            next_nodes: vec![parent],
+            previous_gaussians,
+            next_gaussians,
+        });
+    }
+    for parent in refinement_parents {
+        let children = hierarchy.children(parent).to_vec();
+        let previous_gaussians =
+            u64::from(checked_metrics(hierarchy, parent)?.representative_count);
+        let next_gaussians = children.iter().try_fold(0_u64, |count, child| {
+            count
+                .checked_add(u64::from(
+                    checked_metrics(hierarchy, *child)?.representative_count,
+                ))
+                .ok_or(LodSelectionError::CountOverflow)
+        })?;
+        substitutions.push(LodTemporalSubstitution {
+            key: LodTemporalSubstitutionKey {
+                parent,
+                direction: LodTemporalDirection::Refine,
+            },
+            previous_nodes: vec![parent],
+            next_nodes: children,
+            previous_gaussians,
+            next_gaussians,
+        });
+    }
+    Ok(substitutions)
+}
+
+/// Applies a deterministic, energy-bounded subset of eligible transactions.
+/// Coarsening is ordered first so mixed camera changes release active capacity
+/// before refinement consumes it. At most one indivisible cohort may exceed
+/// the ordinary energy budget; the overshoot remains explicit to callers.
+#[cfg(any(feature = "lod", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LodTemporalStepBudget {
+    pub max_active_gaussians: u64,
+    pub max_changed_gaussians: u64,
+    pub max_substitutions: usize,
+}
+
+#[cfg(any(feature = "lod", test))]
+pub(crate) fn apply_temporal_substitution_step<NodeId, R>(
+    current_frontier: &[NodeId],
+    target_frontier: &[NodeId],
+    current_active_gaussians: u64,
+    substitutions: &[LodTemporalSubstitution<NodeId>],
+    eligible: &BTreeSet<LodTemporalSubstitutionKey<NodeId>>,
+    mut is_resident: R,
+    budget: LodTemporalStepBudget,
+) -> Result<LodTemporalFrontierStep<NodeId>, LodSelectionError<NodeId>>
+where
+    NodeId: Copy + Debug + Eq + Hash + Ord,
+    R: FnMut(NodeId) -> bool,
+{
+    let mut nodes = current_frontier.iter().copied().collect::<BTreeSet<_>>();
+    let mut active_gaussians = current_active_gaussians;
+    let mut applied = Vec::new();
+    let mut requested = BTreeSet::new();
+    let mut changed_gaussians = 0_u64;
+    let mut atomic_budget_overshoot = 0_u64;
+
+    for substitution in substitutions {
+        if !substitution
+            .previous_nodes
+            .iter()
+            .all(|node| nodes.contains(node))
+        {
+            continue;
+        }
+        let missing = substitution
+            .next_nodes
+            .iter()
+            .copied()
+            .filter(|node| !is_resident(*node))
+            .collect::<Vec<_>>();
+        requested.extend(missing.iter().copied());
+        if !missing.is_empty() || !eligible.contains(&substitution.key) {
+            continue;
+        }
+        if applied.len() >= budget.max_substitutions.max(1) {
+            continue;
+        }
+        let Some(next_active) = active_gaussians
+            .checked_sub(substitution.previous_gaussians)
+            .and_then(|count| count.checked_add(substitution.next_gaussians))
+        else {
+            return Err(LodSelectionError::CountOverflow);
+        };
+        if next_active > budget.max_active_gaussians {
+            continue;
+        }
+        let work = substitution.changed_gaussians();
+        let Some(next_work) = changed_gaussians.checked_add(work) else {
+            return Err(LodSelectionError::CountOverflow);
+        };
+        if !applied.is_empty() && next_work > budget.max_changed_gaussians.max(1) {
+            continue;
+        }
+        if applied.is_empty() && next_work > budget.max_changed_gaussians.max(1) {
+            atomic_budget_overshoot = next_work - budget.max_changed_gaussians.max(1);
+        }
+        for node in &substitution.previous_nodes {
+            nodes.remove(node);
+        }
+        nodes.extend(substitution.next_nodes.iter().copied());
+        active_gaussians = next_active;
+        changed_gaussians = next_work;
+        applied.push(substitution.clone());
+    }
+
+    let nodes = nodes.into_iter().collect::<Vec<_>>();
+    Ok(LodTemporalFrontierStep {
+        reached_target: nodes.as_slice() == target_frontier,
+        nodes,
+        substitutions: applied,
+        requested_nodes: requested.into_iter().collect(),
+        changed_gaussians,
+        atomic_budget_overshoot,
+    })
+}
+
+/// Re-evaluates quality/status for a complete temporal cut without rerunning
+/// hierarchy selection. The canonical target retains authority for budget and
+/// traversal degradation, while the emitted cut reports its own exact count
+/// and projected error.
+#[cfg(any(feature = "lod", test))]
+pub(crate) fn temporal_frontier_with_visibility<H, V>(
+    hierarchy: &H,
+    target: &LodFrontier<H::NodeId>,
+    step: &LodTemporalFrontierStep<H::NodeId>,
+    view: LodView,
+    settings: &GaussianLodSettings,
+    mut visible: V,
+) -> Result<LodFrontier<H::NodeId>, LodSelectionError<H::NodeId>>
+where
+    H: LodHierarchy,
+    V: FnMut(H::NodeId, LodNodeMetrics) -> bool,
+{
+    settings
+        .validate()
+        .map_err(LodSelectionError::InvalidSettings)?;
+    let view = LodViewEvaluator::from_validated(view).map_err(|error| match error {
+        LodSelectionError::InvalidView(field) => LodSelectionError::InvalidView(field),
+        _ => unreachable!(),
+    })?;
+    let requested_target = settings.quality_target();
+    let mut active_gaussians = 0_u64;
+    let mut achieved_max_error_px = 0.0_f32;
+    let mut achieved_max_target_ratio = 0.0_f32;
+    for &node in &step.nodes {
+        let metrics = checked_metrics(hierarchy, node)?;
+        active_gaussians = active_gaussians
+            .checked_add(u64::from(metrics.representative_count))
+            .ok_or(LodSelectionError::CountOverflow)?;
+        if visible(node, metrics) {
+            let projected = view.projected_node(metrics);
+            achieved_max_error_px = achieved_max_error_px.max(projected.error_px);
+            achieved_max_target_ratio =
+                achieved_max_target_ratio.max(requested_target.node_pressure(
+                    metrics.quality_threshold(),
+                    projected.error_px,
+                    projected.coverage,
+                    metrics.high_fidelity_certificate,
+                    hierarchy.children(node).is_empty(),
+                ));
+        }
+    }
+
+    let mut requested_nodes = target
+        .requested_nodes
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    requested_nodes.extend(step.requested_nodes.iter().copied());
+    let degradation = if requested_nodes.is_empty() {
+        target.status.degradation
+    } else {
+        target.status.degradation.merge(LodDegradation::Residency)
+    };
+    Ok(LodFrontier {
+        nodes: step.nodes.clone(),
+        requested_nodes: requested_nodes.iter().copied().collect(),
+        status: LodEffectiveStatus {
+            requested_target,
+            achieved_max_error_px,
+            achieved_max_target_ratio,
+            degradation,
+            active_gaussians,
+            visited_nodes: target.status.visited_nodes,
+            requested_pages: requested_nodes.len().try_into().unwrap_or(u32::MAX),
+        },
+    })
+}
+
 fn select_frontier_internal<H, R, V>(
     hierarchy: &H,
     residency: &R,
@@ -800,7 +1417,7 @@ where
     settings
         .validate()
         .map_err(LodSelectionError::InvalidSettings)?;
-    view.validate().map_err(|error| match error {
+    let view = LodViewEvaluator::from_validated(view).map_err(|error| match error {
         LodSelectionError::InvalidView(field) => LodSelectionError::InvalidView(field),
         _ => unreachable!(),
     })?;
@@ -812,13 +1429,16 @@ where
     for &root in hierarchy.roots() {
         state.visit(traversal_limit)?;
         let metrics = checked_metrics(hierarchy, root)?;
-        if !visible(root, metrics) {
-            continue;
-        }
+        let root_visible = visible(root, metrics);
         if residency.is_resident(root) {
-            state.insert_frontier(root, metrics)?;
-            state.maybe_queue_candidate(hierarchy, view, settings, previous, root, metrics);
+            state.insert_frontier(root, metrics, root_visible)?;
+            if root_visible {
+                state.maybe_queue_candidate(hierarchy, view, settings, previous, root, metrics);
+            }
         } else {
+            // Roots are the permanent global coverage guard. An off-screen
+            // missing root is still required so the published cut remains
+            // valid after an arbitrary camera teleport.
             state.requested.insert(root);
             state.degradation = state.degradation.merge(LodDegradation::Residency);
         }
@@ -833,40 +1453,35 @@ where
             }
             state.expanded.insert(candidate.node);
 
-            let mut visible_children = Vec::new();
+            let mut children = Vec::new();
             let mut missing_children = Vec::new();
             let mut child_count = 0_u64;
+            let mut enumeration_complete = true;
             for &child in hierarchy.children(candidate.node) {
                 if state.visited_nodes >= traversal_limit {
                     state.degradation = state.degradation.merge(LodDegradation::TraversalBudget);
+                    enumeration_complete = false;
                     break;
                 }
                 let metrics = checked_metrics(hierarchy, child)?;
                 state.visit(traversal_limit)?;
-                if !visible(child, metrics) {
-                    continue;
-                }
-                if residency.is_resident(child) {
-                    child_count = child_count
-                        .checked_add(u64::from(metrics.representative_count))
-                        .ok_or(LodSelectionError::CountOverflow)?;
-                    visible_children.push((child, metrics));
-                } else {
+                let child_visible = visible(child, metrics);
+                // Selection budgets constrain the logical split, independent
+                // of whether its child pages happen to be resident yet. A
+                // parent is replaced atomically by all children, including
+                // off-screen siblings, so the resulting frontier remains a
+                // complete source-space antichain after camera motion.
+                child_count = child_count
+                    .checked_add(u64::from(metrics.representative_count))
+                    .ok_or(LodSelectionError::CountOverflow)?;
+                if !residency.is_resident(child) {
                     missing_children.push(child);
                 }
+                children.push((child, metrics, child_visible));
             }
 
-            if state.degradation == LodDegradation::TraversalBudget
-                || state.degradation == LodDegradation::Multiple
-                    && state.visited_nodes >= traversal_limit
-            {
+            if !enumeration_complete {
                 // An incomplete child enumeration cannot safely replace its ancestor.
-                continue;
-            }
-
-            if !missing_children.is_empty() {
-                state.requested.extend(missing_children.iter().copied());
-                state.degradation = state.degradation.merge(LodDegradation::Residency);
                 continue;
             }
 
@@ -881,11 +1496,22 @@ where
                 continue;
             }
 
+            if !missing_children.is_empty() {
+                state.requested.extend(missing_children.iter().copied());
+                state.degradation = state.degradation.merge(LodDegradation::Residency);
+                continue;
+            }
+
             state.frontier.remove(&candidate.node);
+            state.visible_frontier.remove(&candidate.node);
             state.active_gaussians = next_count;
-            for (child, metrics) in visible_children {
+            for (child, metrics, child_visible) in children {
                 state.frontier.insert(child, metrics.representative_count);
-                state.maybe_queue_candidate(hierarchy, view, settings, previous, child, metrics);
+                if child_visible {
+                    state.visible_frontier.insert(child);
+                    state
+                        .maybe_queue_candidate(hierarchy, view, settings, previous, child, metrics);
+                }
             }
         }
     }
@@ -897,7 +1523,7 @@ where
     let mut achieved_max_error_px = 0.0_f32;
     let mut achieved_max_target_ratio = 0.0_f32;
     let requested_target = settings.quality_target();
-    for &node in state.frontier.keys() {
+    for &node in &state.visible_frontier {
         let metrics = checked_metrics(hierarchy, node)?;
         let projected = view.projected_node(metrics);
         let selection_error_px = projected.error_px;
@@ -921,9 +1547,13 @@ where
         requested_pages: state.requested.len().try_into().unwrap_or(u32::MAX),
     };
 
+    let mut nodes = state.frontier.into_keys().collect::<Vec<_>>();
+    let mut requested_nodes = state.requested.into_iter().collect::<Vec<_>>();
+    nodes.sort_unstable();
+    requested_nodes.sort_unstable();
     Ok(LodFrontier {
-        nodes: state.frontier.into_keys().collect(),
-        requested_nodes: state.requested.into_iter().collect(),
+        nodes,
+        requested_nodes,
         status,
     })
 }
@@ -970,23 +1600,27 @@ impl<NodeId: Ord> Ord for Candidate<NodeId> {
     }
 }
 
-struct SelectionState<NodeId: Copy + Ord> {
-    frontier: BTreeMap<NodeId, u32>,
+struct SelectionState<NodeId: Copy + Hash + Ord> {
+    frontier: HashMap<NodeId, u32>,
+    /// Nodes in the global frontier whose support intersects the current
+    /// view. Quality status is view-local even though coverage is global.
+    visible_frontier: HashSet<NodeId>,
     candidates: BinaryHeap<Candidate<NodeId>>,
-    requested: BTreeSet<NodeId>,
-    expanded: BTreeSet<NodeId>,
+    requested: HashSet<NodeId>,
+    expanded: HashSet<NodeId>,
     active_gaussians: u64,
     visited_nodes: u32,
     degradation: LodDegradation,
 }
 
-impl<NodeId: Copy + Ord> SelectionState<NodeId> {
+impl<NodeId: Copy + Hash + Ord> SelectionState<NodeId> {
     fn new(visited_nodes: u32) -> Self {
         Self {
-            frontier: BTreeMap::new(),
+            frontier: HashMap::new(),
+            visible_frontier: HashSet::new(),
             candidates: BinaryHeap::new(),
-            requested: BTreeSet::new(),
-            expanded: BTreeSet::new(),
+            requested: HashSet::new(),
+            expanded: HashSet::new(),
             active_gaussians: 0,
             visited_nodes,
             degradation: LodDegradation::None,
@@ -1005,6 +1639,7 @@ impl<NodeId: Copy + Ord> SelectionState<NodeId> {
         &mut self,
         node: NodeId,
         metrics: LodNodeMetrics,
+        visible: bool,
     ) -> Result<(), LodSelectionError<ErrorNode>> {
         if self
             .frontier
@@ -1016,13 +1651,18 @@ impl<NodeId: Copy + Ord> SelectionState<NodeId> {
                 .checked_add(u64::from(metrics.representative_count))
                 .ok_or(LodSelectionError::CountOverflow)?;
         }
+        if visible {
+            self.visible_frontier.insert(node);
+        } else {
+            self.visible_frontier.remove(&node);
+        }
         Ok(())
     }
 
     fn maybe_queue_candidate<H: LodHierarchy<NodeId = NodeId>>(
         &mut self,
         hierarchy: &H,
-        view: LodView,
+        view: LodViewEvaluator,
         settings: &GaussianLodSettings,
         previous: &PreviousCut<NodeId>,
         node: NodeId,
@@ -1052,7 +1692,9 @@ impl<NodeId: Copy + Ord> SelectionState<NodeId> {
         let should_refine = match endpoint {
             LodQualityEndpoint::Coarsest => false,
             LodQualityEndpoint::Original => true,
-            LodQualityEndpoint::Continuous => pressure > 1.0,
+            LodQualityEndpoint::Continuous => {
+                pressure > 1.0 || previous.held_refined.contains(&node)
+            }
         };
         if should_refine {
             self.candidates.push(Candidate {
@@ -1069,6 +1711,9 @@ mod tests {
 
     use std::collections::{BTreeMap, BTreeSet};
 
+    use std::hint::black_box;
+    use std::time::Instant;
+
     use super::*;
     use crate::{
         gaussian::formats::{
@@ -1081,6 +1726,80 @@ mod tests {
     struct TestHierarchy {
         roots: Vec<u32>,
         nodes: BTreeMap<u32, (LodNodeMetrics, Vec<u32>)>,
+    }
+
+    struct DenseBenchmarkHierarchy {
+        roots: Vec<u32>,
+        nodes: Vec<(Option<u32>, LodNodeMetrics, Vec<u32>)>,
+    }
+
+    impl DenseBenchmarkHierarchy {
+        fn binary(levels: u32) -> Self {
+            let node_count = (1usize << levels) - 1;
+            let first_leaf = (1usize << (levels - 1)) - 1;
+            let nodes = (0..node_count)
+                .map(|index| {
+                    let parent = (index > 0).then(|| ((index - 1) / 2) as u32);
+                    let first_child = index * 2 + 1;
+                    let children = if first_child < node_count {
+                        vec![first_child as u32, (first_child + 1) as u32]
+                    } else {
+                        Vec::new()
+                    };
+                    let leaf = index >= first_leaf;
+                    (
+                        parent,
+                        LodNodeMetrics {
+                            center: Vec3::new(0.0, 0.0, 10.0),
+                            radius: 0.5,
+                            geometric_error: if leaf { 0.0 } else { 10.0 },
+                            appearance_error: 0.0,
+                            opacity_error: 0.0,
+                            quality_min: if leaf { 1.0 } else { 0.0 },
+                            quality_max: if leaf { 1.0 } else { 0.1 },
+                            high_fidelity_certificate: 1.0,
+                            representative_count: if leaf { 128 } else { 1 },
+                        },
+                        children,
+                    )
+                })
+                .collect();
+            Self {
+                roots: vec![0],
+                nodes,
+            }
+        }
+
+        fn leaves(&self) -> Vec<u32> {
+            self.nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(index, (_, _, children))| children.is_empty().then_some(index as u32))
+                .collect()
+        }
+    }
+
+    impl LodHierarchy for DenseBenchmarkHierarchy {
+        type NodeId = u32;
+
+        fn roots(&self) -> &[Self::NodeId] {
+            &self.roots
+        }
+
+        fn parent(&self, node: Self::NodeId) -> Option<Self::NodeId> {
+            self.nodes.get(node as usize).and_then(|node| node.0)
+        }
+
+        fn children(&self, node: Self::NodeId) -> &[Self::NodeId] {
+            self.nodes
+                .get(node as usize)
+                .map(|node| node.2.as_slice())
+                .unwrap_or_default()
+        }
+
+        fn metrics(&self, node: Self::NodeId) -> Option<LodNodeMetrics> {
+            self.nodes.get(node as usize).map(|node| node.1)
+        }
     }
 
     impl LodHierarchy for TestHierarchy {
@@ -1133,6 +1852,49 @@ mod tests {
 
     fn view() -> LodView {
         LodView::perspective(Vec3::ZERO, 1080.0, std::f32::consts::FRAC_PI_2, 0.1)
+    }
+
+    fn hierarchy_source_range(node: u32) -> std::ops::Range<u32> {
+        match node {
+            0 => 0..16,
+            1 => 0..8,
+            2 => 8..16,
+            3 => 0..4,
+            4 => 4..8,
+            5 => 8..12,
+            6 => 12..16,
+            _ => panic!("unknown test node {node}"),
+        }
+    }
+
+    fn assert_complete_source_antichain(hierarchy: &TestHierarchy, nodes: &[u32]) {
+        let selected = nodes.iter().copied().collect::<HashSet<_>>();
+        for &node in nodes {
+            let mut cursor = node;
+            while let Some(parent) = hierarchy.parent(cursor) {
+                assert!(
+                    !selected.contains(&parent),
+                    "cut contains ancestor {parent} and descendant {node}"
+                );
+                cursor = parent;
+            }
+        }
+
+        let mut ranges = nodes
+            .iter()
+            .copied()
+            .map(hierarchy_source_range)
+            .collect::<Vec<_>>();
+        ranges.sort_unstable_by_key(|range| range.start);
+        let mut covered_until = 0;
+        for range in ranges {
+            assert_eq!(
+                range.start, covered_until,
+                "cut has a source-space gap or overlap"
+            );
+            covered_until = range.end;
+        }
+        assert_eq!(covered_until, 16, "cut does not cover the source tail");
     }
 
     #[test]
@@ -1217,6 +1979,140 @@ mod tests {
     }
 
     #[test]
+    fn precomputed_view_evaluator_matches_analytic_view_contracts() {
+        fn analytic_world_scale(world_from_local: Mat4) -> f32 {
+            let x = world_from_local.x_axis.truncate();
+            let y = world_from_local.y_axis.truncate();
+            let z = world_from_local.z_axis.truncate();
+            let xx = x.dot(x);
+            let xy = x.dot(y).abs();
+            let xz = x.dot(z).abs();
+            let yy = y.dot(y);
+            let yz = y.dot(z).abs();
+            let zz = z.dot(z);
+            (xx + xy + xz).max(yy + xy + yz).max(zz + xz + yz).sqrt()
+        }
+
+        fn analytic_projection(view: LodView, metrics: LodNodeMetrics) -> LodProjectedNode {
+            let transform_scale = analytic_world_scale(view.world_from_local);
+            let center = view.world_from_local.transform_point3(metrics.center);
+            let radius = metrics.radius.max(0.0) * transform_scale;
+            let projection_scale_px_per_world = match view.projection {
+                LodViewProjection::Perspective {
+                    vertical_fov_radians,
+                } => {
+                    let focal_length_px =
+                        0.5 * view.viewport_height_px / (0.5 * vertical_fov_radians).tan();
+                    let distance_to_surface =
+                        (view.camera_position.distance(center) - radius).max(view.near_plane);
+                    focal_length_px / distance_to_surface
+                }
+                LodViewProjection::Orthographic {
+                    vertical_world_size,
+                } => view.viewport_height_px / vertical_world_size,
+            };
+            let support_radius_px = radius * projection_scale_px_per_world;
+            LodProjectedNode {
+                error_px: metrics.geometric_error * transform_scale * projection_scale_px_per_world,
+                support_radius_px,
+                coverage: (2.0 * support_radius_px / view.viewport_height_px).clamp(0.0, 1.0),
+            }
+        }
+
+        fn assert_close(actual: f32, expected: f32) {
+            let tolerance = expected.abs().max(1.0) * 1e-5;
+            assert!(
+                (actual - expected).abs() <= tolerance,
+                "actual={actual}, expected={expected}, tolerance={tolerance}"
+            );
+        }
+
+        fn assert_projected_close(actual: LodProjectedNode, expected: LodProjectedNode) {
+            assert_close(actual.error_px, expected.error_px);
+            assert_close(actual.support_radius_px, expected.support_radius_px);
+            assert_close(actual.coverage, expected.coverage);
+        }
+
+        let metrics = LodNodeMetrics {
+            center: Vec3::new(0.25, -0.5, 1.0),
+            radius: 0.7,
+            geometric_error: 0.35,
+            appearance_error: 0.0,
+            opacity_error: 0.0,
+            quality_min: 0.0,
+            quality_max: 1.0,
+            high_fidelity_certificate: 1.0,
+            representative_count: 1,
+        };
+        let transforms = [
+            Mat4::IDENTITY,
+            Mat4::from_scale_rotation_translation(
+                Vec3::new(2.0, 0.75, 1.5),
+                bevy::math::Quat::from_rotation_y(0.37),
+                Vec3::new(-2.0, 0.5, 4.0),
+            ),
+            Mat4::from_cols(
+                Vec4::new(1.25, 0.15, 0.0, 0.0),
+                Vec4::new(0.35, 0.9, 0.1, 0.0),
+                Vec4::new(0.0, 0.2, 1.5, 0.0),
+                Vec4::new(-2.0, 0.5, 4.0, 1.0),
+            ),
+        ];
+
+        for world_from_local in transforms {
+            let views = [
+                LodView::perspective(Vec3::new(3.0, -1.0, 12.0), 1440.0, 1.1, 0.25)
+                    .with_world_from_local(world_from_local),
+                LodView::orthographic(Vec3::new(-4.0, 2.0, 9.0), 900.0, 12.0, 0.1)
+                    .with_world_from_local(world_from_local),
+            ];
+            for view in views {
+                let evaluator = LodViewEvaluator::from_validated(view).unwrap();
+                let expected = analytic_projection(view, metrics);
+                assert_projected_close(evaluator.projected_node(metrics), expected);
+                assert_projected_close(view.projected_node(metrics), expected);
+
+                let transform_scale = analytic_world_scale(world_from_local);
+                let center = world_from_local.transform_point3(metrics.center);
+                let radius = metrics.radius * transform_scale;
+                assert_close(
+                    evaluator.distance_to_center(metrics),
+                    view.camera_position.distance(center),
+                );
+                assert_close(
+                    evaluator.distance_to_surface(metrics),
+                    (view.camera_position.distance(center) - radius).max(view.near_plane),
+                );
+            }
+        }
+
+        let frustum_view = LodView::perspective(Vec3::new(0.0, 0.0, 4.0), 1080.0, 1.0, 0.1)
+            .with_world_from_local(Mat4::from_scale_rotation_translation(
+                Vec3::new(2.0, 1.0, 0.5),
+                bevy::math::Quat::IDENTITY,
+                Vec3::new(0.25, 0.0, 0.0),
+            ))
+            .with_clip_from_world(Mat4::IDENTITY);
+        let evaluator = LodViewEvaluator::from_validated(frustum_view).unwrap();
+        for (center, margin) in [
+            (Vec3::new(0.0, 0.0, 1.0), 0.0_f32),
+            (Vec3::new(1.0, 0.0, 1.0), 0.0_f32),
+            (Vec3::new(1.0, 0.0, 1.0), 1.1_f32),
+        ] {
+            let node = LodNodeMetrics { center, ..metrics };
+            let world_scale = analytic_world_scale(frustum_view.world_from_local);
+            let world_center = frustum_view.world_from_local.transform_point3(center);
+            let world_radius = node.radius * world_scale;
+            let expected = frustum_view
+                .frustum
+                .unwrap()
+                .intersects_sphere(world_center, (world_radius + margin.max(0.0)).max(0.0));
+            assert_eq!(evaluator.node_is_visible(node, margin), expected);
+            assert_eq!(frustum_view.node_is_visible(node, margin), expected);
+        }
+    }
+
+    #[test]
     fn endpoint_zero_is_roots_and_one_is_leaves() {
         let hierarchy = hierarchy();
         let mut settings = GaussianLodSettings::default();
@@ -1244,6 +2140,236 @@ mod tests {
         assert_eq!(exact.nodes, vec![3, 4, 5, 6]);
         assert_eq!(exact.status.active_gaussians, 16);
         assert_eq!(exact.status.degradation, LodDegradation::None);
+    }
+
+    #[test]
+    fn temporal_cohorts_advance_both_directions_without_double_density() {
+        let hierarchy = hierarchy();
+        let leaves = vec![3, 4, 5, 6];
+        let root = vec![0];
+
+        let mut current = leaves.clone();
+        let mut active = 16;
+        let mut coarsening_cuts = vec![current.clone()];
+        for _ in 0..4 {
+            let candidates = temporal_substitution_candidates(&hierarchy, &current, &root).unwrap();
+            let eligible = candidates.iter().map(|candidate| candidate.key).collect();
+            let step = apply_temporal_substitution_step(
+                &current,
+                &root,
+                active,
+                &candidates,
+                &eligible,
+                |_| true,
+                LodTemporalStepBudget {
+                    max_active_gaussians: 100,
+                    max_changed_gaussians: 10,
+                    max_substitutions: 16,
+                },
+            )
+            .unwrap();
+            assert!(step.changed_gaussians <= 10);
+            assert_eq!(step.atomic_budget_overshoot, 0);
+            assert_complete_source_antichain(&hierarchy, &step.nodes);
+            active = step
+                .nodes
+                .iter()
+                .map(|node| u64::from(hierarchy.metrics(*node).unwrap().representative_count))
+                .sum();
+            current = step.nodes;
+            coarsening_cuts.push(current.clone());
+            if current == root {
+                break;
+            }
+        }
+        assert_eq!(current, root);
+        assert_eq!(coarsening_cuts, [leaves, vec![1, 5, 6], vec![1, 2], root]);
+
+        let mut current = vec![0];
+        let mut active = 1;
+        let target = vec![3, 4, 5, 6];
+        let mut refinement_cuts = vec![current.clone()];
+        for _ in 0..4 {
+            let candidates =
+                temporal_substitution_candidates(&hierarchy, &current, &target).unwrap();
+            let eligible = candidates.iter().map(|candidate| candidate.key).collect();
+            let step = apply_temporal_substitution_step(
+                &current,
+                &target,
+                active,
+                &candidates,
+                &eligible,
+                |_| true,
+                LodTemporalStepBudget {
+                    max_active_gaussians: 100,
+                    max_changed_gaussians: 10,
+                    max_substitutions: 16,
+                },
+            )
+            .unwrap();
+            assert!(step.changed_gaussians <= 10);
+            assert_complete_source_antichain(&hierarchy, &step.nodes);
+            active = step
+                .nodes
+                .iter()
+                .map(|node| u64::from(hierarchy.metrics(*node).unwrap().representative_count))
+                .sum();
+            current = step.nodes;
+            refinement_cuts.push(current.clone());
+            if current == target {
+                break;
+            }
+        }
+        assert_eq!(current, target);
+        assert_eq!(
+            refinement_cuts,
+            [vec![0], vec![1, 2], vec![2, 3, 4], target]
+        );
+    }
+
+    #[test]
+    fn temporal_cohort_budget_allows_only_one_explicit_atomic_overshoot() {
+        let hierarchy = hierarchy();
+        let current = vec![3, 4, 5, 6];
+        let target = vec![0];
+        let candidates = temporal_substitution_candidates(&hierarchy, &current, &target).unwrap();
+        let eligible = candidates.iter().map(|candidate| candidate.key).collect();
+        let step = apply_temporal_substitution_step(
+            &current,
+            &target,
+            16,
+            &candidates,
+            &eligible,
+            |_| true,
+            LodTemporalStepBudget {
+                max_active_gaussians: 100,
+                max_changed_gaussians: 4,
+                max_substitutions: 16,
+            },
+        )
+        .unwrap();
+        assert_eq!(step.substitutions.len(), 1);
+        assert_eq!(step.changed_gaussians, 10);
+        assert_eq!(step.atomic_budget_overshoot, 6);
+        assert_complete_source_antichain(&hierarchy, &step.nodes);
+    }
+
+    #[test]
+    fn temporal_coarsening_requests_missing_intermediate_parent_without_changing_cut() {
+        let hierarchy = hierarchy();
+        let current = vec![3, 4, 5, 6];
+        let target = vec![0];
+        let candidates = temporal_substitution_candidates(&hierarchy, &current, &target).unwrap();
+        let eligible = candidates.iter().map(|candidate| candidate.key).collect();
+        let step = apply_temporal_substitution_step(
+            &current,
+            &target,
+            16,
+            &candidates,
+            &eligible,
+            |node| node != 1,
+            LodTemporalStepBudget {
+                max_active_gaussians: 100,
+                max_changed_gaussians: 100,
+                max_substitutions: 16,
+            },
+        )
+        .unwrap();
+        assert_eq!(step.nodes, vec![2, 3, 4]);
+        assert_eq!(step.requested_nodes, vec![1]);
+        assert_eq!(step.substitutions.len(), 1);
+        assert_complete_source_antichain(&hierarchy, &step.nodes);
+    }
+
+    #[test]
+    fn temporal_settled_cut_is_canonical_from_coarse_and_fine_histories() {
+        fn settle(hierarchy: &TestHierarchy, mut current: Vec<u32>, target: &[u32]) -> Vec<u32> {
+            for _ in 0..8 {
+                if current == target {
+                    return current;
+                }
+                let active = current
+                    .iter()
+                    .map(|node| u64::from(hierarchy.metrics(*node).unwrap().representative_count))
+                    .sum();
+                let candidates =
+                    temporal_substitution_candidates(hierarchy, &current, target).unwrap();
+                let eligible = candidates.iter().map(|candidate| candidate.key).collect();
+                current = apply_temporal_substitution_step(
+                    &current,
+                    target,
+                    active,
+                    &candidates,
+                    &eligible,
+                    |_| true,
+                    LodTemporalStepBudget {
+                        max_active_gaussians: 100,
+                        max_changed_gaussians: 10,
+                        max_substitutions: 16,
+                    },
+                )
+                .unwrap()
+                .nodes;
+            }
+            current
+        }
+
+        let hierarchy = hierarchy();
+        let canonical = vec![1, 2];
+        assert_eq!(settle(&hierarchy, vec![0], &canonical), canonical);
+        assert_eq!(settle(&hierarchy, vec![3, 4, 5, 6], &canonical), canonical);
+    }
+
+    #[test]
+    fn temporal_coarsening_holds_preserve_one_complete_finer_cut() {
+        let hierarchy = hierarchy();
+        let mut settings = GaussianLodSettings {
+            quality: 0.10,
+            hysteresis: 0.0,
+            ..Default::default()
+        };
+        settings.budgets.max_active_gaussians = 100;
+        let previous = [3, 4, 5, 6];
+
+        let desired = select_frontier_with_previous_and_visibility(
+            &hierarchy,
+            &AllResident,
+            view(),
+            &settings,
+            &previous,
+            |_, _| true,
+        )
+        .unwrap();
+        assert_eq!(desired.nodes, vec![0]);
+
+        let held = select_frontier_with_previous_holds_and_visibility(
+            &hierarchy,
+            &AllResident,
+            view(),
+            &settings,
+            &previous,
+            &BTreeSet::from([0, 1, 2]),
+            |_, _| true,
+        )
+        .unwrap();
+        assert_eq!(held.nodes, previous);
+        assert_eq!(held.status.active_gaussians, 16);
+        assert!(held.requested_nodes.is_empty());
+
+        // Endpoint zero remains categorical; temporal smoothing never changes
+        // the explicit coarsest contract.
+        settings.quality = 0.0;
+        let endpoint = select_frontier_with_previous_holds_and_visibility(
+            &hierarchy,
+            &AllResident,
+            view(),
+            &settings,
+            &previous,
+            &BTreeSet::from([0, 1, 2]),
+            |_, _| true,
+        )
+        .unwrap();
+        assert_eq!(endpoint.nodes, vec![0]);
     }
 
     #[test]
@@ -1386,6 +2512,80 @@ mod tests {
     }
 
     #[test]
+    fn over_budget_nonresident_split_does_not_grow_demand_or_residency() {
+        let hierarchy = hierarchy();
+        let mut resident = BTreeSet::from([0]);
+        let mut demand_driven_residency_revision = 0_u64;
+        let mut settings = GaussianLodSettings::default();
+        settings.quality = 1.0;
+        // Replacing the one-record root with its two two-record children
+        // would require four active records, so this split cannot fit.
+        settings.budgets.max_active_gaussians = 3;
+
+        for _ in 0..8 {
+            let selected = select_frontier(
+                &hierarchy,
+                &|node| resident.contains(&node),
+                view(),
+                &settings,
+            )
+            .unwrap();
+            assert_eq!(selected.nodes, vec![0]);
+            assert!(selected.requested_nodes.is_empty());
+            assert_eq!(selected.status.active_gaussians, 1);
+            assert_eq!(selected.status.degradation, LodDegradation::ActiveBudget);
+
+            for requested in selected.requested_nodes {
+                if resident.insert(requested) {
+                    demand_driven_residency_revision += 1;
+                }
+            }
+        }
+
+        assert_eq!(resident, BTreeSet::from([0]));
+        assert_eq!(demand_driven_residency_revision, 0);
+    }
+
+    #[test]
+    fn fitting_nonresident_split_preserves_child_demand_at_budget_boundary() {
+        let hierarchy = hierarchy();
+        let mut resident = BTreeSet::from([0]);
+        let mut settings = GaussianLodSettings::default();
+        settings.quality = 1.0;
+        // The root-to-children split requires exactly four active records and
+        // must therefore retain the existing inclusive budget semantics.
+        settings.budgets.max_active_gaussians = 4;
+
+        let waiting = select_frontier(
+            &hierarchy,
+            &|node| resident.contains(&node),
+            view(),
+            &settings,
+        )
+        .unwrap();
+        assert_eq!(waiting.nodes, vec![0]);
+        assert_eq!(waiting.requested_nodes, vec![1, 2]);
+        assert_eq!(waiting.status.active_gaussians, 1);
+        assert_eq!(waiting.status.degradation, LodDegradation::Residency);
+
+        resident.extend(waiting.requested_nodes);
+        let resident_children = select_frontier(
+            &hierarchy,
+            &|node| resident.contains(&node),
+            view(),
+            &settings,
+        )
+        .unwrap();
+        assert_eq!(resident_children.nodes, vec![1, 2]);
+        assert!(resident_children.requested_nodes.is_empty());
+        assert_eq!(resident_children.status.active_gaussians, 4);
+        assert_eq!(
+            resident_children.status.degradation,
+            LodDegradation::ActiveBudget
+        );
+    }
+
+    #[test]
     fn missing_child_requests_once_and_keeps_resident_ancestor() {
         let hierarchy = hierarchy();
         let resident = BTreeSet::from([0, 1]);
@@ -1406,21 +2606,157 @@ mod tests {
     }
 
     #[test]
-    fn visibility_filters_whole_branches() {
+    fn frontier_and_requests_publish_in_node_order() {
+        let mut hierarchy = hierarchy();
+        hierarchy.nodes.get_mut(&0).unwrap().1.reverse();
+        let resident = HashSet::from([0]);
+        let mut settings = GaussianLodSettings::default();
+        settings.quality = 1.0;
+        settings.budgets.max_active_gaussians = 100;
+
+        let selected = select_frontier(
+            &hierarchy,
+            &|node| resident.contains(&node),
+            view(),
+            &settings,
+        )
+        .unwrap();
+        assert_eq!(selected.nodes, vec![0]);
+        assert_eq!(selected.requested_nodes, vec![1, 2]);
+    }
+
+    #[test]
+    fn visibility_refines_only_intersecting_branches_but_keeps_invisible_siblings() {
         let hierarchy = hierarchy();
         let mut settings = GaussianLodSettings::default();
         settings.quality = 1.0;
         settings.budgets.max_active_gaussians = 100;
+
+        let left = select_frontier_with_visibility(
+            &hierarchy,
+            &AllResident,
+            view(),
+            &settings,
+            |node, _| matches!(node, 0 | 1 | 3 | 4),
+        )
+        .unwrap();
+        assert_eq!(left.nodes, vec![2, 3, 4]);
+        assert_eq!(left.status.active_gaussians, 10);
+        assert_complete_source_antichain(&hierarchy, &left.nodes);
+
+        let right = select_frontier_with_visibility(
+            &hierarchy,
+            &AllResident,
+            view(),
+            &settings,
+            |node, _| matches!(node, 0 | 2 | 5 | 6),
+        )
+        .unwrap();
+        assert_eq!(right.nodes, vec![1, 5, 6]);
+        assert_eq!(right.status.active_gaussians, 10);
+        assert_complete_source_antichain(&hierarchy, &right.nodes);
+
+        // The cut selected before an arbitrary camera teleport is still a
+        // complete source partition for the newly visible half. Camera motion
+        // only changes which covered branch should be refined next.
+        assert_complete_source_antichain(&hierarchy, &left.nodes);
+    }
+
+    #[test]
+    fn offscreen_roots_remain_in_the_global_guard_cut_and_demand() {
+        let hierarchy = hierarchy();
+        let mut settings = GaussianLodSettings::default();
+        settings.quality = 1.0;
+        settings.budgets.max_active_gaussians = 100;
+
+        let resident =
+            select_frontier_with_visibility(&hierarchy, &AllResident, view(), &settings, |_, _| {
+                false
+            })
+            .unwrap();
+        assert_eq!(resident.nodes, vec![0]);
+        assert!(resident.requested_nodes.is_empty());
+        assert_eq!(resident.status.achieved_max_error_px, 0.0);
+        assert_eq!(resident.status.achieved_max_target_ratio, 0.0);
+        assert_complete_source_antichain(&hierarchy, &resident.nodes);
+
+        let missing =
+            select_frontier_with_visibility(&hierarchy, &|_| false, view(), &settings, |_, _| {
+                false
+            })
+            .unwrap();
+        assert!(missing.nodes.is_empty());
+        assert_eq!(missing.requested_nodes, vec![0]);
+        assert_eq!(missing.status.degradation, LodDegradation::Residency);
+    }
+
+    #[test]
+    fn missing_invisible_sibling_keeps_parent_until_atomic_split_is_resident() {
+        let hierarchy = hierarchy();
+        let resident = BTreeSet::from([0, 1, 3, 4]);
+        let mut settings = GaussianLodSettings::default();
+        settings.quality = 1.0;
+        settings.budgets.max_active_gaussians = 100;
+
+        let selected = select_frontier_with_visibility(
+            &hierarchy,
+            &|node| resident.contains(&node),
+            view(),
+            &settings,
+            |node, _| matches!(node, 0 | 1 | 3 | 4),
+        )
+        .unwrap();
+        assert_eq!(selected.nodes, vec![0]);
+        assert_eq!(selected.requested_nodes, vec![2]);
+        assert_eq!(selected.status.degradation, LodDegradation::Residency);
+        assert_complete_source_antichain(&hierarchy, &selected.nodes);
+    }
+
+    #[test]
+    fn incomplete_atomic_split_neither_substitutes_nor_requests_children() {
+        let hierarchy = hierarchy();
+        let mut settings = GaussianLodSettings::default();
+        settings.quality = 1.0;
+        settings.budgets.max_active_gaussians = 100;
+        // The root plus only its first child fit in the traversal budget. That
+        // is insufficient evidence for a complete sibling substitution.
+        settings.budgets.max_traversal_nodes_per_view = 2;
+
+        let selected = select_frontier_with_visibility(
+            &hierarchy,
+            &|node| node == 0,
+            view(),
+            &settings,
+            |node, _| matches!(node, 0 | 1),
+        )
+        .unwrap();
+        assert_eq!(selected.nodes, vec![0]);
+        assert!(selected.requested_nodes.is_empty());
+        assert_eq!(selected.status.degradation, LodDegradation::TraversalBudget);
+        assert_complete_source_antichain(&hierarchy, &selected.nodes);
+    }
+
+    #[test]
+    fn global_coverage_refinement_stays_within_active_budget() {
+        let hierarchy = hierarchy();
+        let mut settings = GaussianLodSettings::default();
+        settings.quality = 1.0;
+        // One visible half may refine: 2 off-screen representatives plus 8
+        // visible representatives exactly fill the global cut budget.
+        settings.budgets.max_active_gaussians = 10;
+
         let selected = select_frontier_with_visibility(
             &hierarchy,
             &AllResident,
             view(),
             &settings,
-            |node, _| !matches!(node, 2 | 5 | 6),
+            |node, _| matches!(node, 0 | 1 | 3 | 4),
         )
         .unwrap();
-        assert_eq!(selected.nodes, vec![3, 4]);
-        assert_eq!(selected.status.active_gaussians, 8);
+        assert_eq!(selected.nodes, vec![2, 3, 4]);
+        assert_eq!(selected.status.active_gaussians, 10);
+        assert!(selected.status.active_gaussians <= settings.budgets.max_active_gaussians);
+        assert_complete_source_antichain(&hierarchy, &selected.nodes);
     }
 
     #[test]
@@ -1473,8 +2809,7 @@ mod tests {
         assert_eq!(rows[0], [1, 1, 1]);
         assert_eq!(rows[1], [10, 4, 1]);
         assert_eq!(rows[2], [16, 16, 4]);
-        assert_eq!(rows[5], [16, 16, 16]);
-        assert_eq!(rows[6], [16, 16, 16]);
+        assert!(rows[3..].iter().all(|row| row == &[16, 16, 16]));
     }
 
     #[test]
@@ -1507,8 +2842,8 @@ mod tests {
         settings.quality = 0.5;
         settings.budgets.max_traversal_nodes_per_view = 3;
         let cut = PreviousCut::compile(&hierarchy, &[3, 4, 5, 6], &settings).unwrap();
-        assert_eq!(cut.accepted, BTreeSet::from([3]));
-        assert_eq!(cut.refined, BTreeSet::from([1]));
+        assert_eq!(cut.accepted, HashSet::from([3]));
+        assert_eq!(cut.refined, HashSet::from([1]));
         assert_eq!(cut.traversal_nodes_visited, 2);
 
         let selected = select_frontier_with_previous(
@@ -1705,7 +3040,9 @@ mod tests {
     fn default_perspective_selection_is_uniform_scale_invariant() {
         let hierarchy = hierarchy();
         let mut settings = GaussianLodSettings::default();
-        settings.quality = 0.5;
+        // Keep the assertion below a leaf-exact target so the comparison
+        // exercises nonzero projected error and target-ratio math.
+        settings.quality = 0.25;
         settings.hysteresis = 0.0;
         settings.budgets.max_active_gaussians = 100;
 
@@ -1715,7 +3052,7 @@ mod tests {
         let scaled_selection =
             select_frontier(&hierarchy, &AllResident, scaled, &settings).unwrap();
 
-        assert_eq!(base_selection.nodes, vec![3, 4, 5, 6]);
+        assert_eq!(base_selection.nodes, vec![1, 2]);
         assert_eq!(base_selection.nodes, scaled_selection.nodes);
         assert_eq!(
             base_selection.status.active_gaussians,
@@ -1798,6 +3135,48 @@ mod tests {
         assert_eq!(from_coarse.nodes, vec![0]);
     }
 
+    fn force_sparse_compiled_index(
+        mut hierarchy: CompiledManifestLodHierarchy,
+    ) -> CompiledManifestLodHierarchy {
+        hierarchy.node_indices = CompiledManifestNodeIndices::Sparse(
+            hierarchy
+                .manifest
+                .nodes
+                .iter()
+                .enumerate()
+                .map(|(index, node)| (node.id, index))
+                .collect(),
+        );
+        hierarchy.page_indices = CompiledManifestPageIndices::Sparse(
+            hierarchy
+                .manifest
+                .pages
+                .iter()
+                .enumerate()
+                .map(|(index, page)| (page.id, index))
+                .collect(),
+        );
+        hierarchy
+    }
+
+    fn remap_manifest_to_even_node_ids(mut manifest: GaussianLodManifest) -> GaussianLodManifest {
+        let remap = |node: LodNodeId| {
+            LodNodeId(
+                node.0
+                    .checked_mul(2)
+                    .expect("test manifest node IDs fit in u64"),
+            )
+        };
+        for root in &mut manifest.roots {
+            *root = remap(*root);
+        }
+        for node in &mut manifest.nodes {
+            node.id = remap(node.id);
+            node.parent = node.parent.map(remap);
+        }
+        manifest
+    }
+
     #[test]
     fn portable_manifest_runs_through_the_normative_selector() {
         let source = PlanarGaussian3d::from(
@@ -1816,8 +3195,87 @@ mod tests {
         )
         .unwrap();
         let hierarchy = ManifestLodHierarchy::new(&built.manifest).unwrap();
+        let compiled_dense = CompiledManifestLodHierarchy::new(built.manifest.clone()).unwrap();
+        assert!(matches!(
+            &compiled_dense.node_indices,
+            CompiledManifestNodeIndices::DenseOneBased
+        ));
+        assert!(matches!(
+            &compiled_dense.page_indices,
+            CompiledManifestPageIndices::DenseOneBased
+        ));
+        assert!(compiled_dense.node(LodNodeId::INVALID).is_none());
+        assert!(compiled_dense.node(LodNodeId(u64::MAX)).is_none());
+        assert!(compiled_dense.page_descriptor(LodPageId::INVALID).is_none());
+        assert!(
+            compiled_dense
+                .page_descriptor(LodPageId(u64::MAX))
+                .is_none()
+        );
+
+        let compiled_forced_sparse = force_sparse_compiled_index(compiled_dense.clone());
+        for descriptor in &built.manifest.pages {
+            assert_eq!(
+                compiled_dense.page_descriptor(descriptor.id),
+                compiled_forced_sparse.page_descriptor(descriptor.id)
+            );
+        }
+        let compiled_sparse = CompiledManifestLodHierarchy::new(remap_manifest_to_even_node_ids(
+            built.manifest.clone(),
+        ))
+        .unwrap();
+        assert!(matches!(
+            &compiled_sparse.node_indices,
+            CompiledManifestNodeIndices::Sparse(_)
+        ));
+        assert!(compiled_sparse.node(LodNodeId(1)).is_none());
+        assert!(compiled_sparse.node(LodNodeId(2)).is_some());
         let mut settings = GaussianLodSettings::default();
         settings.budgets.max_active_gaussians = 1_000;
+
+        // The borrowed hierarchy keeps its ordered node index and is the
+        // reference for both compiled lookup strategies. Direct and hash-based
+        // lookup must publish identical deterministic cuts at every quality.
+        for quality in [0.0, 0.35, 0.65, 1.0] {
+            settings.quality = quality;
+            let ordered = select_frontier(&hierarchy, &AllResident, view(), &settings).unwrap();
+            let dense = select_frontier(&compiled_dense, &AllResident, view(), &settings).unwrap();
+            let forced_sparse =
+                select_frontier(&compiled_forced_sparse, &AllResident, view(), &settings).unwrap();
+            let sparse =
+                select_frontier(&compiled_sparse, &AllResident, view(), &settings).unwrap();
+            assert_eq!(dense, ordered, "quality={quality}");
+            assert_eq!(forced_sparse, dense, "forced sparse quality={quality}");
+            assert_eq!(
+                sparse.status, dense.status,
+                "sparse status quality={quality}"
+            );
+            assert_eq!(
+                sparse.nodes,
+                dense
+                    .nodes
+                    .iter()
+                    .map(|node| LodNodeId(node.0 * 2))
+                    .collect::<Vec<_>>(),
+                "sparse nodes quality={quality}"
+            );
+            assert_eq!(
+                sparse.requested_nodes,
+                dense
+                    .requested_nodes
+                    .iter()
+                    .map(|node| LodNodeId(node.0 * 2))
+                    .collect::<Vec<_>>(),
+                "sparse requests quality={quality}"
+            );
+            assert!(dense.nodes.windows(2).all(|nodes| nodes[0] < nodes[1]));
+            assert!(
+                dense
+                    .requested_nodes
+                    .windows(2)
+                    .all(|nodes| nodes[0] < nodes[1])
+            );
+        }
 
         settings.quality = 0.0;
         let coarse = select_frontier(&hierarchy, &AllResident, view(), &settings).unwrap();
@@ -1838,5 +3296,136 @@ mod tests {
             fine.status.active_gaussians,
             built.manifest.header.source_gaussian_count
         );
+    }
+
+    #[test]
+    #[ignore = "manual stable-cut selector throughput benchmark"]
+    fn benchmark_large_stable_cut_selection() {
+        const ITERATIONS: u32 = 40;
+        let hierarchy = DenseBenchmarkHierarchy::binary(14);
+        let previous = hierarchy.leaves();
+        let mut settings = GaussianLodSettings {
+            quality: 0.65,
+            hysteresis: 0.1,
+            frustum_culling: false,
+            ..Default::default()
+        };
+        settings.budgets.max_active_gaussians = 2_000_000;
+        settings.budgets.max_traversal_nodes_per_view = 1_000_000;
+
+        let started = Instant::now();
+        for _ in 0..ITERATIONS {
+            let selected = select_frontier_with_previous(
+                black_box(&hierarchy),
+                &AllResident,
+                black_box(view()),
+                black_box(&settings),
+                black_box(&previous),
+            )
+            .unwrap();
+            assert_eq!(selected.nodes, previous);
+            black_box(selected);
+        }
+        let elapsed = started.elapsed();
+        eprintln!(
+            "large stable-cut selection: {ITERATIONS} iterations in {elapsed:?} ({:?}/selection)",
+            elapsed / ITERATIONS,
+        );
+    }
+
+    #[test]
+    #[ignore = "manual compiled-manifest dense-versus-sparse throughput benchmark"]
+    fn benchmark_compiled_manifest_moving_cut_selection() {
+        const ITERATIONS: u32 = 20;
+        let source = PlanarGaussian3d::from(
+            LodTestScene::nested_octants(5)
+                .gaussians
+                .into_iter()
+                .map(|entry| entry.gaussian)
+                .collect::<Vec<_>>(),
+        );
+        let built = build_planar_3d_lod(
+            &source,
+            GaussianLodBuildSettings {
+                leaf_capacity: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let dense = CompiledManifestLodHierarchy::new(built.manifest).unwrap();
+        let sparse = force_sparse_compiled_index(dense.clone());
+        let views = [
+            view(),
+            LodView::perspective(
+                Vec3::new(0.25, 0.0, 0.0),
+                1080.0,
+                std::f32::consts::FRAC_PI_2,
+                0.1,
+            ),
+            LodView::perspective(
+                Vec3::new(0.5, 0.25, 0.0),
+                1080.0,
+                std::f32::consts::FRAC_PI_2,
+                0.1,
+            ),
+            LodView::perspective(
+                Vec3::new(0.25, 0.5, 0.0),
+                1080.0,
+                std::f32::consts::FRAC_PI_2,
+                0.1,
+            ),
+        ];
+        let mut settings = GaussianLodSettings {
+            quality: 0.65,
+            hysteresis: 0.1,
+            frustum_culling: false,
+            ..Default::default()
+        };
+        settings.budgets.max_active_gaussians = 2_000_000;
+        settings.budgets.max_traversal_nodes_per_view = 1_000_000;
+
+        let mut previous = Vec::new();
+        let expected = views
+            .iter()
+            .map(|view| {
+                let selected = select_frontier_with_previous(
+                    &dense,
+                    &AllResident,
+                    *view,
+                    &settings,
+                    &previous,
+                )
+                .unwrap();
+                previous.clone_from(&selected.nodes);
+                selected
+            })
+            .collect::<Vec<_>>();
+        let selections = ITERATIONS * u32::try_from(views.len()).unwrap();
+
+        for (label, hierarchy) in [("dense", &dense), ("sparse", &sparse)] {
+            let started = Instant::now();
+            for _ in 0..ITERATIONS {
+                previous.clear();
+                for (view, expected) in views.iter().zip(&expected) {
+                    let selected = select_frontier_with_previous(
+                        black_box(hierarchy),
+                        &AllResident,
+                        black_box(*view),
+                        black_box(&settings),
+                        black_box(&previous),
+                    )
+                    .unwrap();
+                    assert_eq!(&selected, expected);
+                    previous.clone_from(&selected.nodes);
+                    black_box(selected);
+                }
+            }
+            let elapsed = started.elapsed();
+            eprintln!(
+                "compiled-manifest {label} moving cut: {} nodes, {selections} selections in {elapsed:?} ({:?}/selection)",
+                hierarchy.manifest.nodes.len(),
+                elapsed / selections
+            );
+        }
     }
 }

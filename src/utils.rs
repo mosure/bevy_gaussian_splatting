@@ -6,7 +6,23 @@ use crate::gaussian::settings::{GaussianMode, PlaybackMode, RadixSortDepthBits, 
 #[cfg(feature = "lod")]
 use crate::gaussian::lod_debug::{LodDebugPreset, LodDebugSettings};
 #[cfg(feature = "lod")]
-use crate::gaussian::lod_settings::{GaussianLodSettings, LodSelectionMode, LodSettingsError};
+use crate::gaussian::lod_settings::{
+    GaussianLodSettings, GaussianStreamingSettings, LodSelectionMode, LodSettingsError,
+};
+
+/// Default active-record ceiling used by the standalone viewer.
+#[cfg(feature = "lod")]
+pub const VIEWER_DEFAULT_LOD_MAX_ACTIVE_GAUSSIANS: u64 = 8_000_000;
+/// Default page-transport concurrency used by standalone viewer packages.
+#[cfg(feature = "lod")]
+pub const VIEWER_DEFAULT_LOD_MAX_CONCURRENT_REQUESTS: u32 = 64;
+/// Stateless selector policy used by the standalone viewer.
+///
+/// The reusable library keeps its temporal hysteresis default. The viewer uses
+/// a canonical cut for an identical camera and quality so returning to a pose
+/// cannot settle on a history-dependent frontier.
+#[cfg(feature = "lod")]
+pub const VIEWER_DEFAULT_LOD_HYSTERESIS: f32 = 0.0;
 
 #[cfg(feature = "lod")]
 #[derive(Debug, Serialize, Deserialize, clap::Args)]
@@ -18,6 +34,20 @@ pub struct GaussianLodViewerArgs {
         help = "detail quality in [0,1]: 0 is coarsest, 1 is exact, and intermediate detail scales with projected node size and pixel error"
     )]
     pub lod_quality: f32,
+
+    #[arg(
+        long,
+        default_value_t = VIEWER_DEFAULT_LOD_MAX_ACTIVE_GAUSSIANS,
+        help = "maximum active Gaussians in one LoD cut; values above the viewer's resident-record capacity are clamped"
+    )]
+    pub lod_max_active_gaussians: u64,
+
+    #[arg(
+        long,
+        default_value_t = VIEWER_DEFAULT_LOD_MAX_CONCURRENT_REQUESTS,
+        help = "maximum concurrent LoD page transport requests for standalone packages; lower this for constrained HTTP origins"
+    )]
+    pub lod_max_concurrent_requests: u32,
 
     #[arg(
         long,
@@ -40,6 +70,8 @@ impl Default for GaussianLodViewerArgs {
     fn default() -> Self {
         Self {
             lod_quality: 1.0,
+            lod_max_active_gaussians: VIEWER_DEFAULT_LOD_MAX_ACTIVE_GAUSSIANS,
+            lod_max_concurrent_requests: VIEWER_DEFAULT_LOD_MAX_CONCURRENT_REQUESTS,
             lod_freeze: false,
             lod_debug: None,
         }
@@ -178,13 +210,29 @@ impl GaussianSplattingViewer {
     #[cfg(feature = "lod")]
     pub fn lod_settings(&self) -> Result<GaussianLodSettings, LodSettingsError> {
         let lod = &self.lod;
-        let settings = GaussianLodSettings {
+        let mut settings = GaussianLodSettings {
             quality: lod.lod_quality,
+            hysteresis: VIEWER_DEFAULT_LOD_HYSTERESIS,
             selection_mode: if lod.lod_freeze {
                 LodSelectionMode::Frozen
             } else {
                 LodSelectionMode::Dynamic
             },
+            ..default()
+        };
+        settings.budgets.max_active_gaussians = lod
+            .lod_max_active_gaussians
+            .min(settings.budgets.max_resident_gaussians);
+        settings.validate()?;
+        Ok(settings)
+    }
+
+    /// Builds the viewer's per-package transport policy without changing the
+    /// reusable library default.
+    #[cfg(feature = "lod")]
+    pub fn lod_streaming_settings(&self) -> Result<GaussianStreamingSettings, LodSettingsError> {
+        let settings = GaussianStreamingSettings {
+            max_concurrent_requests: self.lod.lod_max_concurrent_requests,
             ..default()
         };
         settings.validate()?;
@@ -305,21 +353,50 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
-    fn lod_cli_defaults_match_runtime_defaults() {
+    fn lod_cli_defaults_promote_only_the_viewer_active_budget() {
         let viewer = GaussianSplattingViewer::try_parse_from(["viewer"])
             .expect("viewer defaults should parse");
+        let settings = viewer
+            .lod_settings()
+            .expect("default viewer LoD policy is valid");
+        let library_default = GaussianLodSettings::default();
+        assert_eq!(library_default.budgets.max_active_gaussians, 2_000_000);
+        assert_ne!(
+            library_default.hysteresis, VIEWER_DEFAULT_LOD_HYSTERESIS,
+            "the viewer policy must not change the reusable library default"
+        );
+        let mut expected = library_default;
+        expected.hysteresis = VIEWER_DEFAULT_LOD_HYSTERESIS;
+        expected.budgets.max_active_gaussians = VIEWER_DEFAULT_LOD_MAX_ACTIVE_GAUSSIANS;
+        assert_eq!(settings, expected);
+        assert!(settings.budgets.max_active_gaussians <= settings.budgets.max_resident_gaussians);
+        let streaming = viewer
+            .lod_streaming_settings()
+            .expect("default viewer streaming policy is valid");
         assert_eq!(
-            viewer.lod_settings().expect("default LoD policy is valid"),
-            GaussianLodSettings::default()
+            GaussianStreamingSettings::default().max_concurrent_requests,
+            8
+        );
+        assert_eq!(
+            streaming.max_concurrent_requests,
+            VIEWER_DEFAULT_LOD_MAX_CONCURRENT_REQUESTS
         );
     }
 
     #[test]
     fn lod_query_fields_remain_flattened_and_round_trip() {
-        const LOD_QUERY_FIELDS: [&str; 3] = ["lod_quality", "lod_freeze", "lod_debug"];
+        const LOD_QUERY_FIELDS: [&str; 5] = [
+            "lod_quality",
+            "lod_max_active_gaussians",
+            "lod_max_concurrent_requests",
+            "lod_freeze",
+            "lod_debug",
+        ];
 
         let mut viewer = GaussianSplattingViewer::default();
         viewer.lod.lod_quality = 0.375;
+        viewer.lod.lod_max_active_gaussians = 3_500_000;
+        viewer.lod.lod_max_concurrent_requests = 24;
         let serialized = serde_json::to_value(&viewer).expect("viewer should serialize");
         let object = serialized
             .as_object()
@@ -343,6 +420,8 @@ mod tests {
         let decoded: GaussianSplattingViewer = serde_json::from_value(serialized.clone())
             .expect("flattened viewer should deserialize");
         assert_eq!(decoded.lod.lod_quality, 0.375);
+        assert_eq!(decoded.lod.lod_max_active_gaussians, 3_500_000);
+        assert_eq!(decoded.lod.lod_max_concurrent_requests, 24);
 
         let mut legacy = serialized;
         let legacy = legacy
@@ -355,6 +434,14 @@ mod tests {
         let decoded: GaussianSplattingViewer = serde_json::from_value(legacy)
             .expect("pre-LoD flattened viewer should still deserialize");
         assert_eq!(decoded.lod.lod_quality, 1.0);
+        assert_eq!(
+            decoded.lod.lod_max_active_gaussians,
+            VIEWER_DEFAULT_LOD_MAX_ACTIVE_GAUSSIANS
+        );
+        assert_eq!(
+            decoded.lod.lod_max_concurrent_requests,
+            VIEWER_DEFAULT_LOD_MAX_CONCURRENT_REQUESTS
+        );
         assert!(!decoded.lod.lod_freeze);
         assert_eq!(decoded.lod.lod_debug, None);
     }
@@ -364,13 +451,86 @@ mod tests {
         let viewer = GaussianSplattingViewer::try_parse_from([
             "viewer",
             "--lod-quality=0.25",
+            "--lod-max-active-gaussians=3500000",
+            "--lod-max-concurrent-requests=32",
             "--lod-freeze",
         ])
         .expect("valid LoD CLI overrides should parse");
         let settings = viewer.lod_settings().expect("overrides should validate");
 
         assert_eq!(settings.quality, 0.25);
+        assert_eq!(settings.budgets.max_active_gaussians, 3_500_000);
         assert_eq!(settings.selection_mode, LodSelectionMode::Frozen);
+        assert_eq!(
+            viewer
+                .lod_streaming_settings()
+                .expect("streaming override should validate")
+                .max_concurrent_requests,
+            32
+        );
+    }
+
+    #[test]
+    fn lod_active_budget_override_is_validated_and_bounded_by_residency() {
+        let resident_capacity = GaussianLodSettings::default()
+            .budgets
+            .max_resident_gaussians;
+        let clamped = GaussianSplattingViewer::try_parse_from([
+            "viewer",
+            "--lod-max-active-gaussians=18446744073709551615",
+        ])
+        .expect("u64 override should parse")
+        .lod_settings()
+        .expect("an oversized override should clamp to resident capacity");
+        assert_eq!(clamped.budgets.max_active_gaussians, resident_capacity);
+
+        let zero =
+            GaussianSplattingViewer::try_parse_from(["viewer", "--lod-max-active-gaussians=0"])
+                .expect("zero is syntactically an integer");
+        assert!(matches!(
+            zero.lod_settings(),
+            Err(LodSettingsError::ZeroBudget("budgets.max_active_gaussians"))
+        ));
+    }
+
+    #[test]
+    fn lod_transport_concurrency_is_validated_in_the_documented_range() {
+        let zero =
+            GaussianSplattingViewer::try_parse_from(["viewer", "--lod-max-concurrent-requests=0"])
+                .expect("zero is syntactically an integer");
+        assert!(matches!(
+            zero.lod_streaming_settings(),
+            Err(LodSettingsError::ZeroBudget(
+                "streaming.max_concurrent_requests"
+            ))
+        ));
+
+        let oversized = GaussianSplattingViewer::try_parse_from([
+            "viewer",
+            "--lod-max-concurrent-requests=257",
+        ])
+        .expect("257 is syntactically an integer");
+        assert!(matches!(
+            oversized.lod_streaming_settings(),
+            Err(LodSettingsError::OutOfRange {
+                field: "streaming.max_concurrent_requests",
+                min: "1",
+                max: "256",
+            })
+        ));
+
+        for valid in [1, 256] {
+            let argument = format!("--lod-max-concurrent-requests={valid}");
+            let viewer = GaussianSplattingViewer::try_parse_from(["viewer", argument.as_str()])
+                .expect("concurrency is syntactically an integer");
+            assert_eq!(
+                viewer
+                    .lod_streaming_settings()
+                    .expect("boundary concurrency should validate")
+                    .max_concurrent_requests,
+                valid
+            );
+        }
     }
 
     #[test]
@@ -378,14 +538,20 @@ mod tests {
         let help = GaussianSplattingViewer::command()
             .render_long_help()
             .to_string();
-        for visible in ["--lod-quality", "--lod-freeze", "--lod-debug"] {
+        for visible in [
+            "--lod-quality",
+            "--lod-max-active-gaussians",
+            "--lod-max-concurrent-requests",
+            "--lod-freeze",
+            "--lod-debug",
+        ] {
             assert!(help.contains(visible), "missing primary control {visible}");
         }
-        for hidden in [
-            "--lod-enabled",
-            "--lod-max-active-gaussians",
-            "--lod-debug-color",
-        ] {
+        assert!(help.contains("[default: 8000000]"));
+        assert!(help.contains("[default: 64]"));
+        assert!(help.contains("transport requests"));
+        assert!(help.contains("resident-record capacity"));
+        for hidden in ["--lod-enabled", "--lod-debug-color", "--lod-hysteresis"] {
             assert!(
                 !help.contains(hidden),
                 "removed control leaked into help: {hidden}"

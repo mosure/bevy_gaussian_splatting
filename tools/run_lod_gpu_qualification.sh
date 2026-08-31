@@ -33,6 +33,11 @@ for covariance in '' 'precompute_covariance_3d'; do
   RUN_GPU_RENDER_TESTS=1 run "${cargo_cmd[@]}" test --locked \
     --no-default-features --features "headless testing ${covariance}" \
     --test lod_quality_render -- --nocapture --test-threads=1
+  RUN_GPU_RENDER_TESTS=1 run "${cargo_cmd[@]}" test --locked \
+    --no-default-features --features "headless testing lod_build_sh3 ${covariance}" \
+    --test lod_morph_radiance_render \
+    headless::authenticated_abi16_k2_morph_radiance_visibility \
+    -- --exact --nocapture --test-threads=1
 done
 
 RUN_GPU_LOD_ATLAS_TESTS=1 run "${cargo_cmd[@]}" test --locked --lib \
@@ -56,7 +61,12 @@ RUN_GPU_DEVICE_LOSS_TESTS=1 run "${cargo_cmd[@]}" test --locked \
   -- --exact --nocapture --test-threads=1
 
 RUN_GPU_LOD_HIERARCHY_TESTS=1 run "${cargo_cmd[@]}" test --locked --lib \
-  --features 'lod_build testing' gpu_global_external_multi_run_matches_cpu_topology \
+  --no-default-features \
+  --features 'lod_build_sh3 lod testing' gpu_collision_sort_matches_cpu_canonical_order \
+  -- --ignored --nocapture --test-threads=1
+RUN_GPU_LOD_HIERARCHY_TESTS=1 run "${cargo_cmd[@]}" test --locked --lib \
+  --no-default-features \
+  --features 'lod_build_sh3 lod testing' gpu_sorted_external_multi_run_matches_cpu_package \
   -- --ignored --nocapture --test-threads=1
 
 if [[ "${BGS_RUN_CROSS_ADAPTER:-0}" == 1 ]]; then

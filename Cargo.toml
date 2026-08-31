@@ -84,22 +84,40 @@ io_flexbuffers = ["dep:flexbuffers"]
 io_ply = ["dep:ply-rs"]
 
 # Portable hierarchy/page contracts always compile; this flag installs the
-# asset loaders and GPU/runtime LoD systems.
-lod = ["dep:js-sys", "dep:wasm-bindgen-futures", "dep:ureq"]
+# asset loaders and GPU/runtime LoD systems. Native transient hierarchy
+# construction uses Bevy's worker pool so large flat clouds never block the
+# main application schedule.
+lod = [
+  "dep:js-sys",
+  "dep:sha2",
+  "dep:wasm-bindgen-futures",
+  "dep:ureq",
+  "bevy/multi_threaded",
+  # The canonical package builder emits Flexbuffers manifests. Runtime package
+  # loading must decode that format without relying on unrelated default flags.
+  "io_flexbuffers",
+]
 # Supported storage-buffer LoD renderer bundle. The internal `lod_render_path`
 # cfg additionally excludes the deprecated buffer-texture and WebGL2 paths.
 lod_render = ["lod", "buffer_storage", "sort_radix"]
-# Production package builder profile. Source leaves retain the full SH3 data
-# used by the canonical PLY and Trellis assets.
+# Production package builder core. The spherical-harmonic degree is part of
+# the portable package ABI, so callers must select it explicitly instead of
+# inheriting a desktop-only default. Use `lod_build_sh3` for canonical desktop
+# PLY assets and `lod_build_sh0` for the official web profile.
 lod_build = [
   "planar",
   "buffer_storage",
-  "sh3",
+  "sort_rayon",
   "sort_std",
   "io_flexbuffers",
   "io_ply",
   "dep:pollster",
+  "dep:rustix",
+  "dep:sha2",
+  "dep:windows-sys",
 ]
+lod_build_sh0 = ["lod_build", "sh0"]
+lod_build_sh3 = ["lod_build", "sh3"]
 
 material_noise = ["noise", "dep:noise"]
 
@@ -205,6 +223,7 @@ rand = "0.9"
 rayon = { version = "1.8", optional = true }
 serde = "1.0"
 serde_json = "1.0"
+sha2 = { version = "0.10", optional = true }
 static_assertions = "1.1"
 typenum = "1.18"
 wgpu = "29"
@@ -220,6 +239,12 @@ wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ureq = { version = "=3.3.0", optional = true }
+
+[target.'cfg(any(target_os = "android", target_os = "linux", target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "visionos", target_os = "watchos", target_os = "redox"))'.dependencies]
+rustix = { version = "1.1", optional = true, features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
@@ -260,6 +285,7 @@ features = [
   'ReadableStream',
   'ReadableStreamDefaultReader',
   'Response',
+  'Url',
   'Window',
 ]
 
@@ -268,7 +294,6 @@ features = [
 crossbeam-channel = "0.5.15"
 futures-intrusive = { version = "0.5.0" }
 pollster = "0.4.0"
-sha2 = "0.10"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"

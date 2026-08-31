@@ -9,12 +9,16 @@
 //! and manifest-page validation stays in the bounded page preprocessor; a typed
 //! invalidation handoff removes any encoded record rejected there before retry.
 
-use std::{collections::BTreeMap, fmt, path::PathBuf};
+use std::{fmt, path::PathBuf, sync::Arc};
+
+#[cfg(any(target_arch = "wasm32", test))]
+use std::collections::BTreeMap;
 
 use crate::gaussian::formats::planar_3d_lod::GaussianLodManifest;
 
 use super::transport::{
-    LodPageId, LodPageTransport, PagePayload, PagePoll, PageRequest, page_checksum64,
+    CompiledPageIndex, LodPageId, LodPageTransport, PagePayload, PagePoll, PageRequest,
+    page_checksum64,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -74,7 +78,13 @@ impl PersistentCachePackageIdentity {
         manifest
             .validate()
             .map_err(|error| PersistentCacheError::InvalidManifest(error.to_string()))?;
-        Ok(Self {
+        Ok(Self::from_validated_manifest(manifest))
+    }
+
+    /// Derives immutable cache identity from a manifest already validated by
+    /// an in-crate owner.
+    pub(crate) fn from_validated_manifest(manifest: &GaussianLodManifest) -> Self {
+        Self {
             manifest_version: manifest.header.manifest_version,
             page_schema_version: manifest.header.page_schema_version,
             required_features: manifest.header.required_features,
@@ -85,7 +95,7 @@ impl PersistentCachePackageIdentity {
             builder_abi_version: manifest.build.builder_abi_version,
             reducer_version: manifest.build.reducer_version,
             package_version: None,
-        })
+        }
     }
 
     pub fn with_package_version(
@@ -155,15 +165,24 @@ impl PersistentCachePageIdentity {
 /// Validated page-identity index copied from a manifest.
 #[derive(Clone, Debug)]
 pub struct PersistentCachePageIdentities {
-    entries: BTreeMap<LodPageId, PersistentCachePageIdentity>,
+    package: Arc<PersistentCachePackageIdentity>,
+    entries: Arc<[PersistentCachePageIdentityMetadata]>,
+    index: CompiledPageIndex,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PersistentCachePageIdentityMetadata {
+    page_id: LodPageId,
+    content_hash: u64,
+    encoded_len: u64,
 }
 
 impl PersistentCachePageIdentities {
     pub fn from_manifest(manifest: &GaussianLodManifest) -> Result<Self, PersistentCacheError> {
-        Self::from_manifest_with_package_identity(
-            manifest,
-            PersistentCachePackageIdentity::from_manifest(manifest)?,
-        )
+        manifest
+            .validate()
+            .map_err(|error| PersistentCacheError::InvalidManifest(error.to_string()))?;
+        Self::from_validated_manifest(manifest)
     }
 
     pub fn from_manifest_with_package_identity(
@@ -173,27 +192,55 @@ impl PersistentCachePageIdentities {
         manifest
             .validate()
             .map_err(|error| PersistentCacheError::InvalidManifest(error.to_string()))?;
-        let mut entries = BTreeMap::new();
+        Self::from_validated_manifest_with_package_identity(manifest, package)
+    }
+
+    /// Builds page cache identities from an immutable manifest already
+    /// validated by an in-crate owner.
+    pub(crate) fn from_validated_manifest(
+        manifest: &GaussianLodManifest,
+    ) -> Result<Self, PersistentCacheError> {
+        let package = PersistentCachePackageIdentity::from_validated_manifest(manifest);
+        Self::from_validated_manifest_with_package_identity(manifest, package)
+    }
+
+    pub(crate) fn from_validated_manifest_with_package_identity(
+        manifest: &GaussianLodManifest,
+        package: PersistentCachePackageIdentity,
+    ) -> Result<Self, PersistentCacheError> {
+        let index =
+            CompiledPageIndex::compile(manifest.pages.len(), |index| manifest.pages[index].id);
+        let mut entries = Vec::with_capacity(manifest.pages.len());
         for descriptor in &manifest.pages {
             let storage = descriptor
                 .storage
                 .as_ref()
                 .ok_or(PersistentCacheError::MissingStorage(descriptor.id))?;
-            entries.insert(
-                descriptor.id,
-                PersistentCachePageIdentity {
-                    package: package.clone(),
-                    page_id: descriptor.id,
-                    content_hash: descriptor.content_hash,
-                    encoded_len: storage.encoded_len,
-                },
-            );
+            entries.push(PersistentCachePageIdentityMetadata {
+                page_id: descriptor.id,
+                content_hash: descriptor.content_hash,
+                encoded_len: storage.encoded_len,
+            });
         }
-        Ok(Self { entries })
+        Ok(Self {
+            package: Arc::new(package),
+            entries: entries.into(),
+            index,
+        })
     }
 
-    pub fn get(&self, page_id: LodPageId) -> Option<&PersistentCachePageIdentity> {
-        self.entries.get(&page_id)
+    /// Materializes one owned validation identity at the operation boundary.
+    /// Package metadata, including an optional version string, is stored only
+    /// once while the immutable index is idle.
+    pub fn get(&self, page_id: LodPageId) -> Option<PersistentCachePageIdentity> {
+        let index = self.index.get(page_id, self.entries.len())?;
+        let metadata = self.entries.get(index)?;
+        (metadata.page_id == page_id).then(|| PersistentCachePageIdentity {
+            package: self.package.as_ref().clone(),
+            page_id: metadata.page_id,
+            content_hash: metadata.content_hash,
+            encoded_len: metadata.encoded_len,
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -206,7 +253,7 @@ impl PersistentCachePageIdentities {
 
     fn validation(&self, page_id: LodPageId) -> Option<PersistentCachePageValidation> {
         Some(PersistentCachePageValidation {
-            identity: self.entries.get(&page_id)?.clone(),
+            identity: self.get(page_id)?,
         })
     }
 }

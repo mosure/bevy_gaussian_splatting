@@ -175,7 +175,7 @@ fn encoded_browser_transport_fixture() -> (
         encoded_len: encoded.len() as u64,
     });
     let identities = PersistentCachePageIdentities::from_manifest(&built.manifest).unwrap();
-    let identity = identities.get(page.id).unwrap().clone();
+    let identity = identities.get(page.id).unwrap();
     let payload = PagePayload::new(page.id, encoded);
     (identities, identity, payload)
 }

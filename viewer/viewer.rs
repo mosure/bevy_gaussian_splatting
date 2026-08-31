@@ -1,5 +1,9 @@
 // TODO: move to editor crate
-use std::path::{Path, PathBuf};
+#[cfg(feature = "lod")]
+use std::borrow::Cow;
+#[cfg(feature = "lod")]
+use std::path::Path;
+use std::path::PathBuf;
 
 use bevy::{
     app::AppExit,
@@ -12,11 +16,10 @@ use bevy::{
     render::view::screenshot::{Screenshot, save_to_disk},
 };
 
+#[cfg(all(feature = "lod", not(target_arch = "wasm32")))]
+use bevy::asset::io::file::FileAssetReader;
 #[cfg(all(feature = "file_asset", not(target_arch = "wasm32")))]
-use bevy::asset::{
-    AssetApp,
-    io::{AssetSourceBuilder, file::FileAssetReader},
-};
+use bevy::asset::{AssetApp, io::AssetSourceBuilder};
 
 #[cfg(feature = "web_asset")]
 use bevy::asset::io::web::WebAssetPlugin;
@@ -43,13 +46,15 @@ use bevy_gaussian_splatting::{
 
 #[cfg(feature = "lod")]
 use bevy_gaussian_splatting::{
-    GaussianLodBridgeConfig, GaussianLodDebugAvailability, GaussianLodHandle, GaussianLodLifecycle,
-    GaussianLodPackageSource, GaussianLodSettings, GaussianLodSourceKind, GaussianLodStatus,
-    LodDebugPreset, LodQualityTarget, gaussian::lod_settings::LodSelectionMode,
+    GaussianLodAsset, GaussianLodBridgeConfig, GaussianLodBuildSettings,
+    GaussianLodDebugAvailability, GaussianLodHandle, GaussianLodLifecycle,
+    GaussianLodPackageConfig, GaussianLodPackageSource, GaussianLodSettings, GaussianLodSourceKind,
+    GaussianLodStatus, GaussianStreamingSettings, LodBounds, LodDebugPreset, LodQualityTarget,
+    gaussian::lod_settings::LodSelectionMode,
 };
 
 #[cfg(all(test, feature = "lod"))]
-use bevy_gaussian_splatting::utils::GaussianLodViewerArgs;
+use bevy_gaussian_splatting::utils::{GaussianLodViewerArgs, VIEWER_DEFAULT_LOD_HYSTERESIS};
 
 #[cfg(not(target_arch = "wasm32"))]
 use bevy_gaussian_splatting::{
@@ -82,6 +87,10 @@ struct SceneCameraApplied;
 #[derive(Component, Debug, Default)]
 struct SceneRenderModeApplied;
 
+#[cfg(feature = "lod")]
+#[derive(Component, Debug, Default)]
+struct LodPackageCameraApplied;
+
 // Bevy's perspective matrix uses infinite reverse-Z, but its extracted shader
 // frustum still applies `PerspectiveProjection::far`. The default 1,000-unit
 // plane is close enough to cut off an otherwise visible Gaussian scene during
@@ -89,6 +98,8 @@ struct SceneRenderModeApplied;
 // subpixel before the viewer reaches its zoom limit.
 const VIEWER_CAMERA_VISIBILITY_FAR: f32 = 1_000_000.0;
 const VIEWER_CAMERA_MAX_ORBIT_RADIUS: f32 = 100_000.0;
+#[cfg(feature = "lod")]
+const VIEWER_PACKAGE_FRAME_PADDING: f32 = 1.05;
 
 fn viewer_perspective_projection() -> PerspectiveProjection {
     PerspectiveProjection {
@@ -111,6 +122,10 @@ fn viewer_pan_orbit_camera() -> PanOrbitCamera {
 #[cfg(feature = "lod")]
 #[derive(Clone, Debug, Resource)]
 struct ViewerLodPolicy(GaussianLodSettings);
+
+#[cfg(feature = "lod")]
+#[derive(Resource)]
+struct ViewerLodStreamingPolicy(GaussianStreamingSettings);
 
 #[cfg(feature = "lod")]
 type ViewerLodDiagnosticsQuery = (
@@ -136,22 +151,42 @@ type ExportCameraQuery = (&'static GlobalTransform, Option<&'static Name>);
 type SceneCameraApplyQuery = (Entity, &'static mut Transform, &'static mut PanOrbitCamera);
 type SceneRenderModeQuery = (Entity, &'static Children);
 type SceneRenderModeFilter = (With<GaussianSceneLoaded>, Without<SceneRenderModeApplied>);
+#[cfg(feature = "lod")]
+type LodPackageCameraQuery = (
+    &'static Camera,
+    &'static Projection,
+    &'static mut Transform,
+    &'static mut PanOrbitCamera,
+);
+#[cfg(feature = "lod")]
+type LodPackageCameraFilter = (With<GaussianCamera>, With<ViewerMainCamera>);
+#[cfg(feature = "lod")]
+type LodPackageEntityFilter = (Without<LodPackageCameraApplied>, Without<GaussianCamera>);
+
+const VIEWER_ASSET_ROOT: &str = "assets";
 
 fn parse_input_file(input_file: &str) -> String {
     #[cfg(feature = "web_asset")]
-    let input_uri = match URL_SAFE.decode(input_file.as_bytes()) {
-        Ok(data) => match String::from_utf8(data) {
-            Ok(decoded) => decoded,
-            Err(_) => input_file.to_string(),
-        },
-        Err(err) => {
-            if let Some(decoded) = decode_percent_encoded(input_file) {
-                return decoded;
-            }
+    let input_uri = if input_file.starts_with("https://") || input_file.starts_with("http://") {
+        // Preserve an already-formed URL byte-for-byte. Percent-decoding its
+        // path here can turn a valid escape into a space before the package or
+        // ordinary Web asset resolver gets a chance to validate it.
+        input_file.to_string()
+    } else {
+        match URL_SAFE.decode(input_file.as_bytes()) {
+            Ok(data) => match String::from_utf8(data) {
+                Ok(decoded) => decoded,
+                Err(_) => input_file.to_string(),
+            },
+            Err(err) => {
+                if let Some(decoded) = decode_percent_encoded(input_file) {
+                    return decoded;
+                }
 
-            // Leave as-is for regular relative paths and already-decoded URLs.
-            debug!("failed to decode base64 input: {:?}", err);
-            input_file.to_string()
+                // Leave as-is for regular relative paths and already-decoded URLs.
+                debug!("failed to decode base64 input: {:?}", err);
+                input_file.to_string()
+            }
         }
     };
 
@@ -161,23 +196,38 @@ fn parse_input_file(input_file: &str) -> String {
     input_uri
 }
 
+/// Resolve the physical manifest location used by Bevy's default asset
+/// source. `AssetServer::load` interprets a relative path beneath the
+/// configured asset root, while package range I/O needs that resolved root in
+/// order to find page shards beside the manifest.
 #[cfg(feature = "lod")]
-fn lod_package_source(manifest_uri: &str) -> GaussianLodPackageSource {
-    if manifest_uri.starts_with("https://") || manifest_uri.starts_with("http://") {
-        let base_url = manifest_uri
-            .rsplit_once('/')
-            .map_or(manifest_uri, |(base, _)| base);
-        GaussianLodPackageSource::url(format!("{base_url}/"))
-    } else {
-        let native_path = manifest_uri.strip_prefix("file://").unwrap_or(manifest_uri);
-        let root = Path::new(native_path)
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."))
-            .to_string_lossy()
-            .into_owned();
-        GaussianLodPackageSource::native_directory(root)
+fn viewer_lod_manifest_location(input_uri: &str) -> Cow<'_, str> {
+    let has_explicit_source = input_uri.contains("://");
+
+    #[cfg(not(target_arch = "wasm32"))]
+    if has_explicit_source || Path::new(input_uri).is_absolute() {
+        return Cow::Borrowed(input_uri);
     }
+
+    #[cfg(target_arch = "wasm32")]
+    if has_explicit_source || input_uri.starts_with('/') {
+        return Cow::Borrowed(input_uri);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let resolved = FileAssetReader::get_base_path()
+        .join(VIEWER_ASSET_ROOT)
+        .join(input_uri)
+        .to_string_lossy()
+        .into_owned();
+
+    #[cfg(target_arch = "wasm32")]
+    let resolved = Path::new(VIEWER_ASSET_ROOT)
+        .join(input_uri)
+        .to_string_lossy()
+        .into_owned();
+
+    Cow::Owned(resolved)
 }
 
 #[cfg(feature = "web_asset")]
@@ -226,6 +276,7 @@ fn setup_gaussian_cloud(
     mut commands: Commands,
     args: Res<GaussianSplattingViewer>,
     #[cfg(feature = "lod")] lod_policy: Res<ViewerLodPolicy>,
+    #[cfg(feature = "lod")] lod_streaming_policy: Res<ViewerLodStreamingPolicy>,
     asset_server: Res<AssetServer>,
     mut gaussian_3d_assets: ResMut<Assets<PlanarGaussian3d>>,
     mut gaussian_4d_assets: ResMut<Assets<PlanarGaussian4d>>,
@@ -248,10 +299,19 @@ fn setup_gaussian_cloud(
     if let Some(input_lod) = &args.input_lod {
         let input_uri = parse_input_file(input_lod);
         log(&format!("loading LoD package {input_uri}"));
+        let manifest_location = viewer_lod_manifest_location(&input_uri);
+        let package_source =
+            match GaussianLodPackageSource::try_from_manifest_uri(manifest_location.as_ref()) {
+                Ok(source) => source,
+                Err(error) => {
+                    error!("could not resolve LoD package source for '{input_uri}': {error}");
+                    return;
+                }
+            };
         let manifest = asset_server.load(&input_uri);
         commands.spawn((
             GaussianLodHandle(manifest),
-            lod_package_source(&input_uri),
+            package_source,
             CloudSettings {
                 gaussian_mode: GaussianMode::Gaussian3d,
                 playback_mode: args.playback_mode,
@@ -261,6 +321,7 @@ fn setup_gaussian_cloud(
                 ..default()
             },
             lod_policy.0.clone(),
+            lod_streaming_policy.0.clone(),
             Name::new("gaussian_lod_package"),
             ShowAxes,
             cloud_transform,
@@ -471,6 +532,193 @@ fn apply_scene_camera_spawn(
 
         commands.entity(entity).insert(SceneCameraApplied);
     }
+}
+
+/// Frames a standalone LoD package once its validated manifest bounds become
+/// available. Scene assets keep their authored camera path above; this only
+/// supplies the camera metadata which a standalone package intentionally lacks.
+#[cfg(feature = "lod")]
+fn apply_lod_package_camera_spawn(
+    mut commands: Commands,
+    packages: Query<(Entity, &GaussianLodHandle, &Transform), LodPackageEntityFilter>,
+    manifests: Res<Assets<GaussianLodAsset>>,
+    mut cameras: Query<LodPackageCameraQuery, LodPackageCameraFilter>,
+) {
+    for (entity, handle, package_transform) in &packages {
+        let Some(manifest) = manifests.get(&handle.0).map(GaussianLodAsset::manifest) else {
+            continue;
+        };
+        let Some(bounds) = manifest.scene_bounds else {
+            // A validated manifest omits bounds only for an empty package.
+            commands.entity(entity).insert(LodPackageCameraApplied);
+            continue;
+        };
+        let Ok((camera, projection, mut camera_transform, mut pan_orbit)) = cameras.single_mut()
+        else {
+            continue;
+        };
+        let Some(viewport) = camera.physical_viewport_size() else {
+            // The primary target size is populated after camera initialization.
+            // Keep retrying without consuming the one-shot marker.
+            continue;
+        };
+        let Projection::Perspective(perspective) = projection else {
+            continue;
+        };
+        let Some((focus, corners)) =
+            transformed_lod_bounds_corners(bounds, package_transform.to_matrix())
+        else {
+            continue;
+        };
+        let world_up = pan_orbit.axis[1];
+        let view_direction = stable_package_view_direction(
+            camera_transform.translation - pan_orbit.target_focus,
+            world_up,
+            pan_orbit.axis[2],
+        );
+        let aspect = viewport.x as f32 / viewport.y.max(1) as f32;
+        let Some(radius) = perspective_package_frame_distance(
+            focus,
+            &corners,
+            view_direction,
+            world_up,
+            perspective.fov,
+            aspect,
+            perspective.near,
+        ) else {
+            continue;
+        };
+        apply_pan_orbit_frame(
+            &mut camera_transform,
+            &mut pan_orbit,
+            focus,
+            view_direction,
+            radius,
+        );
+        commands.entity(entity).insert(LodPackageCameraApplied);
+    }
+}
+
+#[cfg(feature = "lod")]
+fn transformed_lod_bounds_corners(
+    bounds: LodBounds,
+    world_from_local: Mat4,
+) -> Option<(Vec3, [Vec3; 8])> {
+    if !world_from_local.is_finite() {
+        return None;
+    }
+    let min = Vec3::from_array(bounds.min);
+    let max = Vec3::from_array(bounds.max);
+    let focus = world_from_local.transform_point3(min.midpoint(max));
+    let mut corners = [Vec3::ZERO; 8];
+    let mut index = 0;
+    for x in [min.x, max.x] {
+        for y in [min.y, max.y] {
+            for z in [min.z, max.z] {
+                let corner = world_from_local.transform_point3(Vec3::new(x, y, z));
+                if !corner.is_finite() {
+                    return None;
+                }
+                corners[index] = corner;
+                index += 1;
+            }
+        }
+    }
+    focus.is_finite().then_some((focus, corners))
+}
+
+#[cfg(feature = "lod")]
+fn perspective_package_frame_distance(
+    focus: Vec3,
+    corners: &[Vec3; 8],
+    view_direction: Vec3,
+    world_up: Vec3,
+    vertical_fov: f32,
+    aspect: f32,
+    near: f32,
+) -> Option<f32> {
+    if !focus.is_finite()
+        || !vertical_fov.is_finite()
+        || vertical_fov <= 0.0
+        || vertical_fov >= std::f32::consts::PI
+        || !aspect.is_finite()
+        || aspect <= 0.0
+        || !near.is_finite()
+        || near < 0.0
+    {
+        return None;
+    }
+    let view_direction = view_direction.try_normalize()?;
+    let forward = -view_direction;
+    let right = forward.cross(world_up).try_normalize()?;
+    let camera_up = right.cross(forward).try_normalize()?;
+    let vertical_tangent = (vertical_fov * 0.5).tan();
+    let horizontal_tangent = vertical_tangent * aspect;
+    if !vertical_tangent.is_finite()
+        || vertical_tangent <= 0.0
+        || !horizontal_tangent.is_finite()
+        || horizontal_tangent <= 0.0
+    {
+        return None;
+    }
+
+    let mut distance = near.max(0.05);
+    for &corner in corners {
+        if !corner.is_finite() {
+            return None;
+        }
+        let relative = corner - focus;
+        let toward_camera = relative.dot(view_direction);
+        let horizontal_fit =
+            VIEWER_PACKAGE_FRAME_PADDING * relative.dot(right).abs() / horizontal_tangent;
+        let vertical_fit =
+            VIEWER_PACKAGE_FRAME_PADDING * relative.dot(camera_up).abs() / vertical_tangent;
+        distance = distance
+            .max(toward_camera + near)
+            .max(toward_camera + horizontal_fit)
+            .max(toward_camera + vertical_fit);
+    }
+    distance.is_finite().then_some(distance)
+}
+
+#[cfg(feature = "lod")]
+fn stable_package_view_direction(offset: Vec3, world_up: Vec3, fallback: Vec3) -> Vec3 {
+    let mut direction = offset.try_normalize().unwrap_or(fallback);
+    if !direction.is_finite() || direction.cross(world_up).length_squared() <= f32::EPSILON {
+        direction = fallback.try_normalize().unwrap_or(Vec3::Z);
+    }
+    if direction.cross(world_up).length_squared() <= f32::EPSILON {
+        direction = Vec3::Z;
+    }
+    direction
+}
+
+#[cfg(feature = "lod")]
+fn apply_pan_orbit_frame(
+    camera_transform: &mut Transform,
+    pan_orbit: &mut PanOrbitCamera,
+    focus: Vec3,
+    view_direction: Vec3,
+    radius: f32,
+) {
+    let radius = radius.max(pan_orbit.zoom_lower_limit);
+    if let Some(upper) = pan_orbit.zoom_upper_limit.as_mut() {
+        *upper = upper.max(radius);
+    }
+    *camera_transform = Transform::from_translation(focus + view_direction * radius)
+        .looking_at(focus, pan_orbit.axis[1]);
+    let (yaw, pitch, radius) =
+        orbit_from_translation_and_focus(camera_transform.translation, focus, pan_orbit.axis);
+    pan_orbit.focus = focus;
+    pan_orbit.target_focus = focus;
+    pan_orbit.yaw = Some(yaw);
+    pan_orbit.pitch = Some(pitch);
+    pan_orbit.radius = Some(radius);
+    pan_orbit.target_yaw = yaw;
+    pan_orbit.target_pitch = pitch;
+    pan_orbit.target_radius = radius;
+    pan_orbit.initialized = true;
+    pan_orbit.force_update = true;
 }
 
 fn apply_scene_render_mode_override(
@@ -739,6 +987,20 @@ fn show_lod_cloud_panel(
                 status.and_then(|status| status.target_satisfied),
                 status.map(|status| status.degradation),
                 flat_original_path,
+                status.is_some_and(|status| {
+                    status.view_blend_invalid_pressure_evaluations > 0
+                }),
+                status.is_some_and(|status| status.view_blend_missing_consumers > 0),
+                status.is_some_and(|status| status.view_blend_lagging_edges > 0),
+                status.is_some_and(|status| {
+                    status.target_satisfied.is_none()
+                        && status.selected_gaussians > 0
+                        && status.failure.is_none()
+                        && matches!(
+                            status.lifecycle,
+                            GaussianLodLifecycle::Active | GaussianLodLifecycle::Degraded
+                        )
+                }),
             ));
             ui.end_row();
 
@@ -769,21 +1031,33 @@ fn show_lod_cloud_panel(
             );
             ui.end_row();
 
-            ui.label("Selected splats");
+            ui.label("LoD presentation").on_hover_text(
+                "Each retained view owns independent persistent parent/child edges; there is no global morph clock. Ordinary Dynamic resident motion tracks the current view immediately. Bounded catch-up is reserved for late residency, resuming Dynamic after Frozen, or recovery from an invalid-pressure hold. Cleanup publishes an all-consumer radix aggregate; missing consumers are reported as a degraded hold.",
+            );
+            ui.monospace(format_lod_presentation(status, flat_original_path));
+            ui.end_row();
+
+            ui.label("Scene-wide selected").on_hover_text(
+                "Logical splats in the complete scene-wide LoD frontier. Camera visibility controls which subtrees refine, but off-frustum representatives remain in the cut for global coverage; this is not the post-cull draw count.",
+            );
             ui.monospace(format_lod_runtime_count(
                 status.map(|status| status.selected_gaussians),
                 flat_original_path,
             ));
             ui.end_row();
 
-            ui.label("GPU candidates");
+            ui.label("Pre-cull candidates").on_hover_text(
+                "Splats submitted to GPU compaction before live per-splat frustum and visibility rejection. The exact drawn count remains GPU-resident and is not synchronously read back into this panel.",
+            );
             ui.monospace(format_lod_runtime_count(
                 status.map(|status| u64::from(status.submitted_candidates)),
                 flat_original_path,
             ));
             ui.end_row();
 
-            ui.label("Resident pages");
+            ui.label("Cached pages").on_hover_text(
+                "Total decoded LoD page-cache occupancy, including guard and warm pages; not the current draw-cut size",
+            );
             ui.monospace(format_lod_runtime_count(
                 status.map(|status| u64::from(status.resident_pages)),
                 flat_original_path,
@@ -827,7 +1101,7 @@ const fn lod_debug_preset_label(preset: LodDebugPreset) -> &'static str {
         LodDebugPreset::Level => "hierarchy level",
         LodDebugPreset::Page => "page",
         LodDebugPreset::Residency => "residency / fallback",
-        LodDebugPreset::Boundaries => "chunk boundaries",
+        LodDebugPreset::Boundaries => "logical support boundaries",
         LodDebugPreset::SelectionPressure => "selection pressure",
     }
 }
@@ -851,9 +1125,25 @@ fn format_lod_target_outcome(
     satisfied: Option<bool>,
     degradation: Option<bevy_gaussian_splatting::LodDegradation>,
     original_endpoint: bool,
+    presentation_invalid: bool,
+    presentation_missing: bool,
+    presentation_lagging: bool,
+    current_cut_is_updating: bool,
 ) -> String {
     if original_endpoint {
         return "exact by contract".to_owned();
+    }
+    if presentation_invalid {
+        return "degraded: invalid blend pressure".to_owned();
+    }
+    if presentation_missing {
+        return "degraded: incomplete blend consumers".to_owned();
+    }
+    if presentation_lagging {
+        return "presentation catching up".to_owned();
+    }
+    if current_cut_is_updating {
+        return "updating (current cut retained)".to_owned();
     }
     match satisfied {
         Some(true) => "met".to_owned(),
@@ -871,6 +1161,57 @@ fn format_lod_target_outcome(
             }
         },
         None => "waiting".to_owned(),
+    }
+}
+
+#[cfg(feature = "lod")]
+fn format_lod_presentation(status: Option<&GaussianLodStatus>, original_endpoint: bool) -> String {
+    if original_endpoint {
+        return "n/a (original)".to_owned();
+    }
+    let Some(status) = status else {
+        return "initializing".to_owned();
+    };
+    if status.view_blend_edges > 0 {
+        if status.view_blend_invalid_pressure_evaluations > 0 {
+            return format!(
+                "held · invalid pressure {}/{}",
+                format_lod_count(u64::from(status.view_blend_invalid_pressure_evaluations)),
+                format_lod_count(u64::from(status.view_blend_edges)),
+            );
+        }
+        if status.view_blend_missing_consumers > 0 {
+            return format!(
+                "held · missing consumers {}",
+                format_lod_count(u64::from(status.view_blend_missing_consumers)),
+            );
+        }
+        if status.view_blend_lagging_edges > 0 {
+            return format!(
+                "catching up {}/{} · max gap {:.1}%",
+                format_lod_count(u64::from(status.view_blend_lagging_edges)),
+                format_lod_count(u64::from(status.view_blend_edges)),
+                status.view_blend_max_lag * 100.0,
+            );
+        }
+        let behavior = if status.selection_mode == LodSelectionMode::Frozen {
+            "frozen"
+        } else {
+            "camera-continuous"
+        };
+        return format!(
+            "{behavior} · {} adjacent edges",
+            format_lod_count(u64::from(status.view_blend_edges)),
+        );
+    }
+    match status.temporal_transition_mode {
+        Some(bevy_gaussian_splatting::stream::runtime::LodTemporalTransitionMode::Morphing) => {
+            "preparing adjacent blend".to_owned()
+        }
+        Some(
+            bevy_gaussian_splatting::stream::runtime::LodTemporalTransitionMode::BoundedHardCohort,
+        ) => "categorical fallback (blend unavailable)".to_owned(),
+        None => "exact hierarchy level".to_owned(),
     }
 }
 
@@ -923,10 +1264,9 @@ fn apply_viewer_detail_quality(settings: &mut GaussianLodSettings, quality: f32)
 #[cfg(feature = "lod")]
 fn viewer_lod_bridge_config() -> GaussianLodBridgeConfig {
     // The crate default is deliberately conservative for library users. The
-    // viewer already owns an explicit resident-memory budget, so let its
-    // ephemeral bridge admit real review assets up to that same bound. The 2x
-    // stored/atlas headroom covers progressive hierarchy overhead; byte,
-    // page, and commit budgets still cap physical storage.
+    // viewer admits larger transient hierarchy builds, but its physical atlas
+    // remains the ordinary bounded resident page cache. Stored hierarchy
+    // headroom is independent of that physical working set.
     let budgets = GaussianLodSettings::default().budgets;
     let source_gaussians = budgets
         .max_resident_gaussians
@@ -935,10 +1275,36 @@ fn viewer_lod_bridge_config() -> GaussianLodBridgeConfig {
     GaussianLodBridgeConfig {
         max_ephemeral_source_gaussians: source_gaussians,
         max_ephemeral_stored_gaussians: u64::from(source_gaussians).saturating_mul(2),
-        max_atlas_gaussians: source_gaussians.saturating_mul(2),
+        max_atlas_gaussians: source_gaussians,
         max_atlas_bytes: budgets.max_resident_bytes,
         ..Default::default()
     }
+}
+
+#[cfg(feature = "lod")]
+fn viewer_lod_package_config(settings: &GaussianLodSettings) -> GaussianLodPackageConfig {
+    GaussianLodPackageConfig {
+        max_atlas_gaussians: settings
+            .budgets
+            .max_resident_gaussians
+            .try_into()
+            .unwrap_or(u32::MAX),
+        max_atlas_bytes: settings.budgets.max_resident_bytes,
+        ..Default::default()
+    }
+}
+
+#[cfg(feature = "lod")]
+fn viewer_lod_policy(mut settings: GaussianLodSettings) -> GaussianLodSettings {
+    // Express the viewer's fixed resident-record budget as the largest whole
+    // transient-page working set it can hold. This remains source-independent;
+    // bridge record and byte limits may clamp the physical atlas further.
+    let records_per_page = u64::from(GaussianLodBuildSettings::default().leaf_capacity);
+    settings.budgets.max_resident_pages = (settings.budgets.max_resident_gaussians
+        / records_per_page)
+        .try_into()
+        .unwrap_or(u32::MAX);
+    settings
 }
 
 #[cfg(feature = "lod")]
@@ -1007,10 +1373,15 @@ fn viewer_app() {
     log(&format!("{config:?}"));
 
     #[cfg(feature = "lod")]
-    let lod_policy = ViewerLodPolicy(
+    let lod_policy =
+        ViewerLodPolicy(viewer_lod_policy(config.lod_settings().unwrap_or_else(
+            |error| panic!("invalid viewer LoD configuration: {error}"),
+        )));
+    #[cfg(feature = "lod")]
+    let lod_streaming_policy = ViewerLodStreamingPolicy(
         config
-            .lod_settings()
-            .unwrap_or_else(|error| panic!("invalid viewer LoD configuration: {error}")),
+            .lod_streaming_settings()
+            .unwrap_or_else(|error| panic!("invalid viewer LoD transport configuration: {error}")),
     );
     #[cfg(feature = "lod")]
     let lod_bridge_config = viewer_lod_bridge_config();
@@ -1018,6 +1389,12 @@ fn viewer_app() {
     lod_bridge_config
         .validate()
         .unwrap_or_else(|error| panic!("invalid viewer LoD bridge configuration: {error}"));
+    #[cfg(feature = "lod")]
+    let lod_package_config = viewer_lod_package_config(&lod_policy.0);
+    #[cfg(feature = "lod")]
+    lod_package_config
+        .validate()
+        .unwrap_or_else(|error| panic!("invalid viewer LoD package configuration: {error}"));
 
     #[cfg(not(feature = "morph_interpolate"))]
     if config.input_cloud_target.is_some() {
@@ -1063,9 +1440,12 @@ fn viewer_app() {
     app.insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)));
     #[cfg(feature = "lod")]
     app.insert_resource(lod_policy)
-        .insert_resource(lod_bridge_config);
+        .insert_resource(lod_streaming_policy)
+        .insert_resource(lod_bridge_config)
+        .insert_resource(lod_package_config);
     let default_plugins = DefaultPlugins
         .set(AssetPlugin {
+            file_path: VIEWER_ASSET_ROOT.to_owned(),
             meta_check: bevy::asset::AssetMetaCheck::Never,
             unapproved_path_mode: bevy::asset::UnapprovedPathMode::Allow,
             ..default()
@@ -1108,6 +1488,8 @@ fn viewer_app() {
     app.add_plugins(GaussianSplattingPlugin);
     app.add_systems(Startup, setup_gaussian_cloud);
     app.add_systems(Update, apply_scene_camera_spawn);
+    #[cfg(feature = "lod")]
+    app.add_systems(Update, apply_lod_package_camera_spawn);
     app.add_systems(Update, apply_scene_render_mode_override);
     app.add_systems(Update, press_g_save_gltf_scene);
 
@@ -1366,6 +1748,12 @@ mod tests {
         let parsed = parse_input_file(input);
         assert_eq!(parsed, "trellis.glb");
     }
+
+    #[test]
+    fn preserves_escapes_in_an_already_absolute_url() {
+        let input = "https://cdn.example/x%20y/trellis.glb";
+        assert_eq!(parse_input_file(input), input);
+    }
 }
 
 #[cfg(test)]
@@ -1399,18 +1787,39 @@ mod lod_tests {
     use super::*;
 
     #[test]
-    fn package_manifest_paths_resolve_pages_beside_the_manifest() {
+    fn package_auto_frame_system_uses_disjoint_transform_queries() {
+        let mut world = World::new();
+        let mut system = IntoSystem::into_system(apply_lod_package_camera_spawn);
+        system.initialize(&mut world);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_package_manifest_paths_resolve_pages_beside_the_manifest() {
         assert_eq!(
-            lod_package_source("https://cdn.example/scene/model.gsplatlod"),
+            GaussianLodPackageSource::try_from_manifest_uri(
+                "https://cdn.example/scene/model.gsplatlod"
+            )
+            .unwrap(),
             GaussianLodPackageSource::url("https://cdn.example/scene/")
         );
+        let expected_root = FileAssetReader::get_base_path()
+            .join(VIEWER_ASSET_ROOT)
+            .join("scene");
         assert_eq!(
-            lod_package_source("assets/scene/model.gsplatlod"),
-            GaussianLodPackageSource::native_directory("assets/scene")
+            GaussianLodPackageSource::try_from_manifest_uri(
+                viewer_lod_manifest_location("scene/model.gsplatlod").as_ref()
+            )
+            .unwrap(),
+            GaussianLodPackageSource::native_directory(expected_root.to_string_lossy())
         );
+    }
+
+    #[test]
+    fn absolute_package_manifest_uris_bypass_the_default_asset_root() {
         assert_eq!(
-            lod_package_source("model.gsplatlod"),
-            GaussianLodPackageSource::native_directory(".")
+            viewer_lod_manifest_location("https://cdn.example/scene/model.gsplatlod"),
+            "https://cdn.example/scene/model.gsplatlod"
         );
     }
 
@@ -1418,11 +1827,14 @@ mod lod_tests {
     fn viewer_bridge_budget_admits_documented_large_review_assets() {
         const TRELLIS_GAUSSIANS: u32 = 478_368;
         const LOCAL_BONSAI_GAUSSIANS: u32 = 1_071_766;
+        const GARDEN_GAUSSIANS: u32 = 5_834_784;
+        const GARDEN_PACKAGE_PAGES: u64 = 6_517;
 
         let bridge = viewer_lod_bridge_config();
         bridge.validate().unwrap();
         assert!(bridge.max_ephemeral_source_gaussians >= TRELLIS_GAUSSIANS);
         assert!(bridge.max_ephemeral_source_gaussians >= LOCAL_BONSAI_GAUSSIANS);
+        assert!(bridge.max_ephemeral_source_gaussians >= GARDEN_GAUSSIANS);
         assert_eq!(
             u64::from(bridge.max_ephemeral_source_gaussians),
             GaussianLodSettings::default()
@@ -1432,6 +1844,75 @@ mod lod_tests {
         assert_eq!(
             bridge.max_ephemeral_stored_gaussians,
             u64::from(bridge.max_ephemeral_source_gaussians) * 2
+        );
+
+        const EXTREME_SCENE_GAUSSIANS: u64 = 64_000_000;
+
+        let defaults = GaussianSplattingViewer::default()
+            .lod_settings()
+            .expect("default viewer policy should validate");
+        let policy = viewer_lod_policy(defaults.clone());
+        let package = viewer_lod_package_config(&policy);
+        package.validate().unwrap();
+        let transient_page_capacity = u64::from(GaussianLodBuildSettings::default().leaf_capacity);
+        let expected_pages = defaults.budgets.max_resident_gaussians / transient_page_capacity;
+        let physical_records = u64::from(policy.budgets.max_resident_pages)
+            .checked_mul(transient_page_capacity)
+            .unwrap();
+        let garden_leaf_pages = u64::from(GARDEN_GAUSSIANS).div_ceil(transient_page_capacity);
+
+        assert_eq!(transient_page_capacity, 1_024);
+        assert_eq!(policy.budgets.max_active_gaussians, 8_000_000);
+        assert_eq!(policy.hysteresis, VIEWER_DEFAULT_LOD_HYSTERESIS);
+        assert_eq!(defaults.hysteresis, policy.hysteresis);
+        assert_ne!(
+            GaussianLodSettings::default().hysteresis,
+            policy.hysteresis,
+            "the viewer override must not change the reusable library default"
+        );
+        assert!(
+            policy.budgets.max_active_gaussians <= policy.budgets.max_resident_gaussians,
+            "the viewer's active cut must fit its resident-record capacity"
+        );
+        assert_eq!(policy.budgets.max_resident_pages, 7_812);
+        let mut expected_budgets = defaults.budgets;
+        expected_budgets.max_resident_pages = 7_812;
+        assert_eq!(policy.budgets, expected_budgets);
+        assert_eq!(u64::from(policy.budgets.max_resident_pages), expected_pages);
+        assert_eq!(physical_records, 7_999_488);
+        assert!(physical_records <= policy.budgets.max_resident_gaussians);
+        assert!(policy.budgets.max_resident_gaussians - physical_records < transient_page_capacity);
+        assert!(u64::from(policy.budgets.max_resident_pages) >= garden_leaf_pages);
+        assert!(physical_records < EXTREME_SCENE_GAUSSIANS);
+        assert_eq!(
+            u64::from(bridge.max_atlas_gaussians),
+            defaults.budgets.max_resident_gaussians
+        );
+        assert_eq!(bridge.max_atlas_bytes, defaults.budgets.max_resident_bytes);
+        assert_eq!(
+            u64::from(package.max_atlas_gaussians),
+            policy.budgets.max_resident_gaussians
+        );
+        assert_eq!(package.max_atlas_bytes, policy.budgets.max_resident_bytes);
+        assert!(
+            GARDEN_PACKAGE_PAGES * transient_page_capacity
+                <= u64::from(package.max_atlas_gaussians),
+            "the viewer package atlas must hold Garden's complete bounded hierarchy"
+        );
+        assert!(physical_records <= u64::from(bridge.max_atlas_gaussians));
+        assert!(
+            physical_records * std::mem::size_of::<bevy_gaussian_splatting::Gaussian3d>() as u64
+                <= bridge.max_atlas_bytes
+        );
+
+        let mut different_quality = defaults;
+        different_quality.quality = 0.1;
+        assert_eq!(
+            viewer_lod_policy(different_quality)
+                .budgets
+                .max_resident_pages,
+            policy.budgets.max_resident_pages,
+            "resident capacity must not depend on scene size or quality"
         );
     }
 
@@ -1448,11 +1929,18 @@ mod lod_tests {
             format_lod_target(LodQualityTarget::Original),
             "exact original"
         );
-        assert_eq!(format_lod_target_outcome(Some(true), None, false), "met");
+        assert_eq!(
+            format_lod_target_outcome(Some(true), None, false, false, false, false, false),
+            "met"
+        );
         assert_eq!(
             format_lod_target_outcome(
                 Some(false),
                 Some(bevy_gaussian_splatting::LodDegradation::None),
+                false,
+                false,
+                false,
+                false,
                 false,
             ),
             "over target (hysteresis)"
@@ -1462,8 +1950,28 @@ mod lod_tests {
                 Some(false),
                 Some(bevy_gaussian_splatting::LodDegradation::Residency),
                 false,
+                false,
+                false,
+                false,
+                false,
             ),
             "degraded: residency"
+        );
+        assert_eq!(
+            format_lod_target_outcome(None, None, false, false, false, false, true),
+            "updating (current cut retained)"
+        );
+        assert_eq!(
+            format_lod_target_outcome(Some(true), None, false, false, false, true, false),
+            "presentation catching up"
+        );
+        assert_eq!(
+            format_lod_target_outcome(Some(true), None, false, true, false, false, false),
+            "degraded: invalid blend pressure"
+        );
+        assert_eq!(
+            format_lod_target_outcome(Some(true), None, false, false, true, false, false),
+            "degraded: incomplete blend consumers"
         );
         assert_eq!(format_lod_count(1_234_567), "1,234,567");
         assert_eq!(
@@ -1616,6 +2124,168 @@ mod lod_tests {
     }
 
     #[test]
+    fn package_bounds_are_framed_after_the_explicit_cloud_transform() {
+        let bounds = LodBounds::new([-2.0, -1.0, -3.0], [4.0, 5.0, 7.0]).unwrap();
+        let world_from_local = Transform {
+            translation: Vec3::new(11.0, -7.0, 19.0),
+            rotation: Quat::from_rotation_y(0.37),
+            scale: Vec3::new(2.0, 0.5, 3.0),
+        }
+        .to_matrix();
+        let (focus, corners) = transformed_lod_bounds_corners(bounds, world_from_local).unwrap();
+        let expected_focus = world_from_local.transform_point3(Vec3::from_array(bounds.center()));
+        assert!(focus.abs_diff_eq(expected_focus, 1e-5));
+
+        let mut expected_index = 0;
+        for x in [bounds.min[0], bounds.max[0]] {
+            for y in [bounds.min[1], bounds.max[1]] {
+                for z in [bounds.min[2], bounds.max[2]] {
+                    let corner = world_from_local.transform_point3(Vec3::new(x, y, z));
+                    assert!(corners[expected_index].abs_diff_eq(corner, 1e-5));
+                    expected_index += 1;
+                }
+            }
+        }
+
+        let direction = Vec3::new(0.35, 0.2, 1.0).normalize();
+        let distance = perspective_package_frame_distance(
+            focus,
+            &corners,
+            direction,
+            Vec3::Y,
+            std::f32::consts::FRAC_PI_4,
+            9.0 / 16.0,
+            0.1,
+        )
+        .unwrap();
+        assert_perspective_package_fit(
+            focus,
+            &corners,
+            direction,
+            Vec3::Y,
+            (std::f32::consts::FRAC_PI_4, 9.0 / 16.0, 0.1),
+            distance,
+        );
+    }
+
+    #[test]
+    fn package_perspective_fit_handles_wide_and_tall_bounds() {
+        let vertical_fov = std::f32::consts::FRAC_PI_4;
+        let aspect = 16.0 / 9.0;
+        let direction = Vec3::Z;
+        let near = 0.1;
+        let wide = LodBounds::new([-20.0, -2.0, -1.0], [20.0, 2.0, 1.0]).unwrap();
+        let tall = LodBounds::new([-2.0, -20.0, -1.0], [2.0, 20.0, 1.0]).unwrap();
+        let (wide_focus, wide_corners) =
+            transformed_lod_bounds_corners(wide, Mat4::IDENTITY).unwrap();
+        let (tall_focus, tall_corners) =
+            transformed_lod_bounds_corners(tall, Mat4::IDENTITY).unwrap();
+        let wide_distance = perspective_package_frame_distance(
+            wide_focus,
+            &wide_corners,
+            direction,
+            Vec3::Y,
+            vertical_fov,
+            aspect,
+            near,
+        )
+        .unwrap();
+        let tall_distance = perspective_package_frame_distance(
+            tall_focus,
+            &tall_corners,
+            direction,
+            Vec3::Y,
+            vertical_fov,
+            aspect,
+            near,
+        )
+        .unwrap();
+
+        assert!(tall_distance > wide_distance);
+        assert_perspective_package_fit(
+            wide_focus,
+            &wide_corners,
+            direction,
+            Vec3::Y,
+            (vertical_fov, aspect, near),
+            wide_distance,
+        );
+        assert_perspective_package_fit(
+            tall_focus,
+            &tall_corners,
+            direction,
+            Vec3::Y,
+            (vertical_fov, aspect, near),
+            tall_distance,
+        );
+    }
+
+    fn assert_perspective_package_fit(
+        focus: Vec3,
+        corners: &[Vec3; 8],
+        view_direction: Vec3,
+        world_up: Vec3,
+        projection: (f32, f32, f32),
+        distance: f32,
+    ) {
+        let (vertical_fov, aspect, near) = projection;
+        let view_direction = view_direction.normalize();
+        let camera = focus + view_direction * distance;
+        let forward = -view_direction;
+        let right = forward.cross(world_up).normalize();
+        let camera_up = right.cross(forward).normalize();
+        let vertical_tangent = (vertical_fov * 0.5).tan();
+        let horizontal_tangent = vertical_tangent * aspect;
+        for &corner in corners {
+            let relative = corner - camera;
+            let depth = relative.dot(forward);
+            assert!(depth + 1e-4 >= near);
+            assert!(
+                VIEWER_PACKAGE_FRAME_PADDING * relative.dot(right).abs()
+                    <= depth * horizontal_tangent + 1e-4
+            );
+            assert!(
+                VIEWER_PACKAGE_FRAME_PADDING * relative.dot(camera_up).abs()
+                    <= depth * vertical_tangent + 1e-4
+            );
+        }
+    }
+
+    #[test]
+    fn package_frame_initializes_transform_and_pan_orbit_atomically() {
+        let focus = Vec3::new(9.5, -10.25, 7.75);
+        let mut transform = Transform::from_xyz(0.0, 1.5, 5.0);
+        let mut pan_orbit = viewer_pan_orbit_camera();
+        let direction = stable_package_view_direction(
+            transform.translation - pan_orbit.target_focus,
+            pan_orbit.axis[1],
+            pan_orbit.axis[2],
+        );
+
+        apply_pan_orbit_frame(&mut transform, &mut pan_orbit, focus, direction, 640.0);
+
+        assert!(
+            transform
+                .translation
+                .abs_diff_eq(focus + direction * 640.0, 1e-4)
+        );
+        assert!(
+            transform
+                .forward()
+                .as_vec3()
+                .abs_diff_eq((focus - transform.translation).normalize(), 1e-5)
+        );
+        assert_eq!(pan_orbit.focus, focus);
+        assert_eq!(pan_orbit.target_focus, focus);
+        assert_eq!(pan_orbit.radius, Some(640.0));
+        assert_eq!(pan_orbit.target_radius, 640.0);
+        assert_eq!(pan_orbit.yaw, Some(pan_orbit.target_yaw));
+        assert_eq!(pan_orbit.pitch, Some(pan_orbit.target_pitch));
+        assert!(pan_orbit.initialized);
+        assert!(pan_orbit.force_update);
+    }
+
+    #[test]
     fn scene_children_receive_the_validated_viewer_lod_policy() {
         let args = GaussianSplattingViewer {
             input_scene: Some("scene.glb".to_owned()),
@@ -1626,7 +2296,7 @@ mod lod_tests {
             },
             ..Default::default()
         };
-        let expected = args.lod_settings().expect("test viewer policy is valid");
+        let expected = viewer_lod_policy(args.lod_settings().expect("test viewer policy is valid"));
         let expected_debug = args.lod_debug_settings();
 
         let mut app = App::new();

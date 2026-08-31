@@ -31,7 +31,13 @@ use static_assertions::assert_cfg;
 use bevy::render::view::RetainedViewEntity;
 
 #[cfg(feature = "morph_interpolate")]
-use crate::{gaussian::formats::planar_3d::PlanarGaussian3d, morph::interpolate::InterpolateLabel};
+use crate::{
+    gaussian::formats::planar_3d::PlanarGaussian3d,
+    morph::interpolate::{GaussianInterpolate, InterpolateLabel},
+};
+
+#[cfg(feature = "morph_particles")]
+use crate::morph::particle::{MorphLabel, ParticleBehaviorsHandle};
 
 use crate::{
     CloudSettings, GaussianCamera, RadixSortDepthBits,
@@ -52,14 +58,15 @@ use crate::render::lod::{
     LodCompactionLabel, lod_view_cloud_key,
 };
 
+#[cfg(lod_render_path)]
+use crate::stream::{atlas_upload::LodAtlasGpuGenerations, render_commit::LodRenderCandidates};
+
 assert_cfg!(
     not(all(feature = "sort_radix", feature = "buffer_texture",)),
     "sort_radix and buffer_texture are incompatible",
 );
 
 const RADIX_SHADER_HANDLE: Handle<Shader> = uuid_handle!("dedb3ddf-f254-4361-8762-e221774de1ed");
-const TEMPORAL_SORT_SHADER_HANDLE: Handle<Shader> =
-    uuid_handle!("11986b71-25d8-410b-adfa-6afb107ae4de");
 const RADIX_PIPELINE_RESET: usize = 0;
 const RADIX_PIPELINE_A: usize = 1;
 const RADIX_PIPELINE_B: usize = 2;
@@ -114,6 +121,8 @@ where
             render_app
                 .init_gpu_resource::<LodRadixBindGroups<R>>()
                 .configure_sets(Core3d, RadixSortLabel.after(LodCompactionLabel));
+            #[cfg(feature = "morph_particles")]
+            render_app.configure_sets(Core3d, RadixSortLabel.after(MorphLabel));
             #[cfg(feature = "morph_interpolate")]
             if TypeId::of::<R::PlanarType>() == TypeId::of::<PlanarGaussian3d>() {
                 render_app.add_systems(
@@ -147,13 +156,6 @@ where
         }
 
         load_internal_asset!(app, RADIX_SHADER_HANDLE, "radix.wgsl", Shader::from_wgsl);
-
-        load_internal_asset!(
-            app,
-            TEMPORAL_SORT_SHADER_HANDLE,
-            "temporal.wgsl",
-            Shader::from_wgsl
-        );
     }
 
     fn finish(&self, app: &mut App) {
@@ -183,35 +185,52 @@ impl<R: PlanarSync> Default for RadixSortWorkCache<R> {
     }
 }
 
+fn hash_legacy_camera_sort_inputs(view: &ExtractedView, hasher: &mut impl Hasher) {
+    // The vanilla key is squared world-space distance from the camera. Camera
+    // rotation, projection, and viewport cannot change that global order. This
+    // cache is not a per-pixel depth correction such as StopThePop.
+    for value in view.world_from_view.translation().to_array() {
+        value.to_bits().hash(hasher);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn legacy_sort_signature(
     view: &ExtractedView,
     transform: &GlobalTransform,
     settings: &CloudSettings,
     buffer_generation: u64,
-    sorted_entry_buffer_id: BufferId,
+    sorted_entry_buffer_id: impl Hash,
     cloud_len: usize,
     storage_changed_frame: Option<u32>,
+    atlas_content_revision: u64,
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
-    for value in view.clip_from_view.to_cols_array() {
-        value.to_bits().hash(&mut hasher);
-    }
-    for value in view.world_from_view.to_matrix().to_cols_array() {
-        value.to_bits().hash(&mut hasher);
-    }
-    view.viewport.to_array().hash(&mut hasher);
+    hash_legacy_camera_sort_inputs(view, &mut hasher);
     for value in transform.to_matrix().to_cols_array() {
         value.to_bits().hash(&mut hasher);
     }
-    settings.global_opacity.to_bits().hash(&mut hasher);
-    settings.global_scale.to_bits().hash(&mut hasher);
+    // Morph interpolation writes positions/visibility before this pass from
+    // these settings, without replacing the output storage bind group.
     settings.time.to_bits().hash(&mut hasher);
+    settings.time_start.to_bits().hash(&mut hasher);
+    settings.time_stop.to_bits().hash(&mut hasher);
     settings.radix_sort_depth_bits.hash(&mut hasher);
     buffer_generation.hash(&mut hasher);
     sorted_entry_buffer_id.hash(&mut hasher);
     cloud_len.hash(&mut hasher);
     storage_changed_frame.hash(&mut hasher);
+    atlas_content_revision.hash(&mut hasher);
     hasher.finish()
+}
+
+const fn legacy_sort_cache_allowed(has_interpolate: bool, has_particles: bool) -> bool {
+    !has_interpolate && !has_particles
+}
+
+#[cfg(lod_render_path)]
+const fn skip_legacy_sort_for_required_candidate(candidate_draw_required: bool) -> bool {
+    candidate_draw_required
 }
 
 #[derive(Resource)]
@@ -578,6 +597,29 @@ impl<R: PlanarSync> FromWorld for RadixSortPipeline<R> {
 mod tests {
     use super::*;
 
+    fn extracted_view(
+        world_from_view: GlobalTransform,
+        clip_from_view: Mat4,
+        viewport: UVec4,
+    ) -> ExtractedView {
+        ExtractedView {
+            retained_view_entity: RetainedViewEntity::new(Entity::PLACEHOLDER.into(), None, 0),
+            clip_from_view,
+            world_from_view,
+            clip_from_world: None,
+            target_format: bevy::render::render_resource::TextureFormat::Rgba8Unorm,
+            viewport,
+            color_grading: bevy::render::view::ColorGrading::default(),
+            invert_culling: false,
+        }
+    }
+
+    fn legacy_camera_sort_signature(view: &ExtractedView) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        hash_legacy_camera_sort_inputs(view, &mut hasher);
+        hasher.finish()
+    }
+
     fn blelloch_exclusive_scan(values: &mut [usize]) -> usize {
         assert!(values.len().is_power_of_two());
         let mut stride = 1;
@@ -663,6 +705,125 @@ mod tests {
         assert!(shader.contains("var<storage, read> draw_indirect: RadixDrawIndirect"));
         assert!(shader.contains("return draw_indirect.instance_count"));
         assert!(!shader.contains("atomicLoad(&draw_indirect.instance_count)"));
+    }
+
+    #[test]
+    fn legacy_camera_sort_signature_ignores_rotation_projection_and_viewport() {
+        let position = Vec3::new(1.25, -3.5, 8.0);
+        let base = extracted_view(
+            GlobalTransform::from(Transform::from_translation(position)),
+            Mat4::IDENTITY,
+            UVec4::new(0, 0, 1280, 720),
+        );
+        let changed_view = extracted_view(
+            GlobalTransform::from(
+                Transform::from_translation(position).with_rotation(Quat::from_rotation_y(1.25)),
+            ),
+            Mat4::from_scale(Vec3::new(2.0, 3.0, 1.0)),
+            UVec4::new(20, 40, 3840, 2160),
+        );
+
+        assert_eq!(
+            legacy_camera_sort_signature(&base),
+            legacy_camera_sort_signature(&changed_view)
+        );
+    }
+
+    #[test]
+    fn legacy_camera_sort_signature_invalidates_on_translation() {
+        let base = extracted_view(
+            GlobalTransform::from(Transform::from_xyz(1.25, -3.5, 8.0)),
+            Mat4::IDENTITY,
+            UVec4::new(0, 0, 1280, 720),
+        );
+        let translated = extracted_view(
+            GlobalTransform::from(Transform::from_xyz(1.25, -3.5, 8.001)),
+            Mat4::IDENTITY,
+            UVec4::new(0, 0, 1280, 720),
+        );
+
+        assert_ne!(
+            legacy_camera_sort_signature(&base),
+            legacy_camera_sort_signature(&translated)
+        );
+    }
+
+    #[test]
+    fn legacy_sort_signature_invalidates_on_atlas_content_revision() {
+        let view = extracted_view(
+            GlobalTransform::from(Transform::from_xyz(1.25, -3.5, 8.0)),
+            Mat4::IDENTITY,
+            UVec4::new(0, 0, 1280, 720),
+        );
+        let transform = GlobalTransform::IDENTITY;
+        let settings = CloudSettings::default();
+        let signature = |revision| {
+            legacy_sort_signature(
+                &view,
+                &transform,
+                &settings,
+                7,
+                11_u64,
+                1024,
+                Some(13),
+                revision,
+            )
+        };
+
+        assert_eq!(signature(0), signature(0));
+        assert_ne!(signature(0), signature(1));
+        assert_ne!(signature(1), signature(2));
+    }
+
+    #[test]
+    fn legacy_sort_cache_is_disabled_for_live_gpu_writers() {
+        assert!(legacy_sort_cache_allowed(false, false));
+        assert!(!legacy_sort_cache_allowed(true, false));
+        assert!(!legacy_sort_cache_allowed(false, true));
+        assert!(!legacy_sort_cache_allowed(true, true));
+    }
+
+    #[cfg(lod_render_path)]
+    #[test]
+    fn required_package_without_a_usable_lod_path_skips_legacy_sort() {
+        assert!(!skip_legacy_sort_for_required_candidate(false));
+        assert!(skip_legacy_sort_for_required_candidate(true));
+
+        let host = include_str!("radix.rs");
+        let run = host
+            .rsplit("fn run_radix_sort")
+            .next()
+            .expect("radix runner");
+        assert!(host.contains("Option<&'static LodRenderCandidates>"));
+        let lod_path = run
+            .find("lod_buffers.get_ready_mut")
+            .expect("usable LoD radix path");
+        let package_guard = run
+            .find("skip_legacy_sort_for_required_candidate")
+            .expect("candidate-required fallback guard");
+        let legacy_lookup = run
+            .find("sort_buffers.asset_map.get")
+            .expect("legacy radix allocation lookup");
+        let stale_cache_removal = run
+            .find("work_cache.signatures.remove(&legacy_key)")
+            .expect("required-package stale cache removal");
+        assert!(
+            lod_path < package_guard
+                && package_guard < stale_cache_removal
+                && stale_cache_removal < legacy_lookup
+        );
+        assert!(run[stale_cache_removal..legacy_lookup].contains("continue;"));
+    }
+
+    #[test]
+    fn vanilla_radix_key_has_no_view_direction_or_projection_dependency() {
+        let shader = include_str!("radix.wgsl");
+        assert!(shader.contains("let diff = transformed_position - view.world_position"));
+        assert!(shader.contains("Rotation-stable global pre-sort only"));
+        assert!(!shader.contains("world_to_clip"));
+        assert!(!shader.contains("in_frustum"));
+        assert!(!shader.contains("view.clip_from_view"));
+        assert!(!shader.contains("view.viewport"));
     }
 
     #[test]
@@ -763,6 +924,7 @@ mod tests {
         );
     }
 
+    #[cfg(lod_render_path)]
     #[test]
     fn stable_lsd_passes_match_reference_for_every_depth_and_parity() {
         let source = (0..2_053u32)
@@ -1221,6 +1383,31 @@ pub fn queue_radix_bind_group<R: PlanarSync>(
     }
 }
 
+#[allow(type_alias_bounds)]
+#[cfg(lod_render_path)]
+type RadixCloudQueryItem<R: PlanarSync> = (
+    Entity,
+    &'static R::PlanarTypeHandle,
+    Ref<'static, PlanarStorageBindGroup<R>>,
+    &'static RadixBindGroup,
+    &'static DynamicUniformIndex<CloudUniform>,
+    &'static CloudSettings,
+    &'static GlobalTransform,
+    Option<&'static LodRenderCandidates>,
+);
+
+#[allow(type_alias_bounds)]
+#[cfg(not(lod_render_path))]
+type RadixCloudQueryItem<R: PlanarSync> = (
+    Entity,
+    &'static R::PlanarTypeHandle,
+    Ref<'static, PlanarStorageBindGroup<R>>,
+    &'static RadixBindGroup,
+    &'static DynamicUniformIndex<CloudUniform>,
+    &'static CloudSettings,
+    &'static GlobalTransform,
+);
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn run_radix_sort<R: PlanarSync>(
     mut render_context: RenderContext,
@@ -1231,17 +1418,15 @@ fn run_radix_sort<R: PlanarSync>(
     mut work_cache: ResMut<RadixSortWorkCache<R>>,
     #[cfg(lod_render_path)] mut lod_buffers: ResMut<LodCompactionBuffers<R>>,
     #[cfg(lod_render_path)] lod_radix_groups: Res<LodRadixBindGroups<R>>,
+    #[cfg(lod_render_path)] atlas_generations: Res<LodAtlasGpuGenerations>,
     gpu_planars: Res<RenderAssets<R::GpuPlanarType>>,
     view_bind_group: ViewQuery<RadixViewQueryItem>,
-    gaussian_clouds: Query<(
-        Entity,
-        &'static <R as PlanarSync>::PlanarTypeHandle,
-        Ref<'static, PlanarStorageBindGroup<R>>,
-        &'static RadixBindGroup,
-        &'static DynamicUniformIndex<CloudUniform>,
-        &'static CloudSettings,
-        &'static GlobalTransform,
-    )>,
+    #[cfg(feature = "morph_interpolate")] interpolate_writers: Query<
+        (),
+        With<GaussianInterpolate<R>>,
+    >,
+    #[cfg(feature = "morph_particles")] particle_writers: Query<(), With<ParticleBehaviorsHandle>>,
+    gaussian_clouds: Query<RadixCloudQueryItem<R>>,
 ) where
     R::GpuPlanarType: GpuPlanarStorage,
 {
@@ -1264,7 +1449,11 @@ fn run_radix_sort<R: PlanarSync>(
     };
 
     for (render_entity, _) in &visible_clouds.entities_cpu_culling {
-        let Ok((
+        let Ok(cloud_item) = gaussian_clouds.get(*render_entity) else {
+            continue;
+        };
+        #[cfg(lod_render_path)]
+        let (
             _cloud_entity,
             cloud_handle,
             cloud_bind_group,
@@ -1272,10 +1461,18 @@ fn run_radix_sort<R: PlanarSync>(
             cloud_uniform_index,
             cloud_settings,
             transform,
-        )) = gaussian_clouds.get(*render_entity)
-        else {
-            continue;
-        };
+            render_candidates,
+        ) = cloud_item;
+        #[cfg(not(lod_render_path))]
+        let (
+            _cloud_entity,
+            cloud_handle,
+            cloud_bind_group,
+            radix_bind_group,
+            cloud_uniform_index,
+            cloud_settings,
+            transform,
+        ) = cloud_item;
         let Some(cloud) = gpu_planars.get(cloud_handle.handle()) else {
             continue;
         };
@@ -1421,14 +1618,39 @@ fn run_radix_sort<R: PlanarSync>(
             continue;
         }
 
-        let Some(sorting_assets) = sort_buffers.asset_map.get(&cloud_handle.handle().id()) else {
-            continue;
-        };
         let legacy_key = (
             _extracted_view.retained_view_entity,
             _cloud_entity,
             cloud_handle.handle().id(),
         );
+        #[cfg(lod_render_path)]
+        if skip_legacy_sort_for_required_candidate(
+            render_candidates.is_some_and(|candidates| candidates.candidate_draw_required),
+        ) {
+            // The draw command rejects an unfiltered package atlas whenever no
+            // usable per-view LoD output exists. Sorting that same full atlas
+            // cannot produce a draw and is especially costly during cold load
+            // or device recovery.
+            work_cache.signatures.remove(&legacy_key);
+            continue;
+        }
+        let Some(sorting_assets) = sort_buffers.asset_map.get(&cloud_handle.handle().id()) else {
+            continue;
+        };
+        #[cfg(feature = "morph_interpolate")]
+        let has_interpolate = interpolate_writers.get(_cloud_entity).is_ok();
+        #[cfg(not(feature = "morph_interpolate"))]
+        let has_interpolate = false;
+        #[cfg(feature = "morph_particles")]
+        let has_particles = particle_writers.get(_cloud_entity).is_ok();
+        #[cfg(not(feature = "morph_particles"))]
+        let has_particles = false;
+        let cache_allowed = legacy_sort_cache_allowed(has_interpolate, has_particles);
+        #[cfg(lod_render_path)]
+        let atlas_content_revision =
+            atlas_generations.content_revision(cloud_handle.handle().id().untyped());
+        #[cfg(not(lod_render_path))]
+        let atlas_content_revision = 0;
         let signature = legacy_sort_signature(
             _extracted_view,
             transform,
@@ -1437,11 +1659,12 @@ fn run_radix_sort<R: PlanarSync>(
             radix_bind_group.sorted_entry_buffer_id,
             cloud.len(),
             Some(cloud_bind_group.last_changed().get()),
+            atlas_content_revision,
         );
-        if work_cache.signatures.get(&legacy_key) == Some(&signature) {
+        if cache_allowed && work_cache.signatures.get(&legacy_key) == Some(&signature) {
             continue;
         }
-        if work_cache.signatures.len() >= 65_536 {
+        if cache_allowed && work_cache.signatures.len() >= 65_536 {
             work_cache.signatures.clear();
         }
         let tile_workgroups = (cloud.len() as u32).div_ceil(workgroup_entries_c);
@@ -1532,6 +1755,10 @@ fn run_radix_sort<R: PlanarSync>(
             pass.set_pipeline(radix_sort_c_scatter);
             pass.dispatch_workgroups(1, tile_workgroups, 1);
         }
-        work_cache.signatures.insert(legacy_key, signature);
+        if cache_allowed {
+            work_cache.signatures.insert(legacy_key, signature);
+        } else {
+            work_cache.signatures.remove(&legacy_key);
+        }
     }
 }

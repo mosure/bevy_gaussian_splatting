@@ -12,6 +12,7 @@ use bevy_args::{Deserialize, Serialize};
 
 const HIGH_QUALITY_FIDELITY_GUARD_START: f32 = 0.90;
 const HIGH_QUALITY_FIDELITY_GUARD_FULL: f32 = 0.99;
+const HIGH_QUALITY_CERTIFICATE_GUARD_START: f32 = 0.90;
 const HIGH_QUALITY_CERTIFICATE_GUARD_FULL: f32 = 0.95;
 const PROJECTED_ERROR_AUTHORITY_FULL: f32 = 0.99;
 const MIN_QUANTIZED_HIGH_FIDELITY_CERTIFICATE: f32 = 1.0 / u16::MAX as f32;
@@ -59,11 +60,12 @@ pub enum LodSelectionMode {
 pub enum LodQualityTarget {
     /// Render only the coarsest complete representation (normally the roots).
     Coarsest,
-    /// Refine against structural detail and projected error. Projected-error
-    /// authority rises continuously with the quality slider and becomes a hard
-    /// cap at `.99`. A structural guard removes projected-coverage relaxation
-    /// from `.90` to `.99`; positive builder-authored fidelity certificates use
-    /// a separate coverage-aware curve whose authority reaches one at `.95`.
+    /// Refine against structural detail and projected error. Cubic
+    /// projected-error authority rises continuously with the quality slider
+    /// and becomes a hard cap at `.99`. A structural guard removes
+    /// projected-coverage relaxation from `.90` to `.99`; positive
+    /// builder-authored fidelity-certificate pressure is gated off through
+    /// `.90` and reaches full authority at `.95`.
     Balanced {
         detail_fraction: f32,
         max_error_px: f32,
@@ -247,8 +249,8 @@ impl LodQualityTarget {
 
 /// Continuous authority applied independently to projected-error pressure.
 ///
-/// The normalized cubic mapping deliberately uses only presentation quality and
-/// the fixed `.99` fidelity anchor. Projection supplies the
+/// The normalized cubic mapping deliberately uses only presentation
+/// quality and the fixed `.99` fidelity anchor. Projection supplies the
 /// scene-scale-independent distance response. Keeping this separate from the
 /// structural coverage guard lets that compatibility contract remain unchanged.
 pub(crate) fn projected_error_authority(detail_fraction: f32) -> f32 {
@@ -268,17 +270,21 @@ pub(crate) fn high_quality_fidelity_guard(detail_fraction: f32) -> f32 {
     )
 }
 
-/// Cubic authority used to remove projected-coverage relaxation from a
-/// builder-authored fidelity certificate. It reaches one at `.95`.
+/// High-quality authority for builder-authored fidelity certificates.
+/// Ordinary qualities through `.90` deliberately carry no certificate
+/// pressure; authority then rises smoothly to one at `.95`.
 pub(crate) fn high_quality_certificate_guard(detail_fraction: f32) -> f32 {
-    let normalized =
-        (finite_clamp01(detail_fraction) / HIGH_QUALITY_CERTIFICATE_GUARD_FULL).clamp(0.0, 1.0);
-    normalized * normalized * normalized
+    smooth_quality_guard(
+        detail_fraction,
+        HIGH_QUALITY_CERTIFICATE_GUARD_START,
+        HIGH_QUALITY_CERTIFICATE_GUARD_FULL,
+    )
 }
 
 /// Coverage-aware certificate demand for positive, quantized-compatible
-/// certificates. The base demand is quadratic below `.95`; projected coverage is
-/// smoothly removed as certificate authority reaches one at `.95`.
+/// certificates. The legacy quadratic/cubic demand shape is retained inside
+/// the high-quality gate, but its pressure is exactly zero through `.90` and
+/// reaches its full value at `.95`.
 pub(crate) fn high_quality_certificate_demand(
     detail_fraction: f32,
     projected_coverage: f32,
@@ -286,10 +292,10 @@ pub(crate) fn high_quality_certificate_demand(
     let detail = finite_clamp01(detail_fraction);
     let normalized = (detail / HIGH_QUALITY_CERTIFICATE_GUARD_FULL).clamp(0.0, 1.0);
     let base_demand = detail * normalized;
-    let authority = high_quality_certificate_guard(detail);
+    let coverage_authority = normalized * normalized * normalized;
     let coverage = finite_clamp01(projected_coverage);
-    let effective_coverage = coverage + (1.0 - coverage) * authority;
-    base_demand * effective_coverage
+    let effective_coverage = coverage + (1.0 - coverage) * coverage_authority;
+    high_quality_certificate_guard(detail) * base_demand * effective_coverage
 }
 
 fn smooth_quality_guard(detail_fraction: f32, start: f32, full: f32) -> f32 {
@@ -307,9 +313,10 @@ fn smooth_quality_guard(detail_fraction: f32, start: f32, full: f32) -> f32 {
 /// Pressure contributed by a builder-authored high-fidelity certificate.
 ///
 /// Positive, finite, quantized-compatible certificates carry a coverage-aware
-/// demand across the slider. A zero, tiny, or invalid value denotes a legacy
-/// or uncertified hierarchy: it remains compatible below quality `.95`, then
-/// fails closed for non-original representatives at `.95` and above.
+/// demand only in the high-quality `.90` to `.95` guard band. A zero, tiny, or
+/// invalid value denotes a legacy or uncertified hierarchy: it remains
+/// compatible below quality `.95`, then fails closed for non-original
+/// representatives at `.95` and above.
 pub(crate) fn high_fidelity_certificate_pressure(
     detail_fraction: f32,
     projected_coverage: f32,
@@ -506,8 +513,10 @@ pub struct LodBudgets {
     pub max_resident_pages: u32,
     pub max_pending_requests: u32,
     pub max_requests_per_frame: u32,
-    /// Maximum canonical/derived GPU atlas bytes atomically queued for one cut.
-    /// A cut that exceeds this cap keeps the previous complete fallback.
+    /// Maximum canonical/derived GPU atlas bytes materialized and enqueued in
+    /// one bridge staging step. Larger complete cuts keep the previous
+    /// drawable source/current cut and progress across multiple bounded steps
+    /// before one atomic render handoff.
     pub max_gpu_upload_bytes_per_commit: u64,
     /// Maximum decoded page bytes admitted by the streaming runtime per frame.
     pub max_upload_bytes_per_frame: u64,
@@ -583,6 +592,9 @@ impl Plugin for GaussianLodSettingsPlugin {
             .register_type::<LodSelectionMode>()
             .register_type::<LodQualityTarget>()
             .register_type::<LodDegradation>();
+        #[cfg(feature = "lod")]
+        app.register_type::<super::lodge_settings::GaussianLodgeSettings>()
+            .register_type::<super::lodge_settings::GaussianLodRepresentationKind>();
     }
 }
 
@@ -963,6 +975,8 @@ mod tests {
         let authority = (0.5_f32 / 0.99).powi(3);
         let high_error_pressure = target.node_pressure(0.25, 20.0, 0.25, 1.0, false);
         assert!((high_error_pressure - authority * 10.0).abs() < 1e-6);
+        let extreme_error_pressure = target.node_pressure(0.25, 100.0, 0.25, 1.0, false);
+        assert!((extreme_error_pressure - authority * 50.0).abs() < 1e-6);
         assert_eq!(target.node_pressure(0.25, 1.0, 1.0, 1.0, false), 0.5);
         assert_eq!(
             LodQualityTarget::Original.node_pressure(1.0, 0.0, 1.0, 1.0, true),
@@ -1040,23 +1054,27 @@ mod tests {
     }
 
     #[test]
-    fn certificate_authority_is_cubic_and_demand_is_quadratic_monotonic_and_coverage_aware() {
-        assert!((high_quality_certificate_guard(0.475) - 0.125).abs() < 1e-6);
+    fn certificate_authority_is_high_quality_gated_monotonic_and_coverage_aware() {
+        assert_eq!(high_quality_certificate_guard(0.475), 0.0);
+        assert_eq!(high_quality_certificate_guard(0.90), 0.0);
+        assert!((high_quality_certificate_guard(0.925) - 0.5).abs() < 1e-6);
         assert_eq!(high_quality_certificate_guard(0.95), 1.0);
         assert_eq!(high_quality_certificate_guard(0.99), 1.0);
 
-        let quality = 0.5_f32;
+        let quality = 0.925_f32;
         let normalized = quality / 0.95;
-        let authority = normalized.powi(3);
+        let coverage_authority = normalized.powi(3);
+        let guard = high_quality_certificate_guard(quality);
         let base = quality * normalized;
         for coverage in [0.0_f32, 0.2, 0.4, 0.8, 1.0] {
-            let expected = base * (coverage + (1.0 - coverage) * authority);
+            let expected = guard * base * (coverage + (1.0 - coverage) * coverage_authority);
             assert!((high_quality_certificate_demand(quality, coverage) - expected).abs() < 1e-6);
         }
         let by_coverage = [0.0, 0.2, 0.4, 0.8, 1.0]
             .map(|coverage| high_quality_certificate_demand(quality, coverage));
         assert!(by_coverage.windows(2).all(|pair| pair[1] > pair[0]));
         for coverage in [0.0, 0.25, 0.75, 1.0] {
+            assert_eq!(high_quality_certificate_demand(0.90, coverage), 0.0);
             assert_eq!(high_quality_certificate_demand(0.95, coverage), 0.95);
             assert_eq!(high_quality_certificate_demand(0.99, coverage), 0.99);
             let by_quality = (0..=99)
@@ -1104,10 +1122,44 @@ mod tests {
         );
 
         let certificate = 0.5;
-        let expected = high_quality_certificate_demand(0.5, 0.25) / certificate;
-        assert!(
-            (high_fidelity_certificate_pressure(0.5, 0.25, certificate, false) - expected).abs()
-                < 1e-6
+        assert_eq!(high_quality_certificate_demand(0.5, 0.25), 0.0);
+        assert_eq!(
+            high_fidelity_certificate_pressure(0.5, 0.25, certificate, false),
+            0.0
+        );
+    }
+
+    #[test]
+    fn revised_authorities_preserve_monotonic_pressure_and_categorical_endpoints() {
+        for coverage in [0.0_f32, 0.1, 0.5, 1.0] {
+            let mut previous = 0.0_f32;
+            for step in 0..=99 {
+                let quality = step as f32 / 100.0;
+                let target = LodQualityTarget::Balanced {
+                    detail_fraction: quality,
+                    max_error_px: 1.0,
+                };
+                let pressure =
+                    target.node_pressure_with_error_limit(0.6, 8.0, 1.0, coverage, 0.5, false);
+                assert!(
+                    pressure >= previous,
+                    "pressure regressed at q={quality} coverage={coverage}: {pressure} < {previous}"
+                );
+                previous = pressure;
+            }
+        }
+
+        assert_eq!(projected_error_authority(0.0), 0.0);
+        assert_eq!(projected_error_authority(0.99), 1.0);
+        assert_eq!(high_quality_certificate_guard(0.90), 0.0);
+        assert_eq!(high_quality_certificate_guard(0.95), 1.0);
+        assert_eq!(
+            LodQualityTarget::Coarsest.endpoint(),
+            LodQualityEndpoint::Coarsest
+        );
+        assert_eq!(
+            LodQualityTarget::Original.endpoint(),
+            LodQualityEndpoint::Original
         );
     }
 

@@ -6,7 +6,12 @@
 //! an out-of-core runtime never has to allocate annotations for the full
 //! virtual scene.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::{collections::HashMap, error::Error, fmt, ops::Range, sync::Arc};
+
+#[cfg(any(feature = "lod", test))]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bevy::prelude::*;
 use bevy::render::extract_component::ExtractComponent;
@@ -21,7 +26,7 @@ use crate::gaussian::formats::{
     },
     planar_3d_lod::{
         GaussianLodManifest, GaussianLodNode, LodValidationError, PlanarGaussian3dLod,
-        gaussian_support_bounds,
+        gaussian_support_bounds, gaussian_support_bounds_trusted_decoded,
     },
 };
 use crate::stream::cache::AtlasSlot;
@@ -165,6 +170,63 @@ impl LodDebugRecord {
     ) -> Result<Self, LodDebugMetadataError> {
         let support = gaussian_support_bounds(gaussian, support_sigma)
             .map_err(|_| LodDebugMetadataError::InvalidGaussian(node_id))?;
+        Self::for_node_fields_with_support(
+            node_id,
+            depth,
+            bounds,
+            representation,
+            geometric_error,
+            quality_threshold,
+            high_fidelity_certificate,
+            is_original_representation,
+            support,
+            residency,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn for_node_fields_trusted_decoded(
+        node_id: LodNodeId,
+        depth: u16,
+        bounds: LodBounds,
+        representation: LodPageRange,
+        geometric_error: f32,
+        quality_threshold: f32,
+        high_fidelity_certificate: f32,
+        is_original_representation: bool,
+        gaussian: &Gaussian3d,
+        support_sigma: f32,
+        residency: LodDebugResidency,
+    ) -> Result<Self, LodDebugMetadataError> {
+        let support = gaussian_support_bounds_trusted_decoded(gaussian, support_sigma)
+            .map_err(|_| LodDebugMetadataError::InvalidGaussian(node_id))?;
+        Self::for_node_fields_with_support(
+            node_id,
+            depth,
+            bounds,
+            representation,
+            geometric_error,
+            quality_threshold,
+            high_fidelity_certificate,
+            is_original_representation,
+            support,
+            residency,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn for_node_fields_with_support(
+        _node_id: LodNodeId,
+        depth: u16,
+        bounds: LodBounds,
+        representation: LodPageRange,
+        geometric_error: f32,
+        quality_threshold: f32,
+        high_fidelity_certificate: f32,
+        is_original_representation: bool,
+        support: LodBounds,
+        residency: LodDebugResidency,
+    ) -> Result<Self, LodDebugMetadataError> {
         let boundary_distance = normalized_support_boundary_distance(bounds, support);
         let boundary_distance_bits = boundary_distance.to_bits()
             | if is_original_representation {
@@ -208,6 +270,12 @@ impl LodDebugRecord {
         ((self.residency >> LOD_DEBUG_CERTIFICATE_SHIFT) & LOD_DEBUG_CERTIFICATE_MAX) as f32
             / LOD_DEBUG_CERTIFICATE_MAX as f32
     }
+
+    #[inline]
+    #[cfg(any(feature = "lod", test))]
+    fn set_residency(&mut self, residency: LodDebugResidency) {
+        self.residency = (self.residency & !LOD_DEBUG_RESIDENCY_MASK) | residency as u32;
+    }
 }
 
 const LOD_DEBUG_ORIGINAL_REPRESENTATION_BIT: u32 = 1 << 31;
@@ -250,6 +318,92 @@ fn lod_debug_quality_threshold(min: f32, max: f32) -> f32 {
 #[derive(Clone, Component, Debug, Default, ExtractComponent)]
 pub struct LodDebugMetadata {
     records: Arc<[LodDebugRecord]>,
+    sparse: Option<LodDebugSparseMetadata>,
+}
+
+/// Immutable, cheap-to-clone snapshot of a streamed annotation atlas.
+///
+/// Unlike the legacy dense payload, this representation never allocates or
+/// copies the unused physical address space on the CPU. Each populated slot is
+/// independently reference counted and carries a revision consumed by the
+/// render-world subrange uploader.
+#[derive(Clone, Debug)]
+pub(crate) struct LodDebugSparseMetadata {
+    identity: u64,
+    record_count: usize,
+    records_per_slot: usize,
+    slots: Arc<[LodDebugSparseSlot]>,
+    complete: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LodDebugSparseSlot {
+    key: Option<(LodPageId, u32)>,
+    invariant_revision: u64,
+    payload_revision: u64,
+    records: Option<Arc<[LodDebugRecord]>>,
+}
+
+#[cfg(any(feature = "lod", test))]
+static NEXT_LOD_DEBUG_SPARSE_IDENTITY: AtomicU64 = AtomicU64::new(1);
+#[cfg(test)]
+thread_local! {
+    static LOD_DEBUG_MANIFEST_VALIDATIONS: Cell<u64> = const { Cell::new(0) };
+}
+
+impl LodDebugSparseMetadata {
+    #[inline]
+    pub(crate) const fn identity(&self) -> u64 {
+        self.identity
+    }
+
+    #[inline]
+    pub(crate) const fn record_count(&self) -> usize {
+        self.record_count
+    }
+
+    #[inline]
+    pub(crate) const fn records_per_slot(&self) -> usize {
+        self.records_per_slot
+    }
+
+    #[inline]
+    pub(crate) fn slots(&self) -> &[LodDebugSparseSlot] {
+        &self.slots
+    }
+
+    #[inline]
+    pub(crate) const fn is_complete(&self) -> bool {
+        self.complete
+    }
+}
+
+impl LodDebugSparseSlot {
+    #[cfg(test)]
+    #[inline]
+    pub(crate) const fn revision(&self) -> u64 {
+        self.payload_revision
+    }
+
+    #[inline]
+    pub(crate) const fn invariant_revision(&self) -> u64 {
+        self.invariant_revision
+    }
+
+    #[inline]
+    pub(crate) const fn payload_revision(&self) -> u64 {
+        self.payload_revision
+    }
+
+    #[inline]
+    pub(crate) const fn key(&self) -> Option<(LodPageId, u32)> {
+        self.key
+    }
+
+    #[inline]
+    pub(crate) fn records(&self) -> Option<&[LodDebugRecord]> {
+        self.records.as_deref()
+    }
 }
 
 /// Validated page-to-manifest lookup used by incremental debug annotation.
@@ -267,6 +421,8 @@ pub struct LodDebugManifestIndex {
     nodes: Vec<LodDebugIndexedNode>,
     descriptor_by_page: HashMap<LodPageId, usize>,
     node_indices_by_descriptor: Vec<Vec<usize>>,
+    #[cfg(test)]
+    page_payload_validations: Arc<AtomicU64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -299,10 +455,21 @@ impl From<&GaussianLodNode> for LodDebugIndexedNode {
 impl LodDebugManifestIndex {
     /// Validate `manifest` and build its reusable debug lookup.
     pub fn new(manifest: &GaussianLodManifest) -> Result<Self, LodDebugMetadataError> {
+        #[cfg(test)]
+        LOD_DEBUG_MANIFEST_VALIDATIONS.set(LOD_DEBUG_MANIFEST_VALIDATIONS.get().saturating_add(1));
         manifest
             .validate()
             .map_err(LodDebugMetadataError::InvalidLod)?;
 
+        Self::from_validated_manifest(manifest)
+    }
+
+    /// Builds the immutable lookup for a manifest already validated by its
+    /// package asset/runtime boundary. Package instantiation caches this once so
+    /// UI Off/On toggles never repeat a whole-manifest scan or index allocation.
+    pub(crate) fn from_validated_manifest(
+        manifest: &GaussianLodManifest,
+    ) -> Result<Self, LodDebugMetadataError> {
         let mut descriptors = Vec::new();
         descriptors
             .try_reserve_exact(manifest.pages.len())
@@ -368,7 +535,14 @@ impl LodDebugManifestIndex {
             nodes,
             descriptor_by_page,
             node_indices_by_descriptor,
+            #[cfg(test)]
+            page_payload_validations: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn manifest_validation_count_for_test() -> u64 {
+        LOD_DEBUG_MANIFEST_VALIDATIONS.get()
     }
 
     /// Manifest descriptor index for `page`.
@@ -419,14 +593,40 @@ impl LodDebugManifestIndex {
     pub fn records_for_page_with_node_residency(
         &self,
         page: &PlanarGaussian3dPage,
+        residency_for_node: impl FnMut(LodNodeId) -> LodDebugResidency,
+    ) -> Result<Vec<LodDebugRecord>, LodDebugMetadataError> {
+        let descriptor_index = self
+            .descriptor_index(page.id)
+            .ok_or(LodDebugMetadataError::UnknownPage(page.id))?;
+        let descriptor = &self.descriptors[descriptor_index];
+        #[cfg(test)]
+        self.page_payload_validations
+            .fetch_add(1, Ordering::Relaxed);
+        page.validate(descriptor)
+            .map_err(|_| LodDebugMetadataError::InvalidPage(page.id))?;
+
+        self.records_for_page_with_node_residency_trusted_decoded(page, residency_for_node)
+    }
+
+    /// Builds annotations for a page already authenticated and validated by the
+    /// streaming decoder.
+    ///
+    /// This is intentionally crate-private: transport/runtime decode owns the
+    /// descriptor, content-hash, and semantic validation proof. Repeating that
+    /// scan on the main thread would hash every resident page again whenever
+    /// debug annotations are enabled or their Residency provenance changes.
+    pub(crate) fn records_for_page_with_node_residency_trusted_decoded(
+        &self,
+        page: &PlanarGaussian3dPage,
         mut residency_for_node: impl FnMut(LodNodeId) -> LodDebugResidency,
     ) -> Result<Vec<LodDebugRecord>, LodDebugMetadataError> {
         let descriptor_index = self
             .descriptor_index(page.id)
             .ok_or(LodDebugMetadataError::UnknownPage(page.id))?;
         let descriptor = &self.descriptors[descriptor_index];
-        page.validate(descriptor)
-            .map_err(|_| LodDebugMetadataError::InvalidPage(page.id))?;
+        if page.gaussians.len() != descriptor.gaussian_count as usize {
+            return Err(LodDebugMetadataError::InvalidPage(page.id));
+        }
 
         let mut records = Vec::new();
         records
@@ -452,7 +652,7 @@ impl LodDebugManifestIndex {
                 if slot.is_some() {
                     return Err(LodDebugMetadataError::OverlappingNodeRange(node.id));
                 }
-                *slot = Some(LodDebugRecord::for_node_fields(
+                *slot = Some(LodDebugRecord::for_node_fields_trusted_decoded(
                     node.id,
                     node.depth,
                     node.bounds,
@@ -473,6 +673,45 @@ impl LodDebugManifestIndex {
             .map(|record| record.ok_or(LodDebugMetadataError::UncoveredPage(page.id)))
             .collect()
     }
+
+    /// Patches only the runtime Residency bits of a previously generated page
+    /// basis. Every geometric, hierarchy, palette, and certificate field stays
+    /// immutable, avoiding repeated support-bound work during cut changes.
+    #[cfg(any(feature = "lod", test))]
+    pub(crate) fn patch_page_record_residency(
+        &self,
+        page: LodPageId,
+        records: &mut [LodDebugRecord],
+        mut residency_for_node: impl FnMut(LodNodeId) -> LodDebugResidency,
+    ) -> Result<(), LodDebugMetadataError> {
+        let descriptor_index = self
+            .descriptor_index(page)
+            .ok_or(LodDebugMetadataError::UnknownPage(page))?;
+        let descriptor = &self.descriptors[descriptor_index];
+        if records.len() < descriptor.gaussian_count as usize {
+            return Err(LodDebugMetadataError::InvalidPage(page));
+        }
+        for &node_index in &self.node_indices_by_descriptor[descriptor_index] {
+            let node = &self.nodes[node_index];
+            let start = node.representation.offset as usize;
+            let end = start
+                .checked_add(node.representation.count as usize)
+                .ok_or(LodDebugMetadataError::CountOverflow)?;
+            let node_records = records
+                .get_mut(start..end)
+                .ok_or(LodDebugMetadataError::InvalidNodeRange(node.id))?;
+            let residency = residency_for_node(node.id);
+            node_records
+                .iter_mut()
+                .for_each(|record| record.set_residency(residency));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn page_payload_validation_count_for_test(&self) -> u64 {
+        self.page_payload_validations.load(Ordering::Relaxed)
+    }
 }
 
 /// Generation-safe mutable mirror of a bounded physical Gaussian atlas.
@@ -487,6 +726,7 @@ pub struct LodDebugAnnotationAtlas {
     records_per_slot: u32,
     slots: Vec<LodDebugAnnotationSlot>,
     metadata: LodDebugMetadata,
+    next_revision: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -530,6 +770,49 @@ impl LodDebugAnnotationAtlas {
             records_per_slot,
             slots,
             metadata: LodDebugMetadata::new(records),
+            next_revision: 1,
+        })
+    }
+
+    /// Construct a streamed atlas whose CPU memory grows only with populated
+    /// physical slots. The matching GPU allocation remains fixed-size so
+    /// physical Gaussian indices stay valid, but render extraction can upload
+    /// independently revised slot payloads instead of recreating the buffer.
+    #[cfg(any(feature = "lod", test))]
+    pub(crate) fn new_sparse(
+        slot_count: u32,
+        records_per_slot: u32,
+    ) -> Result<Self, LodDebugAnnotationAtlasError> {
+        if slot_count == 0 {
+            return Err(LodDebugAnnotationAtlasError::ZeroSlotCount);
+        }
+        if records_per_slot == 0 {
+            return Err(LodDebugAnnotationAtlasError::ZeroSlotStride);
+        }
+        let physical_count = slot_count
+            .checked_mul(records_per_slot)
+            .ok_or(LodDebugAnnotationAtlasError::CapacityOverflow)?;
+        let physical_count = usize::try_from(physical_count)
+            .map_err(|_| LodDebugAnnotationAtlasError::CapacityOverflow)?;
+        let slot_len = usize::try_from(slot_count)
+            .map_err(|_| LodDebugAnnotationAtlasError::CapacityOverflow)?;
+
+        let mut slots = Vec::new();
+        slots
+            .try_reserve_exact(slot_len)
+            .map_err(|_| LodDebugAnnotationAtlasError::AllocationFailed(slot_len))?;
+        slots.resize(slot_len, LodDebugAnnotationSlot::default());
+
+        Ok(Self {
+            slot_count,
+            records_per_slot,
+            slots,
+            metadata: LodDebugMetadata::new_sparse(
+                slot_len,
+                records_per_slot as usize,
+                physical_count,
+            )?,
+            next_revision: 1,
         })
     }
 
@@ -554,12 +837,62 @@ impl LodDebugAnnotationAtlas {
         self.metadata.clone()
     }
 
+    /// Marks whether every record required by the currently drawable package
+    /// cut has been populated. Render extraction retains a sparse allocation
+    /// while incomplete, but does not enable its shader binding.
+    #[cfg(any(feature = "lod", test))]
+    pub(crate) fn set_complete(&mut self, complete: bool) {
+        if let Some(sparse) = self.metadata.sparse.as_mut() {
+            sparse.complete = complete;
+        }
+    }
+
     #[inline]
     pub fn page(&self, slot: AtlasSlot) -> Option<LodPageId> {
         self.slots.get(slot.index as usize).and_then(|state| {
             (state.generation == slot.generation)
                 .then_some(state.page)
                 .flatten()
+        })
+    }
+
+    /// Cheap provenance check used before rebuilding a page's records.
+    /// Structural annotation fields are immutable for one manifest, so one
+    /// representative residency code per node range is sufficient to prove
+    /// that the existing physical slot already contains the requested payload.
+    #[cfg(any(feature = "lod", test))]
+    pub(crate) fn page_matches_indexed_node_residency(
+        &self,
+        index: &LodDebugManifestIndex,
+        page: LodPageId,
+        slot: AtlasSlot,
+        mut residency_for_node: impl FnMut(LodNodeId) -> LodDebugResidency,
+    ) -> bool {
+        if self.page(slot) != Some(page) {
+            return false;
+        }
+        let slot_records = if let Some(sparse) = self.metadata.sparse.as_ref() {
+            sparse
+                .slots
+                .get(slot.index as usize)
+                .and_then(LodDebugSparseSlot::records)
+        } else {
+            let Ok(range) = self.slot_range(slot.index) else {
+                return false;
+            };
+            self.metadata.records.get(range)
+        };
+        let Some(slot_records) = slot_records else {
+            return false;
+        };
+        let Some(node_indices) = index.node_indices(page) else {
+            return false;
+        };
+        node_indices.iter().copied().all(|node_index| {
+            let node = &index.nodes[node_index];
+            slot_records
+                .get(node.representation.offset as usize)
+                .is_some_and(|record| record.residency_code() == residency_for_node(node.id) as u32)
         })
     }
 
@@ -582,7 +915,12 @@ impl LodDebugAnnotationAtlas {
             });
         }
         state.page = None;
-        Arc::make_mut(&mut self.metadata.records)[range.clone()].fill(LodDebugRecord::default());
+        if self.metadata.sparse.is_some() {
+            self.write_sparse_slot(slot.index, None, None)?;
+        } else {
+            Arc::make_mut(&mut self.metadata.records)[range.clone()]
+                .fill(LodDebugRecord::default());
+        }
         Ok(LodDebugAtlasUpdate {
             range,
             slot,
@@ -652,13 +990,23 @@ impl LodDebugAnnotationAtlas {
         let page_records = index
             .records_for_page_with_node_residency(page, residency_for_node)
             .map_err(LodDebugAnnotationAtlasError::Metadata)?;
-        let records = Arc::make_mut(&mut self.metadata.records);
-        records[range.clone()].fill(LodDebugRecord::default());
-        let page_end = range
-            .start
-            .checked_add(page_records.len())
-            .ok_or(LodDebugAnnotationAtlasError::CapacityOverflow)?;
-        records[range.start..page_end].copy_from_slice(&page_records);
+        if self.metadata.sparse.is_some() {
+            let mut padded = page_records;
+            padded.resize(self.records_per_slot as usize, LodDebugRecord::default());
+            self.write_sparse_slot(
+                slot.index,
+                Some((page.id, slot.generation)),
+                Some(padded.into()),
+            )?;
+        } else {
+            let records = Arc::make_mut(&mut self.metadata.records);
+            records[range.clone()].fill(LodDebugRecord::default());
+            let page_end = range
+                .start
+                .checked_add(page_records.len())
+                .ok_or(LodDebugAnnotationAtlasError::CapacityOverflow)?;
+            records[range.start..page_end].copy_from_slice(&page_records);
+        }
         self.slots[slot.index as usize] = LodDebugAnnotationSlot {
             generation: slot.generation,
             page: Some(page.id),
@@ -668,6 +1016,60 @@ impl LodDebugAnnotationAtlas {
             range,
             slot,
             page: Some(page.id),
+        })
+    }
+
+    /// Installs one already prepared, fixed-stride sparse payload without
+    /// copying or regenerating its records.
+    ///
+    /// Package staging uses this at logical cut publication after building any
+    /// cut-dependent Residency variants under a bounded per-frame CPU budget.
+    #[cfg(any(feature = "lod", test))]
+    pub(crate) fn write_prepared_sparse_page(
+        &mut self,
+        page: LodPageId,
+        slot: AtlasSlot,
+        records: Arc<[LodDebugRecord]>,
+    ) -> Result<LodDebugAtlasUpdate, LodDebugAnnotationAtlasError> {
+        let range = self.slot_range(slot.index)?;
+        if records.len() != self.records_per_slot as usize {
+            return Err(LodDebugAnnotationAtlasError::PreparedSlotLengthMismatch {
+                page,
+                count: records.len(),
+                stride: self.records_per_slot,
+            });
+        }
+        if slot.generation == 0 {
+            return Err(LodDebugAnnotationAtlasError::InvalidGeneration);
+        }
+        let state = self.slots[slot.index as usize];
+        if state.generation != 0
+            && state.generation != slot.generation
+            && !generation_is_newer(slot.generation, state.generation)
+        {
+            return Err(LodDebugAnnotationAtlasError::StaleGeneration {
+                slot,
+                current: state.generation,
+            });
+        }
+        if self.metadata.sparse.is_none() {
+            return Err(LodDebugAnnotationAtlasError::PreparedPayloadRequiresSparseAtlas);
+        }
+        // A decoded page and slot generation define every annotation field
+        // except Residency. Reusing that semantic key therefore preserves the
+        // invariant revision while advancing only the full payload revision;
+        // Level/Page/Boundaries/SelectionPressure can remain ready while the
+        // residency-only GPU write drains. Pointer equality also makes a
+        // prepublished new slot an O(1) no-op at logical publication.
+        self.replace_prepared_sparse_slot(slot.index, (page, slot.generation), records);
+        self.slots[slot.index as usize] = LodDebugAnnotationSlot {
+            generation: slot.generation,
+            page: Some(page),
+        };
+        Ok(LodDebugAtlasUpdate {
+            range,
+            slot,
+            page: Some(page),
         })
     }
 
@@ -685,6 +1087,81 @@ impl LodDebugAnnotationAtlas {
             .checked_add(self.records_per_slot as usize)
             .ok_or(LodDebugAnnotationAtlasError::CapacityOverflow)?;
         Ok(start..end)
+    }
+
+    fn write_sparse_slot(
+        &mut self,
+        index: u32,
+        key: Option<(LodPageId, u32)>,
+        records: Option<Arc<[LodDebugRecord]>>,
+    ) -> Result<(), LodDebugAnnotationAtlasError> {
+        let sparse = self
+            .metadata
+            .sparse
+            .as_mut()
+            .expect("sparse slot writes require sparse metadata");
+        let slots = Arc::make_mut(&mut sparse.slots);
+        let current = &slots[index as usize];
+        let unchanged = current.key == key
+            && match (&current.records, &records) {
+                (None, None) => true,
+                (Some(current), Some(next)) => current.as_ref() == next.as_ref(),
+                _ => false,
+            };
+        if unchanged {
+            return Ok(());
+        }
+        let revision = self.next_revision;
+        self.next_revision = self.next_revision.wrapping_add(1).max(1);
+        slots[index as usize] = LodDebugSparseSlot {
+            key,
+            invariant_revision: revision,
+            payload_revision: revision,
+            records,
+        };
+        Ok(())
+    }
+
+    #[cfg(any(feature = "lod", test))]
+    fn replace_prepared_sparse_slot(
+        &mut self,
+        index: u32,
+        key: (LodPageId, u32),
+        records: Arc<[LodDebugRecord]>,
+    ) {
+        let sparse = self
+            .metadata
+            .sparse
+            .as_ref()
+            .expect("prepared sparse slot writes require sparse metadata");
+        let current = &sparse.slots[index as usize];
+        let same_key = current.key == Some(key);
+        let invariant_revision = current.invariant_revision;
+        if same_key
+            && current
+                .records
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &records))
+        {
+            return;
+        }
+        let revision = self.next_revision;
+        self.next_revision = self.next_revision.wrapping_add(1).max(1);
+        let sparse = self
+            .metadata
+            .sparse
+            .as_mut()
+            .expect("prepared sparse slot writes require sparse metadata");
+        Arc::make_mut(&mut sparse.slots)[index as usize] = LodDebugSparseSlot {
+            key: Some(key),
+            invariant_revision: if same_key {
+                invariant_revision
+            } else {
+                revision
+            },
+            payload_revision: revision,
+            records: Some(records),
+        };
     }
 }
 
@@ -716,6 +1193,12 @@ pub enum LodDebugAnnotationAtlasError {
         count: usize,
         stride: u32,
     },
+    PreparedSlotLengthMismatch {
+        page: LodPageId,
+        count: usize,
+        stride: u32,
+    },
+    PreparedPayloadRequiresSparseAtlas,
     Metadata(LodDebugMetadataError),
 }
 
@@ -747,6 +1230,19 @@ impl fmt::Display for LodDebugAnnotationAtlasError {
                 "LoD debug page {} has {count} records, exceeding slot stride {stride}",
                 page.0
             ),
+            Self::PreparedSlotLengthMismatch {
+                page,
+                count,
+                stride,
+            } => write!(
+                f,
+                "prepared LoD debug page {} has {count} records; sparse slot stride is {stride}",
+                page.0
+            ),
+            Self::PreparedPayloadRequiresSparseAtlas => write!(
+                f,
+                "prepared LoD debug page payloads require a sparse annotation atlas"
+            ),
             Self::Metadata(error) => error.fmt(f),
         }
     }
@@ -771,7 +1267,34 @@ impl LodDebugMetadata {
     pub fn new(records: impl Into<Arc<[LodDebugRecord]>>) -> Self {
         Self {
             records: records.into(),
+            sparse: None,
         }
+    }
+
+    #[cfg(any(feature = "lod", test))]
+    fn new_sparse(
+        slot_count: usize,
+        records_per_slot: usize,
+        record_count: usize,
+    ) -> Result<Self, LodDebugAnnotationAtlasError> {
+        let mut slots = Vec::new();
+        slots
+            .try_reserve_exact(slot_count)
+            .map_err(|_| LodDebugAnnotationAtlasError::AllocationFailed(slot_count))?;
+        slots.resize_with(slot_count, LodDebugSparseSlot::default);
+        let identity = NEXT_LOD_DEBUG_SPARSE_IDENTITY
+            .fetch_add(1, Ordering::Relaxed)
+            .max(1);
+        Ok(Self {
+            records: Arc::from([]),
+            sparse: Some(LodDebugSparseMetadata {
+                identity,
+                record_count,
+                records_per_slot,
+                slots: slots.into(),
+                complete: true,
+            }),
+        })
     }
 
     #[inline]
@@ -780,13 +1303,49 @@ impl LodDebugMetadata {
     }
 
     #[inline]
+    pub(crate) fn sparse(&self) -> Option<&LodDebugSparseMetadata> {
+        self.sparse.as_ref()
+    }
+
+    #[inline]
     pub fn len(&self) -> usize {
-        self.records.len()
+        self.sparse
+            .as_ref()
+            .map_or_else(|| self.records.len(), |sparse| sparse.record_count)
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.records.is_empty()
+        self.len() == 0
+    }
+
+    /// Whether a streamed snapshot covers every slot in the currently
+    /// drawable cut. Dense metadata is complete by construction.
+    #[inline]
+    #[cfg(any(feature = "lod", feature = "testing", test))]
+    pub(crate) fn is_complete(&self) -> bool {
+        self.sparse
+            .as_ref()
+            .is_none_or(LodDebugSparseMetadata::is_complete)
+    }
+
+    #[cfg(feature = "testing")]
+    pub fn is_complete_for_testing(&self) -> bool {
+        self.is_complete()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn any_record(&self, predicate: impl FnMut(&LodDebugRecord) -> bool) -> bool {
+        if let Some(sparse) = &self.sparse {
+            sparse
+                .slots
+                .iter()
+                .filter_map(LodDebugSparseSlot::records)
+                .flatten()
+                .any(predicate)
+        } else {
+            self.records.iter().any(predicate)
+        }
     }
 
     /// Flatten all pages in `lod.pages` order. The returned page layouts make
@@ -931,11 +1490,32 @@ pub const fn stable_page_color_key(page: LodPageId) -> u32 {
     value ^ (value >> 16)
 }
 
-/// CPU oracle for the shader's deterministic categorical page palette.
+/// Fixed Rec.709 linear luminance of every categorical Page-debug color.
+///
+/// This is deliberately below the darkest hue in the base HSV ring, so
+/// equalization only scales colors down and never clips a channel. Page hue
+/// can therefore identify packing without introducing false light/dark bands
+/// that resemble density error.
+pub const LOD_DEBUG_PAGE_LINEAR_LUMINANCE: f32 = 0.30;
+
+const REC709_LINEAR_LUMINANCE: [f32; 3] = [0.2126, 0.7152, 0.0722];
+
+/// CPU oracle for the shader's deterministic, luminance-equalized categorical
+/// page palette.
 pub fn lod_debug_page_color(page_color_key: u32) -> [f32; 3] {
     let hash = stable_page_color_key(LodPageId(u64::from(page_color_key)));
     let hue = (hash & 0x00ff_ffff) as f32 / 16_777_215.0;
-    hsv_to_rgb(hue, 0.72, 0.95)
+    let base = hsv_to_rgb(hue, 0.72, 0.95);
+    let luminance = rec709_linear_luminance(base);
+    let scale = LOD_DEBUG_PAGE_LINEAR_LUMINANCE / luminance;
+    base.map(|channel| channel * scale)
+}
+
+#[inline]
+fn rec709_linear_luminance(color: [f32; 3]) -> f32 {
+    color[0] * REC709_LINEAR_LUMINANCE[0]
+        + color[1] * REC709_LINEAR_LUMINANCE[1]
+        + color[2] * REC709_LINEAR_LUMINANCE[2]
 }
 
 /// CPU oracle for the shader's fixed hierarchy-level palette.
@@ -1422,6 +2002,20 @@ mod tests {
                 .into_iter()
                 .all(|channel| (0.0..=1.0).contains(&channel))
         );
+        for page in (0..=4_096_u64)
+            .map(|index| LodPageId(index.wrapping_mul(0x9e37_79b9_7f4a_7c15).wrapping_add(1)))
+        {
+            let color = lod_debug_page_color(stable_page_color_key(page));
+            assert!(
+                color
+                    .into_iter()
+                    .all(|channel| (0.0..=1.0).contains(&channel))
+            );
+            assert!(
+                (rec709_linear_luminance(color) - LOD_DEBUG_PAGE_LINEAR_LUMINANCE).abs() <= 2.0e-6,
+                "Page color for {page:?} changed linear luma: {color:?}"
+            );
+        }
 
         let level_colors = (0..8).map(lod_debug_level_color).collect::<Vec<_>>();
         assert_eq!(level_colors[0], lod_debug_level_color(8));
@@ -1604,5 +2198,128 @@ mod tests {
             }),
             Err(LodDebugAnnotationAtlasError::InvalidGeneration)
         ));
+    }
+
+    #[test]
+    fn sparse_atlas_allocates_only_populated_slots_and_keeps_buffer_identity() {
+        let cloud: crate::PlanarGaussian3d = LodTestScene::nested_octants(1)
+            .gaussians
+            .iter()
+            .map(|gaussian| gaussian.gaussian)
+            .collect();
+        let lod = build_planar_3d_lod(
+            &cloud,
+            GaussianLodBuildSettings {
+                leaf_capacity: 2,
+                ..default()
+            },
+        )
+        .unwrap();
+        let page = lod.pages.first().unwrap();
+        let index = LodDebugManifestIndex::new(&lod.manifest).unwrap();
+        let mut atlas = LodDebugAnnotationAtlas::new_sparse(7_812, 1_024).unwrap();
+        let slot = AtlasSlot {
+            index: 4_096,
+            generation: 1,
+        };
+
+        let empty = atlas.metadata();
+        assert_eq!(empty.len(), 7_999_488);
+        assert!(empty.records().is_empty());
+        let empty_sparse = empty.sparse().unwrap();
+        assert_eq!(empty_sparse.slots().len(), 7_812);
+        assert!(
+            empty_sparse
+                .slots()
+                .iter()
+                .all(|slot| slot.records().is_none())
+        );
+
+        atlas
+            .write_page_indexed(&index, page, slot, LodDebugResidency::Resident)
+            .unwrap();
+        let first = atlas.metadata();
+        let first_sparse = first.sparse().unwrap();
+        let first_slot = &first_sparse.slots()[slot.index as usize];
+        let first_revision = first_slot.revision();
+        let first_invariant_revision = first_slot.invariant_revision();
+        let first_records = first_slot.records.as_ref().unwrap().clone();
+        assert_eq!(first_records.len(), 1_024);
+        assert_eq!(
+            first_sparse
+                .slots()
+                .iter()
+                .filter(|slot| slot.records().is_some())
+                .count(),
+            1
+        );
+        assert!(
+            atlas.page_matches_indexed_node_residency(&index, page.id, slot, |_| {
+                LodDebugResidency::Resident
+            },)
+        );
+        assert!(
+            !atlas.page_matches_indexed_node_residency(&index, page.id, slot, |_| {
+                LodDebugResidency::AncestorFallback
+            },)
+        );
+
+        // An equal refresh must not generate a new slot revision or force a
+        // sparse GPU subrange upload.
+        atlas
+            .write_page_indexed(&index, page, slot, LodDebugResidency::Resident)
+            .unwrap();
+        let equal = atlas.metadata();
+        let equal_sparse = equal.sparse().unwrap();
+        let equal_slot = &equal_sparse.slots()[slot.index as usize];
+        assert_eq!(equal_sparse.identity(), first_sparse.identity());
+        assert_eq!(equal_slot.revision(), first_revision);
+        assert_eq!(equal_slot.invariant_revision(), first_invariant_revision);
+        assert!(Arc::ptr_eq(
+            equal_slot.records.as_ref().unwrap(),
+            &first_records
+        ));
+
+        // A staged Arc is known to represent a logically revised target. Even
+        // when this fixture gives it byte-identical records, publication must
+        // install the exact Arc and advance the revision without a deep record
+        // equality scan on the commit frame.
+        let prepared_records: Arc<[LodDebugRecord]> = first_records.as_ref().to_vec().into();
+        assert!(!Arc::ptr_eq(&prepared_records, &first_records));
+        atlas
+            .write_prepared_sparse_page(page.id, slot, Arc::clone(&prepared_records))
+            .unwrap();
+        let prepared = atlas.metadata();
+        let prepared_sparse = prepared.sparse().unwrap();
+        let prepared_slot = &prepared_sparse.slots()[slot.index as usize];
+        assert_ne!(prepared_slot.revision(), first_revision);
+        assert_eq!(
+            prepared_slot.invariant_revision(),
+            first_invariant_revision,
+            "same page/generation prepared payloads may only revise Residency"
+        );
+        assert!(Arc::ptr_eq(
+            prepared_slot.records.as_ref().unwrap(),
+            &prepared_records
+        ));
+
+        atlas
+            .write_page_indexed(&index, page, slot, LodDebugResidency::AncestorFallback)
+            .unwrap();
+        let changed = atlas.metadata();
+        let changed_sparse = changed.sparse().unwrap();
+        assert_eq!(changed_sparse.identity(), first_sparse.identity());
+        assert_ne!(
+            changed_sparse.slots()[slot.index as usize].revision(),
+            first_revision
+        );
+        assert!(changed.any_record(|record| {
+            record.residency_code() == LodDebugResidency::AncestorFallback as u32
+        }));
+
+        atlas.set_complete(false);
+        assert!(!atlas.metadata().is_complete());
+        atlas.set_complete(true);
+        assert!(atlas.metadata().is_complete());
     }
 }

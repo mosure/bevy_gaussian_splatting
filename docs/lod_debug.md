@@ -32,14 +32,38 @@ its exact leaf frontier and can still provide hierarchy presets at quality one.
 The panel reports `metadata ready` without claiming that an adapter-specific
 pipeline has already drawn the annotation.
 
+## Runtime cost and adapter limits
+
+Prebuilt packages build debug records lazily from already validated decoded
+pages. CPU preparation is capped at 32,768 records per package update, and the
+render path writes only changed physical slots, capped at 64 MiB and 256 slots
+per cloud per frame. Switching among enabled presets updates only the 32-byte
+configuration uniform; it does not rebuild the package, replace the active cut,
+or re-upload the full metadata address space. Pending cut annotations are
+prepared outside the visible epoch and become current with the logical cut.
+Level and Page metadata is pre-uploaded before a replacement may activate, so
+camera motion does not briefly fall back to authored color. Residency provenance
+travels with each compacted candidate in two packed entry bits; it therefore
+switches atomically with the exact per-view cut without another record upload.
+
+The GPU binding still reserves one fixed-address record buffer sized for the
+configured physical atlas. A low-limit adapter that cannot bind that buffer
+falls back to authored color and logs a warning. `metadata ready` describes the
+main-world annotation state, not adapter capability; a render-to-main capability
+status is not yet exposed in the panel. The native Garden qualification and its
+bounded sparse-upload evidence are recorded in
+[the Garden report](lod_garden_report.md).
+
 ## Reading selection pressure
 
 Selection pressure is the most useful view for quality diagnosis. It mirrors
 the CPU selector and includes structural demand, projected pixel error, and the
-builder-authored high-fidelity certificate. Cool colors are comfortably below
-the target, green is near the boundary, and warm colors exceed it. A pressure
-above one may be visible transiently inside hysteresis or when the status
-reports a residency/budget degradation.
+builder-authored high-fidelity certificate. Certificate pressure is inactive
+through quality `.90` and ramps to full authority at `.95`; projected-error
+authority uses the same cubic curve as CPU selection. Cool colors are
+comfortably below the target, green is near the boundary, and warm colors
+exceed it. A pressure above one may be visible transiently inside hysteresis or
+when the status reports a residency/budget degradation.
 
 Raw geometric, appearance, opacity, and combined-error ramps are deliberately
 not presets: those values use different units and are not the user-facing
@@ -64,9 +88,17 @@ requested page.
 - `level` shows logical hierarchy depth and is the quickest way to see a mixed
   cut across the object.
 - `page` shows physical packing. Multiple logical node slices may share one
-  page, so page color is not a quality level.
+  page, so page color is not a quality level. Its hashed hues are normalized
+  to a fixed `0.30` Rec.709 linear luminance; light/dark bands therefore do not
+  masquerade as page-local opacity or density changes.
 - `residency` is most informative on prebuilt streamed packages. A fully
-  resident steady cut is expected to look uniform.
+  resident steady cut is expected to look uniform. Its provenance is owned by
+  the per-view candidate, so different cameras can classify the same physical
+  page independently without racing a cloud-wide annotation update.
+- The panel's `Cached pages` value is decoded bounded-cache occupancy,
+  including the permanent coarse guard and warm completed pages. It is not a
+  visible-page, selected-frontier, or GPU-current count, and can rise after
+  camera motion stops while work already in flight finishes before settling.
 - `boundaries` marks logical chunk support. It is not a source-geometry leakage
   detector; use selection pressure and the morphology/PSNR qualification for
   elongated-representative regressions.

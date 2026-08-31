@@ -221,7 +221,7 @@ pub(super) fn package_page_transport(
 ) -> Result<PackagePageTransport, GaussianLodPackageError> {
     let identities = if streaming.persistent_cache {
         Some(
-            PersistentCachePageIdentities::from_manifest(manifest)
+            PersistentCachePageIdentities::from_validated_manifest(manifest)
                 .map_err(|error| GaussianLodPackageError::PersistentCache(error.to_string()))?,
         )
     } else {
@@ -231,9 +231,11 @@ pub(super) fn package_page_transport(
     match source {
         GaussianLodPackageSource::NativeDirectory { root } => {
             let root = validate_native_root(root)?;
-            let upstream = NativeFilePageTransport::from_manifest_with_max_encoded_page_bytes(
+            let locations = ManifestPageLocations::from_validated_manifest(manifest)
+                .map_err(|error| GaussianLodPackageError::NativeTransport(error.to_string()))?;
+            let upstream = NativeFilePageTransport::with_max_encoded_page_bytes(
                 root,
-                manifest,
+                locations,
                 streaming.effective_max_encoded_page_bytes(),
             )
             .map_err(|error| GaussianLodPackageError::NativeTransport(error.to_string()))?;
@@ -250,7 +252,7 @@ pub(super) fn package_page_transport(
             }
         }
         GaussianLodPackageSource::Url { base_url } => {
-            let locations = ManifestPageLocations::from_manifest(manifest)
+            let locations = ManifestPageLocations::from_validated_manifest(manifest)
                 .map_err(|error| GaussianLodPackageError::HttpTransport(error.to_string()))?;
             let http_config = package_http_config(base_url, streaming)?;
             let client = NativeUreqHttpClient::with_max_workers(

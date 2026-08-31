@@ -99,9 +99,50 @@ fn encoded_transport_fixture() -> (
         encoded_len: encoded.len() as u64,
     });
     let identities = PersistentCachePageIdentities::from_manifest(&built.manifest).unwrap();
-    let identity = identities.get(page.id).unwrap().clone();
+    let identity = identities.get(page.id).unwrap();
     let payload = PagePayload::new(page.id, encoded);
     (identities, identity, payload)
+}
+
+#[test]
+fn page_identity_index_is_dense_shared_and_preserves_sparse_ids() {
+    let dense = identities(4);
+    assert!(dense.index.is_dense_one_based());
+    let cloned = dense.clone();
+    assert!(Arc::ptr_eq(&dense.package, &cloned.package));
+    assert!(Arc::ptr_eq(&dense.entries, &cloned.entries));
+    for metadata in dense.entries.iter() {
+        let identity = dense.get(metadata.page_id).unwrap();
+        assert_eq!(identity.page_id, metadata.page_id);
+        assert_eq!(identity.content_hash, metadata.content_hash);
+        assert_eq!(identity.encoded_len, metadata.encoded_len);
+    }
+
+    let mut gaussian = Gaussian3d::default();
+    gaussian.rotation.rotation = [1.0, 0.0, 0.0, 0.0];
+    let source: PlanarGaussian3d = vec![gaussian].into();
+    let mut manifest = CpuGaussianLodBuilder::default()
+        .build(&source)
+        .unwrap()
+        .manifest;
+    let old_page = manifest.pages[0].id;
+    let sparse_page = LodPageId(41);
+    manifest.pages[0].id = sparse_page;
+    manifest.pages[0].storage = Some(LodPageStorage {
+        uri: "sparse.gspage".to_owned(),
+        byte_range: None,
+        encoded_len: 4,
+    });
+    for node in &mut manifest.nodes {
+        if node.representation.page == old_page {
+            node.representation.page = sparse_page;
+        }
+    }
+    manifest.validate().unwrap();
+    let sparse = PersistentCachePageIdentities::from_manifest(&manifest).unwrap();
+    assert!(!sparse.index.is_dense_one_based());
+    assert!(sparse.get(old_page).is_none());
+    assert_eq!(sparse.get(sparse_page).unwrap().page_id, sparse_page);
 }
 
 fn cache(root: &TestRoot, max_entries: u32) -> NativePersistentPageCache {
@@ -144,7 +185,7 @@ fn key_is_content_identity_not_url_identity() {
     });
     let first = PersistentCachePageIdentities::from_manifest(&first).unwrap();
     let second = PersistentCachePageIdentities::from_manifest(&second).unwrap();
-    let page = first.entries.keys().next().copied().unwrap();
+    let page = first.entries.first().unwrap().page_id;
     assert_eq!(
         first.get(page).unwrap().key(),
         second.get(page).unwrap().key()
@@ -159,7 +200,7 @@ fn key_is_content_identity_not_url_identity() {
         .unwrap();
     let changed = PersistentCachePageIdentity {
         package: changed,
-        ..first.get(page).unwrap().clone()
+        ..first.get(page).unwrap()
     };
     assert_ne!(first.get(page).unwrap().key(), changed.key());
 }
@@ -168,18 +209,20 @@ fn key_is_content_identity_not_url_identity() {
 fn cache_survives_reopen_for_offline_reuse() {
     let root = TestRoot::new();
     let identities = identities(1);
-    let identity = identities.entries.values().next().unwrap();
+    let identity = identities
+        .get(identities.entries.first().unwrap().page_id)
+        .unwrap();
     let payload = PagePayload::new(identity.page_id, vec![1, 2, 3, 4]);
     {
         let mut cache = cache(&root, 2);
         assert!(matches!(
-            cache.insert(identity, &payload).unwrap(),
+            cache.insert(&identity, &payload).unwrap(),
             PersistentCacheInsert::Written { .. }
         ));
     }
     let mut reopened = cache(&root, 2);
     assert_eq!(
-        reopened.lookup(identity).unwrap(),
+        reopened.lookup(&identity).unwrap(),
         PersistentCacheLookup::Hit(payload)
     );
     assert_eq!(reopened.stats().hits, 1);
@@ -188,7 +231,10 @@ fn cache_survives_reopen_for_offline_reuse() {
 #[test]
 fn startup_scan_discards_excess_records_before_index_allocation() {
     let root = TestRoot::new();
-    let base = identities(1).entries.values().next().unwrap().clone();
+    let identities = identities(1);
+    let base = identities
+        .get(identities.entries.first().unwrap().page_id)
+        .unwrap();
     let records = (1..=5)
         .map(|id| PersistentCachePageIdentity {
             page_id: LodPageId(id),
@@ -227,17 +273,19 @@ fn startup_scan_discards_excess_records_before_index_allocation() {
 fn checksum_corruption_is_removed_and_refetched() {
     let root = TestRoot::new();
     let identities = identities(1);
-    let identity = identities.entries.values().next().unwrap();
+    let identity = identities
+        .get(identities.entries.first().unwrap().page_id)
+        .unwrap();
     let payload = PagePayload::new(identity.page_id, vec![1, 2, 3, 4]);
     let mut cache = cache(&root, 2);
-    cache.insert(identity, &payload).unwrap();
+    cache.insert(&identity, &payload).unwrap();
     let key = identity.key().unwrap();
     let path = root.0.join(key.file_name());
     let mut bytes = fs::read(&path).unwrap();
     *bytes.last_mut().unwrap() ^= 0xff;
     fs::write(&path, bytes).unwrap();
     assert!(matches!(
-        cache.lookup(identity).unwrap(),
+        cache.lookup(&identity).unwrap(),
         PersistentCacheLookup::CorruptionRecovered(PersistentCacheCorruption {
             reason: PersistentCacheCorruptionReason::PayloadChecksumMismatch { .. },
             ..
@@ -250,7 +298,10 @@ fn checksum_corruption_is_removed_and_refetched() {
 #[test]
 fn byte_and_entry_budget_evict_deterministic_lru() {
     let root = TestRoot::new();
-    let base = identities(1).entries.values().next().unwrap().clone();
+    let identities = identities(1);
+    let base = identities
+        .get(identities.entries.first().unwrap().page_id)
+        .unwrap();
     let identities = (1..=3)
         .map(|id| PersistentCachePageIdentity {
             page_id: LodPageId(id),
@@ -442,7 +493,9 @@ fn owned_cache_transport_drop_and_into_parts_cancel_upstream_tickets() {
     for extract_parts in [false, true] {
         let root = TestRoot::new();
         let identities = identities(1);
-        let identity = identities.entries.values().next().unwrap().clone();
+        let identity = identities
+            .get(identities.entries.first().unwrap().page_id)
+            .unwrap();
         let canceled = Arc::new(AtomicU64::new(0));
         let upstream = PendingCountingTransport {
             next_ticket: 1,
@@ -586,7 +639,7 @@ fn native_cache_service_recovers_after_external_lock_release() {
     }
 
     let identities = identities(1);
-    let page_id = *identities.entries.keys().next().unwrap();
+    let page_id = identities.entries.first().unwrap().page_id;
     let validation = identities.validation(page_id).unwrap();
     let first = NativePersistentCacheService::spawn_from_config(config.clone(), 4).unwrap();
     let initial_failure = first

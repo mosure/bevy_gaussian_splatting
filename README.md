@@ -19,6 +19,15 @@ bevy_gaussian_splatting --input-scene [file://scene.glb | https://mitchell.mosur
 bevy_gaussian_splatting --input-lod [directory/scene.gsplatlod | https://cdn.example/scene.gsplatlod]
 ```
 
+Prebuilt packages use bounded sparse residency and native/HTTP range
+streaming. See the [LoD guide](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod.md)
+and the normative [package-format contract](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod_format.md).
+Externally trained camera-cluster active sets use the additive
+[LODGE sidecar and runtime](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lodge.md)
+and its normative
+[active-set format](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lodge_active_set_format.md)
+without changing the existing `.gsplatlod` hierarchy ABI.
+
 ## viewer hotkeys
 
 - `esc`: close viewer
@@ -35,9 +44,10 @@ cargo run --release --bin bevy_gaussian_splatting -- \
 ```
 
 Append `--lod-debug=selection-pressure` to visualize the effective guarded
-selection pressure: structural detail and projected error, plus the
-continuous high-fidelity certificate demand. Structural coverage and
-certificate authority strengthen progressively toward the high-quality end.
+selection pressure: structural detail and projected error, plus the guarded
+high-fidelity certificate demand. Structural coverage strengthens toward the
+high-quality end; certificate pressure is intentionally inactive through `.90`
+and reaches full authority at `.95`.
 
 For a larger native review, open Trellis at the guarded high-fidelity setting:
 
@@ -87,10 +97,13 @@ for regression results.
 - [ ] spherical harmonic coefficients clustering
 - [ ] 4D gaussian cloud wavelet compression
 - [ ] accelerated spatial queries
+- [X] rotation-stable world-distance sorting and sort-cache reuse
+- [ ] per-ray hierarchical [StopThePop](https://arxiv.org/abs/2402.00525) compositing
 - [ ] temporal depth sorting
 - [ ] skeletons
 - [ ] volume masks
-- [X] [bounded CPU/GPU LoD construction, native/HTTP package streaming with persistent caches, atomic complete-cut commits, automatic GPU-atlas bridges, exact compaction/radix, and device recovery](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod.md)
+- [X] [bounded CPU/GPU LoD construction, globally covering guard cuts, native/HTTP package streaming with persistent caches, atomic complete-cut commits, automatic GPU-atlas bridges, exact compaction/radix, and device recovery](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod.md)
+- [X] [authenticated external LODGE levels and camera-cluster active sets with one deduplicated, opacity-blended global draw](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lodge.md)
 - [X] [named LoD level, page, residency, pressure, and boundary debug views](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod_debug.md)
 - [ ] lighting and shadows
 - [ ] bevy_openxr support
@@ -133,6 +146,8 @@ fn setup_gaussian_cloud(
 ## tools
 
 - [LoD architecture, package builder, fixtures, tests, and benchmarks](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod.md)
+- [External LODGE active-set format, instantiation, and presentation contract](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lodge.md)
+- [Normative `.gslodge` container, manifest, dependency, and membership format](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lodge_active_set_format.md)
 - [Pinned Trellis LoD quality report and regression protocol](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod_quality_report.md)
 - [Named LoD level, page, residency, pressure, and boundary debug views](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod_debug.md)
 - [Security policy and LoD package trust boundary](https://github.com/mosure/bevy_gaussian_splatting/blob/main/SECURITY.md)

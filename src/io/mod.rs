@@ -7,6 +7,10 @@ pub mod loader;
 pub mod lod;
 #[cfg(all(feature = "lod_build", not(target_arch = "wasm32")))]
 pub mod lod_build_external;
+#[cfg(any(feature = "lod", feature = "lod_build"))]
+pub mod lodge;
+#[cfg(all(feature = "lod_build", not(target_arch = "wasm32")))]
+pub mod lodge_build_external;
 pub mod scene;
 
 #[cfg(feature = "io_ply")]
@@ -22,6 +26,8 @@ impl Plugin for IoPlugin {
         {
             app.init_asset::<lod::GaussianLodAsset>();
             app.init_asset_loader::<lod::GaussianLodManifestLoader>();
+            app.init_asset::<lodge::GaussianLodgeAsset>();
+            app.init_asset_loader::<lodge::GaussianLodgeManifestLoader>();
         }
 
         app.add_plugins(scene::GaussianScenePlugin);

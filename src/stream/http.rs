@@ -617,7 +617,7 @@ impl<Client: HttpRangeClient> LodPageTransport for HttpRangePageTransport<Client
     }
 }
 
-fn validate_base_url(base_url: &str) -> Result<(), HttpRangeTransportError> {
+pub(crate) fn validate_base_url(base_url: &str) -> Result<(), HttpRangeTransportError> {
     if !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
         return Err(HttpRangeTransportError::UnsupportedScheme(
             base_url.split(':').next().unwrap_or_default().to_owned(),

@@ -1,8 +1,9 @@
 # Canonical Trellis LoD quality report
 
-This report records a passing full-profile qualification of the current
-production-default LoD selector on the pinned Trellis scene. It is evidence for
-this artifact, renderer convention, and camera contract. It is **not** a
+This report records a passing full-profile qualification of the historical
+ABI 13 LoD selector on the pinned Trellis scene. It is evidence for that
+builder artifact, renderer convention, and camera contract; it has not yet been
+regenerated for the current ABI 14 reducer. It is **not** a
 universal mapping from the quality slider to PSNR, nor a promise that unrelated
 scenes will reach the same savings at the same quality.
 
@@ -12,7 +13,7 @@ scenes will reach the same savings at the same quality.
 - Artifact SHA-256:
   `fbe9d96b6689a78228c121e5f1bc8c5ccc32cef1941294d25f1db66f4a901dc1`
 - Source count: 478,368 Gaussians
-- Hierarchy: production-default CPU builder ABI 13 and reducer settings
+- Hierarchy: historical CPU builder ABI 13 and reducer settings
 - Full rendered graph: quality `.00` through `1.00` in `.01` increments, with
   `.99` present explicitly
 - Image oracle: matched 192px selection height and 192x192 deterministic raster
@@ -113,7 +114,14 @@ The qualification fails unless all of the following remain true:
   morphology bounds, preventing elongated coarse splats from passing on PSNR
   alone. Quality `1` restores the exact source count and image.
 
-## Selector contract qualified by this report
+## Current selector contract
+
+The equations below describe current runtime policy. The historical ABI 13
+measurements above predate this authority mapping and therefore do not qualify
+it. The 2026-08-22 Garden temporal matrix and endpoint-radiance K2 GPU passes
+qualify separate runtime and fixture surfaces; they do not regenerate this
+scene-specific Trellis quality graph. Rerun the full ignored Trellis workflow
+before treating these historical image gates as current evidence.
 
 For an interior quality `q`, projected coverage `p`, node threshold `t`,
 projected error `e`, and nominal error target `L(q) = 16 * 64^-q`:
@@ -130,17 +138,18 @@ For a usable builder-authored high-fidelity certificate `c`:
 
 ```text
 n = min(q / .95, 1)
-D_certificate = q * n * (p + (1 - p) * n^3)
+g = smoothstep(.90, .95, q)
+D_certificate = g * q * n * (p + (1 - p) * n^3)
 P_certificate = D_certificate / c
 P_final = max(P_error, P_certificate)
 ```
 
-Thus the certificate base is quadratic below `.95`, while cubic authority
-smoothly removes its projected-coverage relaxation. A zero, tiny (`<=1/65535`),
-non-finite, or out-of-range certificate is ignored below `.95` for legacy
-compatibility and fails closed for non-original representations at `.95` and
-above. Quality `0` and quality `1` remain categorical coarsest and exact-original
-endpoints.
+Thus usable certificate pressure is exactly zero through `.90`, then smoothly
+enables the existing quadratic base and cubic projected-coverage authority by
+`.95`. A zero, tiny (`<=1/65535`), non-finite, or out-of-range certificate is
+ignored below `.95` for legacy compatibility and fails closed for non-original
+representations at `.95` and above. Quality `0` and quality `1` remain
+categorical coarsest and exact-original endpoints.
 
 ## Reproducing and publishing the report
 
@@ -153,7 +162,7 @@ BGS_TRELLIS_GLB=/absolute/path/to/trellis.glb \
   BGS_TRELLIS_AUDIT_PROFILE=full \
   BGS_LOD_REPORT_PATH=/tmp/trellis-lod-quality.md \
   cargo +1.95.0 test --locked --test lod_real_scene_quality \
-  --features "lod_build testing headless" \
+  --features "lod_build_sh3 testing headless" \
   canonical_trellis_high_quality_color_and_covariance_audit -- \
   --ignored --nocapture --test-threads=1
 ```

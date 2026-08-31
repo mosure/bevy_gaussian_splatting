@@ -4,7 +4,13 @@
 //! begin/poll interface without imposing `Send`, an executor, or a futures crate
 //! on the renderer.
 
-use std::{collections::BTreeMap, fmt};
+use std::{
+    borrow::Borrow,
+    collections::{BTreeMap, HashMap},
+    fmt,
+    ops::Deref,
+    sync::Arc,
+};
 
 use bevy::prelude::Reflect;
 use bevy_args::{Deserialize, Serialize};
@@ -12,19 +18,165 @@ use bevy_args::{Deserialize, Serialize};
 pub use crate::gaussian::formats::planar_3d_chunked::LodPageId;
 use crate::gaussian::formats::planar_3d_lod::GaussianLodManifest;
 
+/// Allocation-free clone of one immutable manifest object name.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ManifestPageUri(Arc<str>);
+
+impl ManifestPageUri {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[cfg(test)]
+    fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Deref for ManifestPageUri {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for ManifestPageUri {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Borrow<str> for ManifestPageUri {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl From<&str> for ManifestPageUri {
+    fn from(uri: &str) -> Self {
+        Self(Arc::from(uri))
+    }
+}
+
+impl From<String> for ManifestPageUri {
+    fn from(uri: String) -> Self {
+        Self(Arc::from(uri))
+    }
+}
+
+impl fmt::Display for ManifestPageUri {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl PartialEq<String> for ManifestPageUri {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl PartialEq<ManifestPageUri> for String {
+    fn eq(&self, other: &ManifestPageUri) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Serialize for ManifestPageUri {
+    fn serialize<Serializer>(
+        &self,
+        serializer: Serializer,
+    ) -> Result<Serializer::Ok, Serializer::Error>
+    where
+        Serializer: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ManifestPageUri {
+    fn deserialize<Deserializer>(deserializer: Deserializer) -> Result<Self, Deserializer::Error>
+    where
+        Deserializer: serde::Deserializer<'de>,
+    {
+        String::deserialize(deserializer).map(Self::from)
+    }
+}
+
 /// Transport location copied from a validated manifest page descriptor.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ManifestPageLocation {
-    pub uri: String,
+    /// Shared immutable object name. Packed packages commonly reference one
+    /// shard from many pages, so cloning a location remains allocation-free.
+    pub uri: ManifestPageUri,
     pub byte_range: Option<(u64, u64)>,
     pub encoded_len: u64,
 }
 
+/// Compact page-ID lookup shared by transport and persistent-cache indexes.
+/// Canonical packages require no index allocation; arbitrary portable IDs use
+/// one expected-linear-time fallback that remains cheap to clone.
+#[derive(Clone, Debug)]
+pub(crate) enum CompiledPageIndex {
+    DenseOneBased,
+    Sparse(Arc<HashMap<LodPageId, usize>>),
+}
+
+impl CompiledPageIndex {
+    pub(crate) fn compile(len: usize, mut page_id_at: impl FnMut(usize) -> LodPageId) -> Self {
+        let dense_one_based = (0..len).all(|index| {
+            let expected = u64::try_from(index)
+                .ok()
+                .and_then(|index| index.checked_add(1));
+            expected.is_some_and(|expected| page_id_at(index) == LodPageId(expected))
+        });
+        if dense_one_based {
+            Self::DenseOneBased
+        } else {
+            Self::Sparse(Arc::new(
+                (0..len).map(|index| (page_id_at(index), index)).collect(),
+            ))
+        }
+    }
+
+    pub(crate) fn get(&self, page_id: LodPageId, len: usize) -> Option<usize> {
+        match self {
+            Self::DenseOneBased => {
+                let index = usize::try_from(page_id.0.checked_sub(1)?).ok()?;
+                (index < len).then_some(index)
+            }
+            Self::Sparse(indices) => indices.get(&page_id).copied(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_dense_one_based(&self) -> bool {
+        matches!(self, Self::DenseOneBased)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ManifestPageLocationEntry {
+    page_id: LodPageId,
+    location: ManifestPageLocation,
+}
+
 /// Resolves immutable page IDs without coupling selection to a particular URL,
 /// filesystem, CDN, signed-URL service, or pack-file implementation.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ManifestPageLocations {
-    entries: BTreeMap<LodPageId, ManifestPageLocation>,
+    entries: Arc<[ManifestPageLocationEntry]>,
+    index: CompiledPageIndex,
+}
+
+impl Default for ManifestPageLocations {
+    fn default() -> Self {
+        Self {
+            entries: Arc::from([]),
+            index: CompiledPageIndex::DenseOneBased,
+        }
+    }
 }
 
 impl ManifestPageLocations {
@@ -32,26 +184,62 @@ impl ManifestPageLocations {
         manifest
             .validate()
             .map_err(|error| PageLocationError::InvalidManifest(error.to_string()))?;
-        let mut entries = BTreeMap::new();
+        Self::from_validated_manifest(manifest)
+    }
+
+    /// Copies transport locations from an immutable manifest whose complete
+    /// semantic contract has already been validated by an in-crate owner.
+    pub(crate) fn from_validated_manifest(
+        manifest: &GaussianLodManifest,
+    ) -> Result<Self, PageLocationError> {
+        let index =
+            CompiledPageIndex::compile(manifest.pages.len(), |index| manifest.pages[index].id);
+        let mut shared_uris = HashMap::<&str, ManifestPageUri>::new();
+        let mut entries = Vec::with_capacity(manifest.pages.len());
         for descriptor in &manifest.pages {
             let storage = descriptor
                 .storage
                 .as_ref()
                 .ok_or(PageLocationError::MissingStorage(descriptor.id))?;
-            entries.insert(
-                descriptor.id,
-                ManifestPageLocation {
-                    uri: storage.uri.clone(),
+            let uri = if let Some(uri) = shared_uris.get(storage.uri.as_str()) {
+                uri.clone()
+            } else {
+                let uri = ManifestPageUri::from(storage.uri.as_str());
+                shared_uris.insert(storage.uri.as_str(), uri.clone());
+                uri
+            };
+            entries.push(ManifestPageLocationEntry {
+                page_id: descriptor.id,
+                location: ManifestPageLocation {
+                    uri,
                     byte_range: storage.byte_range,
                     encoded_len: storage.encoded_len,
                 },
-            );
+            });
         }
-        Ok(Self { entries })
+        Ok(Self {
+            entries: entries.into(),
+            index,
+        })
+    }
+
+    #[cfg(test)]
+    fn from_entries(entries: impl IntoIterator<Item = (LodPageId, ManifestPageLocation)>) -> Self {
+        let entries = entries
+            .into_iter()
+            .map(|(page_id, location)| ManifestPageLocationEntry { page_id, location })
+            .collect::<Vec<_>>();
+        let index = CompiledPageIndex::compile(entries.len(), |index| entries[index].page_id);
+        Self {
+            entries: entries.into(),
+            index,
+        }
     }
 
     pub fn get(&self, page_id: LodPageId) -> Option<&ManifestPageLocation> {
-        self.entries.get(&page_id)
+        let index = self.index.get(page_id, self.entries.len())?;
+        let entry = self.entries.get(index)?;
+        (entry.page_id == page_id).then_some(&entry.location)
     }
 
     pub fn len(&self) -> usize {
@@ -64,7 +252,14 @@ impl ManifestPageLocations {
 
     /// Stable manifest page order for transport construction and cache indexes.
     pub fn page_ids(&self) -> impl Iterator<Item = LodPageId> + '_ {
-        self.entries.keys().copied()
+        self.entries.iter().map(|entry| entry.page_id)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn iter(&self) -> impl Iterator<Item = (LodPageId, &ManifestPageLocation)> {
+        self.entries
+            .iter()
+            .map(|entry| (entry.page_id, &entry.location))
     }
 }
 
@@ -394,7 +589,44 @@ mod native {
     /// Cancelled tickets continue to occupy a slot until their worker finishes.
     pub const DEFAULT_NATIVE_FILE_IO_IN_FLIGHT_LIMIT: usize = 68;
 
+    /// Keep lazy cancellation O(1) in the common case while bounding stale FIFO
+    /// tokens during a long-running filesystem operation.
+    const NATIVE_FILE_IO_WAITER_COMPACTION_FLOOR: usize = 64;
+
     type NativeFileIoJob = Box<dyn FnOnce() + Send + 'static>;
+    type NativeFileReadResult = Result<PagePayload, NativeFileTransportError>;
+    type NativeFileReadReceiver = std::sync::mpsc::Receiver<NativeFileReadResult>;
+
+    struct NativeFileRead {
+        root: std::path::PathBuf,
+        path: std::path::PathBuf,
+        page_id: LodPageId,
+        location: ManifestPageLocation,
+        max_encoded_page_bytes: u64,
+    }
+
+    enum NativeFileTicketState {
+        /// Capacity was unavailable or an earlier waiter owns the next turn.
+        /// The pool owns the queued closure and promotes it automatically; the
+        /// transport retains only the receiver and cancellation token, so an
+        /// owner that temporarily skips polling cannot block later admissions.
+        AdmissionDeferred {
+            receiver: NativeFileReadReceiver,
+            waiter: NativeFileIoWaiter,
+        },
+        Reading(NativeFileReadReceiver),
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+    struct NativeFileIoWaiter {
+        id: u64,
+        owner_id: u64,
+    }
+
+    enum NativeFileIoSubmission {
+        Submitted,
+        Deferred(NativeFileIoWaiter),
+    }
 
     struct NativeFileIoScheduledJob {
         owner_id: u64,
@@ -404,8 +636,12 @@ mod native {
     struct NativeFileIoPoolState {
         jobs: std::collections::VecDeque<NativeFileIoScheduledJob>,
         ready_owners: std::collections::VecDeque<u64>,
+        admission_waiters: std::collections::VecDeque<NativeFileIoWaiter>,
+        deferred_jobs: std::collections::HashMap<NativeFileIoWaiter, NativeFileIoJob>,
         in_flight: usize,
+        in_flight_limit: usize,
         next_owner_id: u64,
+        next_waiter_id: u64,
         shutting_down: bool,
     }
 
@@ -414,11 +650,12 @@ mod native {
         work_available: std::sync::Condvar,
     }
 
-    /// Fixed-size worker pool with FIFO service per transport and deterministic
-    /// round-robin service between transports. `in_flight` is incremented
-    /// before a job is published and decremented only after its closure returns,
-    /// so the bound includes queued, running, cancelled, and receiver-dropped
-    /// work.
+    /// Fixed-size worker pool with FIFO service per transport, deterministic
+    /// round-robin service between transports, and pool-driven FIFO admission
+    /// after saturation. `in_flight` is incremented before a job is published
+    /// and decremented only after its closure returns, so the bound includes
+    /// admitted queued, running, cancelled, and receiver-dropped work. Deferred
+    /// jobs do not consume that bound and are promoted as soon as capacity frees.
     struct NativeFileIoPool {
         shared: std::sync::Arc<NativeFileIoPoolShared>,
         workers: Vec<std::thread::JoinHandle<()>>,
@@ -440,12 +677,21 @@ mod native {
                 });
             }
 
+            // These queues can contain at most `in_flight_limit` admitted jobs.
+            // Reserve that small fixed bound once so automatic promotion cannot
+            // encounter a fallible allocation after the requesting call returns.
+            let jobs = std::collections::VecDeque::with_capacity(in_flight_limit);
+            let ready_owners = std::collections::VecDeque::with_capacity(in_flight_limit);
             let shared = std::sync::Arc::new(NativeFileIoPoolShared {
                 state: std::sync::Mutex::new(NativeFileIoPoolState {
-                    jobs: std::collections::VecDeque::new(),
-                    ready_owners: std::collections::VecDeque::new(),
+                    jobs,
+                    ready_owners,
+                    admission_waiters: std::collections::VecDeque::new(),
+                    deferred_jobs: std::collections::HashMap::new(),
                     in_flight: 0,
+                    in_flight_limit,
                     next_owner_id: 1,
+                    next_waiter_id: 1,
                     shutting_down: false,
                 }),
                 work_available: std::sync::Condvar::new(),
@@ -489,6 +735,7 @@ mod native {
             owner_id
         }
 
+        #[cfg(test)]
         fn submit(
             &self,
             owner_id: u64,
@@ -498,22 +745,117 @@ mod native {
             if state.shutting_down {
                 return Err(NativeFileIoPoolAdmissionError::Unavailable);
             }
-            if state.in_flight >= self.in_flight_limit {
+            Self::prune_cancelled_waiters(&mut state);
+            if state.in_flight >= self.in_flight_limit || !state.deferred_jobs.is_empty() {
                 return Err(NativeFileIoPoolAdmissionError::Saturated {
                     in_flight_limit: self.in_flight_limit,
                 });
             }
-            let owner_already_queued = state.jobs.iter().any(|job| job.owner_id == owner_id);
+            Self::enqueue(&mut state, owner_id, job);
+            drop(state);
+            self.shared.work_available.notify_one();
+            Ok(())
+        }
+
+        fn submit_or_defer(
+            &self,
+            owner_id: u64,
+            job: NativeFileIoJob,
+        ) -> Result<NativeFileIoSubmission, NativeFileIoPoolAdmissionError> {
+            let mut state = lock_native_file_io_state(&self.shared.state);
+            if state.shutting_down {
+                return Err(NativeFileIoPoolAdmissionError::Unavailable);
+            }
+            Self::prune_cancelled_waiters(&mut state);
+            if state.in_flight < self.in_flight_limit && state.deferred_jobs.is_empty() {
+                Self::enqueue(&mut state, owner_id, job);
+                drop(state);
+                self.shared.work_available.notify_one();
+                return Ok(NativeFileIoSubmission::Submitted);
+            }
+
             state
-                .jobs
+                .admission_waiters
                 .try_reserve(1)
                 .map_err(|_| NativeFileIoPoolAdmissionError::QueueAllocationFailed)?;
-            if !owner_already_queued {
-                state
-                    .ready_owners
-                    .try_reserve(1)
-                    .map_err(|_| NativeFileIoPoolAdmissionError::QueueAllocationFailed)?;
+            state
+                .deferred_jobs
+                .try_reserve(1)
+                .map_err(|_| NativeFileIoPoolAdmissionError::QueueAllocationFailed)?;
+            let waiter = NativeFileIoWaiter {
+                id: state.next_waiter_id,
+                owner_id,
+            };
+            state.next_waiter_id = state.next_waiter_id.wrapping_add(1).max(1);
+            if state.deferred_jobs.contains_key(&waiter) {
+                return Err(NativeFileIoPoolAdmissionError::QueueAllocationFailed);
             }
+            let replaced = state.deferred_jobs.insert(waiter, job);
+            debug_assert!(replaced.is_none());
+            state.admission_waiters.push_back(waiter);
+            Ok(NativeFileIoSubmission::Deferred(waiter))
+        }
+
+        fn cancel_waiter(&self, waiter: NativeFileIoWaiter) -> bool {
+            let mut state = lock_native_file_io_state(&self.shared.state);
+            if state.deferred_jobs.remove(&waiter).is_none() {
+                return false;
+            }
+            Self::prune_cancelled_waiters(&mut state);
+            let promoted = Self::promote_waiters(&mut state);
+            drop(state);
+            if promoted {
+                self.shared.work_available.notify_all();
+            }
+            true
+        }
+
+        fn prune_cancelled_waiters(state: &mut NativeFileIoPoolState) {
+            while state
+                .admission_waiters
+                .front()
+                .is_some_and(|waiter| !state.deferred_jobs.contains_key(waiter))
+            {
+                state.admission_waiters.pop_front();
+            }
+            if state.deferred_jobs.is_empty() {
+                state.admission_waiters.clear();
+                return;
+            }
+            let compact_above = state
+                .deferred_jobs
+                .len()
+                .saturating_mul(2)
+                .saturating_add(NATIVE_FILE_IO_WAITER_COMPACTION_FLOOR);
+            if state.admission_waiters.len() > compact_above {
+                let deferred_jobs = &state.deferred_jobs;
+                state
+                    .admission_waiters
+                    .retain(|waiter| deferred_jobs.contains_key(waiter));
+            }
+        }
+
+        fn promote_waiters(state: &mut NativeFileIoPoolState) -> bool {
+            let mut promoted = false;
+            Self::prune_cancelled_waiters(state);
+            while state.in_flight < state.in_flight_limit {
+                let Some(waiter) = state.admission_waiters.pop_front() else {
+                    break;
+                };
+                let Some(job) = state.deferred_jobs.remove(&waiter) else {
+                    continue;
+                };
+                Self::enqueue(state, waiter.owner_id, job);
+                promoted = true;
+                Self::prune_cancelled_waiters(state);
+            }
+            promoted
+        }
+
+        fn enqueue(state: &mut NativeFileIoPoolState, owner_id: u64, job: NativeFileIoJob) {
+            let owner_already_queued = state.jobs.iter().any(|job| job.owner_id == owner_id);
+            debug_assert!(state.jobs.len() < state.in_flight_limit);
+            debug_assert!(state.ready_owners.len() < state.in_flight_limit);
             state.in_flight += 1;
             state
                 .jobs
@@ -521,9 +863,6 @@ mod native {
             if !owner_already_queued {
                 state.ready_owners.push_back(owner_id);
             }
-            drop(state);
-            self.shared.work_available.notify_one();
-            Ok(())
         }
 
         #[cfg(test)]
@@ -587,6 +926,9 @@ mod native {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
             let mut state = lock_native_file_io_state(&shared.state);
             state.in_flight = state.in_flight.saturating_sub(1);
+            if !state.shutting_down {
+                NativeFileIoPool::promote_waiters(&mut state);
+            }
             drop(state);
             shared.work_available.notify_all();
         }
@@ -654,8 +996,7 @@ mod native {
         max_encoded_page_bytes: u64,
         io_pool: &'static NativeFileIoPool,
         io_owner_id: u64,
-        tickets:
-            BTreeMap<u64, std::sync::mpsc::Receiver<Result<PagePayload, NativeFileTransportError>>>,
+        tickets: BTreeMap<u64, NativeFileTicketState>,
         next_ticket: u64,
     }
 
@@ -685,7 +1026,7 @@ mod native {
             if max_encoded_page_bytes == 0 {
                 return Err(NativeFileTransportError::ZeroMaxEncodedPageBytes);
             }
-            for (&page_id, location) in &locations.entries {
+            for (page_id, location) in locations.iter() {
                 validate_native_page_location(page_id, location, max_encoded_page_bytes)?;
             }
             let io_pool = shared_native_file_io_pool()
@@ -747,51 +1088,124 @@ mod native {
                 });
             }
             validate_native_page_location(request.page_id, &location, self.max_encoded_page_bytes)?;
-            let path = self.root.join(&location.uri);
-            let root = self.root.clone();
-            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-            let page_id = request.page_id;
-            let max_encoded_page_bytes = self.max_encoded_page_bytes;
-            self.io_pool
-                .submit(
-                    self.io_owner_id,
-                    Box::new(move || {
-                        let result =
-                            read_native_page(root, path, page_id, location, max_encoded_page_bytes);
-                        let _ = sender.send(result);
-                    }),
-                )
-                .map_err(NativeFileTransportError::IoPoolAdmission)?;
+            let read = std::sync::Arc::new(NativeFileRead {
+                path: self.root.join(location.uri.as_ref()),
+                root: self.root.clone(),
+                page_id: request.page_id,
+                location,
+                max_encoded_page_bytes: self.max_encoded_page_bytes,
+            });
+            let state = begin_native_file_read(self.io_pool, self.io_owner_id, read)?;
             let ticket = self.next_ticket;
             self.next_ticket = self.next_ticket.wrapping_add(1).max(1);
-            self.tickets.insert(ticket, receiver);
+            self.tickets.insert(ticket, state);
             Ok(ticket)
         }
 
         fn poll(&mut self, ticket: &Self::Ticket) -> PagePoll<Self::Error> {
-            let Some(receiver) = self.tickets.get(ticket) else {
+            let Some(state) = self.tickets.remove(ticket) else {
                 return PagePoll::Failed(NativeFileTransportError::InvalidTicket(*ticket));
             };
-            match receiver.try_recv() {
-                Ok(Ok(payload)) => {
-                    self.tickets.remove(ticket);
-                    PagePoll::Ready(payload)
-                }
-                Ok(Err(error)) => {
-                    self.tickets.remove(ticket);
-                    PagePoll::Failed(error)
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => PagePoll::Pending,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.tickets.remove(ticket);
-                    PagePoll::Failed(NativeFileTransportError::WorkerDisconnected)
-                }
+            let (poll, pending_state) = poll_native_file_read(state);
+            if let Some(state) = pending_state {
+                self.tickets.insert(*ticket, state);
             }
+            poll
         }
 
         fn cancel(&mut self, ticket: &Self::Ticket) {
-            self.tickets.remove(ticket);
+            if let Some(NativeFileTicketState::AdmissionDeferred { waiter, .. }) =
+                self.tickets.remove(ticket)
+            {
+                self.io_pool.cancel_waiter(waiter);
+            }
         }
+    }
+
+    impl Drop for NativeFilePageTransport {
+        fn drop(&mut self) {
+            for state in self.tickets.values() {
+                if let NativeFileTicketState::AdmissionDeferred { waiter, .. } = state {
+                    self.io_pool.cancel_waiter(*waiter);
+                }
+            }
+        }
+    }
+
+    fn begin_native_file_read(
+        io_pool: &NativeFileIoPool,
+        io_owner_id: u64,
+        read: std::sync::Arc<NativeFileRead>,
+    ) -> Result<NativeFileTicketState, NativeFileTransportError> {
+        let (job, receiver) = native_file_read_job(&read);
+        match io_pool.submit_or_defer(io_owner_id, job) {
+            Ok(NativeFileIoSubmission::Submitted) => Ok(NativeFileTicketState::Reading(receiver)),
+            Ok(NativeFileIoSubmission::Deferred(waiter)) => {
+                Ok(NativeFileTicketState::AdmissionDeferred { receiver, waiter })
+            }
+            Err(error) => Err(NativeFileTransportError::IoPoolAdmission(error)),
+        }
+    }
+
+    /// Advances one native ticket without blocking. The pool promotes deferred
+    /// jobs independently of owner polling, so saturation remains ordinary
+    /// transport backpressure rather than a failed page attempt. Admission
+    /// setup and completed filesystem errors remain ordinary failures and retain
+    /// runtime retry accounting.
+    fn poll_native_file_read(
+        state: NativeFileTicketState,
+    ) -> (
+        PagePoll<NativeFileTransportError>,
+        Option<NativeFileTicketState>,
+    ) {
+        match state {
+            NativeFileTicketState::AdmissionDeferred { receiver, waiter } => {
+                poll_native_file_receiver(receiver, |receiver| {
+                    NativeFileTicketState::AdmissionDeferred { receiver, waiter }
+                })
+            }
+            NativeFileTicketState::Reading(receiver) => {
+                poll_native_file_receiver(receiver, NativeFileTicketState::Reading)
+            }
+        }
+    }
+
+    fn poll_native_file_receiver(
+        receiver: NativeFileReadReceiver,
+        pending: impl FnOnce(NativeFileReadReceiver) -> NativeFileTicketState,
+    ) -> (
+        PagePoll<NativeFileTransportError>,
+        Option<NativeFileTicketState>,
+    ) {
+        match receiver.try_recv() {
+            Ok(Ok(payload)) => (PagePoll::Ready(payload), None),
+            Ok(Err(error)) => (PagePoll::Failed(error), None),
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                (PagePoll::Pending, Some(pending(receiver)))
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => (
+                PagePoll::Failed(NativeFileTransportError::WorkerDisconnected),
+                None,
+            ),
+        }
+    }
+
+    fn native_file_read_job(
+        read: &std::sync::Arc<NativeFileRead>,
+    ) -> (NativeFileIoJob, NativeFileReadReceiver) {
+        let read = std::sync::Arc::clone(read);
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let job = Box::new(move || {
+            let result = read_native_page(
+                &read.root,
+                &read.path,
+                read.page_id,
+                &read.location,
+                read.max_encoded_page_bytes,
+            );
+            let _ = sender.send(result);
+        });
+        (job, receiver)
     }
 
     fn validate_relative_page_uri(uri: &str) -> Result<(), NativeFileTransportError> {
@@ -859,15 +1273,15 @@ mod native {
     }
 
     fn read_native_page(
-        root: std::path::PathBuf,
-        path: std::path::PathBuf,
+        root: &std::path::Path,
+        path: &std::path::Path,
         page_id: LodPageId,
-        location: ManifestPageLocation,
+        location: &ManifestPageLocation,
         max_encoded_page_bytes: u64,
     ) -> Result<PagePayload, NativeFileTransportError> {
         use std::io::Seek;
 
-        validate_native_page_location(page_id, &location, max_encoded_page_bytes)?;
+        validate_native_page_location(page_id, location, max_encoded_page_bytes)?;
 
         let canonical_root = std::fs::canonicalize(root)
             .map_err(|error| NativeFileTransportError::Io(error.to_string()))?;
@@ -1076,6 +1490,188 @@ mod native {
                 Err(NativeFileIoPoolAdmissionError::Saturated { in_flight_limit: 2 })
             ));
             assert!(first_done.is_ok() && second_done.is_ok());
+        }
+
+        #[test]
+        fn deferred_native_read_completes_while_its_owner_skips_polling() {
+            use std::sync::atomic::{AtomicU64, Ordering};
+
+            static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
+
+            let pool = NativeFileIoPool::new(1, 1).unwrap();
+            let gate = test_gate();
+            let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(1);
+            let blocker_gate = std::sync::Arc::clone(&gate);
+            pool.submit(
+                1,
+                Box::new(move || {
+                    let _ = started_sender.send(());
+                    wait_at_gate(&blocker_gate);
+                }),
+            )
+            .unwrap();
+            started_receiver.recv_timeout(WAIT).unwrap();
+
+            let unique = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "bevy-gaussian-lod-admission-{}-{unique}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(root.join("page.gspage"), [1_u8, 2, 3, 4]).unwrap();
+            let read = std::sync::Arc::new(NativeFileRead {
+                root: root.clone(),
+                path: root.join("page.gspage"),
+                page_id: LodPageId(7),
+                location: ManifestPageLocation {
+                    uri: "page.gspage".into(),
+                    byte_range: None,
+                    encoded_len: 4,
+                },
+                max_encoded_page_bytes: 4,
+            });
+
+            let state = begin_native_file_read(&pool, 2, read).unwrap();
+            let initially_deferred =
+                matches!(&state, NativeFileTicketState::AdmissionDeferred { .. });
+            let (saturated_poll, state) = poll_native_file_read(state);
+            let state = state.expect("a pending native read must retain its ticket state");
+            let remained_deferred =
+                matches!(&state, NativeFileTicketState::AdmissionDeferred { .. });
+            let saturated_in_flight = pool.in_flight();
+
+            release_gate(&gate);
+            assert!(wait_until_idle(&pool));
+            assert!(initially_deferred);
+            assert!(matches!(saturated_poll, PagePoll::Pending));
+            assert!(remained_deferred);
+            assert_eq!(saturated_in_flight, 1);
+
+            // The owner deliberately did not poll while capacity recovered.
+            // Pool-driven promotion must still complete the read and release
+            // the global slot before the owner resumes.
+            let (completed_poll, next_state) = poll_native_file_read(state);
+            let payload = match completed_poll {
+                PagePoll::Ready(payload) => payload,
+                PagePoll::Pending => panic!("auto-promoted native read did not complete"),
+                PagePoll::Failed(error) => panic!("deferred native read failed: {error:?}"),
+            };
+            assert!(next_state.is_none());
+            assert_eq!(payload.page_id, LodPageId(7));
+            assert_eq!(payload.bytes, [1, 2, 3, 4]);
+
+            std::fs::remove_file(root.join("page.gspage")).unwrap();
+            std::fs::remove_dir(root).unwrap();
+        }
+
+        #[test]
+        fn saturated_admission_waiters_cannot_be_leapfrogged_by_a_busy_owner() {
+            let pool = NativeFileIoPool::new(1, 1).unwrap();
+            let gate = test_gate();
+            let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(1);
+            let blocker_gate = std::sync::Arc::clone(&gate);
+            pool.submit(
+                1,
+                Box::new(move || {
+                    let _ = started_sender.send(());
+                    wait_at_gate(&blocker_gate);
+                }),
+            )
+            .unwrap();
+            started_receiver.recv_timeout(WAIT).unwrap();
+
+            let (order_sender, order_receiver) = std::sync::mpsc::channel();
+            let waiting_sender = order_sender.clone();
+            assert!(matches!(
+                pool.submit_or_defer(
+                    2,
+                    Box::new(move || {
+                        let _ = waiting_sender.send(2_u8);
+                    })
+                )
+                .unwrap(),
+                NativeFileIoSubmission::Deferred(_)
+            ));
+            assert!(matches!(
+                pool.submit_or_defer(
+                    1,
+                    Box::new(move || {
+                        let _ = order_sender.send(1_u8);
+                    })
+                )
+                .unwrap(),
+                NativeFileIoSubmission::Deferred(_)
+            ));
+
+            release_gate(&gate);
+            assert_eq!(order_receiver.recv_timeout(WAIT).unwrap(), 2);
+            assert_eq!(order_receiver.recv_timeout(WAIT).unwrap(), 1);
+            assert!(wait_until_idle(&pool));
+        }
+
+        #[test]
+        fn cancelling_an_admission_waiter_releases_the_next_reservation() {
+            let pool = NativeFileIoPool::new(1, 1).unwrap();
+            let gate = test_gate();
+            let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(1);
+            let blocker_gate = std::sync::Arc::clone(&gate);
+            pool.submit(
+                1,
+                Box::new(move || {
+                    let _ = started_sender.send(());
+                    wait_at_gate(&blocker_gate);
+                }),
+            )
+            .unwrap();
+            started_receiver.recv_timeout(WAIT).unwrap();
+
+            let (completed_sender, completed_receiver) = std::sync::mpsc::channel();
+            let first_sender = completed_sender.clone();
+            let first = match pool
+                .submit_or_defer(
+                    2,
+                    Box::new(move || {
+                        let _ = first_sender.send(1_u8);
+                    }),
+                )
+                .unwrap()
+            {
+                NativeFileIoSubmission::Deferred(waiter) => waiter,
+                NativeFileIoSubmission::Submitted => panic!("the full pool must defer owner 2"),
+            };
+            assert!(matches!(
+                pool.submit_or_defer(
+                    3,
+                    Box::new(move || {
+                        let _ = completed_sender.send(2_u8);
+                    })
+                )
+                .unwrap(),
+                NativeFileIoSubmission::Deferred(_)
+            ));
+            for owner_id in 4..260 {
+                let waiter = match pool.submit_or_defer(owner_id, Box::new(|| {})).unwrap() {
+                    NativeFileIoSubmission::Deferred(waiter) => waiter,
+                    NativeFileIoSubmission::Submitted => {
+                        panic!("the full pool must defer cancellation churn")
+                    }
+                };
+                assert!(pool.cancel_waiter(waiter));
+            }
+            {
+                let state = lock_native_file_io_state(&pool.shared.state);
+                assert_eq!(state.deferred_jobs.len(), 2);
+                assert!(
+                    state.admission_waiters.len()
+                        <= state.deferred_jobs.len() * 2 + NATIVE_FILE_IO_WAITER_COMPACTION_FLOOR
+                );
+            }
+            assert!(pool.cancel_waiter(first));
+
+            release_gate(&gate);
+            assert_eq!(completed_receiver.recv_timeout(WAIT).unwrap(), 2);
+            assert!(wait_until_idle(&pool));
+            assert!(completed_receiver.try_recv().is_err());
         }
 
         #[test]
@@ -1295,9 +1891,80 @@ impl PageChecksum64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        gaussian::formats::{
+            planar_3d_chunked::LodPageStorage,
+            planar_3d_lod::{GaussianLodBuildSettings, build_planar_3d_lod},
+        },
+        testing::LodTestScene,
+    };
 
     fn request(id: u64, priority: PageRequestPriority) -> PageRequest {
         PageRequest::new(LodPageId(id), priority)
+    }
+
+    #[test]
+    fn manifest_locations_use_dense_shared_storage_and_sparse_fallback() {
+        let mut built = build_planar_3d_lod(
+            &LodTestScene::nested_octants(2).cloud(),
+            GaussianLodBuildSettings {
+                leaf_capacity: 8,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(built.manifest.pages.len() > 1);
+        for (index, descriptor) in built.manifest.pages.iter_mut().enumerate() {
+            descriptor.storage = Some(LodPageStorage {
+                uri: "scene.pack".to_owned(),
+                byte_range: Some((index as u64 * 4, 4)),
+                encoded_len: 4,
+            });
+        }
+        built.manifest.validate().unwrap();
+
+        let dense = ManifestPageLocations::from_manifest(&built.manifest).unwrap();
+        assert!(dense.index.is_dense_one_based());
+        let cloned = dense.clone();
+        assert!(Arc::ptr_eq(&dense.entries, &cloned.entries));
+        let first = dense.get(built.manifest.pages[0].id).unwrap();
+        let second = dense.get(built.manifest.pages[1].id).unwrap();
+        assert!(first.uri.ptr_eq(&second.uri));
+        assert_eq!(
+            dense.page_ids().collect::<Vec<_>>(),
+            built
+                .manifest
+                .pages
+                .iter()
+                .map(|descriptor| descriptor.id)
+                .collect::<Vec<_>>()
+        );
+
+        let sparse = ManifestPageLocations::from_entries([
+            (
+                LodPageId(9),
+                ManifestPageLocation {
+                    uri: "a.gspage".into(),
+                    byte_range: None,
+                    encoded_len: 1,
+                },
+            ),
+            (
+                LodPageId(3),
+                ManifestPageLocation {
+                    uri: "b.gspage".into(),
+                    byte_range: None,
+                    encoded_len: 1,
+                },
+            ),
+        ]);
+        assert!(!sparse.index.is_dense_one_based());
+        assert_eq!(sparse.get(LodPageId(3)).unwrap().uri.as_ref(), "b.gspage");
+        assert!(sparse.get(LodPageId(1)).is_none());
+
+        let encoded = serde_json::to_string(first).unwrap();
+        let decoded: ManifestPageLocation = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(&decoded, first);
     }
 
     #[test]
@@ -1385,16 +2052,14 @@ mod tests {
     #[test]
     fn native_transport_validates_encoded_page_limits_before_workers() {
         let page_id = LodPageId(3);
-        let locations = ManifestPageLocations {
-            entries: BTreeMap::from([(
-                page_id,
-                ManifestPageLocation {
-                    uri: "page.gspage".to_owned(),
-                    byte_range: None,
-                    encoded_len: 5,
-                },
-            )]),
-        };
+        let locations = ManifestPageLocations::from_entries([(
+            page_id,
+            ManifestPageLocation {
+                uri: "page.gspage".into(),
+                byte_range: None,
+                encoded_len: 5,
+            },
+        )]);
         assert!(matches!(
             NativeFilePageTransport::with_max_encoded_page_bytes("safe-root", locations.clone(), 0,),
             Err(NativeFileTransportError::ZeroMaxEncodedPageBytes)
@@ -1418,16 +2083,14 @@ mod tests {
             DEFAULT_NATIVE_MAX_ENCODED_PAGE_BYTES
         );
 
-        let mismatched_range = ManifestPageLocations {
-            entries: BTreeMap::from([(
-                page_id,
-                ManifestPageLocation {
-                    uri: "pack.bin".to_owned(),
-                    byte_range: Some((7, 6)),
-                    encoded_len: 5,
-                },
-            )]),
-        };
+        let mismatched_range = ManifestPageLocations::from_entries([(
+            page_id,
+            ManifestPageLocation {
+                uri: "pack.bin".into(),
+                byte_range: Some((7, 6)),
+                encoded_len: 5,
+            },
+        )]);
         assert!(matches!(
             NativeFilePageTransport::with_max_encoded_page_bytes(
                 "safe-root",
@@ -1459,16 +2122,14 @@ mod tests {
         fs::create_dir(&root).unwrap();
         fs::write(root.join("scene.pack"), [99, 98, 1, 2, 3, 4, 97]).unwrap();
 
-        let locations = ManifestPageLocations {
-            entries: BTreeMap::from([(
-                LodPageId(9),
-                ManifestPageLocation {
-                    uri: "scene.pack".to_owned(),
-                    byte_range: Some((2, 4)),
-                    encoded_len: 4,
-                },
-            )]),
-        };
+        let locations = ManifestPageLocations::from_entries([(
+            LodPageId(9),
+            ManifestPageLocation {
+                uri: "scene.pack".into(),
+                byte_range: Some((2, 4)),
+                encoded_len: 4,
+            },
+        )]);
         let mut transport = NativeFilePageTransport::new(&root, locations).unwrap();
         let mut request = PageRequest::new(LodPageId(9), PageRequestPriority::visible(1));
         request.expected_bytes = Some(4);
@@ -1505,16 +2166,14 @@ mod tests {
         fs::write(&page_path, [1, 2, 3, 4, 5, 6]).unwrap();
 
         let page_id = LodPageId(11);
-        let locations = ManifestPageLocations {
-            entries: BTreeMap::from([(
-                page_id,
-                ManifestPageLocation {
-                    uri: "page.gspage".to_owned(),
-                    byte_range: None,
-                    encoded_len: 4,
-                },
-            )]),
-        };
+        let locations = ManifestPageLocations::from_entries([(
+            page_id,
+            ManifestPageLocation {
+                uri: "page.gspage".into(),
+                byte_range: None,
+                encoded_len: 4,
+            },
+        )]);
         let mut transport =
             NativeFilePageTransport::with_max_encoded_page_bytes(&root, locations, 4).unwrap();
         let ticket = transport
@@ -1564,16 +2223,14 @@ mod tests {
     #[test]
     fn native_transport_rejects_absolute_parent_and_url_uris() {
         for uri in ["../page.gspage", "/tmp/page.gspage", "https://example/page"] {
-            let locations = ManifestPageLocations {
-                entries: BTreeMap::from([(
-                    LodPageId(1),
-                    ManifestPageLocation {
-                        uri: uri.to_owned(),
-                        byte_range: None,
-                        encoded_len: 1,
-                    },
-                )]),
-            };
+            let locations = ManifestPageLocations::from_entries([(
+                LodPageId(1),
+                ManifestPageLocation {
+                    uri: uri.into(),
+                    byte_range: None,
+                    encoded_len: 1,
+                },
+            )]);
             assert!(matches!(
                 NativeFilePageTransport::new("safe-root", locations),
                 Err(NativeFileTransportError::UnsafeUri(_))
@@ -1602,16 +2259,14 @@ mod tests {
         std::os::unix::fs::symlink(&outside, root.join("page.gspage")).unwrap();
 
         let page_id = LodPageId(13);
-        let locations = ManifestPageLocations {
-            entries: BTreeMap::from([(
-                page_id,
-                ManifestPageLocation {
-                    uri: "page.gspage".to_owned(),
-                    byte_range: None,
-                    encoded_len: 1,
-                },
-            )]),
-        };
+        let locations = ManifestPageLocations::from_entries([(
+            page_id,
+            ManifestPageLocation {
+                uri: "page.gspage".into(),
+                byte_range: None,
+                encoded_len: 1,
+            },
+        )]);
         let mut transport = NativeFilePageTransport::new(&root, locations).unwrap();
         let ticket = transport
             .begin(PageRequest::new(page_id, PageRequestPriority::visible(1)))
