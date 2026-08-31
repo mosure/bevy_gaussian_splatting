@@ -421,6 +421,7 @@ fn queue_gaussians<R: PlanarSync>(
                 rasterize_mode: settings.rasterize_mode,
                 sample_count: msaa.samples(),
                 hdr: view.target_format == TextureFormat::Rgba16Float,
+                additive: settings.additive,
             };
 
             let pipeline = pipelines.specialize(&pipeline_cache, &custom_pipeline, key);
@@ -906,6 +907,9 @@ pub struct CloudPipelineKey {
     pub rasterize_mode: RasterizeMode,
     pub sample_count: u32,
     pub hdr: bool,
+    /// See [`CloudSettings::additive`]. Blending is fixed-function pipeline state rather than
+    /// something the shader can select, so the two modes specialize to distinct pipelines.
+    pub additive: bool,
 }
 
 impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
@@ -943,7 +947,22 @@ impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
                 entry_point: Some("fs_main".into()),
                 targets: vec![Some(ColorTargetState {
                     format,
-                    blend: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    blend: Some(if key.additive {
+                        BlendState {
+                            color: BlendComponent {
+                                src_factor: BlendFactor::One,
+                                dst_factor: BlendFactor::One,
+                                operation: BlendOperation::Add,
+                            },
+                            alpha: BlendComponent {
+                                src_factor: BlendFactor::One,
+                                dst_factor: BlendFactor::One,
+                                operation: BlendOperation::Add,
+                            },
+                        }
+                    } else {
+                        BlendState::PREMULTIPLIED_ALPHA_BLENDING
+                    }),
                     write_mask: ColorWrites::ALL,
                 })],
             }),

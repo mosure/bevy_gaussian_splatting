@@ -105,6 +105,12 @@ pub struct CloudSettings {
     pub time_scale: f32,
     pub time_start: f32,
     pub time_stop: f32,
+    /// Additive/emissive blending. `false` (default) keeps premultiplied alpha-over, which is
+    /// byte-identical to previous behaviour. When `true` the cloud composites `One + One`, so
+    /// overlapping premultiplied fragments accumulate light and glow on a dark background instead
+    /// of alpha-saturating into a solid blob. Additive draws have no occlusion (everything shows
+    /// through), so it suits emissive/procedural content; leave it `false` for solid captures.
+    pub additive: bool,
 }
 
 impl Default for CloudSettings {
@@ -127,6 +133,7 @@ impl Default for CloudSettings {
             time_scale: 1.0,
             time_start: 0.0,
             time_stop: 1.0,
+            additive: false,
         }
     }
 }
