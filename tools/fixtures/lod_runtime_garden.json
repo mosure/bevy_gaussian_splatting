@@ -1,0 +1,142 @@
+{
+  "output": "../../target/lod-roadmap/captures/garden-q35",
+  "manifest": "../../target/lod-roadmap/packages/garden/scene.gsplatlod",
+  "source": "/media/mosure/hyper1/repos/bevy_gaussian_splatting/assets/garden.ply",
+  "synthetic": false,
+  "builder_revision": "REPLACE_WITH_ACTUAL_PACKAGE_BUILDER_REVISION",
+  "viewport": [
+    1280,
+    720
+  ],
+  "vertical_fov_radians": 0.7853982,
+  "near": 0.1,
+  "quality": 0.35,
+  "max_active_gaussians": 1000000,
+  "max_resident_gaussians": 2000000,
+  "max_resident_bytes": 536870912,
+  "max_resident_pages": 4096,
+  "max_upload_bytes_per_frame": 16777216,
+  "capture_every": 6,
+  "readback_slots": 3,
+  "timeout_seconds": 300,
+  "request_timestamps": true,
+  "segments": [
+    {
+      "scenario": "cold_start",
+      "frames": 180,
+      "from": [
+        0,
+        4,
+        32
+      ],
+      "to": [
+        0,
+        4,
+        32
+      ],
+      "target": [
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "scenario": "warm_mid",
+      "frames": 180,
+      "from": [
+        0,
+        4,
+        32
+      ],
+      "to": [
+        0,
+        4,
+        32
+      ],
+      "target": [
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "scenario": "approach",
+      "frames": 180,
+      "from": [
+        0,
+        4,
+        32
+      ],
+      "to": [
+        0,
+        2,
+        8
+      ],
+      "target": [
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "scenario": "warm_near",
+      "frames": 180,
+      "from": [
+        0,
+        2,
+        8
+      ],
+      "to": [
+        0,
+        2,
+        8
+      ],
+      "target": [
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "scenario": "heldout_motion",
+      "frames": 180,
+      "from": [
+        0,
+        2,
+        8
+      ],
+      "to": [
+        12,
+        6,
+        12
+      ],
+      "target": [
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "scenario": "return",
+      "frames": 180,
+      "from": [
+        12,
+        6,
+        12
+      ],
+      "to": [
+        0,
+        4,
+        32
+      ],
+      "target": [
+        0,
+        1,
+        0
+      ]
+    }
+  ],
+  "render_mode": "hierarchy",
+  "capture_images": true,
+  "max_source_gaussians": 6000000
+}

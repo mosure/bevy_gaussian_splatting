@@ -20,7 +20,9 @@ where
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            std_sort::<R>.after(super::update_sorted_entries_sizes::<R>),
+            std_sort::<R>
+                .after(super::update_sorted_entries_sizes::<R>)
+                .in_set(super::CpuSort),
         );
     }
 }
@@ -79,12 +81,21 @@ pub fn std_sort<R: PlanarSync>(
                 continue;
             }
 
-            if let Some(gaussian_cloud) = gaussian_clouds_res.get(gaussian_cloud_handle.handle())
-                && let Some(mut sorted_entries) = sorted_entries_res.get_mut(sorted_entries_handle)
-            {
+            // An unavailable source is awakened by its next asset event. Keep
+            // retrying actual loads above, but do not re-sort unrelated clouds
+            // forever after a source is removed or fails to load.
+            let Some(gaussian_cloud) = gaussian_clouds_res.get(gaussian_cloud_handle.handle())
+            else {
+                continue;
+            };
+            if let Some(mut sorted_entries) = sorted_entries_res.get_mut(sorted_entries_handle) {
                 let gaussians = gaussian_cloud.len();
-                let mut chunks = sorted_entries.sorted.chunks_mut(gaussians);
-                let chunk = chunks.nth(trigger.camera_index).unwrap();
+                let Some(chunk) =
+                    sorted_entries.camera_entries_mut(trigger.camera_index, gaussians)
+                else {
+                    pending_assets = true;
+                    continue;
+                };
 
                 gaussian_cloud
                     .position_iter()
@@ -94,17 +105,19 @@ pub fn std_sort<R: PlanarSync>(
                         let position = Vec3A::from_slice(position.as_ref());
                         let position = transform.affine().transform_point3a(position);
 
-                        let delta = trigger.last_camera_position - position;
+                        let depth = trigger
+                            .last_camera_depth
+                            .dot(Vec3::from(position).extend(1.0));
 
-                        sort_entry.key = bytemuck::cast(delta.length_squared());
+                        sort_entry.key = if gaussian_cloud.visibility(idx) > 0.0 {
+                            super::depth_sort_key(depth)
+                        } else {
+                            u32::MAX
+                        };
                         sort_entry.index = idx as u32;
                     });
 
-                chunk.sort_unstable_by(|a, b| {
-                    bytemuck::cast::<u32, f32>(b.key)
-                        .partial_cmp(&bytemuck::cast::<u32, f32>(a.key))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
+                chunk.sort_unstable_by_key(|entry| (entry.key, entry.index));
 
                 // TODO: update DrawIndirect buffer during sort phase (GPU sort will override default DrawIndirect)
                 sorted_any = true;
@@ -116,9 +129,8 @@ pub fn std_sort<R: PlanarSync>(
         if sorted_any {
             performed_sort = true;
         }
-        if saw_sortable_cloud && sorted_any && !pending_assets {
-            trigger.needs_sort = false;
-        }
+        trigger.sorted_this_frame |= saw_sortable_cloud;
+        trigger.pending_assets |= pending_assets;
     }
 
     let sort_end_time = Instant::now();

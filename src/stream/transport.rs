@@ -166,15 +166,66 @@ struct ManifestPageLocationEntry {
 /// filesystem, CDN, signed-URL service, or pack-file implementation.
 #[derive(Clone, Debug)]
 pub struct ManifestPageLocations {
-    entries: Arc<[ManifestPageLocationEntry]>,
+    entries: Arc<Vec<ManifestPageLocationEntry>>,
     index: CompiledPageIndex,
 }
 
 impl Default for ManifestPageLocations {
     fn default() -> Self {
         Self {
-            entries: Arc::from([]),
+            entries: Arc::new(Vec::new()),
             index: CompiledPageIndex::DenseOneBased,
+        }
+    }
+}
+
+/// Incremental location packing. Finalization moves its Vec into an Arc and
+/// shares a previously compiled page index without a page-sized copy.
+pub(crate) struct ManifestPageLocationsBuilder {
+    entries: Vec<ManifestPageLocationEntry>,
+    shared_uris: HashMap<ManifestPageUri, ManifestPageUri>,
+}
+
+impl ManifestPageLocationsBuilder {
+    pub(crate) fn new(count: usize) -> Self {
+        Self {
+            entries: Vec::with_capacity(count),
+            shared_uris: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn push(
+        &mut self,
+        descriptor: &crate::gaussian::formats::planar_3d_chunked::LodPageDescriptor,
+    ) -> Result<(), PageLocationError> {
+        let storage = descriptor
+            .storage
+            .as_ref()
+            .ok_or(PageLocationError::MissingStorage(descriptor.id))?;
+        let uri = self
+            .shared_uris
+            .get(storage.uri.as_str())
+            .cloned()
+            .unwrap_or_else(|| {
+                let uri = ManifestPageUri::from(storage.uri.as_str());
+                self.shared_uris.insert(uri.clone(), uri.clone());
+                uri
+            });
+        self.entries.push(ManifestPageLocationEntry {
+            page_id: descriptor.id,
+            location: ManifestPageLocation {
+                uri,
+                byte_range: storage.byte_range,
+                encoded_len: storage.encoded_len,
+            },
+        });
+        Ok(())
+    }
+
+    pub(crate) fn finish(self, index: CompiledPageIndex) -> ManifestPageLocations {
+        ManifestPageLocations {
+            entries: Arc::new(self.entries),
+            index,
         }
     }
 }
@@ -218,7 +269,7 @@ impl ManifestPageLocations {
             });
         }
         Ok(Self {
-            entries: entries.into(),
+            entries: Arc::new(entries),
             index,
         })
     }
@@ -231,7 +282,7 @@ impl ManifestPageLocations {
             .collect::<Vec<_>>();
         let index = CompiledPageIndex::compile(entries.len(), |index| entries[index].page_id);
         Self {
-            entries: entries.into(),
+            entries: Arc::new(entries),
             index,
         }
     }
@@ -391,6 +442,15 @@ impl PageRequestQueue {
 
     pub fn contains(&self, page_id: LodPageId) -> bool {
         self.entries.contains_key(&page_id)
+    }
+
+    /// Current-view GPU demand may lower urgency as well as raise it. Keep the
+    /// existing queue sequence, payload metadata and capacity unchanged.
+    #[cfg(lod_render_path)]
+    pub(crate) fn set_priority(&mut self, page_id: LodPageId, priority: PageRequestPriority) {
+        if let Some(entry) = self.entries.get_mut(&page_id) {
+            entry.request.priority = priority;
+        }
     }
 
     /// Stable page IDs currently waiting for transport admission.
@@ -603,6 +663,8 @@ mod native {
         page_id: LodPageId,
         location: ManifestPageLocation,
         max_encoded_page_bytes: u64,
+        #[cfg(feature = "lod")]
+        _memory_reservations: Arc<[crate::stream::memory::LodMemoryLease]>,
     }
 
     enum NativeFileTicketState {
@@ -998,6 +1060,8 @@ mod native {
         io_owner_id: u64,
         tickets: BTreeMap<u64, NativeFileTicketState>,
         next_ticket: u64,
+        #[cfg(feature = "lod")]
+        memory_reservations: Arc<[crate::stream::memory::LodMemoryLease]>,
     }
 
     impl NativeFilePageTransport {
@@ -1029,6 +1093,15 @@ mod native {
             for (page_id, location) in locations.iter() {
                 validate_native_page_location(page_id, location, max_encoded_page_bytes)?;
             }
+            Self::from_prevalidated_locations(root, locations, max_encoded_page_bytes)
+        }
+
+        /// Package compilation already checked every location under its record budget.
+        pub(crate) fn from_prevalidated_locations(
+            root: std::path::PathBuf,
+            locations: ManifestPageLocations,
+            max_encoded_page_bytes: u64,
+        ) -> Result<Self, NativeFileTransportError> {
             let io_pool = shared_native_file_io_pool()
                 .map_err(NativeFileTransportError::IoPoolInitialization)?;
             let io_owner_id = io_pool.allocate_owner_id();
@@ -1040,7 +1113,17 @@ mod native {
                 io_owner_id,
                 tickets: BTreeMap::new(),
                 next_ticket: 1,
+                #[cfg(feature = "lod")]
+                memory_reservations: Arc::from([]),
             })
+        }
+
+        #[cfg(feature = "lod")]
+        pub(crate) fn set_memory_reservations(
+            &mut self,
+            reservations: Arc<[crate::stream::memory::LodMemoryLease]>,
+        ) {
+            self.memory_reservations = reservations;
         }
 
         pub fn from_manifest(
@@ -1094,6 +1177,8 @@ mod native {
                 page_id: request.page_id,
                 location,
                 max_encoded_page_bytes: self.max_encoded_page_bytes,
+                #[cfg(feature = "lod")]
+                _memory_reservations: Arc::clone(&self.memory_reservations),
             });
             let state = begin_native_file_read(self.io_pool, self.io_owner_id, read)?;
             let ticket = self.next_ticket;
@@ -1228,7 +1313,7 @@ mod native {
         Ok(())
     }
 
-    fn validate_native_page_location(
+    pub(crate) fn validate_native_page_location(
         page_id: LodPageId,
         location: &ManifestPageLocation,
         max_encoded_page_bytes: u64,
@@ -1529,6 +1614,8 @@ mod native {
                     encoded_len: 4,
                 },
                 max_encoded_page_bytes: 4,
+                #[cfg(feature = "lod")]
+                _memory_reservations: Arc::from([]),
             });
 
             let state = begin_native_file_read(&pool, 2, read).unwrap();
@@ -1788,6 +1875,9 @@ mod native {
         }
     }
 }
+
+#[cfg(all(feature = "lod", not(target_arch = "wasm32")))]
+pub(crate) use native::validate_native_page_location;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::{

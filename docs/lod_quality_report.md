@@ -147,7 +147,7 @@ P_final = max(P_error, P_certificate)
 Thus usable certificate pressure is exactly zero through `.90`, then smoothly
 enables the existing quadratic base and cubic projected-coverage authority by
 `.95`. A zero, tiny (`<=1/65535`), non-finite, or out-of-range certificate is
-ignored below `.95` for legacy compatibility and fails closed for non-original
+ignored below `.95` for uncertified inputs and fails closed for non-original
 representations at `.95` and above. Quality `0` and quality `1` remain
 categorical coarsest and exact-original endpoints.
 

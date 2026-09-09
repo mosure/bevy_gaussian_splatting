@@ -121,10 +121,11 @@ mod headless {
         assert_eq!(fixture.source_count, 320);
         // This fixture is owned by the in-memory `build_planar_3d_lod`
         // ABI-14/MomentMerge-v3 path, not the external Garden ABI-16 fitter.
-        // Keep its exact selector outputs as a separately calibrated contract.
+        // Keep its matrix-aware selector outputs as a separately calibrated contract.
+        // The near support bound refines more than radial-distance selection.
         assert_eq!(
             fixture.expected_near,
-            [1, 3, 7, 11],
+            [1, 3, 46, 214],
             "the calibrated in-memory builder quality contract drifted"
         );
         assert_eq!(
@@ -133,7 +134,7 @@ mod headless {
                 fixture.expected_far_probe,
                 fixture.expected_distant_probe,
             ),
-            (7, 2, 1),
+            (46, 2, 1),
             "the calibrated in-memory builder perspective contract drifted"
         );
         assert_ne!(
@@ -211,6 +212,413 @@ mod headless {
             read_ready_lod_indirect_args.in_set(RenderSystems::Cleanup),
         );
         app.run();
+    }
+
+    #[derive(Clone, Debug)]
+    struct CapacitySuccessorObservation {
+        camera: Entity,
+        draw_generation: u64,
+        work_generation: u64,
+        work_radix_generation: Option<u64>,
+        draw_capacity: u32,
+        draw_count: u32,
+        radix_generation: u64,
+        candidate_active: bool,
+        candidate_failed: bool,
+        requested_count: u32,
+        tracked_states: usize,
+        tracked_bytes: u64,
+    }
+
+    #[derive(Resource, Clone, Default)]
+    struct CapacitySuccessorProbe(Arc<Mutex<Vec<CapacitySuccessorObservation>>>);
+
+    // Cleanup is after submission, but this observer precedes the capacity
+    // publication set: get_ready therefore still names the output drawn by
+    // this exact frame, including the retained predecessor during handoff.
+    fn probe_capacity_successor_draws(
+        device: Res<RenderDevice>,
+        queue: Res<RenderQueue>,
+        buffers: Res<LodCompactionBuffers<Gaussian3d>>,
+        views: Query<&ExtractedView, With<GaussianCamera>>,
+        clouds: Query<(Entity, &PlanarGaussian3dHandle, &LodRenderCandidates)>,
+        probe: Res<CapacitySuccessorProbe>,
+    ) {
+        let memory = buffers.memory_snapshot();
+        let mut observations = Vec::new();
+        for view in &views {
+            for (entity, handle, candidates) in &clouds {
+                let camera = view.retained_view_entity.main_entity.id();
+                let Some(candidate) = candidates.get(camera) else {
+                    continue;
+                };
+                let Some(draw) =
+                    buffers.get_ready(view.retained_view_entity, entity, handle.handle().id())
+                else {
+                    continue;
+                };
+                let Some(snapshot) = draw.last_radix_drawable_for_testing(candidate) else {
+                    continue;
+                };
+                let args = read_lod_indirect_args_for_testing(&device, &queue, draw)
+                    .expect("capacity predecessor/successor indirect arguments read back");
+                assert!(args.instance_count <= draw.output_capacity());
+                assert_eq!(
+                    u64::from(args.instance_count),
+                    u64::from(snapshot.rendered_candidate_count),
+                    "frustum-disabled fixture must draw its exact radix-promoted candidate count"
+                );
+                let work = buffers
+                    .get(view.retained_view_entity, entity, handle.handle().id())
+                    .unwrap();
+                let work_snapshot = work.last_radix_drawable_for_testing(candidate);
+                if work.generation() != draw.generation()
+                    && let Some(work_snapshot) = work_snapshot.as_ref()
+                    && work.is_ready()
+                {
+                    let work_args =
+                        read_lod_indirect_args_for_testing(&device, &queue, work).unwrap();
+                    assert_eq!(
+                        work_args.instance_count,
+                        work_snapshot.rendered_candidate_count
+                    );
+                    assert_eq!(work_args.overflow_count, 0);
+                }
+                observations.push(CapacitySuccessorObservation {
+                    camera,
+                    draw_generation: draw.generation(),
+                    work_generation: buffers
+                        .get(view.retained_view_entity, entity, handle.handle().id())
+                        .expect("ready state has its work allocation")
+                        .generation(),
+                    work_radix_generation: work_snapshot
+                        .map(|snapshot| snapshot.radix_publication_generation),
+                    draw_capacity: draw.output_capacity(),
+                    draw_count: args.instance_count,
+                    radix_generation: snapshot.radix_publication_generation,
+                    candidate_active: candidate.render_is_active_for_testing(),
+                    candidate_failed: candidate.failed(),
+                    requested_count: candidate.rendered_candidate_count(),
+                    tracked_states: memory.view_cloud_states,
+                    tracked_bytes: memory.tracked_buffer_bytes,
+                });
+            }
+        }
+        *probe.0.lock().unwrap() = observations;
+    }
+
+    #[test]
+    fn native_package_capacity_successors_preserve_two_moving_views_under_denial() {
+        if env::var("RUN_GPU_RENDER_TESTS").ok().as_deref() != Some("1") {
+            eprintln!("skipping capacity successor GPU test; set RUN_GPU_RENDER_TESTS=1");
+            return;
+        }
+        use bevy_gaussian_splatting::render::lod::{
+            LodCapacityPublicationGateForTesting, LodCapacityPublicationLabel,
+            LodCompactionMemoryBudget,
+        };
+        let package = NativePackageFixture::write();
+        let config = GaussianLodPackageConfig {
+            max_atlas_gaussians: 8_192,
+            max_atlas_bytes: 32 * 1024 * 1024,
+            streaming: GaussianStreamingSettings {
+                max_concurrent_requests: 4,
+                retry_limit: 0,
+                ..default()
+            },
+            ..default()
+        };
+        let mut app = garden_temporal_app_with_probe(&package.root, config, false);
+        let probe = CapacitySuccessorProbe::default();
+        app.sub_app_mut(RenderApp)
+            .insert_resource(probe.clone())
+            .add_systems(
+                Render,
+                probe_capacity_successor_draws
+                    .in_set(RenderSystems::Cleanup)
+                    .after(RenderSystems::Render)
+                    .before(LodCapacityPublicationLabel),
+            );
+        let manifest = app
+            .world()
+            .resource::<AssetServer>()
+            .load("scene.gsplatlod");
+        let mut settings = package.settings.clone();
+        settings.budgets.max_active_gaussians = 1;
+        // This test isolates physical output replacement from interpolation
+        // and page-cache pressure. The tiny complete package fits this bound;
+        // only the compaction overlap budget is deliberately denied below.
+        settings.presentation_mode = bevy_gaussian_splatting::LodPresentationMode::Discrete;
+        settings.budgets.max_resident_pages = 128;
+        settings.budgets.max_pending_requests = 128;
+        settings.budgets.max_requests_per_frame = 8;
+        let cloud = app
+            .world_mut()
+            .spawn((
+                GaussianLodHandle(manifest),
+                GaussianLodPackageSource::native_directory(
+                    package.root.to_string_lossy().into_owned(),
+                ),
+                CloudSettings {
+                    sort_mode: SortMode::Radix,
+                    opacity_adaptive_radius: false,
+                    ..default()
+                },
+                settings,
+                Transform::IDENTITY,
+                Visibility::Visible,
+            ))
+            .id();
+        let mut cameras = Vec::new();
+        for index in 0..2 {
+            let image =
+                app.world_mut()
+                    .resource_mut::<Assets<Image>>()
+                    .add(Image::new_target_texture(
+                        WIDTH,
+                        HEIGHT,
+                        TextureFormat::Rgba8UnormSrgb,
+                        None,
+                    ));
+            cameras.push(
+                app.world_mut()
+                    .spawn((
+                        Camera3d::default(),
+                        Camera {
+                            order: index,
+                            ..default()
+                        },
+                        Projection::Perspective(PerspectiveProjection {
+                            fov: VERTICAL_FOV,
+                            near: NEAR_PLANE,
+                            far: FAR_PLANE,
+                            ..default()
+                        }),
+                        RenderTarget::Image(image.into()),
+                        Transform::from_xyz(index as f32 * 0.05, 0.0, NEAR_CAMERA_Z),
+                        Tonemapping::None,
+                        GaussianCamera::default(),
+                    ))
+                    .id(),
+            );
+        }
+        let mut initial = Vec::new();
+        for _ in 0..360 {
+            app.update();
+            let observed = probe.0.lock().unwrap().clone();
+            if observed.len() == 2
+                && observed.iter().all(|entry| {
+                    entry.draw_capacity == 1 && entry.draw_count == 1 && entry.candidate_active
+                })
+            {
+                initial = observed;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            initial.len(),
+            2,
+            "two coarse package views must become drawable; status={:?}",
+            app.world().get::<GaussianLodPackageStatus>(cloud)
+        );
+        // Give the package ownership handshake and queue-retirement ledger a
+        // few completed frames before pinning the budget to current storage.
+        for _ in 0..4 {
+            app.update();
+        }
+        let old_bytes = probe.0.lock().unwrap()[0].tracked_bytes;
+        app.sub_app_mut(RenderApp)
+            .world_mut()
+            .resource_mut::<LodCompactionMemoryBudget>()
+            .max_total_bytes = old_bytes;
+        {
+            let mut settings = app
+                .world_mut()
+                .get_mut::<GaussianLodSettings>(cloud)
+                .unwrap();
+            settings.quality = CAMERA_PROBE_QUALITY;
+            settings.budgets.max_active_gaussians = 256;
+        }
+        let mut denied = false;
+        // A moving request can still be in selector/page preparation. First
+        // prove an actual larger token reached GPU admission and was rejected;
+        // camera motion below then tests retention, not request convergence.
+        for _ in 0..600 {
+            app.update();
+            let observed = probe.0.lock().unwrap().clone();
+            assert_eq!(
+                observed.len(),
+                2,
+                "denied successor must retain both complete views"
+            );
+            for entry in &observed {
+                let old = initial
+                    .iter()
+                    .find(|old| old.camera == entry.camera)
+                    .unwrap();
+                assert_eq!(entry.draw_generation, old.draw_generation);
+                assert_eq!(entry.draw_count, 1);
+                denied |= entry.candidate_failed && entry.requested_count > entry.draw_capacity;
+            }
+            if denied {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            denied,
+            "larger-token overlap denial must be exercised; budget={old_bytes}; status={:?}; draw={:?}",
+            app.world().get::<GaussianLodPackageStatus>(cloud),
+            probe.0.lock().unwrap()
+        );
+        let before_motion = probe.0.lock().unwrap().clone();
+        let mut old_resorted = BTreeSet::new();
+        for frame in 1..=36 {
+            for (index, camera) in cameras.iter().enumerate() {
+                app.world_mut()
+                    .get_mut::<Transform>(*camera)
+                    .unwrap()
+                    .translation
+                    .x = index as f32 * 0.05 + frame as f32 * 0.0001;
+            }
+            app.update();
+            let observed = probe.0.lock().unwrap().clone();
+            assert_eq!(
+                observed.len(),
+                2,
+                "both retained outputs must survive denied motion"
+            );
+            for entry in &observed {
+                let old = before_motion
+                    .iter()
+                    .find(|old| old.camera == entry.camera)
+                    .unwrap();
+                assert_eq!(entry.draw_generation, old.draw_generation);
+                assert_eq!(entry.draw_count, 1);
+                if entry.radix_generation > old.radix_generation {
+                    old_resorted.insert(entry.camera);
+                }
+            }
+            if old_resorted.len() == 2 {
+                break;
+            }
+        }
+        assert!(
+            old_resorted.len() == 2,
+            "both moving retained views must recompact and radix-sort their old cut"
+        );
+        app.sub_app_mut(RenderApp)
+            .world_mut()
+            .resource_mut::<LodCompactionMemoryBudget>()
+            .max_total_bytes = 512 * 1024 * 1024;
+        // A new quality signature plus the render environment epoch gives the
+        // package an explicit retry after the intentionally rejected token.
+        app.world_mut()
+            .get_mut::<GaussianLodSettings>(cloud)
+            .unwrap()
+            .quality = CAMERA_PROBE_QUALITY + 0.001;
+        app.sub_app_mut(RenderApp)
+            .insert_resource(LodCapacityPublicationGateForTesting { hold: true });
+        let mut staged_cameras = BTreeSet::new();
+        let mut pending_radix = BTreeMap::new();
+        let mut recomputed_cameras = BTreeSet::new();
+        let mut moving_staged_outputs = false;
+        let mut settled = false;
+        for frame in 0..540 {
+            if moving_staged_outputs {
+                for (index, camera) in cameras.iter().enumerate() {
+                    app.world_mut()
+                        .get_mut::<Transform>(*camera)
+                        .unwrap()
+                        .translation
+                        .x = index as f32 * 0.05 + (frame % 7) as f32 * 0.0001;
+                }
+            }
+            app.update();
+            let observed = probe.0.lock().unwrap().clone();
+            assert_eq!(observed.len(), 2, "handoff may never hide a covered view");
+            for entry in &observed {
+                assert!(entry.draw_count > 0);
+                if entry.work_generation != entry.draw_generation {
+                    staged_cameras.insert(entry.camera);
+                    if let Some(work_radix) = entry.work_radix_generation {
+                        let first = pending_radix.entry(entry.camera).or_insert((
+                            entry.work_generation,
+                            entry.radix_generation,
+                            work_radix,
+                        ));
+                        if first.0 != entry.work_generation {
+                            *first = (entry.work_generation, entry.radix_generation, work_radix);
+                        }
+                        if entry.radix_generation > first.1 && work_radix > first.2 {
+                            recomputed_cameras.insert(entry.camera);
+                        }
+                    }
+
+                    assert!(
+                        entry.tracked_states >= 3,
+                        "successor overlap must be visible in allocation accounting"
+                    );
+                    assert!(
+                        entry.tracked_bytes > old_bytes,
+                        "both allocations must be charged"
+                    );
+                    assert_eq!(
+                        entry.draw_count, 1,
+                        "staged work must preserve the old complete output"
+                    );
+                }
+            }
+            if pending_radix.len() == 2 {
+                moving_staged_outputs = true;
+            }
+            if recomputed_cameras.len() == 2 {
+                app.sub_app_mut(RenderApp)
+                    .world_mut()
+                    .resource_mut::<LodCapacityPublicationGateForTesting>()
+                    .hold = false;
+            }
+            if observed.iter().all(|entry| {
+                entry.draw_capacity > 1
+                    && entry.draw_count > 1
+                    && entry.candidate_active
+                    && entry.work_generation == entry.draw_generation
+            }) {
+                for entry in &observed {
+                    assert_ne!(
+                        entry.draw_generation,
+                        initial
+                            .iter()
+                            .find(|old| old.camera == entry.camera)
+                            .unwrap()
+                            .draw_generation
+                    );
+                }
+                settled = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            settled,
+            "larger successors must activate after budget recovery; status={:?}; draw={:?}",
+            app.world().get::<GaussianLodPackageStatus>(cloud),
+            probe.0.lock().unwrap()
+        );
+        assert_eq!(
+            recomputed_cameras.len(),
+            2,
+            "both old and staged outputs must recompact and radix-sort after camera motion"
+        );
+        assert_eq!(
+            staged_cameras.len(),
+            2,
+            "both cameras must exercise independently staged capacity growth"
+        );
+        eprintln!(
+            "capacity successors: two moving views, exact indirect counts, rejected overlap retention, separately charged successors, and successful publication verified"
+        );
     }
 
     #[test]
@@ -1298,7 +1706,6 @@ mod headless {
         render_claimed: bool,
         authored_temporal_mode: Option<LodTemporalTransitionMode>,
         effective_temporal_mode: Option<LodTemporalTransitionMode>,
-        temporal_progress: Option<f32>,
         transition_identity: Option<String>,
         target_ranges: (usize, u64, u64),
         required_ranges: (usize, u64, u64),
@@ -1308,7 +1715,7 @@ mod headless {
     impl GardenDebugPendingTelemetry {
         fn summary(&self) -> String {
             format!(
-                "camera_active={}, visible_entities={}, cloud_visible={}, view_visible={:?}, phase={}, claimed={}, authored_temporal={:?}, effective_temporal={:?}, progress={:?}, transition={}, target={:?}, required={:?}, current={:?}",
+                "camera_active={}, visible_entities={}, cloud_visible={}, view_visible={:?}, phase={}, claimed={}, authored_temporal={:?}, effective_temporal={:?}, transition={}, target={:?}, required={:?}, current={:?}",
                 self.camera_active,
                 self.camera_visible_entities_present,
                 self.cloud_visible_to_camera,
@@ -1317,7 +1724,6 @@ mod headless {
                 self.render_claimed,
                 self.authored_temporal_mode,
                 self.effective_temporal_mode,
-                self.temporal_progress,
                 self.transition_identity.as_deref().unwrap_or("none"),
                 self.target_ranges,
                 self.required_ranges,
@@ -1362,7 +1768,6 @@ mod headless {
             render_claimed: candidate.render_is_claimed_for_testing(),
             authored_temporal_mode: transition.map(|transition| transition.mode()),
             effective_temporal_mode: candidate.temporal_transition_mode(),
-            temporal_progress: candidate.temporal_transition_progress(),
             transition_identity: transition
                 .and_then(|transition| transition.morph())
                 .map(|morph| format!("{:?}", morph.identity())),
@@ -1587,7 +1992,7 @@ mod headless {
         }
         let handle = world.get::<PlanarGaussian3dHandle>(cloud)?;
         let blend = candidate.view_blend_testing_snapshot()?;
-        let edges = candidate.view_blend()?.morph()?.edges();
+        let edges = candidate.temporal_transition()?.morph()?.edges();
         assert_eq!(edges.len(), blend.weights.len());
         if blend.status.lagging_count != 0
             || blend.status.missing_consumer_count != 0
@@ -3812,7 +4217,7 @@ mod headless {
                     GardenPromotedDrawableClass::CurrentCandidate => {
                         panic!("{context} unexpectedly classified a mismatched overlay current")
                     }
-                    GardenPromotedDrawableClass::RetainedCurrent(retained) => retained,
+                    GardenPromotedDrawableClass::RetainedCurrent(retained) => *retained,
                 };
                 let witness = assert_garden_retained_dynamic_recovery_overlay(
                     &render, &retained, &frozen, &context,
@@ -4137,8 +4542,10 @@ mod headless {
                 &authored_publication_hold.recovery_edges,
                 &authored_publication_hold.pending_ordinary_edges,
                 &node_parents,
-                true,
-                false,
+                GardenDynamicFramePolicy {
+                    exact_token_candidate: true,
+                    allow_unevaluated_late_authored: false,
+                },
                 &format!("Garden roundtrip sample {sample} at path position {position}"),
             );
             authored_publication_hold.observe(
@@ -4344,8 +4751,7 @@ mod headless {
                     &mut app,
                     &target,
                     position,
-                    cloud,
-                    camera,
+                    GardenViewEntities { cloud, camera },
                     &mut settle_telemetry,
                     &signature,
                     &format!("Garden forward fixed-sweep capture pose {position}"),
@@ -4394,8 +4800,7 @@ mod headless {
                     &mut app,
                     &target,
                     capture_id,
-                    cloud,
-                    camera,
+                    GardenViewEntities { cloud, camera },
                     &mut settle_telemetry,
                     &signature,
                     &format!("Garden reverse fixed-sweep capture pose {position}"),
@@ -4519,6 +4924,14 @@ mod headless {
     }
 
     fn garden_temporal_app(package_root: &Path, package_config: GaussianLodPackageConfig) -> App {
+        garden_temporal_app_with_probe(package_root, package_config, true)
+    }
+
+    fn garden_temporal_app_with_probe(
+        package_root: &Path,
+        package_config: GaussianLodPackageConfig,
+        capture_single_view: bool,
+    ) -> App {
         let mut app = App::new();
         app.insert_resource(ClearColor(Color::BLACK))
             .insert_resource(GaussianLodBridgeConfig {
@@ -4553,12 +4966,14 @@ mod headless {
             ExtractResourcePlugin::<GardenViewBlendRenderProbe>::default(),
         ))
         .add_observer(on_garden_temporal_capture);
-        app.sub_app_mut(RenderApp).add_systems(
-            Render,
-            capture_garden_view_blend_render_state
-                .after(LodViewBlendPublicationLabel)
-                .in_set(RenderSystems::Cleanup),
-        );
+        if capture_single_view {
+            app.sub_app_mut(RenderApp).add_systems(
+                Render,
+                capture_garden_view_blend_render_state
+                    .after(LodViewBlendPublicationLabel)
+                    .in_set(RenderSystems::Cleanup),
+            );
+        }
         while app.plugins_state() == PluginsState::Adding {
             std::thread::yield_now();
         }
@@ -4934,7 +5349,6 @@ mod headless {
                             candidate.render_is_transitioning_for_testing(),
                             candidate.render_is_active_for_testing(),
                             candidate.temporal_transition_mode(),
-                            candidate.temporal_transition_progress(),
                             candidate.temporal_transition().is_some(),
                             candidate.rendered_quality_status().requested_pages,
                         )
@@ -5045,7 +5459,7 @@ mod headless {
         );
         let render_candidate = match drawable_class {
             GardenPromotedDrawableClass::CurrentCandidate => render.candidate.clone(),
-            GardenPromotedDrawableClass::RetainedCurrent(retained) => retained,
+            GardenPromotedDrawableClass::RetainedCurrent(retained) => *retained,
         };
         let allow_unevaluated_late_authored = !measured_frame
             && exact_token_aggregate
@@ -5120,8 +5534,10 @@ mod headless {
                                 &telemetry.authored_publication_hold.recovery_edges,
                                 &telemetry.authored_publication_hold.pending_ordinary_edges,
                                 &telemetry.node_parents,
-                                exact_token_aggregate,
-                                allow_unevaluated_late_authored,
+                                GardenDynamicFramePolicy {
+                                    exact_token_candidate: exact_token_aggregate,
+                                    allow_unevaluated_late_authored,
+                                },
                                 &context,
                             );
                             telemetry
@@ -5378,16 +5794,22 @@ mod headless {
         );
     }
 
+    #[derive(Clone, Copy)]
+    struct GardenViewEntities {
+        cloud: Entity,
+        camera: Entity,
+    }
+
     fn capture_garden_roundtrip_settled_pose(
         app: &mut App,
         target: &Handle<Image>,
         capture_id: u32,
-        cloud: Entity,
-        camera: Entity,
+        entities: GardenViewEntities,
         telemetry: &mut GardenTemporalTelemetry,
         settled: &GardenRoundtripSettledSignature,
         context: &str,
     ) {
+        let GardenViewEntities { cloud, camera } = entities;
         let baseline_upload = telemetry
             .last_blend
             .as_ref()
@@ -5730,7 +6152,24 @@ mod headless {
         unevaluated_late_edge_keys: BTreeSet<GardenViewBlendEdgeKey>,
     }
 
+    #[derive(Clone, Copy)]
+    struct GardenDynamicFramePolicy {
+        exact_token_candidate: bool,
+        allow_unevaluated_late_authored: bool,
+    }
+
     type GardenAuthoredTableIdentity = (u64, u64, Vec<GardenViewBlendEdgeKey>);
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct GardenIncompleteEdgeIdentity {
+        key: GardenViewBlendEdgeKey,
+        activation_requires_slew: bool,
+        recovery_lag: bool,
+        endpoint: u8,
+        displayed_weight_bits: u32,
+        desired_weight_bits: u32,
+        evaluation_weight_bits: Option<u32>,
+    }
 
     #[derive(Clone, Debug, PartialEq)]
     struct GardenIncompletePublicationIdentity {
@@ -5748,15 +6187,7 @@ mod headless {
         presentation_ranges: GardenPhysicalCutSignature,
         required_ranges: GardenPhysicalCutSignature,
         upload: (u64, u64, u64, u64, u32, u32, u32, u32, u64),
-        edges: Vec<(
-            GardenViewBlendEdgeKey,
-            bool,
-            bool,
-            u8,
-            u32,
-            u32,
-            Option<u32>,
-        )>,
+        edges: Vec<GardenIncompleteEdgeIdentity>,
     }
 
     impl GardenIncompletePublicationIdentity {
@@ -5793,16 +6224,14 @@ mod headless {
                 edges: observation
                     .edges
                     .iter()
-                    .map(|edge| {
-                        (
-                            edge.key.clone(),
-                            edge.activation_requires_slew,
-                            edge.recovery_lag,
-                            edge.endpoint,
-                            edge.displayed_weight_bits,
-                            edge.desired_weight_bits,
-                            edge.evaluation_weight_bits,
-                        )
+                    .map(|edge| GardenIncompleteEdgeIdentity {
+                        key: edge.key.clone(),
+                        activation_requires_slew: edge.activation_requires_slew,
+                        recovery_lag: edge.recovery_lag,
+                        endpoint: edge.endpoint,
+                        displayed_weight_bits: edge.displayed_weight_bits,
+                        desired_weight_bits: edge.desired_weight_bits,
+                        evaluation_weight_bits: edge.evaluation_weight_bits,
                     })
                     .collect(),
             }
@@ -6318,10 +6747,13 @@ mod headless {
             recovery_edges: &BTreeSet<GardenViewBlendEdgeKey>,
             pending_ordinary_edges: &BTreeMap<GardenViewBlendEdgeKey, u32>,
             parents: &GardenNodeParents,
-            exact_token_candidate: bool,
-            allow_unevaluated_late_authored: bool,
+            policy: GardenDynamicFramePolicy,
             context: &str,
         ) -> GardenViewBlendActivationEvidence {
+            let GardenDynamicFramePolicy {
+                exact_token_candidate,
+                allow_unevaluated_late_authored,
+            } = policy;
             self.assert_dynamic_coherent(context);
             self.assert_active_dynamic_evaluation_complete(context);
             self.assert_no_invalid_pressure_pairs(context);
@@ -6589,8 +7021,7 @@ mod headless {
             recovery_edges: &BTreeSet<GardenViewBlendEdgeKey>,
             pending_ordinary_edges: &BTreeMap<GardenViewBlendEdgeKey, u32>,
             parents: &GardenNodeParents,
-            exact_token_candidate: bool,
-            allow_unevaluated_late_authored: bool,
+            policy: GardenDynamicFramePolicy,
             context: &str,
         ) -> GardenViewBlendActivationEvidence {
             let evidence = self.assert_dynamic_frame_transition(
@@ -6598,8 +7029,7 @@ mod headless {
                 recovery_edges,
                 pending_ordinary_edges,
                 parents,
-                exact_token_candidate,
-                allow_unevaluated_late_authored,
+                policy,
                 context,
             );
             if !evidence.new_authored_publication {
@@ -6617,7 +7047,7 @@ mod headless {
             {
                 if edge.activation_requires_slew {
                     assert!(
-                        allow_unevaluated_late_authored
+                        policy.allow_unevaluated_late_authored
                             && evidence.unevaluated_late_edge_keys.contains(&edge.key)
                             && edge.recovery_lag,
                         "{context} used late-readiness slew outside the exact PREPARED unmeasured authored publication"
@@ -7390,7 +7820,7 @@ mod headless {
             view_blend: candidate.view_blend_testing_snapshot(),
             retention: candidates.package_retention_for_testing(),
             morph_identity: candidate
-                .view_blend()
+                .temporal_transition()
                 .and_then(|blend| blend.morph())
                 .map(|morph| morph.identity()),
             target_ranges: garden_physical_range_signature(candidate.frontier().physical_ranges()),
@@ -7406,7 +7836,7 @@ mod headless {
     #[derive(Clone, Debug)]
     enum GardenPromotedDrawableClass {
         CurrentCandidate,
-        RetainedCurrent(GardenExtractedCandidateProof),
+        RetainedCurrent(Box<GardenExtractedCandidateProof>),
     }
 
     #[derive(Clone, Debug, Default)]
@@ -7546,12 +7976,12 @@ mod headless {
                     "{context} kept a PREPARED replacement behind the retained drawable for more than {GARDEN_MAX_PREPARED_RETAINED_DRAWABLE_FRAMES} frames"
                 );
             }
-            GardenPromotedDrawableClass::RetainedCurrent(
+            GardenPromotedDrawableClass::RetainedCurrent(Box::new(
                 self.last_accepted_candidate
                     .as_ref()
                     .expect("a retained drawable has a frozen accepted candidate proof")
                     .clone(),
-            )
+            ))
         }
     }
 
@@ -8769,7 +9199,7 @@ mod headless {
             GardenPromotedDrawableClass::CurrentCandidate => {
                 (render_blend.candidate.clone(), false)
             }
-            GardenPromotedDrawableClass::RetainedCurrent(retained) => (retained, true),
+            GardenPromotedDrawableClass::RetainedCurrent(retained) => (*retained, true),
         };
         assert!(
             !render_candidate.failed,
@@ -9700,7 +10130,7 @@ mod headless {
                 .classify(&render, "interactive Garden handoff");
             let (render_candidate, retained) = match drawable_class {
                 GardenPromotedDrawableClass::CurrentCandidate => (render.candidate.clone(), false),
-                GardenPromotedDrawableClass::RetainedCurrent(retained) => (retained, true),
+                GardenPromotedDrawableClass::RetainedCurrent(retained) => (*retained, true),
             };
             assert!(
                 !render_candidate.failed,
@@ -9746,8 +10176,10 @@ mod headless {
                     &state.authored_publication_hold.recovery_edges,
                     &state.authored_publication_hold.pending_ordinary_edges,
                     &state.node_parents,
-                    !retained,
-                    allow_unevaluated_late_authored,
+                    GardenDynamicFramePolicy {
+                        exact_token_candidate: !retained,
+                        allow_unevaluated_late_authored,
+                    },
                     "interactive Garden transition",
                 );
                 state
@@ -11199,6 +11631,20 @@ mod headless {
         }
     }
 
+    // Match the production camera, including the conservative off-axis support
+    // bound. The orientation-free constructor is not a render oracle.
+    fn fixture_lod_view(camera_position: Vec3) -> LodView {
+        LodView::perspective(camera_position, HEIGHT as f32, VERTICAL_FOV, NEAR_PLANE)
+            .with_view_projection(
+                Mat4::perspective_infinite_reverse_rh(
+                    VERTICAL_FOV,
+                    WIDTH as f32 / HEIGHT as f32,
+                    NEAR_PLANE,
+                ) * Mat4::from_translation(-camera_position),
+                Vec2::new(WIDTH as f32, HEIGHT as f32),
+            )
+    }
+
     fn expected_count(
         hierarchy: &ManifestLodHierarchy<'_>,
         base: &GaussianLodSettings,
@@ -11210,7 +11656,7 @@ mod headless {
         select_frontier(
             hierarchy,
             &AllResident,
-            LodView::perspective(camera_position, HEIGHT as f32, VERTICAL_FOV, NEAR_PLANE),
+            fixture_lod_view(camera_position),
             &settings,
         )
         .expect("quality fixture selection succeeds")
@@ -11635,7 +12081,6 @@ mod headless {
                 candidate.rendered_candidate_count(),
                 candidate.frontier().candidate_count(),
                 candidate.temporal_transition_mode(),
-                candidate.temporal_transition_progress(),
             ))
         });
         let indirect_diagnostic = indirect_probe
@@ -11783,6 +12228,8 @@ mod headless {
         root: PathBuf,
         settings: GaussianLodSettings,
         expected_coarse: u64,
+        expected_adjacent: u64,
+        adjacent_pages: BTreeSet<u64>,
         expected_near: u64,
         expected_far: u64,
         expected_near_pages: usize,
@@ -11822,38 +12269,67 @@ mod headless {
             let coarse = select_frontier(
                 &hierarchy,
                 &AllResident,
-                LodView::perspective(
-                    Vec3::new(0.0, 0.0, NEAR_CAMERA_Z),
-                    HEIGHT as f32,
-                    VERTICAL_FOV,
-                    NEAR_PLANE,
-                ),
+                fixture_lod_view(Vec3::new(0.0, 0.0, NEAR_CAMERA_Z)),
                 &settings,
             )
             .expect("coarse package frontier is selectable");
             let mut near_settings = settings.clone();
             near_settings.quality = CAMERA_PROBE_QUALITY;
+            // Force one authored boundary before the unconstrained mixed-depth
+            // cut. Its only ancestor is the already-visible root; deeper direct
+            // targets can legitimately omit navigation pages and publish hard.
+            assert_eq!(lod.manifest.roots.len(), 1);
+            let root_node = lod
+                .manifest
+                .nodes
+                .iter()
+                .find(|node| node.id == lod.manifest.roots[0])
+                .unwrap();
+            let adjacent_nodes = lod
+                .manifest
+                .nodes
+                .iter()
+                .filter(|node| node.parent == Some(root_node.id))
+                .collect::<Vec<_>>();
+            assert!(!adjacent_nodes.is_empty());
+            let expected_adjacent = adjacent_nodes
+                .iter()
+                .map(|node| u64::from(node.representation.count))
+                .sum::<u64>();
+            let adjacent_pages = adjacent_nodes
+                .iter()
+                .map(|node| node.representation.page.0)
+                .collect::<BTreeSet<_>>();
+            assert!(!adjacent_pages.contains(&root_node.representation.page.0));
+            let mut adjacent_settings = near_settings.clone();
+            adjacent_settings.budgets.max_active_gaussians = expected_adjacent;
+            let adjacent = select_frontier(
+                &hierarchy,
+                &AllResident,
+                fixture_lod_view(Vec3::new(0.0, 0.0, NEAR_CAMERA_Z)),
+                &adjacent_settings,
+            )
+            .expect("capped adjacent frontier is selectable");
+            assert_eq!(
+                adjacent.nodes.iter().copied().collect::<BTreeSet<_>>(),
+                adjacent_nodes
+                    .iter()
+                    .map(|node| node.id)
+                    .collect::<BTreeSet<_>>(),
+                "late-delivery phase must select the exact root children"
+            );
+            assert_eq!(adjacent.status.degradation, LodDegradation::ActiveBudget);
             let near = select_frontier(
                 &hierarchy,
                 &AllResident,
-                LodView::perspective(
-                    Vec3::new(0.0, 0.0, NEAR_CAMERA_Z),
-                    HEIGHT as f32,
-                    VERTICAL_FOV,
-                    NEAR_PLANE,
-                ),
+                fixture_lod_view(Vec3::new(0.0, 0.0, NEAR_CAMERA_Z)),
                 &near_settings,
             )
             .expect("near package frontier is selectable");
             let far = select_frontier(
                 &hierarchy,
                 &AllResident,
-                LodView::perspective(
-                    Vec3::new(0.0, 0.0, FAR_CAMERA_Z),
-                    HEIGHT as f32,
-                    VERTICAL_FOV,
-                    NEAR_PLANE,
-                ),
+                fixture_lod_view(Vec3::new(0.0, 0.0, FAR_CAMERA_Z)),
                 &near_settings,
             )
             .expect("far package frontier is selectable");
@@ -11925,6 +12401,8 @@ mod headless {
                 root,
                 settings,
                 expected_coarse: coarse.status.active_gaussians,
+                expected_adjacent,
+                adjacent_pages,
                 expected_near: near.status.active_gaussians,
                 expected_far: far.status.active_gaussians,
                 expected_near_pages: near_pages,
@@ -11945,6 +12423,8 @@ mod headless {
     enum PackageCapturePhase {
         CoarseWaiting,
         CoarsePending,
+        AdjacentWaiting,
+        AdjacentPending,
         NearWaiting,
         NearPending,
         FarWaiting,
@@ -11956,6 +12436,8 @@ mod headless {
         package_root: String,
         settings: GaussianLodSettings,
         expected_coarse: u64,
+        expected_adjacent: u64,
+        adjacent_pages: BTreeSet<u64>,
         expected_near: u64,
         expected_far: u64,
         expected_near_pages: usize,
@@ -11965,6 +12447,9 @@ mod headless {
         stable_active_frames: u32,
         retained_coarse_frames: u32,
         refinement_transition_frames: Option<u32>,
+        coarse_resident_pages_before_refinement: Option<u32>,
+        saw_adjacent_payload_work: bool,
+        saw_near_payload_work: bool,
         peak_resident_pages: u32,
         node_parents: GardenNodeParents,
         last_blend: Option<GardenViewBlendObservation>,
@@ -11991,6 +12476,8 @@ mod headless {
                 package_root: package.root.to_string_lossy().into_owned(),
                 settings: package.settings.clone(),
                 expected_coarse: package.expected_coarse,
+                expected_adjacent: package.expected_adjacent,
+                adjacent_pages: package.adjacent_pages.clone(),
                 expected_near: package.expected_near,
                 expected_far: package.expected_far,
                 expected_near_pages: package.expected_near_pages,
@@ -12000,6 +12487,9 @@ mod headless {
                 stable_active_frames: 0,
                 retained_coarse_frames: 0,
                 refinement_transition_frames: None,
+                coarse_resident_pages_before_refinement: None,
+                saw_adjacent_payload_work: false,
+                saw_near_payload_work: false,
                 peak_resident_pages: 0,
                 node_parents: package.node_parents.clone(),
                 last_blend: None,
@@ -12088,6 +12578,7 @@ mod headless {
         mut commands: Commands,
         mut state: ResMut<PackageQualityRenderState>,
         package_statuses: Query<&GaussianLodPackageStatus>,
+        package_work: Query<&GaussianLodPackageTestingSnapshot>,
         lod_statuses: Query<&GaussianLodStatus>,
         bridge_statuses: Query<&GaussianLodBridgeStatus>,
         candidates: Query<&LodRenderCandidates>,
@@ -12121,6 +12612,25 @@ mod headless {
 
         let cloud = state.cloud.expect("native package cloud exists");
         let camera = state.camera.expect("native package camera exists");
+        if matches!(
+            state.phase,
+            PackageCapturePhase::AdjacentWaiting | PackageCapturePhase::NearWaiting
+        ) && let Ok(work) = package_work.get(cloud)
+        {
+            assert!(
+                work.runtime_work_available,
+                "native package work snapshot unavailable"
+            );
+            let payload_work = work.runtime_transport_in_flight_requests > 0
+                || work.preprocess_waiting_jobs > 0
+                || work.preprocess_backend_tracked_jobs > 0
+                || work.preprocess_ready_pages > 0;
+            if state.phase == PackageCapturePhase::AdjacentWaiting {
+                state.saw_adjacent_payload_work |= payload_work;
+            } else {
+                state.saw_near_payload_work |= payload_work;
+            }
+        }
         assert!(
             bridge_statuses.get(cloud).is_err(),
             "a preprocessed package must not enter the transient LoD bridge"
@@ -12140,8 +12650,10 @@ mod headless {
                 "native package exceeded its resident-page budget: {status:?}"
             );
             state.peak_resident_pages = state.peak_resident_pages.max(status.resident_pages);
-            if state.phase == PackageCapturePhase::NearWaiting
-                && status.phase == GaussianLodPackagePhase::Active
+            if matches!(
+                state.phase,
+                PackageCapturePhase::AdjacentWaiting | PackageCapturePhase::NearWaiting
+            ) && status.phase == GaussianLodPackagePhase::Active
                 && status.active_gaussians == state.expected_coarse
             {
                 state.retained_coarse_frames += 1;
@@ -12164,7 +12676,7 @@ mod headless {
         if let (Some(drawable_class), Some(render)) = (drawable_class, render) {
             let (render_candidate, exact_token_aggregate) = match drawable_class {
                 GardenPromotedDrawableClass::CurrentCandidate => (render.candidate.clone(), true),
-                GardenPromotedDrawableClass::RetainedCurrent(retained) => (retained, false),
+                GardenPromotedDrawableClass::RetainedCurrent(retained) => (*retained, false),
             };
             if !render_candidate.prepared {
                 return;
@@ -12226,8 +12738,10 @@ mod headless {
                             &state.authored_publication_hold.recovery_edges,
                             &state.authored_publication_hold.pending_ordinary_edges,
                             &state.node_parents,
-                            exact_token_aggregate,
-                            allow_unevaluated_late_authored,
+                            GardenDynamicFramePolicy {
+                                exact_token_candidate: exact_token_aggregate,
+                                allow_unevaluated_late_authored,
+                            },
                             "native synthetic ABI-16 transition",
                         );
                         state.authored_publication_hold.observe(
@@ -12271,8 +12785,15 @@ mod headless {
                             .filter(|edge| edge.activation_requires_slew)
                             .collect::<Vec<_>>();
                         assert!(
-                            !late_edges.is_empty(),
-                            "native synthetic ABI-16 first Morphing publication had no late-delivery provenance"
+                            state.phase != PackageCapturePhase::AdjacentWaiting
+                                || !late_edges.is_empty(),
+                            "native synthetic ABI-16 first Morphing publication had no late-delivery provenance: phase={:?}, coarse_resident={:?}, target_pages={}, observed_payload_work={}, candidate_count={}, edges={:?}",
+                            state.phase,
+                            state.coarse_resident_pages_before_refinement,
+                            state.expected_near_pages,
+                            state.saw_near_payload_work,
+                            render_candidate.rendered_candidate_count,
+                            blend.edges,
                         );
                         let mut unevaluated_late_edge_keys = BTreeSet::new();
                         for edge in late_edges {
@@ -12461,9 +12982,11 @@ mod headless {
 
         let expected = match state.phase {
             PackageCapturePhase::CoarseWaiting => Some(state.expected_coarse),
+            PackageCapturePhase::AdjacentWaiting => Some(state.expected_adjacent),
             PackageCapturePhase::NearWaiting => Some(state.expected_near),
             PackageCapturePhase::FarWaiting => Some(state.expected_far),
             PackageCapturePhase::CoarsePending
+            | PackageCapturePhase::AdjacentPending
             | PackageCapturePhase::NearPending
             | PackageCapturePhase::FarPending => None,
         };
@@ -12488,6 +13011,47 @@ mod headless {
             return;
         }
 
+        if state.phase == PackageCapturePhase::CoarseWaiting {
+            let resident_pages = package_statuses
+                .get(cloud)
+                .expect("coherent coarse cut has package status")
+                .resident_pages;
+            assert!(
+                (resident_pages as usize) < state.expected_near_pages,
+                "late-delivery fixture must start with missing target pages: coarse resident={resident_pages}, near target pages={}",
+                state.expected_near_pages,
+            );
+            state.coarse_resident_pages_before_refinement = Some(resident_pages);
+            let coarse_pages = candidates
+                .get(cloud)
+                .unwrap()
+                .get(camera)
+                .unwrap()
+                .render_ranges()
+                .iter()
+                .map(|range| range.page.0)
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                resident_pages as usize,
+                coarse_pages.len(),
+                "cold adjacent phase must have no prefetched pages beyond the retained root"
+            );
+            assert!(
+                coarse_pages.is_disjoint(&state.adjacent_pages),
+                "every adjacent destination page must initially be absent"
+            );
+        }
+        if state.phase == PackageCapturePhase::AdjacentWaiting {
+            let public = lod_statuses
+                .get(cloud)
+                .expect("adjacent cut has public status");
+            assert_eq!(public.degradation, LodDegradation::ActiveBudget);
+            assert_eq!(
+                public.target_satisfied,
+                Some(false),
+                "the capped adjacent cut cannot claim the unconstrained quality target"
+            );
+        }
         if state.phase == PackageCapturePhase::NearWaiting {
             state.refinement_transition_frames = Some(state.phase_frames);
         }
@@ -12496,6 +13060,7 @@ mod headless {
         ));
         state.phase = match state.phase {
             PackageCapturePhase::CoarseWaiting => PackageCapturePhase::CoarsePending,
+            PackageCapturePhase::AdjacentWaiting => PackageCapturePhase::AdjacentPending,
             PackageCapturePhase::NearWaiting => PackageCapturePhase::NearPending,
             PackageCapturePhase::FarWaiting => PackageCapturePhase::FarPending,
             pending => pending,
@@ -12598,13 +13163,47 @@ mod headless {
         let cloud = state.cloud.expect("native package cloud exists");
         match state.phase {
             PackageCapturePhase::CoarsePending => {
+                let mut settings = lod_settings
+                    .get_mut(cloud)
+                    .expect("native package LoD settings exist");
+                settings.quality = CAMERA_PROBE_QUALITY;
+                settings.budgets.max_active_gaussians = state.expected_adjacent;
+                state.enter(PackageCapturePhase::AdjacentWaiting);
+            }
+            PackageCapturePhase::AdjacentPending => {
+                assert!(
+                    state.saw_adjacent_payload_work,
+                    "cold adjacent phase must observe actual payload delivery"
+                );
+                assert!(
+                    state.saw_late_activation
+                        && state.saw_late_lag
+                        && state.saw_late_public_unsatisfied
+                        && state.saw_late_catchup
+                        && !state.late_edge_keys.is_empty()
+                        && state.active_late_edge_keys == state.late_edge_keys
+                        && state.lagged_late_edge_keys == state.late_edge_keys
+                        && state.caught_up_late_edge_keys == state.late_edge_keys,
+                    "adjacent refinement must complete every late-activation/recovery proof before proceeding"
+                );
                 lod_settings
                     .get_mut(cloud)
-                    .expect("native package LoD settings exist")
-                    .quality = CAMERA_PROBE_QUALITY;
+                    .unwrap()
+                    .budgets
+                    .max_active_gaussians = state.settings.budgets.max_active_gaussians;
                 state.enter(PackageCapturePhase::NearWaiting);
             }
             PackageCapturePhase::NearPending => {
+                assert!(
+                    state
+                        .coarse_resident_pages_before_refinement
+                        .is_some_and(|pages| { (pages as usize) < state.expected_near_pages })
+                        && state.saw_near_payload_work,
+                    "late-delivery fixture must authenticate missing target pages and actual payload work: coarse resident={:?}, target pages={}, payload work={}",
+                    state.coarse_resident_pages_before_refinement,
+                    state.expected_near_pages,
+                    state.saw_near_payload_work,
+                );
                 assert!(
                     state.expected_near_pages > 1
                         && state

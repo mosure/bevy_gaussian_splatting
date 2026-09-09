@@ -83,6 +83,9 @@ fn lod_external_active_set_opacity_coefficient(active_set_class: u32) -> f32 {
 // {parent_physical_index, run_length}; the final compact region stores exactly
 // one host-derived displayed f32 weight per edge. Compaction and raster bind
 // this same table, so they consume identical per-view bits.
+// The host evaluates LodView's actual world-to-clip projection bound for these
+// weights. Re-evaluating a distance-only approximation here would move the
+// presentation boundary away from the selector for off-axis cameras.
 // Host validation is authoritative, but every offset and record is checked
 // again here so malformed/stale transition state falls back to the authored
 // child instead of issuing an OOB read.

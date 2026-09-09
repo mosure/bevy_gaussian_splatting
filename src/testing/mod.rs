@@ -1,8 +1,17 @@
 //! Deterministic fixtures and metrics shared by LoD unit, GPU, and render tests.
 
 pub mod image_metrics;
+#[cfg(all(lod_render_path, feature = "webgpu", target_arch = "wasm32"))]
+pub mod lod_browser_capture;
+pub mod lod_capture;
 mod lod_manifest;
+#[cfg(any(feature = "lod", test))]
+pub mod lod_package_cpu;
+#[cfg(all(feature = "headless", lod_render_path, not(target_arch = "wasm32")))]
+pub mod lod_runtime_capture;
 pub mod lod_scenes;
+#[cfg(all(feature = "headless", lod_render_path, not(target_arch = "wasm32")))]
+pub mod point_capture;
 #[cfg(feature = "lod")]
 pub mod render_oracle;
 
@@ -20,8 +29,8 @@ pub use lod_scenes::{
 pub use render_oracle::{
     LodAttributedImage, LodOracleSupport, LodQualitySample, LodRenderOracleError,
     gather_frontier_gaussians, gather_frontier_gaussians_with_nodes, render_flat_linear_gaussians,
-    render_linear_gaussians, render_linear_gaussians_with_nodes,
-    render_lod_linear_gaussians_with_nodes, render_production_flat_linear_gaussians,
-    render_production_flat_linear_gaussians_with_owners, render_production_lod_linear_gaussians,
-    render_production_lod_linear_gaussians_with_nodes, render_quality_sweep,
+    render_lod_linear_gaussians, render_lod_linear_gaussians_with_nodes,
+    render_production_flat_linear_gaussians, render_production_flat_linear_gaussians_with_owners,
+    render_production_lod_linear_gaussians, render_production_lod_linear_gaussians_with_nodes,
+    render_quality_sweep,
 };

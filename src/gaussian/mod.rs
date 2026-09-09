@@ -8,7 +8,7 @@ pub mod formats;
 pub mod interface;
 pub mod iter;
 #[cfg(feature = "lod_build")]
-// The bounded GPU sort/reduction contracts remain available on Wasm, while
+// The bounded GPU sorting contracts remain available on Wasm, while
 // blocking readback is rejected through a typed unsupported error.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub mod lod_build_gpu;
@@ -19,6 +19,6 @@ pub mod lodge_settings;
 pub mod settings;
 
 assert_cfg!(
-    any(feature = "packed", feature = "planar",),
-    "specify one of the following features: packed, planar",
+    feature = "planar",
+    "enable the planar feature for Gaussian storage",
 );

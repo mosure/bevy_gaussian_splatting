@@ -10,18 +10,21 @@ pub mod http;
 pub mod lodge;
 // The portable LODGE format and CPU pair planner remain available in every
 // `lod` build.  Resident ECS presentation additionally needs the storage-
-// buffer radix consumer; WebGL2/buffer-texture builds must not compile a
+// buffer radix consumer; CPU-only profiles must not compile a
 // component which they cannot make drawable.
 #[cfg(lod_render_path)]
 pub mod lodge_resident;
 #[cfg(feature = "lod")]
 pub mod lodge_status;
 #[cfg(feature = "lod")]
+pub mod memory;
+#[cfg(feature = "lod")]
 pub mod package;
 #[cfg(feature = "lod")]
 pub mod package_source;
 #[cfg(feature = "lod")]
 pub mod persistent_cache;
+pub(crate) mod preparation;
 #[cfg(feature = "lod")]
 pub mod preprocess;
 #[cfg(feature = "lod")]
@@ -37,7 +40,7 @@ pub mod transport;
 ///
 /// The portable hierarchy, codec, and streaming APIs remain available in
 /// other feature combinations. Runtime LoD rendering, however, requires the
-/// storage-buffer radix path and is intentionally unavailable on WebGL2.
+/// storage-buffer radix path. CPU-only profiles retain the package contracts.
 #[cfg(feature = "lod")]
 pub const fn lod_render_path_is_supported() -> bool {
     cfg!(lod_render_path)
@@ -58,7 +61,7 @@ impl std::fmt::Display for LodRenderPathSupportError {
         match self {
             Self::UnsupportedBuildConfiguration => write!(
                 formatter,
-                "LoD rendering requires sort_radix + buffer_storage without buffer_texture or webgl2"
+                "LoD rendering requires sort_radix + buffer_storage"
             ),
         }
     }

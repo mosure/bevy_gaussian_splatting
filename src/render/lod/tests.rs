@@ -27,6 +27,64 @@ fn test_extracted_view() -> ExtractedView {
     }
 }
 
+#[test]
+fn extracted_morph_view_matches_matrix_selector_under_off_axis_transforms() {
+    use crate::stream::hierarchy::LodNodeMetrics;
+
+    let mut extracted = test_extracted_view();
+    extracted.world_from_view = GlobalTransform::from(bevy::prelude::Transform {
+        translation: Vec3::new(4.0, 1.0, 3.0),
+        rotation: bevy::math::Quat::from_rotation_y(0.3),
+        ..Default::default()
+    });
+    extracted.clip_from_view.z_axis.x = 0.35;
+    extracted.viewport = UVec4::new(100, 200, 2_000, 700);
+    let cloud = GlobalTransform::from(bevy::prelude::Transform {
+        scale: Vec3::new(-1.0, 2.0, 0.75),
+        ..Default::default()
+    });
+    let metrics = LodNodeMetrics {
+        center: Vec3::new(-5.0, 0.0, -8.0),
+        radius: 0.1,
+        geometric_error: 0.01,
+        appearance_error: 0.0,
+        opacity_error: 0.0,
+        quality_min: 0.0,
+        quality_max: 1.0,
+        high_fidelity_certificate: 1.0,
+        representative_count: 1,
+    };
+    for use_override in [false, true] {
+        let mut clip_from_world =
+            extracted.clip_from_view * extracted.world_from_view.to_matrix().inverse();
+        if use_override {
+            // ExtractedView permits a complete matrix override. The morph host
+            // must use the same override as Bevy's shader ViewUniform.
+            clip_from_world.x_axis.x *= 1.3;
+            extracted.clip_from_world = Some(clip_from_world);
+        }
+        let selector = LodView::perspective(Vec3::ZERO, 700.0, 1.0, 0.1)
+            .with_view_projection(clip_from_world, bevy::math::Vec2::new(2_000.0, 700.0))
+            .with_world_from_local(cloud.to_matrix());
+        let morph = lod_view_blend_view(&extracted, &cloud).unwrap();
+        assert_eq!(
+            selector.projected_error_px(metrics).to_bits(),
+            morph.projected_error_px(metrics).to_bits(),
+        );
+        assert_eq!(
+            selector.projected_support_radius_px(metrics).to_bits(),
+            morph.projected_support_radius_px(metrics).to_bits(),
+        );
+        let target = GaussianLodSettings::default().quality_target();
+        assert_eq!(
+            selector
+                .selection_pressure(metrics, target, false)
+                .to_bits(),
+            morph.selection_pressure(metrics, target, false).to_bits(),
+        );
+    }
+}
+
 fn test_view_blend_edge_key(id: u64) -> LodViewBlendEdgeKey {
     let metric = LodViewBlendMetricKey {
         center_bits: [id as u32, 0, 0],
@@ -321,6 +379,7 @@ fn radix_drawable_metadata_promotes_only_with_matching_sort_generation() {
         candidate_content_signature: Some(101),
         candidate_atlas_allocation_epoch: Some(11),
         rendered_candidate_count: 3,
+        selected_gaussians: Some(2),
         morph_identity,
         compute_input_generation: 4,
         compaction_signature: 41,
@@ -333,6 +392,7 @@ fn radix_drawable_metadata_promotes_only_with_matching_sort_generation() {
         candidate_content_signature: Some(202),
         candidate_atlas_allocation_epoch: Some(12),
         rendered_candidate_count: 5,
+        selected_gaussians: Some(4),
         morph_identity,
         compute_input_generation: 5,
         compaction_signature: 52,
@@ -355,6 +415,7 @@ fn radix_drawable_metadata_promotes_only_with_matching_sort_generation() {
         candidate_content_signature: Some(101),
         candidate_atlas_allocation_epoch: Some(11),
         rendered_candidate_count: 3,
+        selected_gaussians: Some(2),
         morph_identity,
         compute_input_generation: 4,
         compaction_signature: 41,
@@ -392,6 +453,7 @@ fn radix_drawable_metadata_promotes_only_with_matching_sort_generation() {
     );
     assert_eq!(drawable.fingerprint, Some(first_fingerprint));
     assert_eq!(drawable.rendered_candidate_count, 3);
+    assert_eq!(drawable.selected_gaussians, Some(2));
     assert_eq!(drawable.compute_input_generation, 4);
     assert_eq!(tracker.drawable_publication_generation, 1);
 
@@ -1102,7 +1164,6 @@ fn package_hard_fallback_hold_preserves_the_retained_gpu_payload_contract() {
         .split("fn commit_lod_bridge_candidates")
         .next()
         .unwrap();
-    assert!(prepare.contains("current_morph_word_capacity"));
     assert!(prepare.contains("if request.8"));
     assert!(prepare.contains("if hard_fallback_requested"));
     assert!(prepare.contains("pinned_existing: true"));
@@ -1128,6 +1189,9 @@ fn package_hard_fallback_hold_preserves_the_retained_gpu_payload_contract() {
         .nth(1)
         .expect("bridge candidate commit");
     let hold = commit
+        .split("candidate.publish_render_claimed();")
+        .nth(1)
+        .expect("actual consumer claim precedes fallback hold")
         .split("if candidate.render_hard_fallback_requested()")
         .nth(1)
         .expect("render fallback hold")
@@ -1390,7 +1454,7 @@ fn retained_pending_debug_staging_reaches_prepared_before_activation() {
         "debug-sidecar staging readiness must not block PREPARED"
     );
     let synchronized_hold = host
-        .split("LodBridgeAtlasDecision::SynchronizePending => {}")
+        .split("LodBridgeAtlasDecision::SynchronizePending =>")
         .nth(1)
         .expect("synchronized replacement branch exists")
         .split("let atlas_content_revision")
@@ -1421,7 +1485,7 @@ fn retained_replacement_is_validate_only_until_every_draw_prerequisite_is_ready(
 
     let host = include_str!("../lod.rs");
     let synchronized = host
-        .split("LodBridgeAtlasDecision::SynchronizePending => {}")
+        .split("LodBridgeAtlasDecision::SynchronizePending =>")
         .nth(1)
         .expect("synchronized replacement branch exists")
         .split("let atlas_content_revision")
@@ -1631,7 +1695,7 @@ fn removed_edge_retirement_requires_private_and_current_view_endpoint_agreement(
     .with_temporal_transition_for_test(LodTemporalTransitionMode::Morphing);
     let candidate = LodRenderCandidate::new(frontier);
     let published_before = candidate
-        .view_blend_snapshot_for_testing()
+        .view_blend_testing_snapshot()
         .expect("Morphing candidates publish an initial view-blend snapshot");
     assert_eq!(candidate.phase.load(Ordering::Acquire), LOD_RENDER_ACTIVE);
     let first_sync = LodCandidateUploadPlan::Upload(lod_bridge_candidate_fingerprint(&candidate));
@@ -1657,7 +1721,7 @@ fn removed_edge_retirement_requires_private_and_current_view_endpoint_agreement(
     );
     assert!(!candidate.render_hard_fallback_requested());
     assert_eq!(
-        candidate.view_blend_snapshot_for_testing(),
+        candidate.view_blend_testing_snapshot(),
         Some(published_before),
         "the replan request must preserve the predecessor's published presentation evidence"
     );
@@ -3097,7 +3161,7 @@ fn compaction_storage_buffer_capability_is_counted_before_admission() {
         .find("if !storage_buffer_count_supported")
         .expect("ordinary-allocation storage-buffer capability gate");
     let allocation = prepare
-        .find("plan_lod_compaction_allocation(")
+        .find("plan_lod_compaction_allocation_for_ranges(")
         .expect("first allocation planning site");
     let request = allocation
         + prepare[allocation..]
@@ -3650,146 +3714,127 @@ fn testing_range_ownership_survives_an_absent_bridge_until_explicitly_revoked() 
 }
 
 #[test]
-fn candidate_prefix_grows_once_and_replacement_is_peak_bounded() {
-    let tail = candidate_evaluations_and_scan_record_bytes(2_000_000).unwrap();
-    let stable_bytes = candidate_binding_bytes(2_000_000, 4).unwrap();
-    let maximum_source_words = maximum_candidate_source_words(2_000_000).unwrap();
-    let maximum_prefix_bytes = candidate_binding_bytes(2_000_000, maximum_source_words).unwrap();
-    assert_eq!(stable_bytes, tail + 16);
-    assert_eq!(maximum_prefix_bytes, tail + 32_000_000);
-    assert!(stable_bytes < maximum_prefix_bytes);
+fn candidate_prefix_tracks_ranges_and_preserves_admitted_high_water() {
     assert_eq!(candidate_source_capacity_after_upload(4, 4, 8_000_000), 4);
-    assert_eq!(
-        candidate_source_capacity_after_upload(4, 5, 8_000_000),
-        8_000_000,
-        "the first non-trivial prefix grows directly to the admitted maximum"
-    );
-    assert_eq!(
-        candidate_source_capacity_after_upload(8_000_000, 4, 8_000_000),
-        8_000_000,
-        "range frontiers retain peak prefix capacity until state destruction"
-    );
-    assert_eq!(
-        candidate_source_capacity_after_upload(8_000_000, 1_000_000, 8_000_000),
-        8_000_000,
-        "descriptor churn cannot allocate another generation"
-    );
+    assert_eq!(candidate_source_capacity_after_upload(4, 8, 8_000_000), 8);
+    assert_eq!(candidate_source_capacity_after_upload(8, 12, 8_000_000), 16);
+    assert_eq!(candidate_source_capacity_after_upload(16, 4, 8_000_000), 16);
+    assert_eq!(candidate_source_capacity_after_upload(4, 20, 24), 24);
 
-    let host = include_str!("../lod.rs");
-    let resize = host
-        .find("fn resize_candidate_source_prefix")
-        .expect("candidate prefix resize implementation");
-    let resize = &host[resize..];
-    let drop_bind_group = resize
-        .find("let old_bind_group = self.bind_group.take()")
-        .expect("dependent bind group drop");
-    let drop_old_buffer = resize
-        .find("let old_candidate_and_scan_buffer = self.candidate_and_scan_buffer.take()")
-        .expect("old candidate/evaluation buffer drop");
-    let replacement = resize
-        .find("let candidate_and_scan_buffer = render_device.create_buffer")
-        .expect("replacement allocation");
-    assert!(drop_bind_group < drop_old_buffer && drop_old_buffer < replacement);
-    assert!(!host.contains("LodGpuCandidateStorageStats"));
-    assert!(!host.contains("candidate_storage_stats"));
-
-    let plan = plan_lod_compaction_allocation(
+    let limits = wgpu::Limits {
+        max_buffer_size: 256 * 1024 * 1024,
+        max_storage_buffer_binding_size: 128 * 1024 * 1024,
+        ..Default::default()
+    };
+    let plan = plan_lod_compaction_allocation_for_ranges(2_000_000, 8, &limits).unwrap();
+    assert_eq!(plan.effective_capacity, 2_000_000);
+    assert_eq!(plan.candidate_indices_bytes, 32);
+    assert_eq!(
+        plan.candidate_and_scan_records_bytes,
+        candidate_evaluations_and_scan_record_bytes(2_000_000).unwrap() + 32
+    );
+    assert_eq!(plan.candidate_replacement_reserve_bytes, 0);
+    let dense = plan_lod_compaction_allocation(
         2_000_000,
-        256 * 1024 * 1024,
-        128 * 1024 * 1024,
-        64 * 1024,
-        u32::MAX,
+        limits.max_buffer_size,
+        limits.max_storage_buffer_binding_size,
+        limits.max_uniform_buffer_binding_size,
+        limits.max_compute_workgroups_per_dimension,
     )
     .unwrap();
-    assert_eq!(
-        plan.candidate_replacement_reserve_bytes, stable_bytes,
-        "aggregate admission must reserve the sole initial predecessor"
-    );
-    assert!(
-        plan.total_bytes >= maximum_prefix_bytes + stable_bytes,
-        "the admitted peak includes old and replacement candidate bindings"
-    );
-    let invalidate = host
-        .find("pub fn invalidate_candidates")
-        .expect("candidate invalidation implementation");
-    let invalidate = &host[invalidate..];
-    let next_method = invalidate
-        .find("fn synchronize_pipeline_readiness")
-        .expect("end of invalidation method");
-    assert!(
-        !invalidate[..next_method].contains("resize_candidate_source_prefix"),
-        "normal invalidation must not shrink and recreate the full-tail binding"
-    );
-    assert!(invalidate[..next_method].contains("self.morph_buffer"));
-    assert!(invalidate[..next_method].contains("LodCandidateUploadTracker::default()"));
+    assert!(dense.total_bytes - plan.total_bytes > 32_000_000);
+}
+
+#[test]
+fn range_sized_prefix_recovers_capacity_at_the_binding_limit() {
+    let limits = wgpu::Limits {
+        max_buffer_size: 1024 * 1024,
+        max_storage_buffer_binding_size: 8192,
+        ..Default::default()
+    };
+    let sparse = plan_lod_compaction_allocation_for_ranges(2_000, 8, &limits).unwrap();
+    let dense = plan_lod_compaction_allocation(
+        2_000,
+        limits.max_buffer_size,
+        limits.max_storage_buffer_binding_size,
+        limits.max_uniform_buffer_binding_size,
+        limits.max_compute_workgroups_per_dimension,
+    )
+    .unwrap();
+    assert!(sparse.effective_capacity > dense.effective_capacity * 2);
+    assert!(sparse.candidate_and_scan_records_bytes <= 8192);
+    assert!(candidate_binding_bytes(u64::from(sparse.effective_capacity) + 1, 8).unwrap() > 8192);
+}
+
+#[test]
+fn descriptor_retirement_counts_every_uncompleted_submission() {
+    let first = Arc::new(AtomicBool::new(false));
+    let second = Arc::new(AtomicBool::new(false));
+    let retired = vec![
+        LodRetiredAllocation {
+            bytes: 128,
+            memory_leases: Vec::new(),
+            complete: Arc::clone(&first),
+            armed: false,
+        },
+        LodRetiredAllocation {
+            bytes: 256,
+            memory_leases: Vec::new(),
+            complete: Arc::clone(&second),
+            armed: false,
+        },
+    ];
+    assert_eq!(pending_lod_allocation_bytes(&retired), 384);
+    second.store(true, Ordering::Release);
+    assert_eq!(pending_lod_allocation_bytes(&retired), 128);
+    first.store(true, Ordering::Release);
+    assert_eq!(pending_lod_allocation_bytes(&retired), 0);
 }
 
 #[test]
 fn morph_buffer_admission_charges_base_residency_and_growth_overlap_exactly() {
-    let base_total = 1_000_u64;
-    assert_eq!(LOD_MORPH_MIN_BUFFER_BYTES, 32);
-    assert_eq!(lod_morph_word_capacity(8).unwrap(), 8);
-    assert_eq!(lod_morph_word_capacity(9).unwrap(), 16);
-    assert_eq!(lod_morph_word_capacity(17).unwrap(), 32);
-
-    assert_eq!(
-        lod_compaction_admission_bytes_with_morph(base_total, 8, 8),
-        Some(base_total),
-        "the allocation plan already owns the minimum header"
-    );
-    assert_eq!(
-        lod_compaction_admission_bytes_with_morph(base_total, 8, 9),
-        Some(base_total + 64),
-        "first growth charges the retained 32-byte base plus the new 64-byte buffer"
-    );
-    assert_eq!(
-        lod_compaction_admission_bytes_with_morph(base_total, 16, 17),
-        Some(base_total - 32 + 64 + 128),
-        "grow-only replacement charges both current and next power-of-two buffers"
-    );
-    assert_eq!(
-        lod_compaction_admission_bytes_with_morph(base_total, 64, 8),
-        Some(base_total - 32 + 256),
-        "a settled hard cut still charges its resident grow-only morph allocation"
-    );
-
     let plan =
-        plan_lod_compaction_allocation(2_000, 1024 * 1024, 8_192, 64 * 1024, u32::MAX).unwrap();
-    assert_eq!(plan.morph_base_bytes, LOD_MORPH_MIN_BUFFER_BYTES);
-    let first = lod_compaction_admission_bytes_with_morph(plan.total_bytes, 8, 9).unwrap();
-    let second = lod_compaction_admission_bytes_with_morph(plan.total_bytes, 8, 9).unwrap();
+        plan_lod_compaction_allocation_for_ranges(1024, 4, &wgpu::Limits::default()).unwrap();
+    let existing_bytes = 2 * plan.total_bytes;
+    let growth = lod_compaction_incremental_bytes(&plan, Some((1024, 4, 8)), 9).unwrap();
+    assert_eq!(
+        growth, 64,
+        "both old headers are already in the existing allocation charge"
+    );
+    assert_eq!(
+        lod_compaction_incremental_bytes(&plan, Some((1024, 4, 16)), 17),
+        Some(128)
+    );
+    assert_eq!(
+        lod_compaction_incremental_bytes(&plan, Some((1024, 4, 64)), 8),
+        Some(0)
+    );
     let phase_a = AtomicU8::new(LOD_RENDER_WAITING);
     let phase_b = AtomicU8::new(LOD_RENDER_WAITING);
-    let admitted = admit_lod_compaction_requests(
+    let admitted = admit_lod_compaction_requests_with_existing(
         vec![
             LodCompactionAdmissionRequest {
                 payload: 1_u8,
-                total_bytes: first,
+                total_bytes: growth,
                 class: LodCompactionAdmissionClass::FallbackCapable,
                 required_phase: Some(&phase_a),
                 pinned_existing: false,
             },
             LodCompactionAdmissionRequest {
                 payload: 2_u8,
-                total_bytes: second,
+                total_bytes: growth,
                 class: LodCompactionAdmissionClass::FallbackCapable,
                 required_phase: Some(&phase_b),
                 pinned_existing: false,
             },
         ],
-        first + second - 1,
+        existing_bytes + 2 * growth - 1,
+        existing_bytes,
+        |_| None,
     );
     assert_eq!(admitted, vec![1]);
     assert_eq!(phase_a.load(Ordering::Acquire), LOD_RENDER_WAITING);
     assert_eq!(phase_b.load(Ordering::Acquire), LOD_RENDER_FAILED);
-
-    let host = include_str!("../lod.rs");
-    let prepare = host
-        .split("fn prepare_lod_compaction_buffers")
-        .nth(1)
-        .expect("compaction admission system");
-    assert!(prepare.contains("lod_compaction_admission_bytes_with_morph"));
-    assert!(prepare.contains("total_bytes: admission_total_bytes"));
 }
 
 #[test]
@@ -3953,6 +3998,45 @@ fn first_pass_evaluation_is_cached_for_scatter() {
         "padded count/scatter lanes must not address cached evaluations out of bounds"
     );
 }
+#[test]
+fn projection_allocation_releases_radix_budget_without_changing_compaction_capacity() {
+    let sorted = plan_lod_compaction_allocation(
+        2_000_000,
+        256 * 1024 * 1024,
+        128 * 1024 * 1024,
+        64 * 1024,
+        u32::MAX,
+    )
+    .unwrap();
+    let projected = sorted.without_radix();
+    assert_eq!(projected.effective_capacity, sorted.effective_capacity);
+    assert_eq!(projected.active_entries_bytes, sorted.active_entries_bytes);
+    assert_eq!(
+        projected.candidate_and_scan_records_bytes,
+        sorted.candidate_and_scan_records_bytes
+    );
+    assert_eq!(
+        projected.total_bytes
+            + sorted.radix_scratch_bytes
+            + sorted.sorting_global_bytes
+            + sorted.sorting_status_counter_bytes
+            + 4 * sorted.sorting_pass_bytes,
+        sorted.total_bytes
+    );
+    assert_eq!(projected.without_radix(), projected);
+    let mut used = 0;
+    assert!(!reserve_lod_compaction_bytes(
+        &mut used,
+        sorted.total_bytes,
+        projected.total_bytes
+    ));
+    assert!(reserve_lod_compaction_bytes(
+        &mut used,
+        projected.total_bytes,
+        projected.total_bytes
+    ));
+}
+
 #[test]
 fn allocation_plan_preserves_requested_capacity_when_device_limits_fit() {
     let plan = plan_lod_compaction_allocation(
@@ -4210,86 +4294,105 @@ fn hard_fallback_pins_existing_state_above_a_lowered_budget_and_rejects_new_work
 }
 
 #[test]
-fn crossed_replacements_drop_all_old_states_before_allocating() {
-    #[derive(Clone, Copy)]
-    enum Event {
-        ReleaseDependent(usize),
-        DropOld(usize),
-        AllocateNew(usize),
-    }
-
-    fn peak_live_bytes(old: &[u64], new: &[u64], events: &[Event]) -> Option<u64> {
-        let mut dependent_live = vec![true; old.len()];
-        let mut old_live = vec![true; old.len()];
-        let mut new_live = vec![false; new.len()];
-        let mut live = old
-            .iter()
-            .try_fold(0u64, |sum, bytes| sum.checked_add(*bytes))?;
-        let mut peak = live;
-
-        for event in events {
-            match *event {
-                Event::ReleaseDependent(index) => dependent_live[index] = false,
-                Event::DropOld(index) => {
-                    if dependent_live[index] || !old_live[index] {
-                        return None;
-                    }
-                    old_live[index] = false;
-                    live = live.checked_sub(old[index])?;
-                }
-                Event::AllocateNew(index) => {
-                    if old_live[index] || new_live[index] {
-                        return None;
-                    }
-                    new_live[index] = true;
-                    live = live.checked_add(new[index])?;
-                    peak = peak.max(live);
-                }
-            }
-        }
-        Some(peak)
-    }
-
-    // Both steady-state totals fit 100 bytes. Growing key 0 before key 1's
-    // old allocation is dropped creates a 160-byte transient peak.
-    let old = [20, 80];
-    let new = [80, 20];
-    let interleaved = [
-        Event::ReleaseDependent(0),
-        Event::DropOld(0),
-        Event::AllocateNew(0),
-        Event::ReleaseDependent(1),
-        Event::DropOld(1),
-        Event::AllocateNew(1),
-    ];
-    assert_eq!(peak_live_bytes(&old, &new, &interleaved), Some(160));
-
-    let two_phase = [
-        Event::ReleaseDependent(0),
-        Event::ReleaseDependent(1),
-        Event::DropOld(0),
-        Event::DropOld(1),
-        Event::AllocateNew(0),
-        Event::AllocateNew(1),
-    ];
-    assert_eq!(peak_live_bytes(&old, &new, &two_phase), Some(100));
-    assert_eq!(
-        peak_live_bytes(&old, &new, &[Event::DropOld(0)]),
-        None,
-        "a state cannot release memory while its radix group retains it"
+fn submitted_predecessors_block_crossed_growth_and_preserve_complete_outputs() {
+    let phase_a = AtomicU8::new(LOD_RENDER_WAITING);
+    let phase_b = AtomicU8::new(LOD_RENDER_WAITING);
+    let request = |key, bytes, phase| LodCompactionAdmissionRequest {
+        payload: (key, "replacement"),
+        total_bytes: bytes,
+        class: LodCompactionAdmissionClass::RetainedRequiredOutput,
+        required_phase: Some(phase),
+        pinned_existing: false,
+    };
+    // Old 20+80-byte buffers stay charged despite dropping their Rust owners.
+    // Replacing them with 80+20 bytes needs a 200-byte peak, not 100 bytes.
+    let admitted = admit_lod_compaction_requests_with_existing(
+        vec![request(0, 80, &phase_a), request(1, 20, &phase_b)],
+        100,
+        100,
+        |payload| Some((payload.0, "current")),
     );
+    assert_eq!(admitted, [(0, "current"), (1, "current")]);
+    assert_eq!(phase_a.load(Ordering::Acquire), LOD_RENDER_FAILED);
+    assert_eq!(phase_b.load(Ordering::Acquire), LOD_RENDER_FAILED);
 
-    let host = include_str!("../lod.rs");
-    let dependent_drop = host
-        .find("for key in &recreate_keys {\n        radix_groups.remove(key);")
-        .expect("dependent pre-drop phase");
-    let state_drop = host
-        .find("for key in &recreate_keys {\n        buffers.entries.remove(key);")
-        .expect("state pre-drop phase");
-    let allocation = host
-        .find("if recreate_keys.contains(&key) {")
-        .expect("replacement allocation phase");
-    assert!(dependent_drop < state_drop && state_drop < allocation);
+    let admitted = admit_lod_compaction_requests_with_existing(
+        vec![request(0, 80, &phase_a), request(1, 20, &phase_b)],
+        200,
+        100,
+        |_| None,
+    );
+    assert_eq!(admitted, [(0, "replacement"), (1, "replacement")]);
+}
+
+#[test]
+fn retired_allocations_compete_with_new_views_until_completion() {
+    let complete = Arc::new(AtomicBool::new(false));
+    let retired = [LodRetiredAllocation {
+        bytes: 80,
+        memory_leases: Vec::new(),
+        complete: Arc::clone(&complete),
+        armed: true,
+    }];
+    let admit = || {
+        admit_lod_compaction_requests_with_existing(
+            vec![LodCompactionAdmissionRequest {
+                payload: "new view",
+                total_bytes: 40,
+                class: LodCompactionAdmissionClass::RequiredOutput,
+                required_phase: None,
+                pinned_existing: false,
+            }],
+            100,
+            pending_lod_allocation_bytes(&retired),
+            |_| None,
+        )
+    };
+    assert!(admit().is_empty());
+    complete.store(true, Ordering::Release);
+    assert_eq!(admit(), ["new view"]);
+}
+
+#[test]
+fn incremental_allocation_charges_actual_growth_and_allows_reuse_under_lowered_budget() {
+    let limits = wgpu::Limits::default();
+    let initial = plan_lod_compaction_allocation_for_ranges(1024, 4, &limits).unwrap();
+    let ranges = plan_lod_compaction_allocation_for_ranges(1024, 8, &limits).unwrap();
+    let current = Some((1024, 4, LOD_MORPH_HEADER_WORDS));
+    assert_eq!(
+        lod_compaction_incremental_bytes(&initial, current, 8),
+        Some(0)
+    );
+    assert_eq!(
+        lod_compaction_incremental_bytes(&ranges, current, 8),
+        Some(ranges.candidate_and_scan_records_bytes)
+    );
+    assert_eq!(
+        lod_compaction_incremental_bytes(&ranges, current, 17),
+        Some(ranges.candidate_and_scan_records_bytes + 128)
+    );
+    assert_eq!(
+        lod_compaction_incremental_bytes(&initial, None, 17),
+        Some(initial.total_bytes + 128)
+    );
+    let larger = plan_lod_compaction_allocation_for_ranges(2048, 4, &limits).unwrap();
+    assert_eq!(
+        lod_compaction_incremental_bytes(&larger, current, 8),
+        Some(larger.total_bytes)
+    );
+    let admitted = admit_lod_compaction_requests_with_existing(
+        vec![LodCompactionAdmissionRequest {
+            payload: "reuse",
+            total_bytes: 0,
+            class: LodCompactionAdmissionClass::RetainedRequiredOutput,
+            required_phase: None,
+            pinned_existing: false,
+        }],
+        0,
+        100,
+        |_| None,
+    );
+    assert_eq!(admitted, ["reuse"]);
 }
 
 #[test]
@@ -4517,6 +4620,58 @@ fn retained_package_capacity_does_not_shrink_before_replacement_activation() {
 }
 
 #[test]
+fn capacity_handoff_switches_all_subviews_before_publication_and_retires_every_predecessor() {
+    let mut predecessors = HashMap::from([(1u32, 128u64), (2, 256)]);
+    let phase = AtomicU8::new(LOD_RENDER_PREPARED);
+    let mut retired = LodCompactionRetirementLedger::default();
+    assert!(publish_capacity_transaction(
+        &[1, 2],
+        &mut predecessors,
+        || publish_bridge_activation_after_radix(&phase),
+        |_, bytes| {
+            retired.retire_allocations(bytes, &mut Vec::new());
+        }
+    ));
+    assert!(predecessors.is_empty());
+    assert_eq!(phase.load(Ordering::Acquire), LOD_RENDER_ACTIVE);
+    assert_eq!(retired.pending_bytes(), 384);
+}
+
+#[test]
+fn rejected_capacity_publication_restores_every_drawable_predecessor() {
+    let mut predecessors = HashMap::from([(1u32, 128u64), (2, 256)]);
+    let before = predecessors.clone();
+    let phase = AtomicU8::new(LOD_RENDER_PREPARED);
+    assert!(!publish_capacity_transaction(
+        &[1, 2],
+        &mut predecessors,
+        || {
+            // Cancellation can race readiness collection in Cleanup. Its terminal
+            // token wins; neither subview loses its complete previous allocation.
+            phase.store(LOD_RENDER_FAILED, Ordering::Release);
+            publish_bridge_activation_after_radix(&phase)
+        },
+        |_, _| panic!("rejected predecessors must stay drawable")
+    ));
+    assert_eq!(predecessors, before);
+}
+
+#[test]
+fn incomplete_or_duplicate_capacity_transaction_never_partially_switches_views() {
+    for keys in [vec![1u32, 3], vec![1, 1], vec![]] {
+        let mut predecessors = HashMap::from([(1u32, 128u64), (2, 256)]);
+        let before = predecessors.clone();
+        assert!(!publish_capacity_transaction(
+            &keys,
+            &mut predecessors,
+            || panic!("invalid group cannot publish"),
+            |_, _| panic!("invalid group cannot retire")
+        ));
+        assert_eq!(predecessors, before);
+    }
+}
+
+#[test]
 fn oversized_flat_sources_wait_for_candidates_without_truncating_identity() {
     let (identity, identity_readiness) =
         LodCompactionUniform::initial(2_000_000, 2_000_000, LodQualityEndpoint::Original, true);
@@ -4721,4 +4876,41 @@ fn view_entity_cloud_keys_isolate_cameras_subviews_and_assets() {
     ]);
 
     assert_eq!(keys.len(), 3);
+}
+
+#[test]
+fn extracted_presentation_policy_rejects_an_old_morph_candidate() {
+    let mut settings = GaussianLodSettings::default();
+    let frontier = LodCandidateFrontier::complete_empty_for_test(
+        crate::stream::runtime::LodRuntimeViewId::default(),
+        &settings,
+    );
+    let morph = LodRenderCandidate::new(frontier);
+    assert!(lod_candidate_matches_extracted_policy(
+        &morph,
+        Some(&settings),
+        None
+    ));
+    settings.presentation_mode = LodPresentationPolicy::Discrete;
+    assert!(!lod_candidate_matches_extracted_policy(
+        &morph,
+        Some(&settings),
+        None
+    ));
+    let frontier = LodCandidateFrontier::complete_empty_for_test(
+        crate::stream::runtime::LodRuntimeViewId::default(),
+        &settings,
+    );
+    let discrete = LodRenderCandidate::new(frontier);
+    assert!(lod_candidate_matches_extracted_policy(
+        &discrete,
+        Some(&settings),
+        None
+    ));
+    assert!(!morph.same_payload(&discrete));
+    assert_eq!(
+        discrete.render_ranges(),
+        discrete.frontier().physical_ranges()
+    );
+    assert!(discrete.temporal_transition().is_none());
 }

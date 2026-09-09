@@ -1471,8 +1471,10 @@ mod tests {
         let manifest = fixture();
         let mut encoded =
             encode_lodge_manifest_with_encoding(&manifest, LodgeManifestEncoding::Json).unwrap();
-        let mut limits = LodgeCodecLimits::default();
-        limits.max_levels = manifest.header.level_count;
+        let limits = LodgeCodecLimits {
+            max_levels: manifest.header.level_count,
+            ..Default::default()
+        };
         let advertised = limits.max_levels + 1;
         encoded[88..92].copy_from_slice(&advertised.to_le_bytes());
         encoded[LODGE_HEADER_LEN] ^= 0xff;
@@ -1522,8 +1524,10 @@ mod tests {
         oversized[24..56].copy_from_slice(&sha256_bytes(&payload));
         oversized.extend_from_slice(&payload);
 
-        let mut limits = LodgeCodecLimits::default();
-        limits.max_clusters = manifest.header.cluster_count;
+        let limits = LodgeCodecLimits {
+            max_clusters: manifest.header.cluster_count,
+            ..Default::default()
+        };
         assert_eq!(
             decode_lodge_manifest(&oversized, limits),
             Err(LodgeCodecError::LimitExceeded {

@@ -28,12 +28,31 @@ and its normative
 [active-set format](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lodge_active_set_format.md)
 without changing the existing `.gsplatlod` hierarchy ABI.
 
+The LoD engine, shared quad ordering and Gaussian Point Splatting remain
+experimental. The [current acceptance status](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod_implementation_status.md)
+records the outstanding image-quality, performance and platform gates.
+See the [migration guide](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod_migration.md)
+for removed features, API replacements and renderer selection.
+
 ## viewer hotkeys
 
+Use [calibrated camera paths](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/camera_paths.md)
+to open or replay standard 3DGS camera JSON while preserving orientation and intrinsics.
+
+- `--camera-controller orbit` (default): left-drag orbit, right-drag pan, wheel zoom
+- `--camera-controller flycam --camera-speed 200`: use `bevy_flycam` for large scenes;
+  `Tab` captures/releases the mouse, mouse looks, `WASD` moves, `Space` / left `Shift` move up/down
+- optional `--match-ground-plane` with flycam: estimate a fixed navigation up direction
+  from bounded resident geometry samples; applies when manual control begins
+- `Home`: restore the initial calibrated camera-path pose and hold it
 - `esc`: close viewer
-- `s`: save screenshot to `screenshots/`
+- `F12`: save screenshot to `screenshots/` (`S` also works in orbit mode)
 - `g`: export the loaded gaussian scene to `exports/gaussian_scene_<frame>.glb` (cloud transforms + active camera)
 - `f`: freeze/unfreeze the current LoD camera selection for close inspection
+
+The frame overlay reports application FPS and the longest application frame over
+each half-second interval, including stalls. It measures application frame pacing;
+it does not measure GPU execution or confirm that the camera accepted input.
 
 For a reproducible native LoD review scene (editor and LoD panel are on by
 default):
@@ -81,8 +100,8 @@ for regression results.
 - [X] wasm support /w [live demo](https://mosure.github.io/bevy_gaussian_splatting/index.html)
 - [X] depth colorization
 - [X] normal rendering
-- [X] f16 and f32 gcloud
-- [X] wgl2 and webgpu
+- [X] f32 gcloud and optional f16 spherical-harmonic LoD pages
+- [X] native GPU and WebGPU rendering
 - [X] multi-format scenes
 - [X] 2dgs
 - [X] 3dgs
@@ -97,12 +116,12 @@ for regression results.
 - [ ] spherical harmonic coefficients clustering
 - [ ] 4D gaussian cloud wavelet compression
 - [ ] accelerated spatial queries
-- [X] rotation-stable world-distance sorting and sort-cache reuse
+- [X] camera-depth sorting, rotation-aware invalidation and sort-cache reuse
 - [ ] per-ray hierarchical [StopThePop](https://arxiv.org/abs/2402.00525) compositing
 - [ ] temporal depth sorting
 - [ ] skeletons
 - [ ] volume masks
-- [X] [bounded CPU/GPU LoD construction, globally covering guard cuts, native/HTTP package streaming with persistent caches, atomic complete-cut commits, automatic GPU-atlas bridges, exact compaction/radix, and device recovery](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod.md)
+- [X] [bounded CPU LoD construction with optional GPU canonical sorting, globally covering guard cuts, native/HTTP package streaming with persistent caches, atomic complete-cut commits, automatic GPU-atlas bridges, exact compaction/radix, and device recovery](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod.md)
 - [X] [authenticated external LODGE levels and camera-cluster active sets with one deduplicated, opacity-blended global draw](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lodge.md)
 - [X] [named LoD level, page, residency, pressure, and boundary debug views](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod_debug.md)
 - [ ] lighting and shadows
@@ -116,6 +135,7 @@ for regression results.
 use bevy::prelude::*;
 use bevy_gaussian_splatting::{
     CloudSettings,
+    GaussianCamera,
     GaussianSplattingPlugin,
     PlanarGaussian3dHandle,
 };
@@ -138,7 +158,7 @@ fn setup_gaussian_cloud(
         CloudSettings::default(),
     ));
 
-    commands.spawn(Camera3d::default());
+    commands.spawn((Camera3d::default(), GaussianCamera::default()));
 }
 ```
 
@@ -146,6 +166,7 @@ fn setup_gaussian_cloud(
 ## tools
 
 - [LoD architecture, package builder, fixtures, tests, and benchmarks](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod.md)
+- [106-million-splat Poland scene: SH0 loading, calibrated cameras, and measured limitations](docs/lod_poland.md)
 - [External LODGE active-set format, instantiation, and presentation contract](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lodge.md)
 - [Normative `.gslodge` container, manifest, dependency, and membership format](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lodge_active_set_format.md)
 - [Pinned Trellis LoD quality report and regression protocol](https://github.com/mosure/bevy_gaussian_splatting/blob/main/docs/lod_quality_report.md)

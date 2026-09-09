@@ -724,24 +724,10 @@ impl LodRenderCandidate {
     }
 
     /// Bounded parent/children transactions which produced this complete cut.
-    /// Render backends with an authored morph map may consume this seam; older
-    /// packages render the density-correct destination without interpolation.
+    /// Render backends use the authored view-blend payload when available;
+    /// categorical handoffs publish the density-correct destination cut.
     pub fn temporal_transition(&self) -> Option<&super::runtime::LodTemporalTransition> {
         self.frontier.temporal_transition()
-    }
-
-    /// Camera-continuous presentation payload. The historical transition name
-    /// remains as a source-compatibility wrapper while disk ABI16 keeps its
-    /// authored `morph_map` spelling.
-    pub fn view_blend(&self) -> Option<&super::runtime::LodViewBlend> {
-        self.temporal_transition()
-    }
-
-    /// Legacy scalar transition progress. Camera-conditioned adjacent-edge
-    /// blending has no shared clock, so this is always `None`, including while
-    /// a Morphing candidate remains ACTIVE with fractional edge weights.
-    pub fn temporal_transition_progress(&self) -> Option<f32> {
-        None
     }
 
     /// Effective presentation capability after render-adapter checks. Morphing
@@ -756,10 +742,6 @@ impl LodRenderCandidate {
             }
             _ => None,
         }
-    }
-
-    pub fn view_blend_mode(&self) -> Option<super::runtime::LodViewBlendMode> {
-        self.temporal_transition_mode()
     }
 
     /// Requests a package-authored categorical replan after a render-only
@@ -1129,11 +1111,6 @@ impl LodRenderCandidate {
         }
     }
 
-    #[cfg(any(test, feature = "testing"))]
-    pub fn view_blend_snapshot_for_testing(&self) -> Option<LodViewBlendTestingSnapshot> {
-        self.view_blend_testing_snapshot()
-    }
-
     pub(crate) fn publish_temporal_transition_mode(&self, mode: LodTemporalTransitionMode) {
         self.temporal_mode.store(
             match mode {
@@ -1239,8 +1216,8 @@ impl LodRenderCandidate {
             self.render_fallback = previous.render_fallback.clone();
             self.render_claimed = previous.render_claimed.clone();
         } else {
-            // The compatibility path is categorical by construction; an ACTIVE
-            // view blend may never masquerade as its exact selector endpoint.
+            // Categorical handoffs settle at the complete destination cut.
+            // View blends retain their separately tracked drawable endpoints.
             self.settle_temporal_transition();
         }
     }
@@ -1719,11 +1696,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(
-        not(target_arch = "wasm32"),
-        feature = "sort_radix",
-        not(feature = "buffer_texture")
-    ))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "sort_radix"))]
     fn render_hard_fallback_request_never_attests_active_or_mutates_authored_mode() {
         let settings = crate::GaussianLodSettings::default();
         let frontier = LodCandidateFrontier::complete_empty_for_test(
@@ -1754,11 +1727,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(
-        not(target_arch = "wasm32"),
-        feature = "sort_radix",
-        not(feature = "buffer_texture")
-    ))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "sort_radix"))]
     fn retirement_epoch_ignores_metrics_and_replan_preserves_the_authored_payload() {
         let settings = crate::GaussianLodSettings::default();
         let frontier = LodCandidateFrontier::complete_empty_for_test(

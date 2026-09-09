@@ -2,50 +2,30 @@
 
 #import bevy_gaussian_splatting::bindings::gaussian_uniforms
 
-#ifdef PACKED_F32
-    #import bevy_gaussian_splatting::packed::{
-        get_opacity,
-        get_position,
-        get_rotation,
-        get_scale,
-        get_spherical_harmonics,
-        get_visibility,
-        get_rhs_opacity,
-        get_rhs_position,
-        get_rhs_rotation,
-        get_rhs_scale,
-        get_rhs_spherical_harmonics,
-        get_rhs_visibility,
-        set_output_position_visibility,
-        set_output_spherical_harmonics,
-        set_output_transform,
-    };
-#else
-    #import bevy_gaussian_splatting::planar::{
-        get_opacity,
-        get_position,
-        get_rotation,
-        get_scale,
-        get_spherical_harmonics,
-        get_visibility,
-        get_rhs_opacity,
-        get_rhs_position,
-        get_rhs_rotation,
-        get_rhs_scale,
-        get_rhs_spherical_harmonics,
-        get_rhs_visibility,
-        set_output_position_visibility,
-        set_output_spherical_harmonics,
-        set_output_transform,
-    };
+#import bevy_gaussian_splatting::planar::{
+    get_opacity,
+    get_position,
+    get_rotation,
+    get_scale,
+    get_spherical_harmonics,
+    get_visibility,
+    get_rhs_opacity,
+    get_rhs_position,
+    get_rhs_rotation,
+    get_rhs_scale,
+    get_rhs_spherical_harmonics,
+    get_rhs_visibility,
+    set_output_position_visibility,
+    set_output_spherical_harmonics,
+    set_output_transform,
+};
 
-    #ifdef PRECOMPUTE_COVARIANCE_3D
-        #import bevy_gaussian_splatting::planar::{
-            get_cov3d,
-            get_rhs_cov3d,
-            set_output_covariance,
-        };
-    #endif
+#ifdef PRECOMPUTE_COVARIANCE_3D
+    #import bevy_gaussian_splatting::planar::{
+        get_cov3d,
+        get_rhs_cov3d,
+        set_output_covariance,
+    };
 #endif
 
 fn interpolation_factor() -> f32 {

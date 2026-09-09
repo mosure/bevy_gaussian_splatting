@@ -147,6 +147,7 @@ impl PackagePageTransport {
     }
 }
 
+#[cfg(test)]
 pub(super) fn package_page_transport(
     manifest: &crate::GaussianLodManifest,
     source: &GaussianLodPackageSource,
@@ -163,23 +164,53 @@ pub(super) fn package_page_transport(
         None
     };
 
+    let locations = ManifestPageLocations::from_validated_manifest(manifest)
+        .map_err(|error| GaussianLodPackageError::HttpTransport(error.to_string()))?;
+    bevy::tasks::block_on(super::preparation::validate_package_locations(
+        source,
+        streaming,
+        &locations,
+        &crate::stream::preparation::PreparationBudget::new(usize::MAX),
+    ))?;
+    package_page_transport_with_prepared(
+        manifest,
+        source,
+        config,
+        streaming,
+        caches,
+        locations,
+        identities,
+        std::sync::Arc::from([]),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn package_page_transport_with_prepared(
+    manifest: &crate::GaussianLodManifest,
+    source: &GaussianLodPackageSource,
+    config: &GaussianLodPackageConfig,
+    streaming: &GaussianStreamingSettings,
+    caches: &mut PackageCacheRegistry,
+    locations: ManifestPageLocations,
+    identities: Option<PersistentCachePageIdentities>,
+    memory_reservations: std::sync::Arc<[crate::stream::memory::LodMemoryLease]>,
+) -> Result<PackagePageTransport, GaussianLodPackageError> {
     match source {
         GaussianLodPackageSource::NativeDirectory { .. } => {
             Err(GaussianLodPackageError::NativeSourceUnsupportedInBrowser)
         }
         GaussianLodPackageSource::Url { base_url } => {
-            let locations = ManifestPageLocations::from_validated_manifest(manifest)
-                .map_err(|error| GaussianLodPackageError::HttpTransport(error.to_string()))?;
             let http_config = package_http_config(base_url, streaming)?;
-            let client =
+            let mut client =
                 BrowserFetchHttpClient::with_max_requests(streaming.max_concurrent_requests)
                     .map_err(|error| GaussianLodPackageError::HttpTransport(error.to_string()))?;
+            client.set_memory_reservations(memory_reservations);
             // Package HTTP transports own only byte-range, response-shape, and
             // immutable-object validation. The runtime's bounded page
             // preprocessor is the single owner of checksum, codec, manifest,
             // and support-bound validation.
-            let upstream = HttpRangePageTransport::new(http_config, locations, client)
-                .map_err(|error| GaussianLodPackageError::HttpTransport(error.to_string()))?;
+            let upstream =
+                HttpRangePageTransport::from_prevalidated_locations(http_config, locations, client);
             if let Some(identities) = identities {
                 let cache =
                     caches.shared_cache(browser_cache_config(manifest, config, streaming)?)?;

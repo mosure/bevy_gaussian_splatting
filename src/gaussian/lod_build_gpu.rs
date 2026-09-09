@@ -1,12 +1,12 @@
-//! Canonical preprocessing contracts and bounded GPU hierarchy primitives.
+//! Canonical preprocessing contracts and bounded GPU sorting.
 //!
 //! [`preprocess_lod_batch_cpu`] validates a bounded source batch and emits the
 //! deterministic Morton/support records consumed by the external-memory
-//! builder. [`hierarchy`] contains the promoted GPU route: bounded device sort
-//! plus explicit MomentMerge reductions for the globally merged hierarchy.
+//! builder. [`sort`] accelerates canonical run sorting; hierarchy construction
+//! and representative fitting use the CPU builder.
 
-/// Deterministic bounded GPU sort and MomentMerge reduction primitives.
-pub mod hierarchy;
+/// Deterministic bounded GPU Morton sorting and validated readback.
+pub mod sort;
 
 use std::fmt;
 

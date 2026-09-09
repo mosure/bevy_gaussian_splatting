@@ -429,35 +429,6 @@ impl PlanarSync for Gaussian3d {
 
 pub type Gaussian2d = Gaussian3d; // GaussianMode::Gaussian2d /w Gaussian3d structure
 
-// #[allow(unused_imports)]
-// #[cfg(feature = "f16")]
-// use crate::gaussian::f16::{
-//     Covariance3dOpacityPacked128,
-//     RotationScaleOpacityPacked128,
-//     pack_f32s_to_u32,
-// };
-
-// #[cfg(feature = "f16")]
-// #[derive(
-//     Debug,
-//     Default,
-//     PartialEq,
-//     Reflect,
-//     Serialize,
-//     Deserialize,
-// )]
-// pub struct Cloud3d {
-//     pub position_visibility: Vec<PositionVisibility>,
-
-//     pub spherical_harmonic: Vec<SphericalHarmonicCoefficients>,
-
-//     #[cfg(not(feature = "precompute_covariance_3d"))]
-//     pub rotation_scale_opacity_packed128: Vec<RotationScaleOpacityPacked128>,
-
-//     #[cfg(feature = "precompute_covariance_3d")]
-//     pub covariance_3d_opacity_packed128: Vec<Covariance3dOpacityPacked128>,
-// }
-
 impl CommonCloud for PlanarGaussian3d {
     type PackedType = Gaussian3d;
 
@@ -526,18 +497,6 @@ impl Distribution<Gaussian3d> for StandardUniform {
             .into(),
             spherical_harmonic: SphericalHarmonicCoefficients {
                 coefficients: {
-                    // #[cfg(feature = "f16")]
-                    // {
-                    //     let mut coefficients: [u32; HALF_SH_COEFF_COUNT] = [0; HALF_SH_COEFF_COUNT];
-                    //     for coefficient in coefficients.iter_mut() {
-                    //         let upper = rng.gen_range(-1.0..1.0);
-                    //         let lower = rng.gen_range(-1.0..1.0);
-
-                    //         *coefficient = pack_f32s_to_u32(upper, lower);
-                    //     }
-                    //     coefficients
-                    // }
-
                     {
                         let mut coefficients = [0.0; SH_COEFF_COUNT];
                         for coefficient in coefficients.iter_mut() {
@@ -583,20 +542,6 @@ impl TestCloud for PlanarGaussian3d {
             scale_opacity: [0.125, 0.125, 0.125, 0.125].into(),
             spherical_harmonic: SphericalHarmonicCoefficients {
                 coefficients: {
-                    // #[cfg(feature = "f16")]
-                    // {
-                    //     let mut coefficients = [0_u32; HALF_SH_COEFF_COUNT];
-
-                    //     for coefficient in coefficients.iter_mut() {
-                    //         let upper = rng.gen_range(-1.0..1.0);
-                    //         let lower = rng.gen_range(-1.0..1.0);
-
-                    //         *coefficient = pack_f32s_to_u32(upper, lower);
-                    //     }
-
-                    //     coefficients
-                    // }
-
                     {
                         let mut coefficients = [0.0; SH_COEFF_COUNT];
 

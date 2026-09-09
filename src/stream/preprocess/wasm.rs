@@ -133,6 +133,7 @@ mod tests {
             },
             max_encoded_page_bytes: encoded_len,
             support_sigma,
+            node_ranges: None,
         };
         let pending_bytes = input.pending_bytes().unwrap();
         let mut preprocessor =

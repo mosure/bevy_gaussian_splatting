@@ -1,0 +1,104 @@
+{
+  "output": "../../target/lod-roadmap/captures/trellis-q35",
+  "manifest": "../../target/lod-roadmap/packages/trellis/scene.gsplatlod",
+  "source": "../../target/lod-roadmap/fixtures/trellis.glb",
+  "synthetic": false,
+  "builder_revision": "REPLACE_WITH_ACTUAL_PACKAGE_BUILDER_REVISION",
+  "viewport": [
+    1280,
+    720
+  ],
+  "vertical_fov_radians": 0.7853982,
+  "near": 0.01,
+  "quality": 0.35,
+  "max_active_gaussians": 500000,
+  "max_resident_gaussians": 1000000,
+  "max_resident_bytes": 268435456,
+  "max_resident_pages": 2048,
+  "max_upload_bytes_per_frame": 16777216,
+  "capture_every": 6,
+  "readback_slots": 3,
+  "timeout_seconds": 300,
+  "request_timestamps": true,
+  "segments": [
+    {
+      "scenario": "cold_start",
+      "frames": 180,
+      "from": [
+        0,
+        0,
+        3
+      ],
+      "to": [
+        0,
+        0,
+        3
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "scenario": "warm_stationary",
+      "frames": 180,
+      "from": [
+        0,
+        0,
+        3
+      ],
+      "to": [
+        0,
+        0,
+        3
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "scenario": "motion",
+      "frames": 180,
+      "from": [
+        0,
+        0,
+        3
+      ],
+      "to": [
+        2,
+        0,
+        1.5
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "scenario": "return",
+      "frames": 180,
+      "from": [
+        2,
+        0,
+        1.5
+      ],
+      "to": [
+        0,
+        0,
+        3
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "render_mode": "hierarchy",
+  "capture_images": true,
+  "max_source_gaussians": 1000000
+}

@@ -285,6 +285,9 @@ pub struct GaussianLodgeResidentCatalog {
     memberships: Arc<BTreeMap<LodgeClusterId, LodgeMembership>>,
     page_slots: Arc<BTreeMap<LodPageId, AtlasSlot>>,
     resident_pages: u32,
+    /// Checked constructor payload peak, including the entire decoded page
+    /// closure, which can contain records absent from the stable catalog.
+    materialization_bytes: u64,
     catalog_sha256: [u8; 32],
 }
 
@@ -306,13 +309,8 @@ impl GaussianLodgeResidentCatalog {
         memberships: impl IntoIterator<Item = AuthenticatedLodgeMembership>,
         assets: &mut Assets<PlanarGaussian3d>,
     ) -> Result<Self, GaussianLodgeResidentError> {
-        Self::validate_manifest_budget(&manifest, settings)?;
-        if base_manifest.dependency != manifest.base_manifest {
-            return Err(GaussianLodgeResidentError::UnauthenticatedBaseManifest);
-        }
-        manifest
-            .validate_against_base(&base_manifest.manifest)
-            .map_err(|error| GaussianLodgeResidentError::Manifest(error.to_string()))?;
+        let materialization_bytes =
+            Self::validate_dependency_budget(&manifest, base_manifest, settings)?;
 
         let mut descriptors = BTreeMap::new();
         for descriptor in base_manifest
@@ -472,13 +470,16 @@ impl GaussianLodgeResidentCatalog {
             memberships: Arc::new(decoded_memberships),
             page_slots: Arc::new(page_slots),
             resident_pages,
+            materialization_bytes,
             catalog_sha256,
         })
     }
 
-    /// Allocation-free preflight for the fully resident implementation.
-    /// Applications should call this immediately after loading the sidecar,
-    /// before fetching or decoding its page closure.
+    /// Early budget screening using only the sidecar. The decoded closure is
+    /// at least as large as the stable catalog, but its exact size requires
+    /// base-page descriptors. Success here is not a full memory preflight:
+    /// call [`Self::validate_dependency_budget`] after authenticating the base
+    /// manifest and before fetching or decoding pages.
     pub fn validate_manifest_budget(
         manifest: &GaussianLodgeManifest,
         settings: &GaussianLodgeSettings,
@@ -502,7 +503,7 @@ impl GaussianLodgeResidentCatalog {
         if count > settings.budgets.max_resident_gaussians {
             return Err(GaussianLodgeResidentError::ResidentGaussianBudgetExceeded);
         }
-        if lodge_resident_materialization_bytes(manifest)
+        if lodge_resident_materialization_bytes(manifest, count)
             .is_none_or(|bytes| bytes > settings.budgets.max_resident_bytes)
         {
             return Err(GaussianLodgeResidentError::ResidentByteBudgetExceeded);
@@ -513,6 +514,38 @@ impl GaussianLodgeResidentCatalog {
             return Err(GaussianLodgeResidentError::ResidentPageBudgetExceeded);
         }
         Ok(())
+    }
+
+    /// Checks the complete constructor payload peak before any page decoding.
+    /// Returns the budgeted bytes for decoded closure records, interleaved and
+    /// planar stable catalogs, encoded memberships and decoded membership IDs.
+    /// Descriptor/container overhead, caller-owned encoded page buffers and
+    /// later render-world/GPU copies require separate application budgets.
+    pub fn validate_dependency_budget(
+        manifest: &GaussianLodgeManifest,
+        base_manifest: &AuthenticatedLodgeBaseManifest,
+        settings: &GaussianLodgeSettings,
+    ) -> Result<u64, GaussianLodgeResidentError> {
+        Self::validate_manifest_budget(manifest, settings)?;
+        if base_manifest.dependency != manifest.base_manifest {
+            return Err(GaussianLodgeResidentError::UnauthenticatedBaseManifest);
+        }
+        manifest
+            .validate_against_base(&base_manifest.manifest)
+            .map_err(|error| GaussianLodgeResidentError::Manifest(error.to_string()))?;
+        let decoded_count = base_manifest
+            .manifest
+            .pages
+            .iter()
+            .chain(&manifest.extra_pages)
+            .try_fold(0_u64, |count, page| {
+                count.checked_add(u64::from(page.gaussian_count))
+            })
+            .ok_or(GaussianLodgeResidentError::ResidentByteBudgetExceeded)?;
+        let bytes = lodge_resident_materialization_bytes(manifest, decoded_count)
+            .filter(|bytes| *bytes <= settings.budgets.max_resident_bytes)
+            .ok_or(GaussianLodgeResidentError::ResidentByteBudgetExceeded)?;
+        Ok(bytes)
     }
 
     pub fn catalog_handle(&self) -> &Handle<PlanarGaussian3d> {
@@ -592,7 +625,7 @@ struct GaussianLodgeResidentState {
     failed_render_request: Option<LodgeFailedRenderRequest>,
 }
 
-/// Marks the hierarchy settings component as the private compatibility
+/// Marks the hierarchy settings component as the private render
 /// adapter installed by the resident active-set path. Strategy-switch cleanup
 /// can then restore hierarchy defaults without overwriting settings which the
 /// application explicitly supplied during the switch.
@@ -687,7 +720,7 @@ type LodgeCameraQueryItem = (
 /// Additive host plugin for fully resident LODGE artifacts.
 ///
 /// The public [`GaussianLodgeHandle`] is also the exclusion marker used by the
-/// hierarchy bridge/status queries, so the private compatibility settings
+/// hierarchy bridge/status queries, so the private render settings
 /// installed below can never trigger ephemeral MomentMerge construction.
 #[derive(Default)]
 pub struct GaussianLodgeResidentPlugin;
@@ -867,8 +900,8 @@ fn update_resident_lodge_clouds(
         .map(GaussianRenderRecoveryStatus::snapshot)
         .map_or(0, |snapshot| snapshot.device_generation);
     let render_environment_epoch = render_environment.current();
-    for (entity, legacy_handle, state, status) in &mut unmaterialized_clouds {
-        if legacy_handle.is_some() {
+    for (entity, lod_handle, state, status) in &mut unmaterialized_clouds {
+        if lod_handle.is_some() {
             if let Some(mut state) = state {
                 clear_lodge_render_publication(&mut state);
             }
@@ -908,7 +941,7 @@ fn update_resident_lodge_clouds(
         cloud_settings,
         resident,
         transform,
-        legacy_handle,
+        lod_handle,
         planar_handle,
         adapter,
         private_adapter,
@@ -918,7 +951,7 @@ fn update_resident_lodge_clouds(
     {
         live_catalogs.insert(resident.catalog.id());
         let mut status = status.map(|status| status.into_inner());
-        if legacy_handle.is_some() {
+        if lod_handle.is_some() {
             if let Some(state) = state.as_deref_mut() {
                 clear_lodge_render_publication(state);
             }
@@ -1607,6 +1640,7 @@ fn lodge_failed_render_request_matches(
 fn lodge_render_adapter(settings: &GaussianLodgeSettings) -> GaussianLodSettings {
     GaussianLodSettings {
         quality: 0.0,
+        presentation_mode: Default::default(),
         selection_mode: settings.selection_mode,
         budgets: settings.budgets,
         hysteresis: 0.0,
@@ -1633,9 +1667,7 @@ fn validate_resident_budget(
     if count > settings.budgets.max_resident_gaussians {
         return Err(GaussianLodgeResidentError::ResidentGaussianBudgetExceeded);
     }
-    if lodge_resident_materialization_bytes(&resident.manifest)
-        .is_none_or(|bytes| bytes > settings.budgets.max_resident_bytes)
-    {
+    if resident.materialization_bytes > settings.budgets.max_resident_bytes {
         return Err(GaussianLodgeResidentError::ResidentByteBudgetExceeded);
     }
     if resident.resident_pages > settings.budgets.max_resident_pages {
@@ -1644,11 +1676,14 @@ fn validate_resident_budget(
     Ok(())
 }
 
-/// Conservative peak for the resident constructor: decoded page records and
-/// the canonical planar copy coexist while records are materialized, and the
+/// Constructor payload peak: the entire decoded page closure, interleaved
+/// stable catalog and canonical planar copy coexist during conversion. The
 /// authenticated membership object plus decoded stable IDs may coexist while
-/// cluster memberships are produced.
-fn lodge_resident_materialization_bytes(manifest: &GaussianLodgeManifest) -> Option<u64> {
+/// cluster memberships are produced. Counts are checked before allocation.
+fn lodge_resident_materialization_bytes(
+    manifest: &GaussianLodgeManifest,
+    decoded_gaussians: u64,
+) -> Option<u64> {
     let catalog = manifest
         .header
         .stable_gaussian_count
@@ -1659,6 +1694,7 @@ fn lodge_resident_materialization_bytes(manifest: &GaussianLodgeManifest) -> Opt
         .checked_mul(size_of::<LodgeGaussianId>() as u64)?;
     catalog
         .checked_mul(2)?
+        .checked_add(decoded_gaussians.checked_mul(size_of::<Gaussian3d>() as u64)?)?
         .checked_add(manifest.membership_index.object.encoded_len)?
         .checked_add(decoded_memberships)
 }
@@ -2195,12 +2231,18 @@ mod tests {
     }
 
     fn authenticated_resident_fixture() -> AuthenticatedResidentFixture {
+        authenticated_resident_fixture_with_leaf_capacity(8)
+    }
+
+    fn authenticated_resident_fixture_with_leaf_capacity(
+        leaf_capacity: u32,
+    ) -> AuthenticatedResidentFixture {
         let source = PlanarGaussian3d::from(vec![gaussian(-1.0, 0.25), gaussian(1.0, 0.75)]);
         let mut base = build_planar_3d_lod(
             &source,
             GaussianLodBuildSettings {
                 branching_factor: 2,
-                leaf_capacity: 8,
+                leaf_capacity,
                 ..Default::default()
             },
         )
@@ -2496,6 +2538,79 @@ mod tests {
             Err(GaussianLodgeResidentError::ResidentGaussianBudgetExceeded)
         ));
         assert_eq!(assets.len(), before);
+    }
+
+    #[test]
+    fn dependency_budget_counts_unused_base_representatives_and_three_live_copies() {
+        let fixture = authenticated_resident_fixture_with_leaf_capacity(1);
+        let stable = fixture.manifest.header.stable_gaussian_count;
+        let decoded = fixture
+            .pages
+            .iter()
+            .map(|page| page.page.gaussians.len() as u64)
+            .sum::<u64>();
+        assert!(
+            decoded > stable,
+            "base hierarchy adds noncatalog representatives"
+        );
+        let expected = (decoded + stable * 2) * size_of::<Gaussian3d>() as u64
+            + fixture.manifest.membership_index.object.encoded_len
+            + fixture.manifest.header.total_membership_ids * size_of::<LodgeGaussianId>() as u64;
+        let mut settings = GaussianLodgeSettings::default();
+        settings.budgets.max_resident_bytes = expected;
+        assert_eq!(
+            GaussianLodgeResidentCatalog::validate_dependency_budget(
+                &fixture.manifest,
+                &fixture.base,
+                &settings,
+            )
+            .unwrap(),
+            expected
+        );
+        settings.budgets.max_resident_bytes = expected - 1;
+        assert!(
+            GaussianLodgeResidentCatalog::validate_manifest_budget(&fixture.manifest, &settings,)
+                .is_ok()
+        );
+        assert!(matches!(
+            GaussianLodgeResidentCatalog::validate_dependency_budget(
+                &fixture.manifest,
+                &fixture.base,
+                &settings,
+            ),
+            Err(GaussianLodgeResidentError::ResidentByteBudgetExceeded)
+        ));
+        let mut assets = Assets::<PlanarGaussian3d>::default();
+        let mut consumed_page = false;
+        let pages = fixture.pages.into_iter().inspect(|_| consumed_page = true);
+        assert!(matches!(
+            GaussianLodgeResidentCatalog::from_authenticated_pages(
+                Arc::clone(&fixture.manifest),
+                &fixture.base,
+                &settings,
+                pages,
+                fixture.memberships,
+                &mut assets,
+            ),
+            Err(GaussianLodgeResidentError::ResidentByteBudgetExceeded)
+        ));
+        assert!(
+            !consumed_page,
+            "preflight must precede page materialization"
+        );
+        assert_eq!(assets.len(), 0);
+    }
+
+    #[test]
+    fn resident_materialization_accounting_rejects_overflow() {
+        let fixture = authenticated_resident_fixture();
+        assert!(lodge_resident_materialization_bytes(&fixture.manifest, u64::MAX).is_none());
+        let mut manifest = fixture.manifest.as_ref().clone();
+        manifest.header.stable_gaussian_count = u64::MAX;
+        assert!(lodge_resident_materialization_bytes(&manifest, 1).is_none());
+        manifest.header.stable_gaussian_count = 1;
+        manifest.membership_index.object.encoded_len = u64::MAX;
+        assert!(lodge_resident_materialization_bytes(&manifest, 1).is_none());
     }
 
     #[test]
@@ -2941,8 +3056,10 @@ mod tests {
             Some(LodOrchestrationFailureCode::InvalidConfiguration)
         );
 
-        let mut state = GaussianLodgeResidentState::default();
-        state.catalog_id = Some(catalog_id);
+        let state = GaussianLodgeResidentState {
+            catalog_id: Some(catalog_id),
+            ..Default::default()
+        };
         app.world_mut().entity_mut(entity).insert((
             state,
             PlanarGaussian3dHandle(catalog_handle),
@@ -3002,8 +3119,10 @@ mod tests {
             Some(&GaussianLodSettings::default())
         );
 
-        let mut explicit_state = GaussianLodgeResidentState::default();
-        explicit_state.catalog_id = Some(catalog_id);
+        let explicit_state = GaussianLodgeResidentState {
+            catalog_id: Some(catalog_id),
+            ..Default::default()
+        };
         let explicit_same_value = app
             .world_mut()
             .spawn((GaussianLodgeHandle(valid_lodge), resident, explicit_state))
@@ -3053,7 +3172,7 @@ mod tests {
     }
 
     #[test]
-    fn internal_adapter_uses_only_private_coarsest_compatibility() {
+    fn internal_adapter_uses_private_coarsest_settings() {
         let settings = GaussianLodgeSettings {
             selection_mode: LodSelectionMode::Frozen,
             frustum_culling: false,

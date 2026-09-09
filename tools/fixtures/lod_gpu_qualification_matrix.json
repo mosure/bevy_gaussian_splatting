@@ -1,0 +1,190 @@
+{
+  "schema_version": 1,
+  "kind": "existing_gpu_contract_coverage_inventory",
+  "release_qualified": false,
+  "scope": "Fixture assertions and missing qualification, not a record that these scenarios passed on an adapter. Acceptance thresholds remain in the owning fixtures.",
+  "entrypoint": "BGS_RUN_GPU_QUALIFICATION=1 BGS_GPU_QUALIFICATION_SUITE=core bash tools/run_lod_gpu_qualification.sh",
+  "profiles": [
+    "headless testing lod_build_sh0",
+    "headless testing lod_build_sh3"
+  ],
+  "execution": "serial per profile; shared CI/local runner; all GPU environment gates explicit",
+  "fixtures": {
+    "ordered": "tests/global_order.rs::interleaved_clouds_match_merged_cloud_order_and_admission_never_duplicates_draws",
+    "gps": "tests/gaussian_point_splatting.rs::headless::shared_point_visibility_matches_opacity_and_retains_complete_images_on_overflow",
+    "package": "tests/gpu_lod_package.rs::native_page_demand_reaches_a_generation_acknowledged_point_image",
+    "flat_multiview": "tests/multi_camera_sort.rs::flat_multi_camera_sort_survives_capacity_retention_and_camera_removal",
+    "near_clip": "tests/near_clip_render.rs::near_plane_approach_fades_and_return_restores_each_renderer",
+    "traversal": "src/render/traversal/tests.rs::gpu_traversal_matches_cpu_cuts_and_preserves_bounded_parent_fallback"
+  },
+  "scenarios": [
+    {
+      "id": "static",
+      "ordered_contracts": [
+        "interleaved clouds match merged order",
+        "empty-view retirement",
+        "complete package image acknowledgements"
+      ],
+      "gps_contracts": [
+        "frozen-seed image stability",
+        "bounded sixteen-seed visibility expectation",
+        "opaque geometry depth visibility"
+      ],
+      "fixtures": [
+        "ordered",
+        "gps",
+        "package"
+      ],
+      "qualification_gap": "Diverse representative quality and native-source reference contributor parity are not established by tiny images."
+    },
+    {
+      "id": "translation",
+      "ordered_contracts": [
+        "current-camera image change",
+        "tiny spatial pan and perspective depth step",
+        "fractional descriptor and image endpoint gates",
+        "orthographic lateral pan preserves image under exact pixel translation and byte-identical return"
+      ],
+      "gps_contracts": [
+        "current-camera image while diagnostic feedback is paused",
+        "current-camera fallback while atlas uploads wait"
+      ],
+      "fixtures": [
+        "ordered",
+        "gps",
+        "package",
+        "traversal"
+      ],
+      "qualification_gap": "Matched full-scene moving detail, visual quality and delivered-frame latency still require captured routes."
+    },
+    {
+      "id": "rotation",
+      "ordered_contracts": [
+        "two pure camera yaw poses match explicitly far-to-near flat reference streams"
+      ],
+      "gps_contracts": [],
+      "shared_contracts": [
+        "transformed-bound CPU/GPU cut parity; flat cameras switch opposing views"
+      ],
+      "fixtures": [
+        "traversal",
+        "flat_multiview",
+        "ordered"
+      ],
+      "qualification_gap": "Two flat yaw poses are not continuous hierarchy-consumer rotation or GPS rotation image qualification."
+    },
+    {
+      "id": "zoom",
+      "ordered_contracts": [
+        "tiny orthographic zoom at fixed resident spatial cut"
+      ],
+      "gps_contracts": [],
+      "fixtures": [
+        "ordered"
+      ],
+      "qualification_gap": "Perspective focal zoom and GPS zoom image sequences remain unqualified; axial motion is a separate case."
+    },
+    {
+      "id": "near_crossing",
+      "ordered_contracts": [
+        "current-camera near-plane opacity approach and crossing with perspective and orthographic projections",
+        "separate fixed resident spatial cut approaches the exact child endpoint across the conservative near envelope"
+      ],
+      "gps_contracts": [
+        "current-camera near-plane opacity approach and crossing with perspective and orthographic projections"
+      ],
+      "shared_contracts": [
+        "ordinary quads, ordered quads and fixed-seed eight-sample GPS use six approach/cross/return depths in both projections; exact return and bounded near-image peaks; no hierarchy inputs",
+        "near support versus thin transformed AABB",
+        "near descendant admission and complete missing-cohort fallback"
+      ],
+      "fixtures": [
+        "near_clip",
+        "ordered",
+        "traversal"
+      ],
+      "qualification_gap": "Tiny near-clipping and fixed-cut spatial assertions do not establish near-camera quality of authored proxies, changing residency, or cold missing-cohort recovery. GPS has no spatial-morph coverage."
+    },
+    {
+      "id": "reversal",
+      "ordered_contracts": [
+        "returned fully resident perspective spatial pose equals baseline"
+      ],
+      "gps_contracts": [
+        "returned package camera has a nonempty acknowledged image"
+      ],
+      "fixtures": [
+        "ordered",
+        "package",
+        "traversal"
+      ],
+      "qualification_gap": "GPS return phase does not assert exact image equality. Long-route reverse-camera detail and image recovery under changing residency remain separate gates."
+    },
+    {
+      "id": "cold_relocation",
+      "ordered_contracts": [
+        "cold CPU-discrete and GPU package activation"
+      ],
+      "gps_contracts": [
+        "native cold page-to-image lifecycle",
+        "identical frozen sampling after atlas relocation"
+      ],
+      "fixtures": [
+        "ordered",
+        "gps",
+        "package"
+      ],
+      "qualification_gap": "Atlas relocation and cold startup are not a cold camera teleport. Neither backend has a bounded distant-teleport image/detail recovery gate here."
+    },
+    {
+      "id": "residency_pressure",
+      "ordered_contracts": [
+        "aggregate root admission",
+        "bounded spatial whole-band fallback"
+      ],
+      "gps_contracts": [
+        "complete-image retention on work overflow",
+        "aggregate projected-record admission",
+        "automatic budget floor"
+      ],
+      "shared_contracts": [
+        "missing children retain whole parent",
+        "desired cut independent of page arrival",
+        "request priority and bounded frontier/visits"
+      ],
+      "fixtures": [
+        "ordered",
+        "gps",
+        "package",
+        "traversal"
+      ],
+      "qualification_gap": "Steady cache churn and parent/child working sets on a long route require measured images and residency recovery; work overflow is not cache-pressure qualification."
+    },
+    {
+      "id": "multiview",
+      "ordered_contracts": [],
+      "gps_contracts": [],
+      "shared_contracts": [
+        "six flat camera views across sort modes, opposing depth order, capacity retention and camera removal",
+        "hidden-record rejection at 16/24/32-bit radix precision and CPU-sort parity"
+      ],
+      "fixtures": [
+        "flat_multiview"
+      ],
+      "qualification_gap": "The ordered/GPS fixtures have multiple clouds in one view. Concurrent hierarchy-consumer views with independent camera motion and shared package demand are not qualified by the flat sorter fixture."
+    }
+  ],
+  "unsupported_combinations": [
+    "GPS does not consume ordered spatial morph output; no spatial continuity acceptance is inherited.",
+    "The native core fixture matrix does not establish browser execution or portable-adapter image parity."
+  ],
+  "capture_pairing": {
+    "entrypoint": "python3 tools/compare_lod_captures.py reference/capture.jsonl candidate/capture.jsonl --require-complete-pairs --output comparison.json",
+    "scope": "Strict pairing is opt-in for intentionally sampled captures. Multiview receipts require unambiguous run/view identity; paired images require identical camera and source/path identity. Output always remains teacher-relative and release_qualified=false.",
+    "existing_route_configs": [
+      "tools/fixtures/lod_runtime_synthetic_discrete.json",
+      "tools/fixtures/lod_runtime_poland.json"
+    ],
+    "config_limits": "Synthetic route is the CPU hierarchy consumer; Poland config is one ordered SH0 held pose requiring external data. Neither config supplies the entire scenario matrix."
+  }
+}

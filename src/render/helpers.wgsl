@@ -17,6 +17,44 @@ const GAUSSIAN_MIP_FILTER_VARIANCE_2D_SHADER: f32 =
         * GAUSSIAN_SHADER_COORDINATE_UNITS_PER_PIXEL;
 const GAUSSIAN_FINITE_F32_MAX: f32 = 3.402823e+38;
 
+// Back-to-front center depth, shared by dense radix, LoD compaction, and
+// cross-cloud ordering. Signed depths also support orthographic near planes
+// behind the eye. Non-finite centers sort to the invalid sentinel.
+fn gaussian_depth_sort_key(position_world: vec3<f32>) -> u32 {
+    let depth = -(view.view_from_world * vec4<f32>(position_world, 1.0)).z;
+    let raw_bits = bitcast<u32>(depth);
+    if (raw_bits & 0x7f800000u) == 0x7f800000u { return 0xffffffffu; }
+    let bits = select(raw_bits, 0u, depth == 0.0);
+    let ascending = select(bits ^ 0x80000000u, ~bits, depth < 0.0);
+    return ~ascending;
+}
+
+// Soften center-based near clipping over the Gaussian's own three-sigma
+// depth support. A center entering the near plane starts with zero opacity;
+// wholly interior support retains its authored opacity and covariance. This
+// is a current-camera clipping filter, not truncated-volume integration.
+fn gaussian_near_clip_weight(position_world: vec3<f32>, covariance: array<f32, 6>) -> f32 {
+    let rows = transpose(view.clip_from_view);
+    let plane_view = rows[3] - rows[2];
+    let position_view = view.view_from_world * vec4<f32>(position_world, 1.0);
+    let clearance = dot(plane_view, position_view);
+    // Evaluate clearance in view space to avoid a large translated world-plane
+    // constant. Plane normalization cancels between clearance and support.
+    let plane_world = transpose(view.view_from_world) * vec4<f32>(plane_view.xyz, 0.0);
+    let normal = plane_world.xyz;
+    let sigma = mat3x3<f32>(
+        vec3<f32>(covariance[0], covariance[1], covariance[2]),
+        vec3<f32>(covariance[1], covariance[3], covariance[4]),
+        vec3<f32>(covariance[2], covariance[4], covariance[5]),
+    );
+    let variance = dot(normal, sigma * normal);
+    if !(clearance > 0.0 && clearance <= GAUSSIAN_FINITE_F32_MAX)
+        || !(variance >= 0.0 && variance <= GAUSSIAN_FINITE_F32_MAX) { return 0.0; }
+    if variance == 0.0 { return 1.0; }
+    let weight = clamp(clearance / (3.0 * sqrt(variance)), 0.0, 1.0);
+    return weight * weight * (3.0 - 2.0 * weight);
+}
+
 // Converts the filtered Gaussian's screen-space cutoff to a conservative
 // world-space sphere margin. `cov2d` measures projected covariance in doubled
 // shader coordinates, so the fixed LoD 3-sigma footprint is
@@ -142,18 +180,25 @@ fn get_bounding_box_clip(
 ) -> vec4<f32> {
     // return vec4<f32>(offset, uv);
 
-    let det = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
-    let trace = cov2d.x + cov2d.z;
-    let mid = 0.5 * trace;
-    let discriminant = max(0.0, mid * mid - det);
-
-    let term = sqrt(discriminant);
-
-    let lambda1 = mid + term;
-    let lambda2 = max(mid - term, 0.0);
-
-    let x_axis_length = sqrt(lambda1);
-    let y_axis_length = sqrt(lambda2);
+    // Use one stable eigensystem for both lengths and orientation. Computing
+    // lambda-a through mid^2-det loses the small component of an x-major
+    // eigenvector and can rotate its support box by 90 degrees after one ULP.
+    let covariance_scale = max(max(abs(cov2d.x), abs(cov2d.z)), abs(cov2d.y));
+    let covariance = cov2d / select(1.0, covariance_scale, covariance_scale > 0.0);
+    let mid = 0.5 * covariance.x + 0.5 * covariance.z;
+    let half_difference = 0.5 * covariance.x - 0.5 * covariance.z;
+    let difference_scale = max(abs(half_difference), abs(covariance.y));
+    var spectral_radius = 0.0;
+    if difference_scale > 0.0 {
+        spectral_radius = difference_scale * length(vec2<f32>(half_difference, covariance.y) / difference_scale);
+    }
+    let lambda1 = max(mid + spectral_radius, 0.0);
+    let lambda2 = max(mid - spectral_radius, 0.0);
+    // Multiplying square roots avoids overflowing a finite support radius
+    // merely because the corresponding variance exceeds the f32 range.
+    let radius_scale = sqrt(covariance_scale);
+    let x_axis_length = radius_scale * sqrt(lambda1);
+    let y_axis_length = radius_scale * sqrt(lambda2);
 
 #ifdef USE_AABB
     let radius_px = cutoff * max(x_axis_length, y_axis_length);
@@ -169,27 +214,18 @@ fn get_bounding_box_clip(
 
 #ifdef USE_OBB
 
-    let a = (cov2d.x - cov2d.z) * (cov2d.x - cov2d.z);
-    let b = sqrt(a + 4.0 * cov2d.y * cov2d.y);
-    let major_radius = sqrt((cov2d.x + cov2d.z + b) * 0.5);
-    let minor_radius = sqrt((cov2d.x + cov2d.z - b) * 0.5);
+    let bounds = cutoff * vec2<f32>(x_axis_length, y_axis_length);
 
-    let bounds = cutoff * vec2<f32>(
-        major_radius,
-        minor_radius,
-    );
-
-    let major_axis_candidate = vec2<f32>(
-        -cov2d.y,
-        lambda1 - cov2d.x,
-    );
-    // The analytic eigenvector above is exactly zero for a diagonal
-    // x-major (and isotropic) covariance. Choose the canonical x axis in
-    // that case instead of normalizing zero to NaN. The perpendicular below
-    // deliberately retains the historical negative handedness.
+    // Choose the well-conditioned eigenvector formula on either side of the
+    // diagonal. Only an exactly isotropic covariance needs a canonical axis.
+    var major_axis_candidate = vec2<f32>(-covariance.y, spectral_radius - half_difference);
+    if covariance.x >= covariance.z {
+        major_axis_candidate = vec2<f32>(spectral_radius + half_difference, -covariance.y);
+    }
+    let vector_scale = max(abs(major_axis_candidate.x), abs(major_axis_candidate.y));
     var eigvec1 = vec2<f32>(1.0, 0.0);
-    if abs(major_axis_candidate.x) + abs(major_axis_candidate.y) > 1.0e-12 {
-        eigvec1 = normalize(major_axis_candidate);
+    if vector_scale > 0.0 {
+        eigvec1 = normalize(major_axis_candidate / vector_scale);
     }
     let eigvec2 = vec2<f32>(
         eigvec1.y,

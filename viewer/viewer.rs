@@ -10,7 +10,7 @@ use bevy::{
     camera::primitives::Aabb,
     color::palettes::css::GOLD,
     core_pipeline::{prepass::MotionVectorPrepass, tonemapping::Tonemapping},
-    diagnostic::{DiagnosticsStore, FrameCount, FrameTimeDiagnosticsPlugin},
+    diagnostic::FrameCount,
     gizmos::config::GizmoConfigStore,
     prelude::*,
     render::view::screenshot::{Screenshot, save_to_disk},
@@ -31,6 +31,11 @@ use bevy_inspector_egui::bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui}
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 
+#[cfg(not(target_arch = "wasm32"))]
+mod camera_path_navigation;
+mod fly_camera;
+mod ground_plane;
+
 #[cfg(feature = "web_asset")]
 use base64::{Engine as _, engine::general_purpose::URL_SAFE};
 use bevy_gaussian_splatting::{
@@ -41,7 +46,21 @@ use bevy_gaussian_splatting::{
     io::scene::GaussianSceneLoaded,
     random_gaussians_3d, random_gaussians_3d_seeded, random_gaussians_4d,
     random_gaussians_4d_seeded,
-    utils::{GaussianSplattingViewer, log, setup_hooks},
+    utils::{CameraController, GaussianSplattingViewer, log, setup_hooks},
+};
+
+#[cfg(lod_render_path)]
+use bevy::render::{renderer::RenderDevice, settings::WgpuFeatures};
+#[cfg(lod_render_path)]
+use bevy_gaussian_splatting::{
+    render::point::{
+        GaussianPointSplattingAvailability, GaussianPointSplattingDiagnostics,
+        GaussianPointSplattingSettings, GaussianPointSplattingViewBudgetDiagnostics,
+    },
+    stream::package::{
+        GaussianGpuLodPackage, GaussianGpuLodPackageStatus, GaussianLodPackagePhase,
+        GaussianLodPackageStatus,
+    },
 };
 
 #[cfg(feature = "lod")]
@@ -50,7 +69,7 @@ use bevy_gaussian_splatting::{
     GaussianLodDebugAvailability, GaussianLodHandle, GaussianLodLifecycle,
     GaussianLodPackageConfig, GaussianLodPackageSource, GaussianLodSettings, GaussianLodSourceKind,
     GaussianLodStatus, GaussianStreamingSettings, LodBounds, LodDebugPreset, LodQualityTarget,
-    gaussian::lod_settings::LodSelectionMode,
+    gaussian::lod_settings::LodSelectionMode, stream::memory::LodMemoryLedger,
 };
 
 #[cfg(all(test, feature = "lod"))]
@@ -80,6 +99,77 @@ use bevy_gaussian_splatting::query::sparse::SparseSelect;
 
 #[derive(Component, Debug, Default)]
 struct ViewerMainCamera;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Resource)]
+struct ViewerCameraPath {
+    path: bevy_gaussian_splatting::camera::path::GaussianCameraPath,
+    first: usize,
+    current: usize,
+    frames_per_second: f64,
+    elapsed: f64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn viewer_camera_path(args: &GaussianSplattingViewer) -> Result<Option<ViewerCameraPath>, String> {
+    if !args.camera_path_fps.is_finite() || !(0.0..=240.0).contains(&args.camera_path_fps) {
+        return Err("--camera-path-fps must be between 0 and 240".into());
+    }
+    let Some(file) = &args.camera_path else {
+        if args.camera_path_index != 0 || args.camera_path_fps != 0.0 {
+            return Err("camera-path index/playback requires --camera-path".into());
+        }
+        return Ok(None);
+    };
+    let bytes = std::fs::read(file).map_err(|error| format!("camera path {file}: {error}"))?;
+    let path = bevy_gaussian_splatting::camera::path::GaussianCameraPath::from_json(&bytes)
+        .map_err(|error| error.to_string())?;
+    if args.camera_path_index >= path.frames().len() {
+        return Err(format!(
+            "camera path has {} frames; index {} is out of range",
+            path.frames().len(),
+            args.camera_path_index
+        ));
+    }
+    Ok(Some(ViewerCameraPath {
+        path,
+        first: args.camera_path_index,
+        current: args.camera_path_index,
+        frames_per_second: args.camera_path_fps,
+        elapsed: 0.0,
+    }))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn advance_viewer_camera_path(
+    path: Option<ResMut<ViewerCameraPath>>,
+    time: Res<Time>,
+    mut cameras: Query<(&mut Transform, &mut Projection), With<ViewerMainCamera>>,
+) {
+    let Some(mut path) = path else {
+        return;
+    };
+    if path.frames_per_second == 0.0 {
+        return;
+    }
+    path.elapsed += time.delta_secs_f64();
+    let frame = path
+        .first
+        .saturating_add((path.elapsed * path.frames_per_second) as usize)
+        .min(path.path.frames().len() - 1);
+    if frame == path.current {
+        return;
+    }
+    path.current = frame;
+    let frame = &path.path.frames()[frame];
+    if let Ok((mut transform, mut projection)) = cameras.single_mut() {
+        *transform = frame.transform();
+        let next = frame.projection(0.1, VIEWER_CAMERA_VISIBILITY_FAR).unwrap();
+        if projection.get_clip_from_view() != next.get_clip_from_view() {
+            *projection = next;
+        }
+    }
+}
 
 #[derive(Component, Debug, Default)]
 struct SceneCameraApplied;
@@ -127,6 +217,40 @@ struct ViewerLodPolicy(GaussianLodSettings);
 #[derive(Resource)]
 struct ViewerLodStreamingPolicy(GaussianStreamingSettings);
 
+#[cfg(lod_render_path)]
+#[derive(Resource)]
+struct ViewerPointSplattingPolicy(Option<GaussianPointSplattingSettings>);
+
+#[cfg(lod_render_path)]
+#[derive(Resource)]
+struct ViewerGlobalOrderPolicy(
+    Option<bevy_gaussian_splatting::GaussianGlobalOrderSettings>,
+    Option<bevy_gaussian_splatting::render::spatial_morph::GaussianLodSpatialTransitionSettings>,
+);
+
+#[cfg(lod_render_path)]
+#[derive(Resource)]
+struct ViewerGpuLodPolicy(
+    Option<bevy_gaussian_splatting::render::traversal::GpuLodTraversalSettings>,
+);
+
+#[cfg(lod_render_path)]
+fn report_point_splatting_timestamp_support(
+    policy: Res<ViewerPointSplattingPolicy>,
+    device: Option<Res<RenderDevice>>,
+) {
+    if policy
+        .0
+        .as_ref()
+        .is_some_and(|settings| settings.target_gpu_ms.is_some())
+        && !device.is_some_and(|device| device.features().contains(WgpuFeatures::TIMESTAMP_QUERY))
+    {
+        warn!(
+            "Point splatting GPU timestamps are unavailable under the selected adapter/feature policy; automatic sampling can only reduce whole layers after point-budget overflow"
+        );
+    }
+}
+
 #[cfg(feature = "lod")]
 type ViewerLodDiagnosticsQuery = (
     Entity,
@@ -135,6 +259,17 @@ type ViewerLodDiagnosticsQuery = (
     &'static mut CloudSettings,
     Option<&'static GaussianLodPackageSource>,
     Option<&'static GaussianLodStatus>,
+);
+
+#[cfg(lod_render_path)]
+type ViewerFreezableLod = Without<GaussianGpuLodPackage>;
+#[cfg(all(feature = "lod", not(lod_render_path)))]
+type ViewerFreezableLod = ();
+
+#[cfg(lod_render_path)]
+type ViewerGpuLodDiagnosticsQuery = (
+    Option<&'static GaussianGpuLodPackageStatus>,
+    Option<&'static GaussianLodPackageStatus>,
 );
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -272,28 +407,82 @@ fn decode_hex(value: u8) -> Option<u8> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn setup_gaussian_cloud(
     mut commands: Commands,
     args: Res<GaussianSplattingViewer>,
     #[cfg(feature = "lod")] lod_policy: Res<ViewerLodPolicy>,
     #[cfg(feature = "lod")] lod_streaming_policy: Res<ViewerLodStreamingPolicy>,
+    #[cfg(lod_render_path)] point_policy: Res<ViewerPointSplattingPolicy>,
+    #[cfg(lod_render_path)] ordered_policy: Res<ViewerGlobalOrderPolicy>,
+    #[cfg(lod_render_path)] gpu_lod_policy: Res<ViewerGpuLodPolicy>,
     asset_server: Res<AssetServer>,
     mut gaussian_3d_assets: ResMut<Assets<PlanarGaussian3d>>,
     mut gaussian_4d_assets: ResMut<Assets<PlanarGaussian4d>>,
+    #[cfg(not(target_arch = "wasm32"))] camera_path: Option<Res<ViewerCameraPath>>,
 ) {
     debug!("spawning camera...");
     let cloud_transform = args.cloud_transform();
     #[cfg(feature = "lod")]
     let lod_debug = args.lod_debug_settings();
-    commands
+    let _camera = commands
         .spawn(Camera3d::default())
         .insert(Projection::Perspective(viewer_perspective_projection()))
         .insert(Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)))
         .insert(Tonemapping::None)
         .insert(MotionVectorPrepass)
-        .insert(viewer_pan_orbit_camera())
+        .insert(PanOrbitCamera {
+            enabled: args.camera_controller == CameraController::Orbit,
+            ..viewer_pan_orbit_camera()
+        })
         .insert(ViewerMainCamera)
-        .insert(GaussianCamera::default());
+        .insert(GaussianCamera::default())
+        .id();
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(path) = camera_path {
+        let frame = &path.path.frames()[path.current];
+        commands
+            .entity(_camera)
+            .insert((
+                frame.transform(),
+                frame.projection(0.1, VIEWER_CAMERA_VISIBILITY_FAR).unwrap(),
+                camera_path_navigation::PathCameraNavigation::new(&path),
+            ))
+            .remove::<PanOrbitCamera>();
+    }
+    if args.camera_controller == CameraController::Flycam {
+        commands.entity(_camera).insert(fly_camera::FlyCamera);
+    }
+    #[cfg(lod_render_path)]
+    if let Some(settings) = &point_policy.0 {
+        commands
+            .entity(_camera)
+            .insert((settings.clone(), Msaa::Off));
+    }
+    #[cfg(lod_render_path)]
+    if let Some(settings) = &ordered_policy.0 {
+        commands
+            .entity(_camera)
+            .insert((settings.clone(), Msaa::Off));
+        if let Some(transitions) = &ordered_policy.1 {
+            commands.entity(_camera).insert(transitions.clone());
+        }
+    }
+    #[cfg(lod_render_path)]
+    if let Some(settings) = &gpu_lod_policy.0 {
+        commands.entity(_camera).insert(settings.clone());
+        if point_policy.0.is_some()
+            && let Some(target_view_gpu_ms) = args.point.point_target_gpu_ms
+        {
+            commands.entity(_camera).insert(
+                bevy_gaussian_splatting::render::point::GaussianPointSplattingViewBudget {
+                    target_view_gpu_ms,
+                    min_selected_gaussians: 16_384.min(settings.max_selected_gaussians),
+                    max_selected_gaussians: settings.max_selected_gaussians,
+                },
+            );
+        }
+    }
 
     #[cfg(feature = "lod")]
     if let Some(input_lod) = &args.input_lod {
@@ -308,24 +497,38 @@ fn setup_gaussian_cloud(
                     return;
                 }
             };
-        let manifest = asset_server.load(&input_uri);
-        commands.spawn((
-            GaussianLodHandle(manifest),
-            package_source,
-            CloudSettings {
-                gaussian_mode: GaussianMode::Gaussian3d,
-                playback_mode: args.playback_mode,
-                rasterize_mode: args.rasterization_mode,
-                radix_sort_depth_bits: args.radix_sort_depth_bits,
-                lod_debug,
-                ..default()
-            },
-            lod_policy.0.clone(),
-            lod_streaming_policy.0.clone(),
-            Name::new("gaussian_lod_package"),
-            ShowAxes,
-            cloud_transform,
-        ));
+        let max_manifest_bytes = args.lod.lod_max_manifest_bytes;
+        let manifest = asset_server
+            .load_builder()
+            .with_settings(move |settings: &mut bevy_gaussian_splatting::io::lod::GaussianLodManifestLoaderSettings| {
+                settings.max_encoded_bytes = max_manifest_bytes;
+            })
+            .load(input_uri.clone());
+        let _package = commands
+            .spawn((
+                GaussianLodHandle(manifest),
+                package_source,
+                CloudSettings {
+                    gaussian_mode: GaussianMode::Gaussian3d,
+                    playback_mode: args.playback_mode,
+                    rasterize_mode: args.rasterization_mode,
+                    radix_sort_depth_bits: args.radix_sort_depth_bits,
+                    lod_debug,
+                    ..default()
+                },
+                lod_policy.0.clone(),
+                lod_streaming_policy.0.clone(),
+                Name::new("gaussian_lod_package"),
+                ShowAxes,
+                cloud_transform,
+            ))
+            .id();
+        #[cfg(lod_render_path)]
+        if gpu_lod_policy.0.is_some() {
+            commands
+                .entity(_package)
+                .insert(bevy_gaussian_splatting::stream::package::GaussianGpuLodPackage);
+        }
         return;
     }
 
@@ -416,7 +619,7 @@ fn setup_gaussian_cloud(
                         rasterize_mode: args.rasterization_mode,
                         radix_sort_depth_bits: args.radix_sort_depth_bits,
                         #[cfg(feature = "lod")]
-                        lod_debug: lod_debug.clone(),
+                        lod_debug,
                         ..default()
                     },
                     PlanarGaussian3dHandle(cloud.clone()),
@@ -846,7 +1049,7 @@ fn setup_sparse_select(
 fn toggle_lod_freeze(
     keys: Res<ButtonInput<KeyCode>>,
     egui_wants_input: Option<Res<EguiWantsInput>>,
-    mut clouds: Query<&mut GaussianLodSettings>,
+    mut clouds: Query<&mut GaussianLodSettings, ViewerFreezableLod>,
 ) {
     if !keys.just_pressed(KeyCode::KeyF)
         || egui_wants_input.is_some_and(|input| input.wants_keyboard_input())
@@ -863,7 +1066,22 @@ fn toggle_lod_freeze(
 }
 
 #[cfg(feature = "lod")]
-fn lod_diagnostics_panel(mut contexts: EguiContexts, mut clouds: Query<ViewerLodDiagnosticsQuery>) {
+fn lod_diagnostics_panel(
+    mut contexts: EguiContexts,
+    mut clouds: Query<ViewerLodDiagnosticsQuery>,
+    #[cfg(lod_render_path)] gpu_clouds: Query<
+        ViewerGpuLodDiagnosticsQuery,
+        With<GaussianGpuLodPackage>,
+    >,
+    #[cfg(lod_render_path)] cameras: Query<Entity, With<ViewerMainCamera>>,
+    #[cfg(lod_render_path)] point_diagnostics: Option<Res<GaussianPointSplattingDiagnostics>>,
+    #[cfg(lod_render_path)] ordered_diagnostics: Option<
+        Res<bevy_gaussian_splatting::GaussianGlobalOrderDiagnostics>,
+    >,
+    #[cfg(lod_render_path)] budget_diagnostics: Option<
+        Res<GaussianPointSplattingViewBudgetDiagnostics>,
+    >,
+) {
     let Ok(context) = contexts.ctx_mut() else {
         return;
     };
@@ -877,6 +1095,13 @@ fn lod_diagnostics_panel(mut contexts: EguiContexts, mut clouds: Query<ViewerLod
             for (entity, name, mut settings, mut cloud, package, status) in &mut clouds {
                 found_cloud = true;
                 ui.push_id(entity, |ui| {
+                    #[cfg(lod_render_path)]
+                    if let Ok((gpu_status, package_status)) = gpu_clouds.get(entity) {
+                        show_gpu_lod_cloud_panel(
+                            ui, entity, name, &mut settings, gpu_status, package_status,
+                        );
+                        return;
+                    }
                     show_lod_cloud_panel(
                         ui,
                         entity,
@@ -893,10 +1118,160 @@ fn lod_diagnostics_panel(mut contexts: EguiContexts, mut clouds: Query<ViewerLod
             if !found_cloud {
                 ui.label("Waiting for a Gaussian cloud…");
             } else {
-                ui.small("F: freeze / resume camera-driven LoD selection");
+                ui.small("F: freeze / resume CPU LoD selection");
                 ui.small("Advanced: select this named cloud in World Inspector.");
             }
+            #[cfg(lod_render_path)]
+            for camera in &cameras {
+                if let Some(ordered) = ordered_diagnostics.as_ref().and_then(|diagnostics| diagnostics.get(camera)) {
+                    ui.separator();
+                    ui.strong("Globally ordered quads");
+                    ui.label(format!("{} projected Gaussians across {} clouds", format_lod_count(u64::from(ordered.projected_gaussians)), ordered.source_clouds));
+                    if ordered.spatial_unavailable {
+                        ui.colored_label(egui::Color32::YELLOW, "Continuous LoD unavailable at current limits");
+                        if ordered.spatial_required_edges > 0 {
+                            ui.small(format!("Transition band needs {} clusters / {} records",
+                                format_lod_count(u64::from(ordered.spatial_required_edges)),
+                                format_lod_count(u64::from(ordered.spatial_required_records))));
+                        }
+                    } else if ordered.spatial_transition_edges > 0 {
+                        ui.small(format!("Continuous LoD · {} changing clusters",
+                            format_lod_count(u64::from(ordered.spatial_transition_edges))));
+                    }
+                    if let Some(error) = ordered.error {
+                        ui.colored_label(egui::Color32::LIGHT_RED, error);
+                    }
+                }
+                let point = point_diagnostics.as_ref().and_then(|diagnostics| diagnostics.get(camera));
+                let budget = budget_diagnostics.as_ref().and_then(|diagnostics| diagnostics.get(camera));
+                if let Some(point) = point {
+                    ui.separator();
+                    ui.strong("Point renderer");
+                    ui.label(match point.availability {
+                        GaussianPointSplattingAvailability::Unavailable => "Waiting for a complete image",
+                        GaussianPointSplattingAvailability::Retained => "Retaining the last complete image",
+                        GaussianPointSplattingAvailability::Ready => "Ready",
+                    });
+                    ui.label(format!("{} samples / pixel · {} point attempts", point.samples_per_pixel, format_lod_count(u64::from(point.dispatched_points))));
+                    if let Some(gpu_ms) = point.gpu_ms {
+                        ui.label(format!("Point rendering: {gpu_ms:.2} ms GPU"));
+                    }
+                    if let Some(error) = point.error {
+                        ui.colored_label(egui::Color32::LIGHT_RED, error);
+                    }
+                }
+                if let Some(budget) = budget {
+                    if let Some(view_gpu_ms) = budget.view_gpu_ms {
+                        ui.label(format!("View rendering: {view_gpu_ms:.2} ms GPU")).on_hover_text("Completed GPU traversal through final composition for this view; excludes CPU work and other views.");
+                    }
+                    ui.label(format!("Selection limit: {}", format_lod_count(u64::from(budget.selected_gaussian_limit))));
+                    if budget.target_unmet {
+                        ui.small("View budget target unmet");
+                    }
+                    if let Some(error) = budget.error {
+                        ui.colored_label(egui::Color32::LIGHT_RED, error);
+                    }
+                }
+            }
         });
+}
+
+#[cfg(feature = "lod")]
+fn show_lod_quality_control(ui: &mut egui::Ui, settings: &mut GaussianLodSettings) {
+    let mut detail_quality = viewer_detail_quality(settings);
+    let response = ui.add(
+        egui::Slider::new(&mut detail_quality, 0.0..=1.0)
+            .text("Detail quality")
+            .fixed_decimals(3),
+    );
+    if response.changed() {
+        apply_viewer_detail_quality(settings, detail_quality);
+    }
+    response.on_hover_text(
+        "Higher values request more hierarchy detail and lower projected error. Above 0.90, large error and builder-detected unsafe merged representatives progressively force refinement.",
+    );
+}
+
+#[cfg(lod_render_path)]
+fn show_gpu_lod_cloud_panel(
+    ui: &mut egui::Ui,
+    entity: Entity,
+    name: Option<&Name>,
+    settings: &mut GaussianLodSettings,
+    status: Option<&GaussianGpuLodPackageStatus>,
+    package: Option<&GaussianLodPackageStatus>,
+) {
+    ui.strong(name.map_or_else(
+        || format!("cloud {}", entity.index()),
+        |name| name.to_string(),
+    ));
+    show_lod_quality_control(ui, settings);
+    ui.small("GPU selection · current camera");
+    egui::Grid::new("gpu_lod_diagnostics")
+        .num_columns(2)
+        .spacing([12.0, 2.0])
+        .show(ui, |ui| {
+            ui.label("Requested detail");
+            ui.monospace(format_lod_target(settings.quality_target()));
+            ui.end_row();
+            ui.label("Package");
+            ui.monospace(match package.map(|package| package.phase) {
+                None => "initializing",
+                Some(GaussianLodPackagePhase::Loading) => "loading",
+                Some(GaussianLodPackagePhase::Active) => "active",
+                Some(GaussianLodPackagePhase::Degraded) => "degraded",
+                Some(GaussianLodPackagePhase::Failed) => "failed",
+            });
+            ui.end_row();
+            let Some(status) = status else {
+                return;
+            };
+            ui.label("Completed views").on_hover_text(
+                "Views whose completed image used the current resident page snapshot.",
+            );
+            ui.monospace(format!("{} / {}", status.acknowledged_views, status.visible_views));
+            ui.end_row();
+            ui.label("Selected Gaussians").on_hover_text(
+                "Latest GPU hierarchy selections summed across views, before per-Gaussian visibility rejection.",
+            );
+            ui.monospace(format_lod_count(status.selected_gaussians));
+            ui.end_row();
+            ui.label("Snapshot pages");
+            ui.monospace(format_lod_count(u64::from(status.snapshot_pages)));
+            ui.end_row();
+            ui.label("Requests queued / active");
+            ui.monospace(format!("{} / {}", status.queued_requests, status.in_flight_requests));
+            ui.end_row();
+            ui.label("Capacity blocked");
+            ui.monospace(format_lod_count(u64::from(status.capacity_blocked_requests)));
+            ui.end_row();
+        });
+    if let Some(status) = status {
+        let limits = [
+            (status.record_limited, "Gaussians"),
+            (status.frontier_limited, "frontier"),
+            (status.visit_limited, "traversal"),
+            (status.request_overflow, "page requests"),
+        ]
+        .into_iter()
+        .filter_map(|(limited, label)| limited.then_some(label))
+        .collect::<Vec<_>>();
+        if !limits.is_empty() {
+            ui.small(format!("Limited by {}", limits.join(", ")));
+        }
+        if status.cutoff_unavailable {
+            ui.colored_label(
+                egui::Color32::YELLOW,
+                "Continuous LoD exceeds traversal limits",
+            );
+        }
+        if let Some(error) = &status.spatial_mapping_error {
+            ui.colored_label(egui::Color32::YELLOW, format!("LoD transitions: {error}"));
+        }
+    }
+    if let Some(failure) = package.and_then(|package| package.failure.as_ref()) {
+        ui.colored_label(egui::Color32::LIGHT_RED, format!("LoD package: {failure}"));
+    }
 }
 
 #[cfg(feature = "lod")]
@@ -921,18 +1296,7 @@ fn show_lod_cloud_panel(
         && status.is_none_or(|status| status.source == GaussianLodSourceKind::Original);
     let selection_mode = status.map_or(settings.selection_mode, |status| status.selection_mode);
 
-    let mut detail_quality = viewer_detail_quality(settings);
-    let quality_response = ui.add(
-        egui::Slider::new(&mut detail_quality, 0.0..=1.0)
-            .text("Detail quality")
-            .fixed_decimals(3),
-    );
-    if quality_response.changed() {
-        apply_viewer_detail_quality(settings, detail_quality);
-    }
-    quality_response.on_hover_text(
-        "Higher values request more hierarchy detail and lower projected error. Above 0.90, large error and builder-detected unsafe merged representatives progressively force refinement.",
-    );
+    show_lod_quality_control(ui, settings);
     ui.horizontal(|ui| {
         let mut frozen = settings.selection_mode == LodSelectionMode::Frozen;
         if ui
@@ -1262,12 +1626,12 @@ fn apply_viewer_detail_quality(settings: &mut GaussianLodSettings, quality: f32)
 }
 
 #[cfg(feature = "lod")]
-fn viewer_lod_bridge_config() -> GaussianLodBridgeConfig {
+fn viewer_lod_bridge_config(settings: &GaussianLodSettings) -> GaussianLodBridgeConfig {
     // The crate default is deliberately conservative for library users. The
     // viewer admits larger transient hierarchy builds, but its physical atlas
     // remains the ordinary bounded resident page cache. Stored hierarchy
     // headroom is independent of that physical working set.
-    let budgets = GaussianLodSettings::default().budgets;
+    let budgets = settings.budgets;
     let source_gaussians = budgets
         .max_resident_gaussians
         .try_into()
@@ -1296,7 +1660,7 @@ fn viewer_lod_package_config(settings: &GaussianLodSettings) -> GaussianLodPacka
 
 #[cfg(feature = "lod")]
 fn viewer_lod_policy(mut settings: GaussianLodSettings) -> GaussianLodSettings {
-    // Express the viewer's fixed resident-record budget as the largest whole
+    // Express the viewer's configured resident-record budget as the largest whole
     // transient-page working set it can hold. This remains source-independent;
     // bridge record and byte limits may clamp the physical atlas further.
     let records_per_page = u64::from(GaussianLodBuildSettings::default().leaf_capacity);
@@ -1370,13 +1734,52 @@ fn format_lod_debug_availability(
 
 fn viewer_app() {
     let config = parse_args::<GaussianSplattingViewer>();
+    let (camera_speed, camera_sensitivity) = config
+        .camera_control_settings()
+        .unwrap_or_else(|error| panic!("invalid viewer camera controls: {error}"));
     log(&format!("{config:?}"));
+    #[cfg(not(target_arch = "wasm32"))]
+    let camera_path = viewer_camera_path(&config)
+        .unwrap_or_else(|error| panic!("invalid viewer camera path: {error}"));
 
+    #[cfg(lod_render_path)]
+    let point_policy =
+        ViewerPointSplattingPolicy(config.point_splatting_settings().unwrap_or_else(|error| {
+            panic!("invalid viewer point-splatting configuration: {error}")
+        }));
+    #[cfg(lod_render_path)]
+    let ordered_policy = ViewerGlobalOrderPolicy(
+        config
+            .global_order_settings()
+            .unwrap_or_else(|error| panic!("invalid viewer global-order configuration: {error}")),
+        config
+            .spatial_transition_settings()
+            .unwrap_or_else(|error| {
+                panic!("invalid viewer spatial transition configuration: {error}")
+            }),
+    );
+    #[cfg(lod_render_path)]
+    let gpu_lod_policy = ViewerGpuLodPolicy(
+        config
+            .gpu_lod_traversal_settings()
+            .unwrap_or_else(|error| panic!("invalid viewer GPU traversal configuration: {error}")),
+    );
     #[cfg(feature = "lod")]
     let lod_policy =
         ViewerLodPolicy(viewer_lod_policy(config.lod_settings().unwrap_or_else(
             |error| panic!("invalid viewer LoD configuration: {error}"),
         )));
+    #[cfg(feature = "lod")]
+    lod_policy
+        .0
+        .validate()
+        .unwrap_or_else(|error| panic!("invalid viewer LoD page capacity: {error}"));
+    #[cfg(feature = "lod")]
+    let lod_memory_ledger = LodMemoryLedger::new(
+        config
+            .lod_memory_limits()
+            .unwrap_or_else(|error| panic!("invalid viewer LoD memory configuration: {error}")),
+    );
     #[cfg(feature = "lod")]
     let lod_streaming_policy = ViewerLodStreamingPolicy(
         config
@@ -1384,7 +1787,7 @@ fn viewer_app() {
             .unwrap_or_else(|error| panic!("invalid viewer LoD transport configuration: {error}")),
     );
     #[cfg(feature = "lod")]
-    let lod_bridge_config = viewer_lod_bridge_config();
+    let lod_bridge_config = viewer_lod_bridge_config(&lod_policy.0);
     #[cfg(feature = "lod")]
     lod_bridge_config
         .validate()
@@ -1402,6 +1805,10 @@ fn viewer_app() {
     }
 
     let mut app = App::new();
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(path) = camera_path {
+        app.insert_resource(path);
+    }
     app.register_type::<GizmoConfigStore>();
 
     #[cfg(target_arch = "wasm32")]
@@ -1440,6 +1847,7 @@ fn viewer_app() {
     app.insert_resource(ClearColor(Color::srgb_u8(0, 0, 0)));
     #[cfg(feature = "lod")]
     app.insert_resource(lod_policy)
+        .insert_resource(lod_memory_ledger)
         .insert_resource(lod_streaming_policy)
         .insert_resource(lod_bridge_config)
         .insert_resource(lod_package_config);
@@ -1456,6 +1864,12 @@ fn viewer_app() {
             ..default()
         });
 
+    #[cfg(lod_render_path)]
+    app.insert_resource(point_policy)
+        .insert_resource(ordered_policy)
+        .insert_resource(gpu_lod_policy)
+        .add_systems(Startup, report_point_splatting_timestamp_support);
+
     #[cfg(feature = "web_asset")]
     let default_plugins = default_plugins.set(WebAssetPlugin {
         silence_startup_warning: true,
@@ -1465,13 +1879,19 @@ fn viewer_app() {
     app.add_plugins(BevyArgsPlugin::<GaussianSplattingViewer>::default());
     add_editor_plugins(&mut app, config.editor);
     app.add_plugins(PanOrbitCameraPlugin);
+    if config.camera_controller == CameraController::Flycam {
+        app.add_plugins(fly_camera::ViewerFlyCameraPlugin {
+            speed: camera_speed,
+            sensitivity: camera_sensitivity,
+        });
+    }
 
     if config.press_esc_close {
         app.add_systems(Update, press_esc_close);
     }
 
     if config.press_s_screenshot {
-        app.add_systems(Update, press_s_screenshot);
+        app.add_systems(Update, press_screenshot);
     }
 
     if config.show_axes {
@@ -1479,14 +1899,26 @@ fn viewer_app() {
     }
 
     if config.show_fps {
-        app.add_plugins(FrameTimeDiagnosticsPlugin::default());
         app.add_systems(Startup, fps_display_setup);
         app.add_systems(Update, fps_update_system);
     }
 
     // setup for gaussian splatting
     app.add_plugins(GaussianSplattingPlugin);
+    if config.match_ground_plane {
+        app.add_plugins(ground_plane::GroundPlanePlugin);
+    }
     app.add_systems(Startup, setup_gaussian_cloud);
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_systems(
+        PostUpdate,
+        (camera_path_navigation::navigate, advance_viewer_camera_path)
+            .chain()
+            .after(fly_camera::FlyCameraCommit)
+            .after(bevy_inspector_egui::bevy_egui::EguiPostUpdateSet::ProcessOutput)
+            .before(bevy::transform::TransformSystems::Propagate)
+            .before(bevy::camera::CameraUpdateSystems),
+    );
     app.add_systems(Update, apply_scene_camera_spawn);
     #[cfg(feature = "lod")]
     app.add_systems(Update, apply_lod_package_camera_spawn);
@@ -1529,12 +1961,15 @@ fn add_plugins_when(app: &mut App, enabled: bool, install: impl FnOnce(&mut App)
     }
 }
 
-pub fn press_s_screenshot(
+pub fn press_screenshot(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     current_frame: Res<FrameCount>,
+    args: Res<GaussianSplattingViewer>,
 ) {
-    if keys.just_pressed(KeyCode::KeyS) {
+    if keys.just_pressed(KeyCode::F12)
+        || (args.camera_controller == CameraController::Orbit && keys.just_pressed(KeyCode::KeyS))
+    {
         let images_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("screenshots");
         std::fs::create_dir_all(&images_dir).unwrap();
         let output_path = images_dir.join(format!("output_{}.png", current_frame.0));
@@ -1662,10 +2097,10 @@ fn press_o_save_selection(
 fn fps_display_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands
         .spawn((
-            Text("fps: ".to_string()),
+            Text("fps: ".to_owned()),
             TextFont {
                 font: FontSource::Handle(asset_server.load("fonts/Caveat-Bold.ttf")),
-                font_size: FontSize::Px(60.0),
+                font_size: FontSize::Px(28.0),
                 ..Default::default()
             },
             TextColor(Color::WHITE),
@@ -1682,7 +2117,7 @@ fn fps_display_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             TextColor(Color::Srgba(GOLD)),
             TextFont {
                 font: FontSource::Handle(asset_server.load("fonts/Caveat-Bold.ttf")),
-                font_size: FontSize::Px(60.0),
+                font_size: FontSize::Px(28.0),
                 ..Default::default()
             },
             TextSpan::default(),
@@ -1694,40 +2129,62 @@ struct FpsText;
 
 #[derive(Default)]
 struct FpsDisplayState {
-    smoothed_fps: Option<f64>,
-    update_elapsed_secs: f32,
+    elapsed_secs: f64,
+    frames: u32,
+}
+
+impl FpsDisplayState {
+    fn record(&mut self, delta_secs: f64) -> Option<f64> {
+        if delta_secs <= 0.0 || !delta_secs.is_finite() {
+            return None;
+        }
+        self.elapsed_secs += delta_secs;
+        self.frames += 1;
+        if self.elapsed_secs < 0.5 {
+            return None;
+        }
+        let sample = f64::from(self.frames) / self.elapsed_secs;
+        *self = Self::default();
+        Some(sample)
+    }
 }
 
 fn fps_update_system(
-    diagnostics: Res<DiagnosticsStore>,
-    time: Res<Time>,
+    // Real time includes stalls beyond the virtual clock's maximum delta.
+    time: Res<Time<Real>>,
     mut state: Local<FpsDisplayState>,
     mut query: Query<&mut TextSpan, With<FpsText>>,
 ) {
-    let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) else {
+    let Some(fps) = state.record(time.delta_secs_f64()) else {
         return;
     };
-    let Some(value) = fps.smoothed() else {
-        return;
-    };
-
-    const SMOOTHING_ALPHA: f64 = 0.08;
-    const DISPLAY_UPDATE_INTERVAL_SECS: f32 = 0.5;
-
-    let smoothed_fps = state.smoothed_fps.map_or(value, |current| {
-        current + (value - current) * SMOOTHING_ALPHA
-    });
-    state.smoothed_fps = Some(smoothed_fps);
-
-    state.update_elapsed_secs += time.delta_secs();
-    if state.update_elapsed_secs < DISPLAY_UPDATE_INTERVAL_SECS {
-        return;
-    }
-    state.update_elapsed_secs = 0.0;
-
-    let display_fps = smoothed_fps.round() as u32;
     for mut text in &mut query {
-        **text = display_fps.to_string();
+        **text = format!("{fps:.0}");
+    }
+}
+
+#[cfg(test)]
+mod frame_timing_tests {
+    use super::*;
+
+    #[test]
+    fn frame_display_reports_stalls_without_smoothing_or_virtual_time_clamping() {
+        let mut app = App::new();
+        app.init_resource::<Time<Real>>()
+            .add_systems(Update, fps_update_system);
+        let text = app.world_mut().spawn((FpsText, TextSpan::default())).id();
+        for _ in 0..5 {
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(std::time::Duration::from_millis(100));
+            app.update();
+        }
+        assert_eq!(app.world().get::<TextSpan>(text).unwrap().0, "10");
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(std::time::Duration::from_secs(2));
+        app.update();
+        assert_eq!(app.world().get::<TextSpan>(text).unwrap().0, "0");
     }
 }
 
@@ -1830,7 +2287,7 @@ mod lod_tests {
         const GARDEN_GAUSSIANS: u32 = 5_834_784;
         const GARDEN_PACKAGE_PAGES: u64 = 6_517;
 
-        let bridge = viewer_lod_bridge_config();
+        let bridge = viewer_lod_bridge_config(&GaussianLodSettings::default());
         bridge.validate().unwrap();
         assert!(bridge.max_ephemeral_source_gaussians >= TRELLIS_GAUSSIANS);
         assert!(bridge.max_ephemeral_source_gaussians >= LOCAL_BONSAI_GAUSSIANS);
@@ -1913,6 +2370,39 @@ mod lod_tests {
                 .max_resident_pages,
             policy.budgets.max_resident_pages,
             "resident capacity must not depend on scene size or quality"
+        );
+
+        let mut large_viewer = GaussianSplattingViewer::default();
+        large_viewer.lod.lod_max_active_gaussians = 16_000_000;
+        large_viewer.lod.lod_max_resident_gaussians = 24_000_000;
+        large_viewer.lod.lod_max_resident_bytes = 4_294_967_296;
+        large_viewer.lod.lod_max_cpu_bytes = 8_589_934_592;
+        large_viewer.lod.lod_max_gpu_bytes = 8_589_934_592;
+        let large_policy = viewer_lod_policy(large_viewer.lod_settings().unwrap());
+        large_policy.validate().unwrap();
+        let large_package = viewer_lod_package_config(&large_policy);
+        let large_bridge = viewer_lod_bridge_config(&large_policy);
+        large_package.validate().unwrap();
+        large_bridge.validate().unwrap();
+        assert_eq!(large_policy.budgets.max_active_gaussians, 16_000_000);
+        assert_eq!(large_policy.budgets.max_resident_pages, 23_437);
+        assert_eq!(large_package.max_atlas_gaussians, 24_000_000);
+        assert_eq!(large_package.max_atlas_bytes, 4_294_967_296);
+        assert_eq!(
+            large_bridge.max_atlas_gaussians,
+            large_package.max_atlas_gaussians
+        );
+        assert_eq!(large_bridge.max_atlas_bytes, large_package.max_atlas_bytes);
+        let ledger = LodMemoryLedger::new(large_viewer.lod_memory_limits().unwrap());
+        assert_eq!(ledger.limits().max_cpu_bytes, 8_589_934_592);
+        assert_eq!(ledger.limits().max_gpu_bytes, 8_589_934_592);
+
+        // A record budget below one transient page fails before plugin allocation.
+        large_viewer.lod.lod_max_resident_gaussians = 1;
+        assert!(
+            viewer_lod_policy(large_viewer.lod_settings().unwrap())
+                .validate()
+                .is_err()
         );
     }
 
@@ -2049,6 +2539,11 @@ mod lod_tests {
         app.init_resource::<ButtonInput<KeyCode>>()
             .add_systems(Update, toggle_lod_freeze);
         let entity = app.world_mut().spawn(GaussianLodSettings::default()).id();
+        #[cfg(lod_render_path)]
+        let gpu_entity = app
+            .world_mut()
+            .spawn((GaussianLodSettings::default(), GaussianGpuLodPackage))
+            .id();
 
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
@@ -2060,6 +2555,14 @@ mod lod_tests {
                 .unwrap()
                 .selection_mode,
             LodSelectionMode::Frozen
+        );
+        #[cfg(lod_render_path)]
+        assert_eq!(
+            app.world()
+                .get::<GaussianLodSettings>(gpu_entity)
+                .unwrap()
+                .selection_mode,
+            LodSelectionMode::Dynamic
         );
 
         {
@@ -2075,6 +2578,14 @@ mod lod_tests {
         assert_eq!(
             app.world()
                 .get::<GaussianLodSettings>(entity)
+                .unwrap()
+                .selection_mode,
+            LodSelectionMode::Dynamic
+        );
+        #[cfg(lod_render_path)]
+        assert_eq!(
+            app.world()
+                .get::<GaussianLodSettings>(gpu_entity)
                 .unwrap()
                 .selection_mode,
             LodSelectionMode::Dynamic

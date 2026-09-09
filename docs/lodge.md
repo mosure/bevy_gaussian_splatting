@@ -104,12 +104,17 @@ The current ECS integration is deliberately fully resident. The
 application resolves its authenticated dependency closure before attaching a
 cloud:
 
-1. Call `GaussianLodgeResidentCatalog::validate_manifest_budget` before any
-   page allocation. Pass the exact manifest `Arc` returned by
+1. Call `GaussianLodgeResidentCatalog::validate_manifest_budget` for an early
+   lower-bound budget check. Pass the exact manifest `Arc` returned by
    `GaussianLodgeAsset::shared_manifest()` through the remaining steps; this
    binds the materialized catalog to that loaded sidecar asset identity.
 2. Fetch `base_manifest.uri`, then construct an
-   `AuthenticatedLodgeBaseManifest` from its exact bytes.
+   `AuthenticatedLodgeBaseManifest` from its exact bytes. Call
+   `GaussianLodgeResidentCatalog::validate_dependency_budget` with both manifests
+   before fetching pages. Its returned payload peak includes the entire decoded
+   page closure (including unused base representatives), the interleaved and
+   planar stable catalogs, and encoded/decoded memberships. Application-owned
+   encoded page buffers, container overhead and render/GPU copies are additional.
 3. Fetch every declared base/extra page and decode it through
    `AuthenticatedLodgePage` (SHA-256 first, ordinary page validation second).
 4. Fetch and authenticate the complete membership object and index through
@@ -130,8 +135,8 @@ commands.spawn((
 `GaussianSplattingPlugin` supplies the required cloud/transform/visibility and
 resident render systems when `lod_render_path_is_supported()` is true. The
 normal `lod_render` and WebGPU `web` bundles satisfy that storage-buffer radix
-contract; `buffer_texture` and WebGL2 builds retain the codec and CPU planner
-but cannot instantiate the resident renderer. Attaching both
+contract. Builds without the runtime renderer retain the codec and CPU planner.
+Attaching both
 `GaussianLodgeHandle` and `GaussianLodHandle` is rejected; the two strategies
 never race for one cloud.
 

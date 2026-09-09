@@ -138,14 +138,11 @@ pub struct GaussianLodStatus {
     /// Sum of per-edge absolute weight change times mapped record count for the
     /// most recently published drawable frame.
     pub view_blend_weighted_record_energy: f32,
-    /// Compatibility classification for a currently pending topology handoff.
+    /// Presentation mode for a currently pending topology handoff.
     /// ACTIVE camera-conditioned blending is reported by the `view_blend_*`
     /// fields instead, so `None` still means no handoff is blocking the visible
     /// cut.
     pub temporal_transition_mode: Option<LodTemporalTransitionMode>,
-    /// Legacy timed-transition progress. Camera-conditioned view blending has
-    /// no global progress scalar and reports `None` here.
-    pub temporal_transition_progress: Option<f32>,
     pub debug_preset: LodDebugPreset,
     pub debug_availability: GaussianLodDebugAvailability,
     pub failure: Option<LodOrchestrationFailure>,
@@ -175,7 +172,6 @@ impl GaussianLodStatus {
             && self.view_blend_max_delta == other.view_blend_max_delta
             && self.view_blend_weighted_record_energy == other.view_blend_weighted_record_energy
             && self.temporal_transition_mode == other.temporal_transition_mode
-            && self.temporal_transition_progress == other.temporal_transition_progress
             && self.debug_preset == other.debug_preset
             && self.debug_availability == other.debug_availability
             && self.failure == other.failure
@@ -264,10 +260,9 @@ fn publish_gaussian_lod_status(
         let mut view_blend_max_delta = 0.0_f32;
         let mut view_blend_weighted_record_energy = 0.0_f32;
         let mut temporal_transition_mode = None;
-        let mut temporal_transition_progress: Option<f32> = None;
         if let Some(candidates) = candidates {
             for candidate in candidates.by_camera.values() {
-                // This compatibility field describes only a pending topology
+                // This field describes only a pending topology
                 // handoff. ACTIVE adjacent-edge blending is stable presentation
                 // state and is exposed through the aggregate view-blend fields
                 // below, never as an indefinitely pending transition.
@@ -284,12 +279,6 @@ fn publish_gaussian_lod_status(
                     }
                     _ => LodTemporalTransitionMode::BoundedHardCohort,
                 });
-                if let Some(progress) = candidate.temporal_transition_progress() {
-                    temporal_transition_progress = Some(
-                        temporal_transition_progress
-                            .map_or(progress, |current| current.min(progress)),
-                    );
-                }
             }
         }
         let requested_target = settings.quality_target();
@@ -470,7 +459,6 @@ fn publish_gaussian_lod_status(
             view_blend_max_delta,
             view_blend_weighted_record_energy,
             temporal_transition_mode,
-            temporal_transition_progress,
             debug_preset,
             debug_availability,
             failure,
@@ -826,7 +814,6 @@ mod tests {
             pending.temporal_transition_mode,
             Some(LodTemporalTransitionMode::Morphing)
         );
-        assert_eq!(pending.temporal_transition_progress, None);
 
         app.world()
             .get::<LodRenderCandidates>(entity)
@@ -840,7 +827,6 @@ mod tests {
             fallback.temporal_transition_mode,
             Some(LodTemporalTransitionMode::BoundedHardCohort)
         );
-        assert_eq!(fallback.temporal_transition_progress, None);
 
         phase.store(
             crate::stream::render_commit::LOD_RENDER_ACTIVE,
@@ -854,7 +840,6 @@ mod tests {
         assert!(active.achieved_max_target_ratio.is_some());
         assert!(active.submitted_candidates > 0);
         assert_eq!(active.temporal_transition_mode, None);
-        assert_eq!(active.temporal_transition_progress, None);
 
         let active_selected = active.selected_gaussians;
         let active_submitted = active.submitted_candidates;

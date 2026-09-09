@@ -3,7 +3,7 @@ use std::io::{self, BufRead};
 use bevy_interleave::prelude::Planar;
 use ply_rs::{
     parser::Parser,
-    ply::{ElementDef, Encoding, Property, PropertyAccess, PropertyType, ScalarType},
+    ply::{ElementDef, Encoding, Header, Property, PropertyAccess, PropertyType, ScalarType},
 };
 
 use crate::{
@@ -194,24 +194,7 @@ pub fn stream_ply_3d_with_sh_compatibility(
     let parser = Parser::<Gaussian3d>::new();
     let header = parser.read_header(&mut reader)?;
 
-    // This converter consumes only Gaussian vertices. Validate the complete
-    // header before reading any payload so an ignored face/list element cannot
-    // make the upstream parser allocate from an attacker-controlled list count.
-    let mut remapped_vertex = None;
-    for (_, element) in &header.elements {
-        if element.name == "vertex" {
-            let sh_layout = validate_gaussian_3d_properties(element, sh_compatibility)?;
-            remapped_vertex = Some(remap_gaussian_3d_element(element, sh_layout));
-        } else if element.count != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "unsupported non-vertex PLY element '{}' with {} records",
-                    element.name, element.count
-                ),
-            ));
-        }
-    }
+    let remapped_vertex = validated_vertex_definition(&header, sh_compatibility)?;
 
     let mut summary = PlyStreamSummary::default();
     let mut batch = Vec::new();
@@ -223,6 +206,9 @@ pub fn stream_ply_3d_with_sh_compatibility(
     })?;
 
     for (_, element) in &header.elements {
+        if element.count == 0 {
+            continue;
+        }
         let parse_element = if element.name == "vertex" {
             remapped_vertex.as_ref().ok_or_else(|| {
                 io::Error::new(
@@ -233,8 +219,15 @@ pub fn stream_ply_3d_with_sh_compatibility(
         } else {
             element
         };
+        let mut binary = match header.encoding {
+            Encoding::Ascii => None,
+            encoding => Some(BinaryGaussianDecoder::new(parse_element, encoding)?),
+        };
         for element_index in 0..element.count {
-            let mut value = read_ply_element(&parser, &mut reader, parse_element, header.encoding)?;
+            let mut value = match &mut binary {
+                Some(decoder) => decoder.read(&mut reader)?,
+                None => read_ply_element(&parser, &mut reader, parse_element, header.encoding)?,
+            };
             if element.name != "vertex" {
                 continue;
             }
@@ -258,6 +251,173 @@ pub fn stream_ply_3d_with_sh_compatibility(
         consume_batch(&batch)?;
     }
     Ok(summary)
+}
+
+/// Read and validate the Gaussian property layout without consuming the payload.
+/// The returned count is declared by the header; only a complete stream validates
+/// that these vertices exist and contain finite, normalizable Gaussian values.
+pub fn inspect_ply_3d(
+    mut reader: &mut dyn BufRead,
+    sh_compatibility: PlyShCompatibility,
+) -> io::Result<PlyStreamSummary> {
+    let header = Parser::<Gaussian3d>::new().read_header(&mut reader)?;
+    let vertex = validated_vertex_definition(&header, sh_compatibility)?;
+    Ok(PlyStreamSummary {
+        logical_count: vertex.map_or(0, |element| element.count as u64),
+    })
+}
+
+fn validated_vertex_definition(
+    header: &Header,
+    sh_compatibility: PlyShCompatibility,
+) -> io::Result<Option<ElementDef>> {
+    // This converter consumes only Gaussian vertices. Validate the complete
+    // header before reading any payload so an ignored face/list element cannot
+    // make the upstream parser allocate from an attacker-controlled list count.
+    let mut remapped_vertex = None;
+    for (_, element) in &header.elements {
+        if element.name == "vertex" {
+            let sh_layout = validate_gaussian_3d_properties(element, sh_compatibility)?;
+            remapped_vertex = Some(remap_gaussian_3d_element(element, sh_layout));
+        } else if element.count != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "unsupported non-vertex PLY element '{}' with {} records",
+                    element.name, element.count
+                ),
+            ));
+        }
+    }
+
+    Ok(remapped_vertex)
+}
+
+/// Compile binary property names and SH channel remapping once per header.
+/// The generic PLY parser clones a property-name String for every scalar; large
+/// scenes otherwise perform billions of tiny allocations across source replays.
+struct BinaryGaussianDecoder {
+    record: Vec<u8>,
+    fields: Vec<(usize, GaussianField)>,
+    little_endian: bool,
+}
+
+#[derive(Clone, Copy)]
+enum GaussianField {
+    Position(usize),
+    Visibility,
+    Sh(usize),
+    Scale(usize),
+    Opacity,
+    Rotation(usize),
+}
+
+impl GaussianField {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "x" => Some(Self::Position(0)),
+            "y" => Some(Self::Position(1)),
+            "z" => Some(Self::Position(2)),
+            "visibility" => Some(Self::Visibility),
+            "f_dc_0" => Some(Self::Sh(0)),
+            "f_dc_1" => Some(Self::Sh(1)),
+            "f_dc_2" => Some(Self::Sh(2)),
+            "scale_0" => Some(Self::Scale(0)),
+            "scale_1" => Some(Self::Scale(1)),
+            "scale_2" => Some(Self::Scale(2)),
+            "opacity" => Some(Self::Opacity),
+            "rot_0" => Some(Self::Rotation(0)),
+            "rot_1" => Some(Self::Rotation(1)),
+            "rot_2" => Some(Self::Rotation(2)),
+            "rot_3" => Some(Self::Rotation(3)),
+            _ => {
+                // These names already use the compiled channel stride. A
+                // truncated coefficient has an internal ignored name instead.
+                let index = name.strip_prefix("f_rest_")?.parse::<usize>().ok()?;
+                let stride = SH_COEFF_COUNT_PER_CHANNEL
+                    .checked_sub(1)
+                    .filter(|n| *n > 0)?;
+                let channel = index / stride;
+                let coefficient = index % stride + 1;
+                (channel < SH_CHANNELS).then_some(Self::Sh(coefficient * SH_CHANNELS + channel))
+            }
+        }
+    }
+
+    fn write(self, gaussian: &mut Gaussian3d, value: f32) {
+        match self {
+            Self::Position(index) => gaussian.position_visibility.position[index] = value,
+            Self::Visibility => gaussian.position_visibility.visibility = value,
+            Self::Sh(index) => gaussian.spherical_harmonic.set(index, value),
+            Self::Scale(index) => gaussian.scale_opacity.scale[index] = value,
+            Self::Opacity => gaussian.scale_opacity.opacity = 1.0 / (1.0 + (-value).exp()),
+            Self::Rotation(index) => gaussian.rotation.rotation[index] = value,
+        }
+    }
+}
+
+impl BinaryGaussianDecoder {
+    fn new(element: &ElementDef, encoding: Encoding) -> io::Result<Self> {
+        let mut fields = Vec::new();
+        let mut stride = 0usize;
+        for (name, property) in &element.properties {
+            let width = match property.data_type {
+                PropertyType::Scalar(ScalarType::Char | ScalarType::UChar) => 1,
+                PropertyType::Scalar(ScalarType::Short | ScalarType::UShort) => 2,
+                PropertyType::Scalar(ScalarType::Int | ScalarType::UInt | ScalarType::Float) => 4,
+                PropertyType::Scalar(ScalarType::Double) => 8,
+                PropertyType::List(_, _) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "list-valued Gaussian vertex property is not supported",
+                    ));
+                }
+            };
+            if let Some(field) = GaussianField::from_name(name) {
+                fields.push((stride, field));
+            }
+            stride = stride.checked_add(width).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "binary Gaussian vertex stride overflow",
+                )
+            })?;
+        }
+        if stride > MAX_STREAM_BATCH_ALLOCATION_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "binary Gaussian vertex exceeds the allocation safety limit",
+            ));
+        }
+        let mut record = Vec::new();
+        record.try_reserve_exact(stride).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                format!("could not reserve the binary Gaussian vertex: {error}"),
+            )
+        })?;
+        record.resize(stride, 0);
+        Ok(Self {
+            record,
+            fields,
+            little_endian: encoding == Encoding::BinaryLittleEndian,
+        })
+    }
+
+    fn read(&mut self, reader: &mut dyn BufRead) -> io::Result<Gaussian3d> {
+        reader.read_exact(&mut self.record)?;
+        let mut gaussian = Gaussian3d::default();
+        for &(offset, field) in &self.fields {
+            let bytes = self.record[offset..offset + 4].try_into().unwrap();
+            let value = if self.little_endian {
+                f32::from_le_bytes(bytes)
+            } else {
+                f32::from_be_bytes(bytes)
+            };
+            field.write(&mut gaussian, value);
+        }
+        Ok(gaussian)
+    }
 }
 
 fn read_ply_element(
@@ -447,7 +607,7 @@ fn normalize_gaussian_3d(gaussian: &mut Gaussian3d) -> Result<(), &'static str> 
     }
 
     // PLY Gaussian splat scales are logarithmic. Clamp relative outliers before exponentiation,
-    // matching the legacy loader while rejecting values that would poison hierarchy bounds.
+    // matching the in-memory loader while rejecting values that would poison hierarchy bounds.
     let mean_scale = gaussian.scale_opacity.scale.iter().sum::<f32>() / 3.0;
     if !mean_scale.is_finite() {
         return Err("scale is not finite");
@@ -684,7 +844,72 @@ mod tests {
     }
 
     #[test]
-    fn aligned_legacy_parse_does_not_add_an_extra_workgroup() {
+    fn binary_layout_matches_ascii_sh_mapping_and_rejects_truncated_records() {
+        let rest = (0..45)
+            .map(|index| index as f32 / 128.0)
+            .collect::<Vec<_>>();
+        let ascii = String::from_utf8(gaussian_ascii_ply_with_rest(&rest)).unwrap();
+        let (header, payload) = ascii.split_once("end_header\n").unwrap();
+        let values = payload
+            .split_whitespace()
+            .map(|value| value.parse::<f32>().unwrap())
+            .collect::<Vec<_>>();
+        let mut expected = Vec::new();
+        stream_ply_3d(&mut Cursor::new(ascii.as_bytes()), 1, |batch| {
+            expected.extend_from_slice(batch);
+            Ok(())
+        })
+        .unwrap();
+        for little_endian in [true, false] {
+            let encoding = if little_endian {
+                "binary_little_endian"
+            } else {
+                "binary_big_endian"
+            };
+            let mut binary = header
+                .replace("format ascii", &format!("format {encoding}"))
+                .into_bytes();
+            binary.extend_from_slice(
+                b"property uchar ignored_byte\nproperty double ignored_double\nend_header\n",
+            );
+            for value in &values {
+                binary.extend_from_slice(&if little_endian {
+                    value.to_le_bytes()
+                } else {
+                    value.to_be_bytes()
+                });
+            }
+            binary.push(127);
+            binary.extend_from_slice(&if little_endian {
+                0.375f64.to_le_bytes()
+            } else {
+                0.375f64.to_be_bytes()
+            });
+            let inspected = inspect_ply_3d(
+                &mut Cursor::new(&binary),
+                PlyShCompatibility::AllowTruncation,
+            )
+            .unwrap();
+            assert_eq!(inspected.logical_count, 1);
+            let mut actual = Vec::new();
+            stream_ply_3d(&mut Cursor::new(&binary), 1, |batch| {
+                actual.extend_from_slice(batch);
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(actual, expected);
+            binary.pop();
+            assert_eq!(
+                stream_ply_3d(&mut Cursor::new(binary), 1, |_| Ok(()))
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::UnexpectedEof
+            );
+        }
+    }
+
+    #[test]
+    fn aligned_parse_does_not_add_an_extra_workgroup() {
         let bytes = gaussian_ascii_ply(32, true);
         let mut reader = BufReader::new(Cursor::new(bytes));
         let cloud = parse_ply_3d(&mut reader).unwrap();

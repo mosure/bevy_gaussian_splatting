@@ -289,6 +289,7 @@ impl LodCodecLimits {
 #[derive(Asset, Clone, Debug, TypePath)]
 pub struct GaussianLodAsset {
     manifest: Arc<GaussianLodManifest>,
+    preparation_bytes: u64,
 }
 
 impl GaussianLodAsset {
@@ -313,9 +314,44 @@ impl GaussianLodAsset {
     /// The asset loader calls this only after [`decode_manifest`] has applied
     /// the same complete semantic validation used by [`Self::new`].
     fn from_validated_manifest(manifest: GaussianLodManifest) -> Self {
+        // Conservative input and derived-index charge. The exact process RSS
+        // remains a separate measurement; overflow fails admission closed.
+        let preparation_bytes = (manifest.nodes.len() as u64)
+            .checked_mul(512)
+            .and_then(|bytes| bytes.checked_add((manifest.pages.len() as u64).checked_mul(1024)?))
+            .and_then(|bytes| {
+                manifest.pages.iter().try_fold(bytes, |bytes, page| {
+                    bytes.checked_add(
+                        page.storage
+                            .as_ref()
+                            .map_or(0, |storage| storage.uri.len() as u64)
+                            .checked_mul(2)?,
+                    )
+                })
+            })
+            .and_then(|bytes| {
+                manifest.morph_map.as_ref().map_or(Some(bytes), |mapping| {
+                    bytes
+                        .checked_add((mapping.node_runs.capacity() as u64).checked_mul(
+                            std::mem::size_of::<
+                                crate::gaussian::formats::planar_3d_chunked::LodIndexRange,
+                            >() as u64,
+                        )?)?
+                        .checked_add(
+                            (mapping.child_run_lengths.capacity() as u64)
+                                .checked_mul(std::mem::size_of::<u16>() as u64)?,
+                        )
+                })
+            })
+            .unwrap_or(u64::MAX);
         Self {
             manifest: Arc::new(manifest),
+            preparation_bytes,
         }
+    }
+
+    pub(crate) fn preparation_bytes(&self) -> u64 {
+        self.preparation_bytes
     }
 }
 
@@ -454,7 +490,7 @@ pub fn decode_manifest(
         limits.max_manifest_bytes,
     )?;
     // Read only the fixed prefix before interpreting the versioned remainder.
-    // This preserves a useful version error for legacy 32-byte headers.
+    // This preserves a useful version error for unsupported 32-byte headers.
     if encoded.len() < 10 {
         return Err(LodCodecError::Truncated("manifest header prefix"));
     }
@@ -1266,6 +1302,31 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn package_metadata_reservation_includes_morph_run_vector_capacity() {
+        let mut manifest = crate::testing::upgrade_manifest_to_synthetic_abi16_lifecycle_fixture(
+            fixture().manifest,
+        )
+        .unwrap();
+        let baseline = GaussianLodAsset::new(manifest.clone()).unwrap();
+        let baseline_map = baseline.manifest().morph_map.as_ref().unwrap();
+        let baseline_mapping_bytes = baseline_map.node_runs.capacity()
+            * std::mem::size_of::<crate::gaussian::formats::planar_3d_chunked::LodIndexRange>()
+            + baseline_map.child_run_lengths.capacity() * std::mem::size_of::<u16>();
+        let mapping = manifest.morph_map.as_mut().unwrap();
+        mapping.node_runs.reserve_exact(37);
+        mapping.child_run_lengths.reserve_exact(4096);
+        let mapping_bytes = mapping.node_runs.capacity()
+            * std::mem::size_of::<crate::gaussian::formats::planar_3d_chunked::LodIndexRange>()
+            + mapping.child_run_lengths.capacity() * std::mem::size_of::<u16>();
+        let grown = GaussianLodAsset::new(manifest).unwrap();
+        assert!(mapping_bytes > baseline_mapping_bytes);
+        assert_eq!(
+            grown.preparation_bytes() - baseline.preparation_bytes(),
+            (mapping_bytes - baseline_mapping_bytes) as u64
+        );
     }
 
     #[cfg(feature = "io_flexbuffers")]

@@ -51,10 +51,23 @@ pub enum LodSelectionMode {
     Frozen,
 }
 
+/// How a complete hierarchy cut is presented after selection.
+///
+/// This does not change the quality target, error policy, or cut completeness.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Reflect, Serialize, Deserialize)]
+pub enum LodPresentationMode {
+    /// Use authored continuous parent/child morphs when supported.
+    #[default]
+    ContinuousMorph,
+    /// Publish complete cuts at their exact authored endpoints. No stable,
+    /// late-residency, or predictive parent/child blend is constructed.
+    Discrete,
+}
+
 /// Resolved runtime quality contract.
 ///
 /// [`GaussianLodSettings::quality`] remains the serialized presentation slider
-/// for source compatibility. Selection and status reporting should use this
+/// for authoring. Selection and status reporting should use this
 /// target so an interior slider value has an explicit screen-space meaning.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Reflect, Serialize, Deserialize)]
 pub enum LodQualityTarget {
@@ -187,7 +200,7 @@ impl LodQualityTarget {
     /// continuous authority term increasingly caps how far the structural path
     /// may exceed the advertised pixel target. Positive builder-authored
     /// fidelity certificates independently contribute coverage-aware pressure;
-    /// legacy zero/tiny certificates fail closed at quality `.95` and above.
+    /// zero/tiny certificates fail closed at quality `.95` and above.
     pub fn node_pressure(
         self,
         node_quality_threshold: f32,
@@ -252,7 +265,7 @@ impl LodQualityTarget {
 /// The normalized cubic mapping deliberately uses only presentation
 /// quality and the fixed `.99` fidelity anchor. Projection supplies the
 /// scene-scale-independent distance response. Keeping this separate from the
-/// structural coverage guard lets that compatibility contract remain unchanged.
+/// structural coverage guard preserves the authored quality contract.
 pub(crate) fn projected_error_authority(detail_fraction: f32) -> f32 {
     let normalized =
         (finite_clamp01(detail_fraction) / PROJECTED_ERROR_AUTHORITY_FULL).clamp(0.0, 1.0);
@@ -282,7 +295,7 @@ pub(crate) fn high_quality_certificate_guard(detail_fraction: f32) -> f32 {
 }
 
 /// Coverage-aware certificate demand for positive, quantized-compatible
-/// certificates. The legacy quadratic/cubic demand shape is retained inside
+/// certificates. The quadratic/cubic demand shape is retained inside
 /// the high-quality gate, but its pressure is exactly zero through `.90` and
 /// reaches its full value at `.95`.
 pub(crate) fn high_quality_certificate_demand(
@@ -314,7 +327,7 @@ fn smooth_quality_guard(detail_fraction: f32, start: f32, full: f32) -> f32 {
 ///
 /// Positive, finite, quantized-compatible certificates carry a coverage-aware
 /// demand only in the high-quality `.90` to `.95` guard band. A zero, tiny, or
-/// invalid value denotes a legacy or uncertified hierarchy: it remains
+/// invalid value denotes an uncertified hierarchy: it remains
 /// compatible below quality `.95`, then fails closed for non-original
 /// representatives at `.95` and above.
 pub(crate) fn high_fidelity_certificate_pressure(
@@ -555,6 +568,8 @@ pub struct GaussianLodSettings {
     /// Camera policy for hierarchy selection. Freezing affects the selection
     /// view only; page loading and render publication continue.
     pub selection_mode: LodSelectionMode,
+    /// Presentation of selected cuts; independent of selection quality.
+    pub presentation_mode: LodPresentationMode,
     #[reflect(ignore)]
     pub budgets: LodBudgets,
     /// Relative screen-space error that must be crossed before changing cuts.
@@ -574,6 +589,7 @@ impl Default for GaussianLodSettings {
         Self {
             quality: 1.0,
             selection_mode: LodSelectionMode::default(),
+            presentation_mode: LodPresentationMode::default(),
             budgets: LodBudgets::default(),
             hysteresis: 0.1,
             frustum_culling: true,
@@ -590,6 +606,7 @@ impl Plugin for GaussianLodSettingsPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<GaussianLodSettings>()
             .register_type::<LodSelectionMode>()
+            .register_type::<LodPresentationMode>()
             .register_type::<LodQualityTarget>()
             .register_type::<LodDegradation>();
         #[cfg(feature = "lod")]
@@ -599,13 +616,18 @@ impl Plugin for GaussianLodSettingsPlugin {
 }
 
 impl GaussianLodSettings {
+    /// Whether hierarchy presentation may construct parent/child blends.
+    pub fn allows_view_blend(&self) -> bool {
+        self.presentation_mode == LodPresentationMode::ContinuousMorph
+    }
+
     /// Classifies the endpoint contract. Invalid values are made safe here, but
     /// callers loading external configuration should still call [`Self::validate`].
     pub fn quality_endpoint(&self) -> LodQualityEndpoint {
         self.quality_target().endpoint()
     }
 
-    /// Resolves the compatibility quality slider into the runtime contract.
+    /// Resolves the authored quality slider into the runtime contract.
     ///
     /// This is the authoritative selection target. In particular, quality one
     /// is reported as [`LodQualityTarget::Original`], not as an approximation
@@ -1086,7 +1108,7 @@ mod tests {
     }
 
     #[test]
-    fn certificate_pressure_preserves_legacy_values_then_fails_closed_at_point_ninety_five() {
+    fn certificate_pressure_preserves_uncertified_values_then_fails_closed_at_point_ninety_five() {
         assert_eq!(
             high_fidelity_certificate_pressure(0.5, 0.25, 0.0, false),
             0.0
@@ -1307,6 +1329,25 @@ mod tests {
     }
 
     #[test]
+    fn presentation_mode_defaults_to_morph_and_preserves_the_selection_target() {
+        let mut settings: GaussianLodSettings =
+            serde_json::from_str(r#"{"quality":0.35}"#).unwrap();
+        assert_eq!(
+            settings.presentation_mode,
+            LodPresentationMode::ContinuousMorph
+        );
+        assert!(settings.allows_view_blend());
+        let target = settings.quality_target();
+        settings.presentation_mode = LodPresentationMode::Discrete;
+        assert!(!settings.allows_view_blend());
+        assert_eq!(settings.quality_target(), target);
+        let encoded = serde_json::to_string(&settings).unwrap();
+        let decoded: GaussianLodSettings = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, settings);
+        assert!(encoded.contains("Discrete"));
+    }
+
+    #[test]
     fn default_reflection_exposes_only_primary_lod_controls() {
         let settings = GaussianLodSettings::default();
         let ReflectRef::Struct(reflected) = settings.reflect_ref() else {
@@ -1315,7 +1356,7 @@ mod tests {
         let fields = (0..reflected.field_len())
             .filter_map(|index| reflected.name_at(index))
             .collect::<Vec<_>>();
-        assert_eq!(fields, ["quality", "selection_mode"]);
+        assert_eq!(fields, ["quality", "selection_mode", "presentation_mode"]);
     }
 
     #[test]

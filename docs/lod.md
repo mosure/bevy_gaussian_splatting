@@ -4,6 +4,9 @@ The LoD system selects a camera-aware, globally covering hierarchy cut, streams
 or materializes the required pages into a bounded atlas, compacts visible
 records on the GPU, and renders them through the ordinary Gaussian raster path.
 
+The [migration guide](lod_migration.md) lists the branch's breaking API and
+feature changes and shows how to select the supported experimental renderers.
+
 The promoted product surface is deliberately small:
 
 - `GaussianLodSettings::quality` controls detail from `0` (coarsest) to `1`
@@ -83,8 +86,8 @@ For bounded-refinement MomentMerge packages (builder/reducer pairs `(14, 3)`,
 whole-level bootstrap antichain capped at 8 pages, 8,192 active records, and
 2 MiB each of encoded, decoded, and GPU staging payload. It is published only
 after the whole antichain is generation-current, then retained unchanged until
-the camera target reaches a quiescent fixed point. Legacy
-external ABI 5/6 packages do not qualify for this presentation path. Ordinary
+the camera target reaches a quiescent fixed point. External ABI 5/6 packages
+do not qualify for this presentation path. Ordinary
 resident ancestor waves are never exposed. When the bootstrap, root recovery,
 and all-resident camera target can coexist for one atomic handoff, a stationary
 package therefore produces at most the bootstrap and final target cuts. If that
@@ -216,12 +219,15 @@ Progressive CPU builder ABI 14 calibrates representative opacity against a
 conservative all-view projected alpha-mass bound so thin anisotropic surfaces
 cannot become oversized bright representatives. External-memory ABI 15 remains
 readable as the reducer-3 bounded multi-representative format. The current
-external writer emits ABI 16 / MomentMerge v4: it retains ABI 15's
+external writer emits ABI 17 / MomentMerge v4: it retains ABI 15's
 original-source accumulation and bounded amplification, adds bounded spatial
 fitting, and serializes a compact monotone immediate-child-record to
-parent-record map for temporal morphing. ABI 15 remains readable but is not
-relabeled or mutated. Readable legacy external CPU/GPU ABIs 5/6 remain on
-reducer v2 and do not claim the v3/v4 proof.
+parent-record map for temporal morphing. Readers also accept external ABIs
+5/6 with reducer v2 and ABI 15 with reducer v3 under their own format
+contracts; ABI 16/v4 remains readable with the same required morph map. ABI 17
+excludes un-emitted candidate proxies from spatial bounds while retaining their
+conservative error and certificate envelope. Page payloads, topology, and
+construction resource bounds are unchanged. ABI 5/6 data does not claim the v3/v4 proof.
 
 The v4 spatial fitter evaluates every authored-support-touching node pair
 inside one same-depth future-parent cohort. The validated branching limit of 32
@@ -251,7 +257,7 @@ The manifest records:
 - bounds, quality interval, error, and high-fidelity certificate;
 - page encoding, length, checksum, and optional storage location;
 - builder ABI, reducer version, and required format features;
-- for ABI 16, morph-map schema 1 plus one validated positive `u16` run per
+- for ABIs 16/17, morph-map schema 1 plus one validated positive `u16` run per
   parent-local record, ordered by manifest child and page-local record order.
 
 Validation rejects cycles, invalid ranges, heterogeneous shared pages,
@@ -329,13 +335,15 @@ before atomic publication; it is an output limit, not a promise that the final
 serializer never temporarily reaches that size.
 
 `--gpu-preprocess` explicitly enables bounded GPU canonical preprocessing and
-run sorting; parsing, external merge, the ABI 16 MomentMerge v4 hierarchy and
+run sorting; parsing, external merge, the MomentMerge v4 hierarchy and
 morph map, encoding, verification, and atomic publication remain on the CPU.
-GPU setup is never implicit. The old `--gpu-hierarchy` spelling remains a CLI
-alias, but it no longer selects the visually unsafe legacy GPU v2 hierarchy
-reducer. A future GPU hierarchy path must match the CPU v4 topology, opacity,
-spatial-fit, morph, certificate, and render-quality oracles before it can
-replace this conservative stage.
+Library callers use `lod_build_gpu::sort::GpuLodBatchSorter` through
+`GpuExternalLodBatchPreprocessor`. The sorter allocates bounded source, key,
+output, status, command, and readback buffers. Its CLI limits are
+`--gpu-max-input-bytes`, `--gpu-max-sort-commands`, and
+`--gpu-max-readback-bytes`. This offline preprocessing option is independent
+of runtime GPU hierarchy traversal; it does not construct or fit hierarchy
+representatives on the GPU.
 
 ## Selection, residency, and commit
 
@@ -354,10 +362,10 @@ a spatial safety invariant, not a presentation signal: those partial cuts stay
 hidden while requests are queued, in flight, preprocessing, or capacity
 blocked. The bridge performs one atomic replacement only after the target is
 drained, or after a bounded terminal cut has reached a stable fixed point.
-For a categorical legacy package, one bounded authored substitution is not
-itself that fixed point; an unchanged request continues through as many
+For a package using categorical transitions, one bounded authored substitution
+is not itself that fixed point; an unchanged request continues through as many
 complete cohorts as required and ownership follows a stable no-transition
-update. ABI 16 ownership instead follows the coherent drawable edge table: a
+update. ABI 16/17 ownership instead follows the coherent drawable edge table: a
 stable fractional presentation may own the stationary request when every
 expected consumer is published and no edge has recovery lag or invalid
 pressure. A quiescent rendered target has no missing consumers or requested
@@ -365,14 +373,14 @@ pages, reports the target satisfied without degradation, and agrees with the
 public count and quality status.
 
 Selector hysteresis suppresses small cut oscillations. For readable packages
-without the ABI 16 map, a categorical topology demand must persist for two
-consecutive selection frames before admission. Each legacy categorical frame
+without the morph map, a categorical topology demand must persist for two
+consecutive selection frames before admission. Each categorical frame
 admits at most 256 authored substitutions and targets changed-record work of
 `min(ceil(active_records / 24), 256 * 1024 records)`. One indivisible hierarchy
 cohort may overshoot that record budget so the parent/children substitution
 remains atomic.
 
-ABI 16 presentation has no serialized cohort clock. Its immutable adjacent
+ABI 16/17 presentation has no serialized cohort clock. Its immutable adjacent
 parent/children edges persist across compatible cut replacements, and every
 retained render view owns independent displayed and desired weights for those
 edges. Multiple edges can therefore overlap and respond independently. In
@@ -390,7 +398,7 @@ run to an endpoint merely because frames elapsed. Every presentation range set
 remains a bounded, globally covering antichain. Quality zero and one remain
 categorical endpoints.
 
-For a direct ABI 16 parent/children edge, the runtime expands the validated
+For a direct ABI 16/17 parent/children edge, the runtime expands the validated
 monotone runs into a bounded destination-cardinality GPU lookup. Refinement
 draws the target child records; coarsening temporarily retains the old child
 records until their split-parent endpoint is exact. Positions and covariance
@@ -524,11 +532,10 @@ cargo bench --locked --no-default-features \
 
 The opt-in GPU target compares canonical CPU preprocessing plus Morton sorting
 with the complete production GPU-assisted external preprocessor, including the
-CPU support-bound reconstruction after GPU readback. It also labels and
-measures the legacy ABI 6/v2 leaf and internal reduction primitives as
-experimental microbenchmarks; those are not the ABI 16/v4 hierarchy path and are
-not an end-to-end CPU/GPU quality or speed comparison. Merely compiling this
-target never opens an adapter; execution requires an explicit environment flag:
+CPU support-bound reconstruction after GPU readback. These measurements cover
+bounded preprocessing and sorting, not end-to-end package construction or
+representative quality. Merely compiling this target never opens an adapter;
+execution requires an explicit environment flag:
 
 ```bash
 RUN_GPU_LOD_BENCHMARKS=1 cargo bench --locked --no-default-features \
@@ -588,7 +595,7 @@ Deterministic CPU camera traces measure motion-cancelled temporal residuals,
 They distinguish frontier identity rather than count alone, bound settled-cut
 noise and cut-event spikes separately. A separate compatibility trace verifies
 that pre-ABI16 packages without morph payloads bound each categorical cohort's
-event energy relative to an immediate coarsening jump. ABI 16 instead evaluates
+event energy relative to an immediate coarsening jump. ABIs 16/17 instead evaluate
 persistent per-view edge weights directly from the current camera; its monotone
 parent map and optical-depth morph are an authored hierarchy transition, not the
 paper's per-ray depth-sort ordering, and do not claim StopThePop's ordering

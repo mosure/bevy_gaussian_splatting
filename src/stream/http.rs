@@ -166,6 +166,20 @@ pub trait HttpRangeClient {
 
     fn begin(&mut self, request: HttpFetchRequest) -> Result<Self::Ticket, HttpClientFailure>;
     fn poll(&mut self, ticket: &Self::Ticket) -> HttpClientPoll;
+    /// Returns an optional checksum computed with the response on the client's
+    /// worker. The hint belongs only to the accompanying `Ready` body and must
+    /// equal [`super::transport::page_checksum64`] of those exact bytes.
+    ///
+    /// Existing clients can keep implementing only `poll`; the transport
+    /// computes their checksum as before. A hint avoids that caller-thread
+    /// byte scan but never replaces HTTP validation or downstream payload and
+    /// authenticated codec verification. Incorrect hints fail that boundary.
+    fn poll_with_payload_checksum(
+        &mut self,
+        ticket: &Self::Ticket,
+    ) -> (HttpClientPoll, Option<u64>) {
+        (self.poll(ticket), None)
+    }
     fn cancel(&mut self, ticket: &Self::Ticket);
 }
 
@@ -234,7 +248,16 @@ impl<Client: HttpRangeClient> HttpRangePageTransport<Client> {
             validate_http_location(page_id, location, config.max_encoded_page_bytes)?;
             resolve_page_url(&config.base_url, &location.uri)?;
         }
-        Ok(Self {
+        Ok(Self::from_prevalidated_locations(config, locations, client))
+    }
+
+    /// Package compilation checked configuration and locations incrementally.
+    pub(crate) fn from_prevalidated_locations(
+        config: HttpRangeTransportConfig,
+        locations: ManifestPageLocations,
+        client: Client,
+    ) -> Self {
+        Self {
             config,
             locations,
             client,
@@ -243,7 +266,7 @@ impl<Client: HttpRangeClient> HttpRangePageTransport<Client> {
             observed_versions: BTreeMap::new(),
             expected_versions: BTreeMap::new(),
             validation_descriptors: BTreeMap::new(),
-        })
+        }
     }
 
     /// Enables optional manifest-level decoded page validation inside the HTTP
@@ -391,6 +414,7 @@ impl<Client: HttpRangeClient> HttpRangePageTransport<Client> {
         &mut self,
         attempt: FetchAttempt<Client::Ticket>,
         response: HttpFetchResponse,
+        payload_checksum: Option<u64>,
     ) -> Result<PagePayload, ResponseDisposition<Client::Ticket>> {
         if is_retryable_status(response.status) {
             let failure = HttpClientFailure::new(
@@ -443,7 +467,14 @@ impl<Client: HttpRangeClient> HttpRangePageTransport<Client> {
                 },
             ));
         }
-        let payload = PagePayload::new(attempt.request.page_id, response.bytes);
+        let payload = match payload_checksum {
+            Some(checksum) => PagePayload {
+                page_id: attempt.request.page_id,
+                bytes: response.bytes,
+                checksum,
+            },
+            None => PagePayload::new(attempt.request.page_id, response.bytes),
+        };
         if let Some(descriptor) = self.validation_descriptors.get(&attempt.request.page_id) {
             let mut limits = LodCodecLimits::default();
             limits.max_page_bytes = limits.max_page_bytes.max(attempt.location.encoded_len);
@@ -541,7 +572,10 @@ impl<Client: HttpRangeClient> LodPageTransport for HttpRangePageTransport<Client
                 }
             }
             HttpTicketState::Fetching(attempt) => {
-                match self.client.poll(&attempt.client_ticket) {
+                let (response, payload_checksum) = self
+                    .client
+                    .poll_with_payload_checksum(&attempt.client_ticket);
+                match response {
                     HttpClientPoll::Pending => {
                         // Poll the client before applying the transport's
                         // fallback wall-clock timeout. Native and browser
@@ -579,7 +613,7 @@ impl<Client: HttpRangeClient> LodPageTransport for HttpRangePageTransport<Client
                         PagePoll::Pending
                     }
                     HttpClientPoll::Ready(response) => {
-                        match self.handle_response(attempt, response) {
+                        match self.handle_response(attempt, response, payload_checksum) {
                             Ok(payload) => PagePoll::Ready(payload),
                             Err(ResponseDisposition::Failed(error)) => PagePoll::Failed(error),
                             Err(ResponseDisposition::Retry { state }) => match state {
@@ -655,7 +689,10 @@ fn validate_header_name(header: &str) -> Result<(), HttpRangeTransportError> {
     Ok(())
 }
 
-fn resolve_page_url(base_url: &str, uri: &str) -> Result<String, HttpRangeTransportError> {
+pub(crate) fn resolve_page_url(
+    base_url: &str,
+    uri: &str,
+) -> Result<String, HttpRangeTransportError> {
     if uri.is_empty()
         || uri.starts_with('/')
         || uri.contains("://")
@@ -676,7 +713,7 @@ fn resolve_page_url(base_url: &str, uri: &str) -> Result<String, HttpRangeTransp
     Ok(format!("{base_url}{separator}{uri}"))
 }
 
-fn validate_http_location(
+pub(crate) fn validate_http_location(
     page: LodPageId,
     location: &ManifestPageLocation,
     max_encoded_page_bytes: u64,

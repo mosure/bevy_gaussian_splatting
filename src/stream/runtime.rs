@@ -7,8 +7,12 @@
 //! pass. No operation allocates in proportion to the manifest's virtual source
 //! Gaussian count.
 
+mod discrete;
+#[cfg(lod_render_path)]
+mod gpu;
+
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
     fmt,
     num::NonZeroU32,
     sync::Arc,
@@ -21,17 +25,13 @@ use crate::{
     gaussian::{
         formats::{
             planar_3d_chunked::{
-                LodBounds, LodNodeId, LodPageDescriptor, LodPageId, LodPageRange,
-                PlanarGaussian3dPage,
+                LodNodeId, LodPageDescriptor, LodPageId, LodPageRange, PlanarGaussian3dPage,
             },
-            planar_3d_lod::{
-                GaussianLodManifest, LOD_REQUIRED_FEATURE_SHARED_NODE_PAGES, MOMENT_MERGE_VERSION,
-                gaussian_support_bounds,
-            },
+            planar_3d_lod::{GaussianLodManifest, LOD_REQUIRED_FEATURE_SHARED_NODE_PAGES},
         },
         lod_settings::{
             GaussianLodSettings, GaussianStreamingSettings, LodDegradation, LodEffectiveStatus,
-            LodQualityEndpoint, LodQualityTarget, LodSelectionMode,
+            LodPresentationMode, LodQualityEndpoint, LodQualityTarget, LodSelectionMode,
         },
     },
     io::lod::LodCodecLimits,
@@ -44,9 +44,11 @@ use crate::{
             apply_temporal_substitution_step, select_frontier_with_visibility,
             temporal_frontier_with_visibility, temporal_substitution_candidates,
         },
+        memory::{LodMemoryCategory, LodMemoryLease, LodMemoryLedger},
+        preparation::PreparationBudget,
         preprocess::{
             LodPagePreprocessAdmissionError, LodPagePreprocessError, LodPagePreprocessInput,
-            LodPagePreprocessStats, LodPagePreprocessor,
+            LodPagePreprocessStats, LodPagePreprocessor, SharedPageNodeRange,
         },
         transport::{
             LodPageTransport, LodPageTransportFailure, PagePoll, PageRequest, PageRequestClass,
@@ -119,6 +121,7 @@ pub struct LodCandidateFrontier {
     candidate_count: u32,
     quality_status: LodEffectiveStatus,
     selection_view_frozen: bool,
+    presentation_mode: LodPresentationMode,
     /// This candidate is the runtime-owned globally covering coarse guard, not
     /// the ordinary camera-selected detail frontier.
     coverage_guard: bool,
@@ -144,7 +147,7 @@ pub enum LodTemporalTransitionMode {
 /// rasterization. `split_count` is the number of child-cardinality records
 /// which share the same parent representative at the parent endpoint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LodTemporalMorphRecord {
+pub struct LodViewBlendRecord {
     pub parent_physical_index: u32,
     pub split_count: u32,
 }
@@ -393,18 +396,18 @@ fn lod_view_blend_batch_pressures_are_valid(
 
 /// One contiguous child atlas range and its record-relative direct-map start.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LodTemporalMorphDescriptor {
+pub struct LodViewBlendDescriptor {
     pub child_physical_start: u32,
     pub child_count: u32,
     pub mapping_start: u32,
-    /// Dense index into [`LodTemporalMorphBatch::edges`]. Direction never enters
+    /// Dense index into [`LodViewBlendBatch::edges`]. Direction never enters
     /// the shader payload; one parent-to-child weight applies in both directions.
     pub edge_index: u32,
 }
 
 fn view_blend_batch_structure_is_valid(
     edges: &[LodViewBlendEdge],
-    descriptors: &[LodTemporalMorphDescriptor],
+    descriptors: &[LodViewBlendDescriptor],
 ) -> bool {
     let mut endpoint_nodes = HashSet::new();
     edges.iter().all(|edge| {
@@ -457,33 +460,83 @@ fn manifest_ordered_morph_presentation_ranges(
         .collect()
 }
 
-/// Bounded destination-cardinality morph payload for one complete-cut cohort.
+/// Camera-conditioned, child-cardinality payload for adjacent hierarchy edges.
 ///
 /// `presentation_ranges` is always a complete antichain. Refinement uses the
 /// target children directly; coarsening temporarily retains the old children
 /// until their parent-split endpoint is exact. `required_ranges` is the
 /// generation-safe union of presentation, target, and parent lookup sources.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LodTemporalMorphBatch {
-    identity: LodTemporalMorphIdentity,
+#[derive(Debug)]
+pub struct LodViewBlendBatch {
+    identity: LodViewBlendIdentity,
     presentation_ranges: Vec<LodPhysicalRange>,
     required_ranges: Vec<LodPhysicalRange>,
     edges: Vec<LodViewBlendEdge>,
-    descriptors: Vec<LodTemporalMorphDescriptor>,
-    records: Vec<LodTemporalMorphRecord>,
+    descriptors: Vec<LodViewBlendDescriptor>,
+    records: Vec<LodViewBlendRecord>,
+    /// Shared through the outer Arc. Deep cloning this payload would require
+    /// new admission, so callers clone Arc<LodViewBlendBatch> instead.
+    memory_reservation: Option<LodMemoryLease>,
+}
+
+impl PartialEq for LodViewBlendBatch {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity == other.identity
+            && self.presentation_ranges == other.presentation_ranges
+            && self.required_ranges == other.required_ranges
+            && self.edges == other.edges
+            && self.descriptors == other.descriptors
+            && self.records == other.records
+    }
+}
+impl Eq for LodViewBlendBatch {}
+
+/// Peak live capacity of the existing builder: expanded parent records,
+/// child-owned copies, growing final mapping, range vectors, nested edge
+/// vectors, descriptor vectors, and bounded ordering/validation scratch.
+/// Allocator bookkeeping is outside the ledger; retained Vec capacities are
+/// measured before unused scratch reservation is released.
+fn temporal_morph_build_capacity_bytes(
+    target_ranges: usize,
+    edges: usize,
+    identity: LodViewBlendIdentity,
+) -> Option<u64> {
+    let targets = u64::try_from(target_ranges).ok()?;
+    let edges = u64::try_from(edges).ok()?;
+    let descriptors = u64::from(identity.descriptor_count);
+    let records = u64::from(identity.mapping_record_count);
+    let range_slots = targets
+        .checked_mul(2)?
+        .checked_add(descriptors.checked_mul(2)?)?
+        .checked_add(edges)?;
+    records
+        .checked_mul(4)?
+        .checked_mul(std::mem::size_of::<LodViewBlendRecord>() as u64)?
+        .checked_add(
+            range_slots
+                .checked_mul(4)?
+                .checked_mul(std::mem::size_of::<LodPhysicalRange>() as u64)?,
+        )?
+        .checked_add(targets.checked_add(descriptors)?.checked_mul(256)?)?
+        .checked_add(edges.checked_mul(std::mem::size_of::<LodViewBlendEdge>() as u64)?)?
+        .checked_add(descriptors.checked_mul(2)?.checked_mul(
+            (std::mem::size_of::<LodNodeId>() + std::mem::size_of::<LodViewBlendMetric>()) as u64,
+        )?)?
+        .checked_add(descriptors.checked_mul(128)?)?
+        .checked_add((2 * std::mem::size_of::<LodViewBlendBatch>()) as u64)
 }
 
 /// Compact immutable content identity for a morph batch. Runtime and render
 /// hot paths compare this instead of scanning the expanded direct-record map.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct LodTemporalMorphIdentity {
+pub struct LodViewBlendIdentity {
     primary: u64,
     secondary: u64,
     descriptor_count: u32,
     mapping_record_count: u32,
 }
 
-impl LodTemporalMorphIdentity {
+impl LodViewBlendIdentity {
     pub fn primary(self) -> u64 {
         self.primary
     }
@@ -501,8 +554,26 @@ impl LodTemporalMorphIdentity {
     }
 }
 
-impl LodTemporalMorphBatch {
-    pub fn identity(&self) -> LodTemporalMorphIdentity {
+impl LodViewBlendBatch {
+    fn allocation_capacity_bytes(&self) -> Option<u64> {
+        fn vector_bytes<T>(values: &Vec<T>) -> Option<u64> {
+            (values.capacity() as u64).checked_mul(std::mem::size_of::<T>() as u64)
+        }
+        let fixed = (std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64;
+        let bytes = fixed
+            .checked_add(vector_bytes(&self.presentation_ranges)?)?
+            .checked_add(vector_bytes(&self.required_ranges)?)?
+            .checked_add(vector_bytes(&self.edges)?)?
+            .checked_add(vector_bytes(&self.descriptors)?)?
+            .checked_add(vector_bytes(&self.records)?)?;
+        self.edges.iter().try_fold(bytes, |bytes, edge| {
+            bytes
+                .checked_add(vector_bytes(&edge.children)?)?
+                .checked_add(vector_bytes(&edge.child_metrics)?)
+        })
+    }
+
+    pub fn identity(&self) -> LodViewBlendIdentity {
         self.identity
     }
 
@@ -518,23 +589,14 @@ impl LodTemporalMorphBatch {
         &self.edges
     }
 
-    pub fn descriptors(&self) -> &[LodTemporalMorphDescriptor] {
+    pub fn descriptors(&self) -> &[LodViewBlendDescriptor] {
         &self.descriptors
     }
 
-    pub fn records(&self) -> &[LodTemporalMorphRecord] {
+    pub fn records(&self) -> &[LodViewBlendRecord] {
         &self.records
     }
 }
-
-/// Camera-continuous presentation names. The on-disk ABI retains its historical
-/// `morph_map` spelling; new runtime/render code should use these aliases.
-pub type LodViewBlendRecord = LodTemporalMorphRecord;
-pub type LodViewBlendDescriptor = LodTemporalMorphDescriptor;
-pub type LodViewBlendBatch = LodTemporalMorphBatch;
-pub type LodViewBlendIdentity = LodTemporalMorphIdentity;
-pub type LodViewBlendMode = LodTemporalTransitionMode;
-pub type LodViewBlend = LodTemporalTransition;
 
 /// Observable bounded work used to advance one complete hierarchy cut.
 #[derive(Clone, Debug, PartialEq)]
@@ -548,7 +610,7 @@ pub struct LodTemporalTransition {
     changed_gaussians: u64,
     atomic_budget_overshoot: u64,
     mode: LodTemporalTransitionMode,
-    morph: Option<Arc<LodTemporalMorphBatch>>,
+    morph: Option<Arc<LodViewBlendBatch>>,
 }
 
 impl LodTemporalTransition {
@@ -568,17 +630,11 @@ impl LodTemporalTransition {
         self.initial_weight_bits.get(edge_index).copied()
     }
 
-    /// Compatibility accessor for the removed cohort clock. View-blend
-    /// weights are independently evaluated from each current render view.
-    pub fn progress(&self) -> f32 {
-        0.0
-    }
-
     pub fn mode(&self) -> LodTemporalTransitionMode {
         self.mode
     }
 
-    pub fn morph(&self) -> Option<&LodTemporalMorphBatch> {
+    pub fn morph(&self) -> Option<&LodViewBlendBatch> {
         self.morph.as_deref()
     }
 
@@ -631,6 +687,7 @@ impl LodCandidateFrontier {
                 requested_pages: 0,
             },
             selection_view_frozen,
+            presentation_mode: LodPresentationMode::ContinuousMorph,
             coverage_guard: false,
             temporal_transition: None,
         })
@@ -639,12 +696,7 @@ impl LodCandidateFrontier {
     /// Defensive package-orchestration fixture for a complete cut that reads no
     /// atlas data. Production selectors currently retain a globally covering
     /// frontier and therefore cannot naturally emit this shape.
-    #[cfg(all(
-        test,
-        not(target_arch = "wasm32"),
-        feature = "sort_radix",
-        not(feature = "buffer_texture")
-    ))]
+    #[cfg(all(test, not(target_arch = "wasm32"), feature = "sort_radix"))]
     pub(crate) fn complete_empty_for_test(
         view: LodRuntimeViewId,
         settings: &GaussianLodSettings,
@@ -659,6 +711,7 @@ impl LodCandidateFrontier {
                 ..Default::default()
             },
             selection_view_frozen: settings.selection_mode == LodSelectionMode::Frozen,
+            presentation_mode: settings.presentation_mode,
             coverage_guard: false,
             temporal_transition: None,
         }
@@ -686,6 +739,7 @@ impl LodCandidateFrontier {
             && self.candidate_count == other.candidate_count
             && self.physical_ranges == other.physical_ranges
             && self.ancestor_fallback_nodes == other.ancestor_fallback_nodes
+            && self.presentation_mode == other.presentation_mode
             && match (&self.temporal_transition, &other.temporal_transition) {
                 (Some(left), Some(right)) => left.same_render_payload(right),
                 (None, None) => true,
@@ -703,6 +757,7 @@ impl LodCandidateFrontier {
             && self.candidate_count == other.candidate_count
             && self.physical_ranges == other.physical_ranges
             && self.ancestor_fallback_nodes == other.ancestor_fallback_nodes
+            && self.presentation_mode == other.presentation_mode
     }
 
     pub fn candidate_count(&self) -> u32 {
@@ -719,6 +774,11 @@ impl LodCandidateFrontier {
     /// on entry into [`LodSelectionMode::Frozen`].
     pub fn selection_view_frozen(&self) -> bool {
         self.selection_view_frozen
+    }
+
+    /// Presentation policy captured with this complete cut.
+    pub fn presentation_mode(&self) -> LodPresentationMode {
+        self.presentation_mode
     }
 
     /// True for the bounded, permanently resident coarse cut that remains safe
@@ -738,8 +798,9 @@ impl LodCandidateFrontier {
         mode: LodTemporalTransitionMode,
     ) -> Self {
         let morph = (mode == LodTemporalTransitionMode::Morphing).then(|| {
-            Arc::new(LodTemporalMorphBatch {
-                identity: LodTemporalMorphIdentity {
+            Arc::new(LodViewBlendBatch {
+                memory_reservation: None,
+                identity: LodViewBlendIdentity {
                     primary: 1,
                     secondary: 2,
                     descriptor_count: 0,
@@ -799,8 +860,9 @@ impl LodCandidateFrontier {
             changed_gaussians: 2,
             atomic_budget_overshoot: 0,
             mode: LodTemporalTransitionMode::Morphing,
-            morph: Some(Arc::new(LodTemporalMorphBatch {
-                identity: LodTemporalMorphIdentity {
+            morph: Some(Arc::new(LodViewBlendBatch {
+                memory_reservation: None,
+                identity: LodViewBlendIdentity {
                     primary: 3,
                     secondary: 4,
                     descriptor_count: 0,
@@ -866,6 +928,7 @@ pub struct LodStreamFrame {
     physical_ranges: Vec<LodPhysicalRange>,
     ancestor_fallback_nodes: BTreeSet<LodNodeId>,
     selection_view_frozen: bool,
+    presentation_mode: LodPresentationMode,
     /// True only after an unchanged selection reproduces the previous logical
     /// frontier for the exact view, policy, and residency revision. Transport
     /// quiescence alone is insufficient: temporal topology work deliberately
@@ -1008,6 +1071,7 @@ impl LodStreamFrame {
             self.frontier.status,
             LodCandidateFrontierBuildOptions {
                 selection_view_frozen: self.selection_view_frozen,
+                presentation_mode: self.presentation_mode,
                 coverage_guard: false,
                 temporal_transition: self.temporal_transition.clone(),
                 limit,
@@ -1035,6 +1099,7 @@ pub struct LodSplitCohortCapacityStall {
 
 struct LodCandidateFrontierBuildOptions {
     selection_view_frozen: bool,
+    presentation_mode: LodPresentationMode,
     coverage_guard: bool,
     temporal_transition: Option<LodTemporalTransition>,
     limit: u32,
@@ -1095,6 +1160,7 @@ fn build_candidate_frontier(
         candidate_count: count as u32,
         quality_status,
         selection_view_frozen: options.selection_view_frozen,
+        presentation_mode: options.presentation_mode,
         coverage_guard: options.coverage_guard,
         temporal_transition: options.temporal_transition,
     })
@@ -1214,8 +1280,8 @@ struct LodTemporalDemand {
 
 #[derive(Clone, Debug)]
 struct LodTemporalMorphCache {
-    identity: LodTemporalMorphIdentity,
-    batch: Arc<LodTemporalMorphBatch>,
+    identity: LodViewBlendIdentity,
+    batch: Arc<LodViewBlendBatch>,
 }
 
 #[derive(Clone, Debug)]
@@ -1266,7 +1332,7 @@ struct LodRuntimeCoverageGuard {
     active_gaussians: u64,
     /// True only when the package-specific cold budget admitted this complete
     /// antichain. The ordinary emergency guard remains available independently
-    /// and must not become a presentation signal for legacy coarse hierarchies.
+    /// and is not a presentation bootstrap without bounded-refinement guarantees.
     package_bootstrap: bool,
     /// Set exactly once after package orchestration publishes its first cut.
     /// Released bootstraps no longer own pins, requests, or demand priority.
@@ -1279,6 +1345,48 @@ struct LodRuntimeCoverageGuardFootprint {
     resident_bytes: u64,
     resident_gaussians: u64,
     encoded_bytes: Option<u64>,
+}
+
+struct LodPageFootprint {
+    resident_bytes: u64,
+    resident_gaussians: u64,
+    encoded_bytes: Option<u64>,
+}
+
+impl LodPageFootprint {
+    fn new() -> Self {
+        Self {
+            resident_bytes: 0,
+            resident_gaussians: 0,
+            encoded_bytes: Some(0),
+        }
+    }
+
+    fn add(&mut self, descriptor: &LodPageDescriptor) -> Result<(), LodRuntimeError> {
+        self.resident_bytes = self
+            .resident_bytes
+            .checked_add(descriptor.decoded_len)
+            .ok_or(LodRuntimeError::PhysicalIndexOverflow)?;
+        self.resident_gaussians = self
+            .resident_gaussians
+            .checked_add(u64::from(descriptor.gaussian_count))
+            .ok_or(LodRuntimeError::PhysicalIndexOverflow)?;
+        self.encoded_bytes = self.encoded_bytes.and_then(|bytes| {
+            descriptor
+                .storage
+                .as_ref()
+                .and_then(|storage| bytes.checked_add(storage.encoded_len))
+        });
+        Ok(())
+    }
+
+    fn totals(self) -> (u64, u64, Option<u64>) {
+        (
+            self.resident_bytes,
+            self.resident_gaussians,
+            self.encoded_bytes,
+        )
+    }
 }
 
 /// Package-only budget for one globally complete cold-start antichain.
@@ -1303,6 +1411,16 @@ pub(crate) struct LodPackageBootstrapBudget {
 pub(crate) struct LodPackageTargetPlan {
     pages: BTreeSet<LodPageId>,
     views: Vec<LodPackageTargetView>,
+    /// Proven package-only complete categorical transaction. Exact physical
+    /// union admission allows missing intermediate rungs to be bypassed.
+    discrete_direct_transaction: bool,
+}
+
+pub(crate) struct LodPackageTargetCandidates {
+    pub views: Vec<(LodRuntimeViewId, LodCandidateFrontier)>,
+    /// The admitted cut still equals the current camera's authoritative cut.
+    /// A useful older complete cut may publish without completing that request.
+    pub matches_live_target: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1310,15 +1428,28 @@ struct LodPackageTargetView {
     view: LodRuntimeViewId,
     frontier: LodFrontier<LodNodeId>,
     selection_view_frozen: bool,
+    presentation_mode: LodPresentationMode,
+    /// The admitted adjacent wave already proved these complete substitutions.
+    /// Share that topology through readiness polls instead of walking the same
+    /// current/destination ancestor paths while page I/O is still pending.
+    discrete_wave: Option<Arc<discrete::PreparedDiscreteWave>>,
 }
 
 impl LodPackageTargetPlan {
     pub(crate) fn pages(&self) -> &BTreeSet<LodPageId> {
         &self.pages
     }
+
+    pub(crate) fn nodes_for_view(&self, view: LodRuntimeViewId) -> Option<&[LodNodeId]> {
+        self.views
+            .iter()
+            .find(|target| target.view == view)
+            .map(|target| target.frontier.nodes.as_slice())
+    }
 }
 
 impl LodRuntimeCoverageGuard {
+    #[cfg(test)]
     fn new(
         hierarchy: &CompiledManifestLodHierarchy,
         settings: &GaussianLodSettings,
@@ -1326,14 +1457,37 @@ impl LodRuntimeCoverageGuard {
         Self::new_with_package_bootstrap(hierarchy, settings, None)
     }
 
+    #[cfg(test)]
     fn new_with_package_bootstrap(
         hierarchy: &CompiledManifestLodHierarchy,
         settings: &GaussianLodSettings,
         package_budget: Option<LodPackageBootstrapBudget>,
     ) -> Result<Self, LodRuntimeError> {
-        let mut nodes = hierarchy.roots().to_vec();
-        nodes.sort_unstable();
-        let mut footprint = Self::footprint(hierarchy, &nodes)?;
+        bevy::tasks::block_on(Self::prepare_with_package_bootstrap(
+            hierarchy,
+            settings,
+            package_budget,
+            &PreparationBudget::new(usize::MAX),
+        ))
+    }
+
+    async fn prepare_with_package_bootstrap(
+        hierarchy: &CompiledManifestLodHierarchy,
+        settings: &GaussianLodSettings,
+        package_budget: Option<LodPackageBootstrapBudget>,
+        work: &PreparationBudget,
+    ) -> Result<Self, LodRuntimeError> {
+        let mut ordered_roots = BTreeSet::new();
+        for &node in hierarchy.roots() {
+            work.record().await;
+            ordered_roots.insert(node);
+        }
+        let mut nodes = Vec::with_capacity(ordered_roots.len());
+        for node in ordered_roots {
+            work.record().await;
+            nodes.push(node);
+        }
+        let mut footprint = Self::prepare_footprint(hierarchy, &nodes, work).await?;
         let resident_pages = u64::try_from(footprint.pages.len()).unwrap_or(u64::MAX);
         if resident_pages > u64::from(settings.budgets.max_resident_pages) {
             return Err(LodRuntimeError::CoverageGuardPagesExceedLimit {
@@ -1365,23 +1519,38 @@ impl LodRuntimeCoverageGuard {
         }
 
         let package_eligible = if let Some(budget) = package_budget {
+            // Validated bounded-refinement manifests include both progressive
+            // v3 and spatial v4 reducers. Restricting this to v3 leaves spatial
+            // packages blank until the entire requested deep cut is resident,
+            // despite an already decoded, complete startup guard.
             hierarchy
                 .manifest()
                 .build
                 .has_bounded_refinement_amplification()
-                && hierarchy.manifest().build.reducer_version == MOMENT_MERGE_VERSION
                 && Self::package_bootstrap_footprint_fits(&footprint, settings, budget)
-                && Self::has_transition_headroom(hierarchy, &nodes, &footprint, settings)?
+                && Self::prepare_has_transition_headroom(
+                    hierarchy, &nodes, &footprint, settings, work,
+                )
+                .await?
         } else {
             false
         };
         if package_eligible {
             let budget = package_budget.expect("checked package bootstrap budget");
             if settings.quality_endpoint() != LodQualityEndpoint::Coarsest {
-                while let Some(next_nodes) = Self::next_complete_level(hierarchy, &nodes) {
-                    let next = Self::footprint(hierarchy, &next_nodes)?;
+                while let Some(next_nodes) =
+                    Self::prepare_next_complete_level(hierarchy, &nodes, work).await
+                {
+                    let next = Self::prepare_footprint(hierarchy, &next_nodes, work).await?;
                     if !Self::package_bootstrap_footprint_fits(&next, settings, budget)
-                        || !Self::has_transition_headroom(hierarchy, &next_nodes, &next, settings)?
+                        || !Self::prepare_has_transition_headroom(
+                            hierarchy,
+                            &next_nodes,
+                            &next,
+                            settings,
+                            work,
+                        )
+                        .await?
                     {
                         break;
                     }
@@ -1407,14 +1576,19 @@ impl LodRuntimeCoverageGuard {
         // individually valid guard that lacks this transition headroom would
         // permanently prevent a complete root forest from becoming resident.
         let root_page_count = footprint.pages.len();
-        let root_pages = footprint.pages.clone();
+        let root_pages = Self::copy_pages(&footprint.pages, work).await;
         if u64::from(settings.budgets.max_resident_pages) > resident_pages {
-            while let Some(next_nodes) = Self::next_complete_level(hierarchy, &nodes) {
-                let next = Self::footprint(hierarchy, &next_nodes)?;
-                let mut transition_pages = root_pages.clone();
-                transition_pages.extend(next.pages.iter().copied());
+            while let Some(next_nodes) =
+                Self::prepare_next_complete_level(hierarchy, &nodes, work).await
+            {
+                let next = Self::prepare_footprint(hierarchy, &next_nodes, work).await?;
+                let mut transition_pages = Self::copy_pages(&root_pages, work).await;
+                for &page in &next.pages {
+                    work.record().await;
+                    transition_pages.insert(page);
+                }
                 let (transition_bytes, transition_gaussians, _) =
-                    Self::page_footprint(hierarchy, &transition_pages)?;
+                    Self::prepare_page_footprint(hierarchy, &transition_pages, work).await?;
                 if next.pages.len() > root_page_count
                     || transition_pages.len() > settings.budgets.max_resident_pages as usize
                     || transition_bytes > settings.budgets.max_resident_bytes
@@ -1449,26 +1623,35 @@ impl LodRuntimeCoverageGuard {
         self.is_active() && self.pages.contains(&page)
     }
 
-    fn next_complete_level(
+    async fn prepare_next_complete_level(
         hierarchy: &CompiledManifestLodHierarchy,
         nodes: &[LodNodeId],
+        work: &PreparationBudget,
     ) -> Option<Vec<LodNodeId>> {
-        let mut next = Vec::new();
+        let mut next = BTreeSet::new();
         let mut expanded = false;
         for &node in nodes {
+            work.record().await;
             let children = hierarchy.children(node);
             if children.is_empty() {
-                next.push(node);
+                next.insert(node);
             } else {
-                next.extend_from_slice(children);
+                for &child in children {
+                    work.record().await;
+                    next.insert(child);
+                }
                 expanded = true;
             }
         }
         if !expanded {
             return None;
         }
-        next.sort_unstable();
-        Some(next)
+        let mut ordered = Vec::with_capacity(next.len());
+        for node in next {
+            work.record().await;
+            ordered.push(node);
+        }
+        Some(ordered)
     }
 
     fn package_bootstrap_footprint_fits(
@@ -1496,16 +1679,21 @@ impl LodRuntimeCoverageGuard {
     /// atomic child substitution. This is the smallest useful transition
     /// proof: the selector can enter and refine guard regions one at a time
     /// before the first visible cut transfers protection to its package lease.
-    fn has_transition_headroom(
+    async fn prepare_has_transition_headroom(
         hierarchy: &CompiledManifestLodHierarchy,
         nodes: &[LodNodeId],
         footprint: &LodRuntimeCoverageGuardFootprint,
         settings: &GaussianLodSettings,
+        work: &PreparationBudget,
     ) -> Result<bool, LodRuntimeError> {
-        let root = Self::footprint(hierarchy, hierarchy.roots())?;
-        let mut base_pages = footprint.pages.clone();
-        base_pages.extend(root.pages);
-        let (base_bytes, base_gaussians, _) = Self::page_footprint(hierarchy, &base_pages)?;
+        let root = Self::prepare_footprint(hierarchy, hierarchy.roots(), work).await?;
+        let mut base_pages = Self::copy_pages(&footprint.pages, work).await;
+        for page in root.pages {
+            work.record().await;
+            base_pages.insert(page);
+        }
+        let (base_bytes, base_gaussians, _) =
+            Self::prepare_page_footprint(hierarchy, &base_pages, work).await?;
         if base_pages.len() > settings.budgets.max_resident_pages as usize
             || base_bytes > settings.budgets.max_resident_bytes
             || base_gaussians > settings.budgets.max_resident_gaussians
@@ -1513,19 +1701,21 @@ impl LodRuntimeCoverageGuard {
             return Ok(false);
         }
         for &node in nodes {
+            work.record().await;
             let children = hierarchy.children(node);
             if children.is_empty() {
                 continue;
             }
-            let mut transition_pages = base_pages.clone();
+            let mut transition_pages = Self::copy_pages(&base_pages, work).await;
             for &child in children {
+                work.record().await;
                 let representation = hierarchy
                     .representation(child)
                     .ok_or(LodRuntimeError::MissingNode(child))?;
                 transition_pages.insert(representation.page);
             }
             let (resident_bytes, resident_gaussians, _) =
-                Self::page_footprint(hierarchy, &transition_pages)?;
+                Self::prepare_page_footprint(hierarchy, &transition_pages, work).await?;
             if transition_pages.len() > settings.budgets.max_resident_pages as usize
                 || resident_bytes > settings.budgets.max_resident_bytes
                 || resident_gaussians > settings.budgets.max_resident_gaussians
@@ -1536,13 +1726,67 @@ impl LodRuntimeCoverageGuard {
         Ok(true)
     }
 
+    async fn copy_pages(
+        pages: &BTreeSet<LodPageId>,
+        work: &PreparationBudget,
+    ) -> BTreeSet<LodPageId> {
+        let mut copied = BTreeSet::new();
+        for &page in pages {
+            work.record().await;
+            copied.insert(page);
+        }
+        copied
+    }
+
+    #[cfg(test)]
     fn footprint(
         hierarchy: &CompiledManifestLodHierarchy,
         nodes: &[LodNodeId],
     ) -> Result<LodRuntimeCoverageGuardFootprint, LodRuntimeError> {
+        bevy::tasks::block_on(Self::prepare_footprint(
+            hierarchy,
+            nodes,
+            &PreparationBudget::new(usize::MAX),
+        ))
+    }
+
+    #[cfg(test)]
+    fn next_complete_level(
+        hierarchy: &CompiledManifestLodHierarchy,
+        nodes: &[LodNodeId],
+    ) -> Option<Vec<LodNodeId>> {
+        bevy::tasks::block_on(Self::prepare_next_complete_level(
+            hierarchy,
+            nodes,
+            &PreparationBudget::new(usize::MAX),
+        ))
+    }
+
+    #[cfg(test)]
+    fn has_transition_headroom(
+        hierarchy: &CompiledManifestLodHierarchy,
+        nodes: &[LodNodeId],
+        footprint: &LodRuntimeCoverageGuardFootprint,
+        settings: &GaussianLodSettings,
+    ) -> Result<bool, LodRuntimeError> {
+        bevy::tasks::block_on(Self::prepare_has_transition_headroom(
+            hierarchy,
+            nodes,
+            footprint,
+            settings,
+            &PreparationBudget::new(usize::MAX),
+        ))
+    }
+
+    async fn prepare_footprint(
+        hierarchy: &CompiledManifestLodHierarchy,
+        nodes: &[LodNodeId],
+        work: &PreparationBudget,
+    ) -> Result<LodRuntimeCoverageGuardFootprint, LodRuntimeError> {
         let mut pages = BTreeSet::new();
         let mut active_gaussians = 0_u64;
         for &node in nodes {
+            work.record().await;
             let representation = hierarchy
                 .representation(node)
                 .ok_or(LodRuntimeError::MissingNode(node))?;
@@ -1553,7 +1797,7 @@ impl LodRuntimeCoverageGuard {
         }
 
         let (resident_bytes, resident_gaussians, encoded_bytes) =
-            Self::page_footprint(hierarchy, &pages)?;
+            Self::prepare_page_footprint(hierarchy, &pages, work).await?;
 
         Ok(LodRuntimeCoverageGuardFootprint {
             pages,
@@ -1568,27 +1812,32 @@ impl LodRuntimeCoverageGuard {
         hierarchy: &CompiledManifestLodHierarchy,
         pages: &BTreeSet<LodPageId>,
     ) -> Result<(u64, u64, Option<u64>), LodRuntimeError> {
-        let mut resident_bytes = 0_u64;
-        let mut resident_gaussians = 0_u64;
-        let mut encoded_bytes = Some(0_u64);
+        let mut footprint = LodPageFootprint::new();
         for &page in pages {
-            let descriptor = hierarchy
-                .page_descriptor(page)
-                .ok_or(LodRuntimeError::MissingPageDescriptor(page))?;
-            resident_bytes = resident_bytes
-                .checked_add(descriptor.decoded_len)
-                .ok_or(LodRuntimeError::PhysicalIndexOverflow)?;
-            resident_gaussians = resident_gaussians
-                .checked_add(u64::from(descriptor.gaussian_count))
-                .ok_or(LodRuntimeError::PhysicalIndexOverflow)?;
-            encoded_bytes = encoded_bytes.and_then(|bytes| {
-                descriptor
-                    .storage
-                    .as_ref()
-                    .and_then(|storage| bytes.checked_add(storage.encoded_len))
-            });
+            footprint.add(
+                hierarchy
+                    .page_descriptor(page)
+                    .ok_or(LodRuntimeError::MissingPageDescriptor(page))?,
+            )?;
         }
-        Ok((resident_bytes, resident_gaussians, encoded_bytes))
+        Ok(footprint.totals())
+    }
+
+    async fn prepare_page_footprint(
+        hierarchy: &CompiledManifestLodHierarchy,
+        pages: &BTreeSet<LodPageId>,
+        work: &PreparationBudget,
+    ) -> Result<(u64, u64, Option<u64>), LodRuntimeError> {
+        let mut footprint = LodPageFootprint::new();
+        for &page in pages {
+            work.record().await;
+            footprint.add(
+                hierarchy
+                    .page_descriptor(page)
+                    .ok_or(LodRuntimeError::MissingPageDescriptor(page))?,
+            )?;
+        }
+        Ok(footprint.totals())
     }
 }
 
@@ -1856,6 +2105,7 @@ fn active_coarsening_holds(
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct LodHysteresisPolicy {
     target: LodQualityTarget,
+    presentation_mode: LodPresentationMode,
     hysteresis: f32,
     frustum_culling: bool,
     frustum_margin: f32,
@@ -1903,6 +2153,7 @@ impl From<&GaussianLodSettings> for LodHysteresisPolicy {
     fn from(settings: &GaussianLodSettings) -> Self {
         Self {
             target: settings.quality_target(),
+            presentation_mode: settings.presentation_mode,
             hysteresis: settings.hysteresis,
             frustum_culling: settings.frustum_culling,
             frustum_margin: settings.frustum_margin,
@@ -1919,13 +2170,6 @@ struct LodRuntimeStructuralSettings {
     max_resident_pages: u32,
     max_pending_requests: u32,
     max_encoded_page_bytes: u64,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct SharedPageNodeRange {
-    node: LodNodeId,
-    range: LodPageRange,
-    bounds: LodBounds,
 }
 
 impl LodRuntimeStructuralSettings {
@@ -1970,12 +2214,191 @@ impl LodRuntimeStructuralSettings {
     }
 }
 
+/// Transport-neutral runtime state constructed before package publication.
+pub(crate) struct PreparedLodRuntime {
+    hierarchy: CompiledManifestLodHierarchy,
+    shared_page_node_ranges: BTreeMap<LodPageId, Arc<Vec<SharedPageNodeRange>>>,
+    cache: LodPageCache,
+    queue: PageRequestQueue,
+    preprocessor: LodPagePreprocessor,
+    coverage_guard: LodRuntimeCoverageGuard,
+    maximum_page_gaussians: u32,
+    largest_decoded_page: (LodPageId, u64),
+    queue_capacity: usize,
+}
+
+impl PreparedLodRuntime {
+    pub(crate) async fn new(
+        hierarchy: CompiledManifestLodHierarchy,
+        lod_settings: &GaussianLodSettings,
+        streaming_settings: &GaussianStreamingSettings,
+        package_bootstrap: Option<LodPackageBootstrapBudget>,
+        work: &PreparationBudget,
+    ) -> Result<Self, LodRuntimeError> {
+        let shared_page_node_ranges = if hierarchy.manifest().header.required_features
+            & LOD_REQUIRED_FEATURE_SHARED_NODE_PAGES
+            != 0
+        {
+            let mut ranges_by_page = BTreeMap::<_, BTreeMap<_, _>>::new();
+            for node in &hierarchy.manifest().nodes {
+                work.record().await;
+                ranges_by_page
+                    .entry(node.representation.page)
+                    .or_default()
+                    .insert(
+                        node.representation.offset,
+                        SharedPageNodeRange {
+                            node: node.id,
+                            range: node.representation,
+                            bounds: node.bounds,
+                        },
+                    );
+            }
+            let mut shared = BTreeMap::new();
+            for (page, ranges) in ranges_by_page {
+                work.record().await;
+                if ranges.len() > 1 {
+                    let mut ordered = Vec::with_capacity(ranges.len());
+                    for range in ranges.into_values() {
+                        work.record().await;
+                        ordered.push(range);
+                    }
+                    shared.insert(page, Arc::new(ordered));
+                }
+            }
+            shared
+        } else {
+            BTreeMap::new()
+        };
+        let max_decoded_page_bytes = lod_settings
+            .budgets
+            .max_resident_bytes
+            .min(lod_settings.budgets.max_upload_bytes_per_frame);
+        let max_encoded_page_bytes = streaming_settings.effective_max_encoded_page_bytes();
+        if max_encoded_page_bytes < 44 {
+            return Err(LodRuntimeError::EncodedPageLimitTooSmall {
+                limit: max_encoded_page_bytes,
+                minimum: 44,
+            });
+        }
+        for descriptor in &hierarchy.manifest().pages {
+            work.record().await;
+            if descriptor.decoded_len > max_decoded_page_bytes {
+                return Err(LodRuntimeError::PageDecodedBytesExceedLimit {
+                    page: descriptor.id,
+                    actual: descriptor.decoded_len,
+                    limit: max_decoded_page_bytes,
+                });
+            }
+            if u64::from(descriptor.gaussian_count) > lod_settings.budgets.max_resident_gaussians {
+                return Err(LodRuntimeError::PageGaussiansExceedLimit {
+                    page: descriptor.id,
+                    actual: u64::from(descriptor.gaussian_count),
+                    limit: lod_settings.budgets.max_resident_gaussians,
+                });
+            }
+            if let Some(storage) = &descriptor.storage
+                && storage.encoded_len > max_encoded_page_bytes
+            {
+                return Err(LodRuntimeError::PageEncodedBytesExceedLimit {
+                    page: descriptor.id,
+                    actual: storage.encoded_len,
+                    limit: max_encoded_page_bytes,
+                });
+            }
+        }
+        let coverage_guard = LodRuntimeCoverageGuard::prepare_with_package_bootstrap(
+            &hierarchy,
+            lod_settings,
+            package_bootstrap,
+            work,
+        )
+        .await?;
+        let mut maximum_page_gaussians = 0;
+        let mut largest_decoded_page = None;
+        for descriptor in &hierarchy.manifest().pages {
+            work.record().await;
+            maximum_page_gaussians = maximum_page_gaussians.max(descriptor.gaussian_count);
+            if largest_decoded_page.is_none_or(|(_, bytes)| descriptor.decoded_len >= bytes) {
+                largest_decoded_page = Some((descriptor.id, descriptor.decoded_len));
+            }
+        }
+        let largest_decoded_page =
+            largest_decoded_page.ok_or(LodRuntimeError::ManifestHasNoPages)?;
+        let physical_address_count = u64::from(lod_settings.budgets.max_resident_pages)
+            .checked_mul(u64::from(maximum_page_gaussians))
+            .ok_or(LodRuntimeError::PhysicalIndexOverflow)?;
+        if physical_address_count > u64::from(u32::MAX) + 1 {
+            return Err(LodRuntimeError::AtlasAddressSpaceOverflow {
+                slots: lod_settings.budgets.max_resident_pages,
+                stride: maximum_page_gaussians,
+            });
+        }
+        let cache = LodPageCache::new(PageCacheLimits::from(&lod_settings.budgets))
+            .map_err(LodRuntimeError::Cache)?;
+        let queue_capacity = usize::try_from(lod_settings.budgets.max_pending_requests)
+            .map_err(|_| LodRuntimeError::RequestCapacityOverflow)?;
+        let queue = PageRequestQueue::new(queue_capacity).map_err(LodRuntimeError::Queue)?;
+        let preprocess_capacity = queue_capacity.min(
+            usize::try_from(streaming_settings.max_concurrent_requests)
+                .map_err(|_| LodRuntimeError::RequestCapacityOverflow)?,
+        );
+        let preprocess_byte_capacity = max_encoded_page_bytes
+            .checked_add(lod_settings.budgets.max_upload_bytes_per_frame)
+            .ok_or(LodRuntimeError::PreprocessAdmission(
+                LodPagePreprocessAdmissionError::ByteLengthOverflow,
+            ))?;
+        let preprocessor =
+            LodPagePreprocessor::with_byte_capacity(preprocess_capacity, preprocess_byte_capacity)
+                .map_err(LodRuntimeError::PreprocessAdmission)?;
+        for descriptor in &hierarchy.manifest().pages {
+            work.record().await;
+            let encoded_bytes = descriptor
+                .storage
+                .as_ref()
+                .map_or(max_encoded_page_bytes, |storage| storage.encoded_len);
+            preprocessor
+                .validate_job_bytes(encoded_bytes, descriptor.decoded_len)
+                .map_err(LodRuntimeError::PreprocessAdmission)?;
+        }
+        Ok(Self {
+            hierarchy,
+            shared_page_node_ranges,
+            cache,
+            queue,
+            preprocessor,
+            coverage_guard,
+            maximum_page_gaussians,
+            largest_decoded_page,
+            queue_capacity,
+        })
+    }
+}
+
+const MAX_LOD_FAILURE_DIAGNOSTIC_PAGES: usize = 256;
+const MAX_LOD_FAILURE_DETAIL_BYTES: usize = 2_048;
+
+fn bounded_lod_failure_detail(detail: &str) -> String {
+    if detail.len() <= MAX_LOD_FAILURE_DETAIL_BYTES {
+        return detail.to_owned();
+    }
+    let mut end = MAX_LOD_FAILURE_DETAIL_BYTES - 3;
+    while !detail.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut bounded = String::with_capacity(end + 3);
+    bounded.push_str(&detail[..end]);
+    bounded.push_str("...");
+    bounded
+}
+
 /// Long-lived bounded state for one virtual Gaussian cloud.
 pub struct LodStreamingRuntime<T: LodPageTransport> {
+    memory_ledger: LodMemoryLedger,
     hierarchy: CompiledManifestLodHierarchy,
     /// Slice-local validation plans for physical pages shared by logical nodes.
     /// Single-node pages retain the cheaper descriptor-wide preprocessing path.
-    shared_page_node_ranges: BTreeMap<LodPageId, Vec<SharedPageNodeRange>>,
+    shared_page_node_ranges: BTreeMap<LodPageId, Arc<Vec<SharedPageNodeRange>>>,
     cache: LodPageCache,
     decoded_pages: BTreeMap<LodPageId, PlanarGaussian3dPage>,
     queue: PageRequestQueue,
@@ -1983,6 +2406,9 @@ pub struct LodStreamingRuntime<T: LodPageTransport> {
     in_flight: BTreeMap<LodPageId, InFlight<T::Ticket>>,
     preprocessor: LodPagePreprocessor,
     preprocess_failures: BTreeMap<LodPageId, LodPagePreprocessError>,
+    /// Bounded diagnostic ownership, separate from exact fatal membership and
+    /// retry request/attempt tombstones over validated manifest page IDs.
+    failure_diagnostic_order: VecDeque<LodPageId>,
     /// Frame in which a rejected decoded payload queued its bounded retry.
     /// The retry remains in the ordinary request queue, but cannot start until
     /// the next frame. Package transports use that boundary to invalidate a
@@ -2008,6 +2434,10 @@ pub struct LodStreamingRuntime<T: LodPageTransport> {
     /// Last admitted/attempted key. The next cohort starts strictly after this
     /// key and wraps, providing deterministic owner/view round-robin fairness.
     split_cohort_cursor: Option<(LodRuntimeViewId, LodNodeId)>,
+    /// First successful owner of the previous Discrete package wave. The next
+    /// wave starts after it so continuously moving views share admission.
+    package_discrete_view_cursor: Option<LodRuntimeViewId>,
+    package_discrete_destination_cache: Option<discrete::budget::DiscreteDestinationCache>,
     split_cohort_capacity_stall: Option<LodSplitCohortCapacityStall>,
     coverage_guard: LodRuntimeCoverageGuard,
     atlas_layout: PageAtlasLayout,
@@ -2065,26 +2495,6 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         Self::from_compiled_hierarchy(hierarchy, transport, lod_settings, streaming_settings, None)
     }
 
-    /// Package construction variant which may promote one tightly bounded,
-    /// globally complete progressive antichain as a cold-start presentation.
-    pub(crate) fn from_validated_shared_manifest_with_package_bootstrap(
-        manifest: Arc<GaussianLodManifest>,
-        transport: T,
-        lod_settings: &GaussianLodSettings,
-        streaming_settings: &GaussianStreamingSettings,
-        bootstrap: LodPackageBootstrapBudget,
-    ) -> Result<Self, LodRuntimeError> {
-        Self::validate_creation_settings(lod_settings, streaming_settings)?;
-        let hierarchy = CompiledManifestLodHierarchy::from_validated_shared_manifest(manifest);
-        Self::from_compiled_hierarchy(
-            hierarchy,
-            transport,
-            lod_settings,
-            streaming_settings,
-            Some(bootstrap),
-        )
-    }
-
     fn validate_creation_settings(
         lod_settings: &GaussianLodSettings,
         streaming_settings: &GaussianStreamingSettings,
@@ -2105,124 +2515,45 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         streaming_settings: &GaussianStreamingSettings,
         package_bootstrap: Option<LodPackageBootstrapBudget>,
     ) -> Result<Self, LodRuntimeError> {
-        let shared_page_node_ranges = if hierarchy.manifest().header.required_features
-            & LOD_REQUIRED_FEATURE_SHARED_NODE_PAGES
-            != 0
-        {
-            let mut ranges_by_page = BTreeMap::<_, Vec<_>>::new();
-            for node in &hierarchy.manifest().nodes {
-                ranges_by_page
-                    .entry(node.representation.page)
-                    .or_default()
-                    .push(SharedPageNodeRange {
-                        node: node.id,
-                        range: node.representation,
-                        bounds: node.bounds,
-                    });
-            }
-            ranges_by_page.retain(|_, ranges| {
-                ranges.sort_unstable_by_key(|entry| entry.range.offset);
-                ranges.len() > 1
-            });
-            ranges_by_page
-        } else {
-            BTreeMap::new()
-        };
-        let max_decoded_page_bytes = lod_settings
-            .budgets
-            .max_resident_bytes
-            .min(lod_settings.budgets.max_upload_bytes_per_frame);
-        let max_encoded_page_bytes = streaming_settings.effective_max_encoded_page_bytes();
-        if max_encoded_page_bytes < 44 {
-            return Err(LodRuntimeError::EncodedPageLimitTooSmall {
-                limit: max_encoded_page_bytes,
-                minimum: 44,
-            });
+        let prepared = bevy::tasks::block_on(PreparedLodRuntime::new(
+            hierarchy,
+            lod_settings,
+            streaming_settings,
+            package_bootstrap,
+            &PreparationBudget::new(usize::MAX),
+        ))?;
+        Self::from_prepared(prepared, transport, lod_settings, streaming_settings)
+    }
+
+    pub(crate) fn set_preprocess_memory_reservations(
+        &mut self,
+        reservations: Arc<[crate::stream::memory::LodMemoryLease]>,
+    ) {
+        if let Some(reservation) = reservations.first() {
+            self.memory_ledger = reservation.ledger();
         }
-        for descriptor in &hierarchy.manifest().pages {
-            if descriptor.decoded_len > max_decoded_page_bytes {
-                return Err(LodRuntimeError::PageDecodedBytesExceedLimit {
-                    page: descriptor.id,
-                    actual: descriptor.decoded_len,
-                    limit: max_decoded_page_bytes,
-                });
-            }
-            if u64::from(descriptor.gaussian_count) > lod_settings.budgets.max_resident_gaussians {
-                return Err(LodRuntimeError::PageGaussiansExceedLimit {
-                    page: descriptor.id,
-                    actual: u64::from(descriptor.gaussian_count),
-                    limit: lod_settings.budgets.max_resident_gaussians,
-                });
-            }
-            if let Some(storage) = &descriptor.storage
-                && storage.encoded_len > max_encoded_page_bytes
-            {
-                return Err(LodRuntimeError::PageEncodedBytesExceedLimit {
-                    page: descriptor.id,
-                    actual: storage.encoded_len,
-                    limit: max_encoded_page_bytes,
-                });
-            }
-        }
-        let coverage_guard = if let Some(bootstrap) = package_bootstrap {
-            LodRuntimeCoverageGuard::new_with_package_bootstrap(
-                &hierarchy,
-                lod_settings,
-                Some(bootstrap),
-            )?
-        } else {
-            LodRuntimeCoverageGuard::new(&hierarchy, lod_settings)?
-        };
-        let maximum_page_gaussians = hierarchy
-            .manifest()
-            .pages
-            .iter()
-            .map(|descriptor| descriptor.gaussian_count)
-            .max()
-            .ok_or(LodRuntimeError::ManifestHasNoPages)?;
-        let largest_decoded_page = hierarchy
-            .manifest()
-            .pages
-            .iter()
-            .map(|descriptor| (descriptor.id, descriptor.decoded_len))
-            .max_by_key(|(_, decoded_len)| *decoded_len)
-            .ok_or(LodRuntimeError::ManifestHasNoPages)?;
-        let physical_address_count = u64::from(lod_settings.budgets.max_resident_pages)
-            .checked_mul(u64::from(maximum_page_gaussians))
-            .ok_or(LodRuntimeError::PhysicalIndexOverflow)?;
-        if physical_address_count > u64::from(u32::MAX) + 1 {
-            return Err(LodRuntimeError::AtlasAddressSpaceOverflow {
-                slots: lod_settings.budgets.max_resident_pages,
-                stride: maximum_page_gaussians,
-            });
-        }
-        let cache = LodPageCache::new(PageCacheLimits::from(&lod_settings.budgets))
-            .map_err(LodRuntimeError::Cache)?;
-        let queue_capacity = usize::try_from(lod_settings.budgets.max_pending_requests)
-            .map_err(|_| LodRuntimeError::RequestCapacityOverflow)?;
-        let queue = PageRequestQueue::new(queue_capacity).map_err(LodRuntimeError::Queue)?;
-        let preprocess_capacity = queue_capacity.min(
-            usize::try_from(streaming_settings.max_concurrent_requests)
-                .map_err(|_| LodRuntimeError::RequestCapacityOverflow)?,
-        );
-        let preprocess_byte_capacity = max_encoded_page_bytes
-            .checked_add(lod_settings.budgets.max_upload_bytes_per_frame)
-            .ok_or(LodRuntimeError::PreprocessAdmission(
-                LodPagePreprocessAdmissionError::ByteLengthOverflow,
-            ))?;
-        let preprocessor =
-            LodPagePreprocessor::with_byte_capacity(preprocess_capacity, preprocess_byte_capacity)
-                .map_err(LodRuntimeError::PreprocessAdmission)?;
-        for descriptor in &hierarchy.manifest().pages {
-            let encoded_bytes = descriptor
-                .storage
-                .as_ref()
-                .map_or(max_encoded_page_bytes, |storage| storage.encoded_len);
-            preprocessor
-                .validate_job_bytes(encoded_bytes, descriptor.decoded_len)
-                .map_err(LodRuntimeError::PreprocessAdmission)?;
-        }
+        self.preprocessor.set_memory_reservations(reservations);
+    }
+
+    pub(crate) fn from_prepared(
+        prepared: PreparedLodRuntime,
+        transport: T,
+        lod_settings: &GaussianLodSettings,
+        streaming_settings: &GaussianStreamingSettings,
+    ) -> Result<Self, LodRuntimeError> {
+        let PreparedLodRuntime {
+            hierarchy,
+            shared_page_node_ranges,
+            cache,
+            queue,
+            preprocessor,
+            coverage_guard,
+            maximum_page_gaussians,
+            largest_decoded_page,
+            queue_capacity,
+        } = prepared;
         let mut runtime = Self {
+            memory_ledger: LodMemoryLedger::default(),
             hierarchy,
             shared_page_node_ranges,
             cache,
@@ -2232,6 +2563,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             in_flight: BTreeMap::new(),
             preprocessor,
             preprocess_failures: BTreeMap::new(),
+            failure_diagnostic_order: VecDeque::new(),
             preprocess_retry_deferred_frame: BTreeMap::new(),
             transport_failures: BTreeMap::new(),
             attempts: BTreeMap::new(),
@@ -2243,6 +2575,8 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             caller_page_leases: BTreeMap::new(),
             active_split_cohort: None,
             split_cohort_cursor: None,
+            package_discrete_view_cursor: None,
+            package_discrete_destination_cache: None,
             split_cohort_capacity_stall: None,
             coverage_guard,
             atlas_layout: PageAtlasLayout::new(maximum_page_gaussians)?,
@@ -2285,6 +2619,25 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         &self.cache
     }
 
+    #[cfg(all(test, feature = "lod_build", feature = "sort_radix"))]
+    pub(crate) fn evict_unpinned_page_for_test(
+        &mut self,
+        page: LodPageId,
+    ) -> Result<(), LodRuntimeError> {
+        self.cache.remove(page).map_err(LodRuntimeError::Cache)?;
+        self.decoded_pages.remove(&page);
+        self.residency_revision = self.residency_revision.wrapping_add(1).max(1);
+        self.wake_capacity_blocked();
+        Ok(())
+    }
+
+    #[cfg(all(test, feature = "lod_build", feature = "sort_radix"))]
+    pub(crate) fn selected_history_for_test(&self, view: LodRuntimeViewId) -> &[LodNodeId] {
+        self.views
+            .get(&view)
+            .map_or(&[], |state| state.previous_frontier.as_slice())
+    }
+
     /// Capacity pressure is observable without failing the update that
     /// produced the retained ancestor cut. Multi-view callers should read this
     /// after `finish_frame`; individual frame values are point-in-time status.
@@ -2292,7 +2645,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         self.split_cohort_capacity_stall
     }
 
-    #[cfg(all(test, feature = "sort_radix", not(feature = "buffer_texture")))]
+    #[cfg(all(test, feature = "sort_radix"))]
     pub(crate) fn package_bootstrap_pages_for_test(&self) -> Option<&BTreeSet<LodPageId>> {
         (self.coverage_guard.package_bootstrap && self.coverage_guard.is_active())
             .then_some(&self.coverage_guard.pages)
@@ -2353,22 +2706,31 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             return Ok(cached.frontier.clone());
         }
 
+        #[cfg(feature = "testing")]
+        let _cpu_scope = crate::testing::lod_package_cpu::scope(
+            crate::testing::lod_package_cpu::PackageCpuScope::CanonicalSelectionMiss,
+        );
         #[cfg(test)]
         {
             self.all_resident_selection_traversals =
                 self.all_resident_selection_traversals.saturating_add(1);
         }
+        let visibility = crate::stream::hierarchy::LodViewEvaluator::from_view(selection_view);
         let target = select_frontier_with_visibility(
             &self.hierarchy,
             &|_| true,
             selection_view,
             lod_settings,
-            |_, metrics| {
+            |node, _| {
                 !lod_settings.frustum_culling
-                    || selection_view.node_is_visible(metrics, lod_settings.frustum_margin)
+                    || self.hierarchy.node(node).is_none_or(|node| {
+                        visibility.bounds_are_visible(node.bounds, lod_settings.frustum_margin)
+                    })
             },
         )
         .map_err(LodRuntimeError::Selection)?;
+        #[cfg(feature = "testing")]
+        crate::testing::lod_package_cpu::canonical_selected(target.status.visited_nodes);
         self.views
             .entry(view_id)
             .or_default()
@@ -2423,11 +2785,14 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
                 view: view_id,
                 frontier: target,
                 selection_view_frozen: lod_settings.selection_mode == LodSelectionMode::Frozen,
+                presentation_mode: lod_settings.presentation_mode,
+                discrete_wave: None,
             });
         }
         Ok(LodPackageTargetPlan {
             pages,
             views: target_views,
+            discrete_direct_transaction: false,
         })
     }
 
@@ -2436,8 +2801,13 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
     pub(crate) fn package_target_candidates(
         &mut self,
         plan: &LodPackageTargetPlan,
-        max_active_gaussians: u32,
-    ) -> Result<Option<Vec<(LodRuntimeViewId, LodCandidateFrontier)>>, LodRuntimeError> {
+        views: &[(LodRuntimeViewId, LodView)],
+        lod_settings: &GaussianLodSettings,
+    ) -> Result<Option<LodPackageTargetCandidates>, LodRuntimeError> {
+        #[cfg(feature = "testing")]
+        let _cpu_scope = crate::testing::lod_package_cpu::scope(
+            crate::testing::lod_package_cpu::PackageCpuScope::TargetCandidates,
+        );
         if plan.pages.iter().any(|page| {
             !self.cache.contains(*page)
                 || !self.decoded_pages.contains_key(page)
@@ -2445,10 +2815,107 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         }) {
             return Ok(None);
         }
+        if views.len() != plan.views.len()
+            || plan
+                .views
+                .iter()
+                .any(|target| views.iter().filter(|(id, _)| *id == target.view).count() != 1)
+        {
+            return Err(LodRuntimeError::Selection(LodSelectionError::InvalidView(
+                "package_target_views",
+            )));
+        }
+        // A physically constrained Discrete destination is a settled request
+        // while its quality status can still report Residency. Compare against
+        // the exact live planning signature, never a stale admitted camera.
+        let constrained = if lod_settings.presentation_mode == LodPresentationMode::Discrete
+            && self
+                .hierarchy
+                .manifest()
+                .build
+                .has_bounded_refinement_amplification()
+        {
+            Some(self.package_discrete_destination_plan(views, lod_settings)?)
+        } else {
+            None
+        };
         let mut candidates = Vec::with_capacity(plan.views.len());
+        let mut matches_live_target = true;
         for target in &plan.views {
-            let ancestor_fallback_nodes =
-                selected_ancestor_fallback_nodes(&self.hierarchy, &target.frontier);
+            let live_view = views.iter().find(|(id, _)| *id == target.view).unwrap().1;
+            let selection_view = self
+                .views
+                .entry(target.view)
+                .or_default()
+                .selection_view(live_view, lod_settings.selection_mode);
+            selection_view.validate().map_err(|error| match error {
+                LodSelectionError::InvalidView(field) => {
+                    LodRuntimeError::Selection(LodSelectionError::InvalidView(field))
+                }
+                _ => unreachable!("LodView::validate only emits InvalidView"),
+            })?;
+            let latest = self.all_resident_target_frontier(
+                target.view,
+                selection_view,
+                target.selection_view_frozen,
+                lod_settings,
+            )?;
+            let live_nodes = constrained
+                .as_ref()
+                .and_then(|plan| plan.views.iter().find(|view| view.view == target.view))
+                .map_or(&latest.nodes, |view| &view.frontier.nodes);
+            matches_live_target &= &target.frontier.nodes == live_nodes;
+            let ancestor_fallback_nodes = all_resident_coverage_guard_fallback_nodes(
+                &self.hierarchy,
+                &target.frontier.nodes,
+                &latest.nodes,
+            );
+            // Demand is frozen only until this admitted complete cut arrives.
+            // Its quality evidence must describe the live camera, not the pose
+            // which happened to start a delayed page request.
+            let requested_target = lod_settings.quality_target();
+            let evaluator = crate::stream::hierarchy::LodViewEvaluator::from_view(selection_view);
+            let mut achieved_max_error_px = 0.0_f32;
+            let mut achieved_max_target_ratio = 0.0_f32;
+            for &node in &target.frontier.nodes {
+                let metrics = self
+                    .hierarchy
+                    .metrics(node)
+                    .ok_or(LodRuntimeError::MissingNode(node))?;
+                if lod_settings.frustum_culling
+                    && !evaluator.bounds_are_visible(
+                        self.hierarchy
+                            .node(node)
+                            .ok_or(LodRuntimeError::MissingNode(node))?
+                            .bounds,
+                        lod_settings.frustum_margin,
+                    )
+                {
+                    continue;
+                }
+                let (error_px, pressure) = evaluator.projected_quality(
+                    metrics,
+                    requested_target,
+                    self.hierarchy.children(node).is_empty(),
+                );
+                achieved_max_error_px = achieved_max_error_px.max(error_px);
+                achieved_max_target_ratio = achieved_max_target_ratio.max(pressure);
+            }
+            let status = LodEffectiveStatus {
+                requested_target,
+                achieved_max_error_px,
+                achieved_max_target_ratio,
+                degradation: latest.status.degradation.merge(
+                    if ancestor_fallback_nodes.is_empty() {
+                        LodDegradation::None
+                    } else {
+                        LodDegradation::Residency
+                    },
+                ),
+                active_gaussians: target.frontier.status.active_gaussians,
+                visited_nodes: target.frontier.nodes.len().try_into().unwrap_or(u32::MAX),
+                requested_pages: 0,
+            };
             let physical_ranges = self.physical_ranges(&target.frontier)?;
             candidates.push((
                 target.view,
@@ -2456,17 +2923,21 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
                     target.view,
                     &physical_ranges,
                     &ancestor_fallback_nodes,
-                    target.frontier.status,
+                    status,
                     LodCandidateFrontierBuildOptions {
                         selection_view_frozen: target.selection_view_frozen,
+                        presentation_mode: target.presentation_mode,
                         coverage_guard: false,
                         temporal_transition: None,
-                        limit: max_active_gaussians,
+                        limit: lod_settings.max_active_gaussians_u32(),
                     },
                 )?,
             ));
         }
-        Ok(Some(candidates))
+        Ok(Some(LodPackageTargetCandidates {
+            views: candidates,
+            matches_live_target,
+        }))
     }
 
     pub(crate) fn has_active_package_bootstrap(&self) -> bool {
@@ -2487,6 +2958,16 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         view_id: LodRuntimeViewId,
         pages: &BTreeSet<LodPageId>,
     ) -> Result<(), LodRuntimeError> {
+        self.prime_package_pages_in_order(frame, view_id, pages, pages.iter().copied())
+    }
+
+    fn prime_package_pages_in_order(
+        &mut self,
+        frame: LodRuntimeFrameId,
+        view_id: LodRuntimeViewId,
+        pages: &BTreeSet<LodPageId>,
+        order: impl IntoIterator<Item = LodPageId>,
+    ) -> Result<(), LodRuntimeError> {
         let current = LodRuntimeFrameId(self.epoch);
         if frame != current || frame.0 == 0 {
             return Err(LodRuntimeError::InvalidFrameToken {
@@ -2497,25 +2978,48 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         if self.frame_finished {
             return Err(LodRuntimeError::FrameAlreadyFinished(frame));
         }
-        let admitted_pages = pages
+        // Terminal pages are the sparse exception to admission. Derive those
+        // exceptions without rebuilding the full resident/requested set on
+        // every held GPU frame; explicit retry and renewed residency are still
+        // observed even when requested page membership has not changed.
+        let excluded = self
+            .terminal_failures
             .iter()
+            .chain(self.speculative_prefetch_terminal_requests.keys())
             .copied()
-            .filter(|page| self.page_reserves_streaming_capacity(*page))
+            .filter(|page| pages.contains(page) && !self.cache.contains(*page))
             .collect::<BTreeSet<_>>();
         let view = self.views.entry(view_id).or_default();
         if view.requested_pages_frame != frame {
-            view.requested_pages.clear();
+            if view.requested_pages != *pages {
+                view.requested_pages.clone_from(pages);
+            }
             view.requested_pages_frame = frame;
+        } else {
+            view.requested_pages.extend(pages.iter().copied());
         }
-        view.requested_pages.extend(pages.iter().copied());
         if view.admitted_pages_frame != frame {
-            view.admitted_pages.clear();
+            let same_admission = view.admitted_pages.len() == pages.len() - excluded.len()
+                && view.admitted_pages.is_subset(pages)
+                && excluded
+                    .iter()
+                    .all(|page| !view.admitted_pages.contains(page));
+            if !same_admission {
+                view.admitted_pages.clone_from(pages);
+                for page in &excluded {
+                    view.admitted_pages.remove(page);
+                }
+            }
             view.admitted_pages_frame = frame;
+        } else {
+            view.admitted_pages
+                .extend(pages.difference(&excluded).copied());
         }
-        view.admitted_pages.extend(admitted_pages);
 
-        for &page_id in pages {
-            if self.cache.contains(page_id)
+        for page_id in order {
+            // GPU packages do not build CPU physical ranges, so this demand
+            // lookup also records use for LRU once snapshot pins later retire.
+            if self.cache.touch(page_id, self.epoch)
                 || self.in_flight.contains_key(&page_id)
                 || self.preprocessor.contains(page_id)
                 || self.queue.contains(page_id)
@@ -2572,7 +3076,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         self.finish_frame(frame)
     }
 
-    #[cfg(all(test, feature = "sort_radix", not(feature = "buffer_texture")))]
+    #[cfg(all(test, feature = "sort_radix"))]
     pub(crate) fn pending_request_count_for_test(&self) -> usize {
         self.pending_request_count()
     }
@@ -2602,12 +3106,12 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         self.transport_request_starts
     }
 
-    #[cfg(all(test, feature = "sort_radix", not(feature = "buffer_texture")))]
+    #[cfg(all(test, feature = "sort_radix"))]
     pub(crate) fn contains_view_for_test(&self, view_id: LodRuntimeViewId) -> bool {
         self.views.contains_key(&view_id)
     }
 
-    #[cfg(all(test, feature = "sort_radix", not(feature = "buffer_texture")))]
+    #[cfg(all(test, feature = "sort_radix"))]
     pub(crate) fn frozen_selection_view_for_test(
         &self,
         view_id: LodRuntimeViewId,
@@ -2679,11 +3183,17 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             self.caller_page_leases.insert(page, count - 1);
         }
         self.split_cohort_capacity_stall = None;
-        // A caller lease can be the final hold preventing a decoded page from
-        // entering the bounded atlas. Resume those requests immediately;
-        // their view demand may be unchanged, so no later pin transition is
-        // guaranteed to wake them.
-        self.wake_capacity_blocked();
+        // Retirement often releases a snapshot lease from a page still owned
+        // by newer snapshots or another view. Only its final aggregate pin
+        // creates evictable capacity; otherwise retries would fetch/decode the
+        // same inadmissible pages on every overlapping generation retirement.
+        if self
+            .cache
+            .get(page)
+            .is_some_and(|resident| resident.pin_count == 0)
+        {
+            self.wake_capacity_blocked();
+        }
         Ok(())
     }
 
@@ -2807,13 +3317,20 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         let requested_target = lod_settings.quality_target();
         let mut achieved_max_error_px = 0.0_f32;
         let mut achieved_max_target_ratio = 0.0_f32;
+        let visibility = crate::stream::hierarchy::LodViewEvaluator::from_view(selection_view);
         for &node in &self.coverage_guard.nodes {
             let metrics = self
                 .hierarchy
                 .metrics(node)
                 .ok_or(LodRuntimeError::MissingNode(node))?;
             if lod_settings.frustum_culling
-                && !selection_view.node_is_visible(metrics, lod_settings.frustum_margin)
+                && !visibility.bounds_are_visible(
+                    self.hierarchy
+                        .node(node)
+                        .ok_or(LodRuntimeError::MissingNode(node))?
+                        .bounds,
+                    lod_settings.frustum_margin,
+                )
             {
                 continue;
             }
@@ -2865,6 +3382,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             &ancestor_fallback_nodes,
             status,
             LodCandidateFrontierBuildOptions {
+                presentation_mode: lod_settings.presentation_mode,
                 selection_view_frozen: lod_settings.selection_mode == LodSelectionMode::Frozen,
                 coverage_guard: true,
                 temporal_transition: None,
@@ -2890,16 +3408,71 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
 
     /// Last typed preprocessing failure observed for a page. The entry is
     /// retained across bounded retries and cleared after success or an explicit
-    /// terminal-page retry.
+    /// terminal-page retry. Older diagnostic payloads may age out of the bounded
+    /// detail cache; terminal membership and explicit retry state remain intact.
     pub fn page_preprocess_error(&self, page: LodPageId) -> Option<&LodPagePreprocessError> {
         self.preprocess_failures.get(&page)
     }
 
     /// Last normalized transport failure observed for a page. The entry is
     /// retained across bounded retries and cleared after a payload succeeds or
-    /// an explicit terminal-page retry.
+    /// an explicit terminal-page retry. Older diagnostics may age out while the
+    /// exact terminal tombstone remains. Text is capped at 2 KiB of UTF-8.
     pub fn page_transport_failure(&self, page: LodPageId) -> Option<&LodPageTransportFailure> {
         self.transport_failures.get(&page)
+    }
+
+    /// Maximum distinct pages whose expensive failure details are retained.
+    /// Compact terminal membership, request priorities and attempt counters
+    /// remain exact over validated manifest pages for explicit retry semantics.
+    pub fn failure_diagnostic_page_capacity(&self) -> usize {
+        self.pending_request_capacity
+            .clamp(1, MAX_LOD_FAILURE_DIAGNOSTIC_PAGES)
+    }
+
+    fn retain_failure_diagnostic_page(&mut self, page: LodPageId) -> bool {
+        if self.hierarchy.page_descriptor(page).is_none() {
+            return false;
+        }
+        self.failure_diagnostic_order.retain(|entry| *entry != page);
+        self.failure_diagnostic_order.push_back(page);
+        while self.failure_diagnostic_order.len() > self.failure_diagnostic_page_capacity() {
+            let expired = self.failure_diagnostic_order.pop_front().unwrap();
+            self.preprocess_failures.remove(&expired);
+            self.transport_failures.remove(&expired);
+        }
+        true
+    }
+
+    fn record_transport_failure(&mut self, page: LodPageId, error: LodPageTransportFailure) {
+        if !self.retain_failure_diagnostic_page(page) {
+            return;
+        }
+        self.transport_failures.insert(
+            page,
+            LodPageTransportFailure::new(error.kind(), bounded_lod_failure_detail(error.detail())),
+        );
+    }
+
+    fn record_preprocess_failure(&mut self, page: LodPageId, mut error: LodPagePreprocessError) {
+        if !self.retain_failure_diagnostic_page(page) {
+            return;
+        }
+        if let LodPagePreprocessError::Codec(codec) = &mut error {
+            use crate::io::lod::LodCodecError;
+            match codec {
+                LodCodecError::InvalidShardIndex(detail)
+                | LodCodecError::Serialize(detail)
+                | LodCodecError::Deserialize(detail)
+                | LodCodecError::ManifestValidation(detail)
+                | LodCodecError::PageValidation(detail)
+                | LodCodecError::InvalidGaussian { field: detail, .. } => {
+                    *detail = bounded_lod_failure_detail(detail);
+                }
+                _ => {}
+            }
+        }
+        self.preprocess_failures.insert(page, error);
     }
 
     /// Number of transport starts attempted since the last success or explicit
@@ -3085,7 +3658,6 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             .selection_view(view, lod_settings.selection_mode);
         let selection_view_frozen = lod_settings.selection_mode == LodSelectionMode::Frozen;
 
-        let mut completed_pages = Vec::new();
         let mut preprocess_failed_pages = Vec::new();
         let mut failed_pages = Vec::new();
         self.poll_pages(frame, lod_settings, streaming_settings, &mut failed_pages)?;
@@ -3111,17 +3683,18 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             &frontier.requested_nodes,
             &mut failed_pages,
         );
-        let released_predictive_capacity =
-            if lod_settings.quality_endpoint() == LodQualityEndpoint::Continuous {
-                self.update_predictive_view_blend_demand(
-                    view_id,
-                    &frontier.nodes,
-                    selection_view,
-                    lod_settings.quality_target(),
-                )?
-            } else {
-                self.clear_predictive_view_blend_demand(view_id)?
-            };
+        let released_predictive_capacity = if lod_settings.allows_view_blend()
+            && lod_settings.quality_endpoint() == LodQualityEndpoint::Continuous
+        {
+            self.update_predictive_view_blend_demand(
+                view_id,
+                &frontier.nodes,
+                selection_view,
+                lod_settings.quality_target(),
+            )?
+        } else {
+            self.clear_predictive_view_blend_demand(view_id)?
+        };
         if released_predictive_capacity {
             self.wake_capacity_blocked();
         }
@@ -3143,11 +3716,11 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             self.record_frame_demand(frame, view_id, &frontier)
         };
         frontier.status.requested_pages = requested_pages;
-        self.commit_preprocessed_pages(
+        let completed_pages = self.commit_preprocessed_pages(
             frame,
+            None,
             lod_settings,
             streaming_settings,
-            &mut completed_pages,
             &mut preprocess_failed_pages,
             &mut failed_pages,
         )?;
@@ -3171,17 +3744,18 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
                 &frontier.requested_nodes,
                 &mut failed_pages,
             );
-            let released_predictive_capacity =
-                if lod_settings.quality_endpoint() == LodQualityEndpoint::Continuous {
-                    self.update_predictive_view_blend_demand(
-                        view_id,
-                        &frontier.nodes,
-                        selection_view,
-                        lod_settings.quality_target(),
-                    )?
-                } else {
-                    self.clear_predictive_view_blend_demand(view_id)?
-                };
+            let released_predictive_capacity = if lod_settings.allows_view_blend()
+                && lod_settings.quality_endpoint() == LodQualityEndpoint::Continuous
+            {
+                self.update_predictive_view_blend_demand(
+                    view_id,
+                    &frontier.nodes,
+                    selection_view,
+                    lod_settings.quality_target(),
+                )?
+            } else {
+                self.clear_predictive_view_blend_demand(view_id)?
+            };
             if released_predictive_capacity {
                 self.wake_capacity_blocked();
             }
@@ -3309,6 +3883,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             physical_ranges,
             ancestor_fallback_nodes,
             selection_view_frozen,
+            presentation_mode: lod_settings.presentation_mode,
             selection_stable,
             temporal_transition,
             complete_resident_cut,
@@ -3344,20 +3919,31 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             self.wake_capacity_blocked();
         }
         self.schedule_next_split_cohort(frame)?;
-        let mut demanded = self
-            .views
-            .values()
-            .filter(|view| view.admitted_pages_frame == frame)
-            .flat_map(|view| view.admitted_pages.iter().copied())
-            .collect::<BTreeSet<_>>();
-        if self.coverage_guard.is_active() {
-            demanded.extend(self.coverage_guard.pages.iter().copied());
-        }
+        self.cancel_undemanded_page_work(frame);
+        self.frame_finished = true;
+        Ok(())
+    }
+
+    // GPU packages know every participating view's demand before starting IO.
+    // They can cancel obsolete work without releasing completion holds or
+    // ending the frame before completed pages transfer into publication.
+    fn cancel_undemanded_page_work(&mut self, frame: LodRuntimeFrameId) {
+        // Pending work is bounded by request/decode admission. Query its IDs
+        // against retained view sets instead of copying every selected page
+        // into another union on every frame, including settled frames.
+        let views = &self.views;
+        let coverage_guard = &self.coverage_guard;
+        let demanded = |page: &LodPageId| {
+            coverage_guard.contains_active_page(*page)
+                || views.values().any(|view| {
+                    view.admitted_pages_frame == frame && view.admitted_pages.contains(page)
+                })
+        };
 
         let cancelled_queued = self
             .queue
             .page_ids()
-            .filter(|page| !demanded.contains(page))
+            .filter(|page| !demanded(page))
             .collect::<Vec<_>>();
         for page in &cancelled_queued {
             self.queue.remove(*page);
@@ -3369,7 +3955,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         let cancelled_in_flight = self
             .in_flight
             .keys()
-            .filter(|page| !demanded.contains(page))
+            .filter(|page| !demanded(page))
             .copied()
             .collect::<Vec<_>>();
         for page in &cancelled_in_flight {
@@ -3385,7 +3971,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             .preprocessor
             .page_ids()
             .into_iter()
-            .filter(|page| !demanded.contains(page))
+            .filter(|page| !demanded(page))
             .collect::<Vec<_>>();
         for page in &cancelled_preprocessing {
             self.preprocessor.cancel(*page);
@@ -3398,7 +3984,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         let cancelled_capacity_blocked = self
             .capacity_blocked
             .keys()
-            .filter(|page| !demanded.contains(page))
+            .filter(|page| !demanded(page))
             .copied()
             .collect::<Vec<_>>();
         for page in &cancelled_capacity_blocked {
@@ -3407,9 +3993,6 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             self.preprocess_retry_deferred_frame.remove(page);
             self.transport_failures.remove(page);
         }
-
-        self.frame_finished = true;
-        Ok(())
     }
 
     fn hold_frame_completion_page(&mut self, page: LodPageId) -> Result<(), LodRuntimeError> {
@@ -3532,9 +4115,18 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         nodes: &[LodNodeId],
     ) {
         let rendered_nodes = nodes.iter().copied().collect::<BTreeSet<_>>();
-        self.views
-            .entry(view_id)
-            .or_default()
+        let state = self.views.entry(view_id).or_default();
+        if state.previous_frontier.as_slice() != nodes {
+            // A package may publish an authenticated direct cut without ever
+            // traversing its intermediate rungs. That drawable cut, rather
+            // than older optimistic selector history, owns the next adjacent
+            // substitution's inherited endpoint.
+            state.previous_frontier.clear();
+            state.previous_frontier.extend_from_slice(nodes);
+            state.previous_lod_policy = None;
+            state.stable_selection = None;
+        }
+        state
             .late_view_blend_edges
             .retain(|parent| rendered_nodes.contains(parent));
     }
@@ -3564,12 +4156,47 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         rendered_frontier: &[LodNodeId],
         requested_nodes: &[LodNodeId],
     ) {
+        self.record_late_view_blend_demand_filtered(
+            view_id,
+            rendered_frontier,
+            requested_nodes,
+            false,
+        );
+    }
+
+    /// Records an admitted package request before its first page prime/poll.
+    /// Direct bootstrap streaming bypasses ordinary per-view selection, but a
+    /// missing descendant of a drawable retained parent has the same late
+    /// activation provenance. Resident, authenticated endpoints stay ordinary.
+    pub(crate) fn record_package_target_view_blend_demand(
+        &mut self,
+        view_id: LodRuntimeViewId,
+        rendered_frontier: &[LodNodeId],
+        target_nodes: &[LodNodeId],
+    ) {
+        self.record_late_view_blend_demand_filtered(view_id, rendered_frontier, target_nodes, true);
+    }
+
+    fn record_late_view_blend_demand_filtered(
+        &mut self,
+        view_id: LodRuntimeViewId,
+        rendered_frontier: &[LodNodeId],
+        requested_nodes: &[LodNodeId],
+        missing_only: bool,
+    ) {
         if rendered_frontier.is_empty() || requested_nodes.is_empty() {
             return;
         }
         let rendered = rendered_frontier.iter().copied().collect::<BTreeSet<_>>();
         let mut late_edges = BTreeSet::new();
         for requested in requested_nodes.iter().copied() {
+            if missing_only
+                && self.hierarchy.page(requested).is_some_and(|page| {
+                    self.cache.contains(page) && self.decoded_page(page).is_some()
+                })
+            {
+                continue;
+            }
             let mut cursor = requested;
             while let Some(parent) = self.hierarchy.parent(cursor) {
                 if rendered.contains(&parent) {
@@ -3597,6 +4224,13 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         lod_settings: &GaussianLodSettings,
     ) -> Result<LodRuntimeSelection, LodRuntimeError> {
         let endpoint = lod_settings.quality_endpoint();
+        let blend_enabled = lod_settings.allows_view_blend();
+        if !blend_enabled {
+            let state = self.views.entry(view_id).or_default();
+            state.clear_temporal_state();
+            state.late_view_blend_edges.clear();
+            state.temporal_morph_cache = None;
+        }
         let policy = LodHysteresisPolicy::from(lod_settings);
         let residency_revision = self.residency_revision;
         let stable_key = StableSelectionKey {
@@ -3611,7 +4245,14 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             .and_then(|state| state.cached_stable_selection(stable_key))
             .cloned()
         {
-            if endpoint == LodQualityEndpoint::Continuous
+            if !blend_enabled {
+                return Ok(LodRuntimeSelection {
+                    frontier: cached,
+                    temporal_transition: None,
+                });
+            }
+            if blend_enabled
+                && endpoint == LodQualityEndpoint::Continuous
                 && self.hierarchy.manifest().morph_map.is_some()
             {
                 self.record_late_view_blend_demand(view_id, &cached.nodes, &cached.requested_nodes);
@@ -3640,6 +4281,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         // The authoritative destination is stateless. Temporal confirmation
         // suppresses boundary chatter, but no prior approach direction is
         // allowed to change the final cut of a stationary camera.
+        let visibility = crate::stream::hierarchy::LodViewEvaluator::from_view(view);
         let desired = select_frontier_with_visibility(
             &self.hierarchy,
             &|node| {
@@ -3649,9 +4291,11 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             },
             view,
             lod_settings,
-            |_, metrics| {
+            |node, _| {
                 !lod_settings.frustum_culling
-                    || view.node_is_visible(metrics, lod_settings.frustum_margin)
+                    || self.hierarchy.node(node).is_none_or(|node| {
+                        visibility.bounds_are_visible(node.bounds, lod_settings.frustum_margin)
+                    })
             },
         )
         .map_err(LodRuntimeError::Selection)?;
@@ -3662,7 +4306,8 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             .map(|state| state.rendered_frontier().to_vec())
             .unwrap_or_default();
 
-        if endpoint == LodQualityEndpoint::Continuous
+        if blend_enabled
+            && endpoint == LodQualityEndpoint::Continuous
             && self.hierarchy.manifest().morph_map.is_some()
             && !rendered_frontier.is_empty()
         {
@@ -3673,7 +4318,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             );
         }
 
-        if endpoint != LodQualityEndpoint::Continuous {
+        if !blend_enabled || endpoint != LodQualityEndpoint::Continuous {
             let state = self.views.entry(view_id).or_default();
             state.clear_temporal_state();
             state.stable_selection =
@@ -3797,9 +4442,11 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             &step,
             view,
             lod_settings,
-            |_, metrics| {
+            |node, _| {
                 !lod_settings.frustum_culling
-                    || view.node_is_visible(metrics, lod_settings.frustum_margin)
+                    || self.hierarchy.node(node).is_none_or(|node| {
+                        visibility.bounds_are_visible(node.bounds, lod_settings.frustum_margin)
+                    })
             },
         )
         .map_err(LodRuntimeError::Selection)?;
@@ -4398,6 +5045,10 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         streaming_settings: &GaussianStreamingSettings,
         failed_pages: &mut Vec<LodPageId>,
     ) -> Result<(), LodRuntimeError> {
+        #[cfg(feature = "testing")]
+        let _cpu_scope = crate::testing::lod_package_cpu::scope(
+            crate::testing::lod_package_cpu::PackageCpuScope::RuntimePollPages,
+        );
         let pages = self.in_flight.keys().copied().collect::<Vec<_>>();
         for page_id in pages {
             let Some(in_flight) = self.in_flight.get(&page_id).cloned() else {
@@ -4443,13 +5094,13 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
                             max_encoded_page_bytes: streaming_settings
                                 .effective_max_encoded_page_bytes(),
                             support_sigma: self.hierarchy.manifest().build.settings.support_sigma,
+                            node_ranges: self.shared_page_node_ranges.get(&page_id).cloned(),
                         })
                         .map_err(LodRuntimeError::PreprocessAdmission)?;
                 }
                 PagePoll::Failed(error) => {
                     self.in_flight.remove(&page_id);
-                    self.transport_failures
-                        .insert(page_id, T::classify_error(&error));
+                    self.record_transport_failure(page_id, T::classify_error(&error));
                     self.retry_or_fail(
                         in_flight.request,
                         streaming_settings.retry_limit,
@@ -4473,28 +5124,49 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
     fn commit_preprocessed_pages(
         &mut self,
         frame: LodRuntimeFrameId,
+        gpu_request_order: Option<&[LodPageId]>,
         lod_settings: &GaussianLodSettings,
         streaming_settings: &GaussianStreamingSettings,
-        completed_pages: &mut Vec<LodPageId>,
         preprocess_failed_pages: &mut Vec<LodPageId>,
         failed_pages: &mut Vec<LodPageId>,
-    ) -> Result<(), LodRuntimeError> {
-        let mut ready_pages = self.preprocessor.ready_page_ids();
-        ready_pages.sort_unstable_by_key(|page| {
-            let admission_class = if self.coverage_guard.contains_active_page(*page) {
-                0
-            } else if self
-                .active_split_cohort
-                .as_ref()
-                .is_some_and(|cohort| cohort.plan.pages.contains(page))
-            {
-                1
-            } else {
-                2
-            };
-            (admission_class, *page)
-        });
-        for page_id in ready_pages {
+    ) -> Result<Vec<LodPageId>, LodRuntimeError> {
+        #[cfg(feature = "testing")]
+        let _cpu_scope = crate::testing::lod_package_cpu::scope(
+            crate::testing::lod_package_cpu::PackageCpuScope::RuntimeCommitPreprocessedPages,
+        );
+        let mut completed_pages = Vec::new();
+        if !self.preprocessor.has_ready_pages() {
+            return Ok(completed_pages);
+        }
+        let ready_pages = if let Some(order) = gpu_request_order {
+            // GPU-only packages have no CPU selector guard/cohort. Consume the
+            // current required-before-prefetch demand directly, without a
+            // demand-sized rank table or stale transport-start priorities.
+            debug_assert!(!self.coverage_guard.is_active());
+            debug_assert!(self.active_split_cohort.is_none());
+            std::borrow::Cow::Borrowed(order)
+        } else {
+            let mut pages = self.preprocessor.ready_page_ids();
+            pages.sort_unstable_by_key(|page| {
+                let admission_class = if self.coverage_guard.contains_active_page(*page) {
+                    0
+                } else if self
+                    .active_split_cohort
+                    .as_ref()
+                    .is_some_and(|cohort| cohort.plan.pages.contains(page))
+                {
+                    1
+                } else {
+                    2
+                };
+                (admission_class, *page)
+            });
+            std::borrow::Cow::Owned(pages)
+        };
+        for &page_id in ready_pages.iter() {
+            if !self.preprocessor.is_ready(page_id) {
+                continue;
+            }
             // A camera page can decode faster than a larger presentation-guard
             // page. Publishing and pinning it first could consume the final
             // cache slot and capacity-block the active global guard. Keep
@@ -4537,7 +5209,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             let page = match output.result {
                 Ok(page) => page,
                 Err(error) => {
-                    self.preprocess_failures.insert(page_id, error);
+                    self.record_preprocess_failure(page_id, error);
                     preprocess_failed_pages.push(page_id);
                     self.preprocess_retry_deferred_frame.insert(page_id, frame);
                     self.retry_or_fail(
@@ -4548,19 +5220,6 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
                     continue;
                 }
             };
-            if let Some(ranges) = self.shared_page_node_ranges.get(&page_id)
-                && let Err(error) = validate_shared_page_node_ranges(
-                    &page,
-                    ranges,
-                    self.hierarchy.manifest().build.settings.support_sigma,
-                )
-            {
-                self.preprocess_failures.insert(page_id, error);
-                preprocess_failed_pages.push(page_id);
-                self.preprocess_retry_deferred_frame.insert(page_id, frame);
-                self.retry_or_fail(output.request, streaming_settings.retry_limit, failed_pages);
-                continue;
-            }
             self.frame_decoded_bytes = self
                 .frame_decoded_bytes
                 .checked_add(descriptor.decoded_len)
@@ -4610,7 +5269,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             // become evictable.
             completed_pages.push(page_id);
         }
-        Ok(())
+        Ok(completed_pages)
     }
 
     fn retry_or_fail(
@@ -4619,6 +5278,9 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         retry_limit: u32,
         failed_pages: &mut Vec<LodPageId>,
     ) {
+        if self.hierarchy.page_descriptor(request.page_id).is_none() {
+            return;
+        }
         if self.terminal_failures.contains(&request.page_id)
             || self
                 .speculative_prefetch_terminal_requests
@@ -4666,6 +5328,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
     }
 
     fn clear_failure_state(&mut self, page: LodPageId) {
+        self.failure_diagnostic_order.retain(|entry| *entry != page);
         self.attempts.remove(&page);
         self.terminal_failures.remove(&page);
         self.terminal_requests.remove(&page);
@@ -5303,7 +5966,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         view: LodRuntimeViewId,
         _target_ranges: &[LodPhysicalRange],
         transition: &LodTemporalTransition,
-    ) -> Option<LodTemporalMorphIdentity> {
+    ) -> Option<LodViewBlendIdentity> {
         self.hierarchy.manifest().morph_map.as_ref()?;
         let mut primary = 0xcbf2_9ce4_8422_2325_u64;
         let mut secondary = 0x6eed_0e9d_a4d9_4a4f_u64;
@@ -5341,11 +6004,20 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
                 .views
                 .get(&view)
                 .is_some_and(|state| state.late_view_blend_edges.contains(&parent));
-            let edge = self.view_blend_edge_for_substitution(
-                substitution,
-                transition.initial_weight_bits(edge_index)?,
-                activation_requires_slew,
-            )?;
+            // Identity lookup must not allocate unreserved edge vectors on
+            // every cache hit. Hash the same immutable fields directly.
+            let initial_weight_bits = transition.initial_weight_bits(edge_index)?;
+            if initial_weight_bits != 0.0_f32.to_bits() && initial_weight_bits != 1.0_f32.to_bits()
+            {
+                return None;
+            }
+            let child_nodes = match substitution.key.direction {
+                LodTemporalDirection::Refine => substitution.next_nodes.as_slice(),
+                LodTemporalDirection::Coarsen => substitution.previous_nodes.as_slice(),
+            };
+            if child_nodes.is_empty() || child_nodes != self.hierarchy.children(parent) {
+                return None;
+            }
             let node_index = self.hierarchy.node_index(parent)?;
             let run_range = self
                 .hierarchy
@@ -5355,10 +6027,10 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             write(parent.0);
             write(u64::from(run_range.start));
             write(u64::from(run_range.count));
-            write(u64::from(edge.initial_weight_bits()));
-            write(u64::from(u8::from(edge.activation_requires_slew())));
-            write(edge.children().len() as u64);
-            for child in edge.children() {
+            write(u64::from(initial_weight_bits));
+            write(u64::from(u8::from(activation_requires_slew)));
+            write(child_nodes.len() as u64);
+            for child in child_nodes {
                 write(child.0);
             }
             macro_rules! write_metric {
@@ -5375,23 +6047,18 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
                     write(u64::from(u8::from(metric.original_representation)));
                 }};
             }
-            write_metric!(edge.parent_metric());
-            write(edge.child_metrics().len() as u64);
-            for metric in edge.child_metrics().iter().copied() {
-                write_metric!(metric);
+            write_metric!(LodViewBlendMetric::from_node(
+                self.hierarchy.metrics(parent)?,
+                false
+            ));
+            write(child_nodes.len() as u64);
+            for child in child_nodes.iter().copied() {
+                write_metric!(LodViewBlendMetric::from_node(
+                    self.hierarchy.metrics(child)?,
+                    self.hierarchy.children(child).is_empty(),
+                ));
             }
             write_range!(parent_range);
-            let child_nodes = match substitution.key.direction {
-                crate::stream::hierarchy::LodTemporalDirection::Refine => {
-                    substitution.next_nodes.as_slice()
-                }
-                crate::stream::hierarchy::LodTemporalDirection::Coarsen => {
-                    substitution.previous_nodes.as_slice()
-                }
-            };
-            if child_nodes != self.hierarchy.children(parent) {
-                return None;
-            }
             descriptor_count =
                 descriptor_count.checked_add(u32::try_from(child_nodes.len()).ok()?)?;
             for child in child_nodes.iter().copied() {
@@ -5400,7 +6067,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
                 write_range!(range);
             }
         }
-        Some(LodTemporalMorphIdentity {
+        Some(LodViewBlendIdentity {
             primary,
             secondary,
             descriptor_count,
@@ -5415,7 +6082,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         target: LodQualityTarget,
         target_ranges: &[LodPhysicalRange],
         transition: &LodTemporalTransition,
-    ) -> Option<Arc<LodTemporalMorphBatch>> {
+    ) -> Option<Arc<LodViewBlendBatch>> {
         let identity = self.temporal_morph_identity(view, target_ranges, transition)?;
         if let Some(batch) = self
             .views
@@ -5454,11 +6121,20 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
     fn build_temporal_morph_batch_uncached(
         &self,
         view: LodRuntimeViewId,
-        identity: LodTemporalMorphIdentity,
+        identity: LodViewBlendIdentity,
         target_ranges: &[LodPhysicalRange],
         transition: &LodTemporalTransition,
-    ) -> Option<LodTemporalMorphBatch> {
+    ) -> Option<LodViewBlendBatch> {
         self.hierarchy.manifest().morph_map.as_ref()?;
+        let peak_bytes = temporal_morph_build_capacity_bytes(
+            target_ranges.len(),
+            transition.substitutions().len(),
+            identity,
+        )?;
+        let mut memory_reservation = self
+            .memory_ledger
+            .try_reserve(LodMemoryCategory::TransitionCpu, peak_bytes)
+            .ok()?;
 
         let mut presentation = target_ranges
             .iter()
@@ -5468,7 +6144,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
         let mut required = target_ranges.to_vec();
         let mut edges = Vec::with_capacity(transition.substitutions().len());
         let mut descriptor_records =
-            Vec::<(LodTemporalMorphDescriptor, Vec<LodTemporalMorphRecord>)>::new();
+            Vec::<(LodViewBlendDescriptor, Vec<LodViewBlendRecord>)>::new();
 
         if transition.initial_weight_bits.len() != transition.substitutions().len() {
             return None;
@@ -5526,7 +6202,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
                 let parent_physical_index =
                     parent_range.physical_start.checked_add(parent_local)?;
                 expanded.extend(std::iter::repeat_n(
-                    LodTemporalMorphRecord {
+                    LodViewBlendRecord {
                         parent_physical_index,
                         split_count: u32::from(run_length),
                     },
@@ -5538,7 +6214,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             for child_range in child_ranges.iter().copied() {
                 let child_end = child_offset.checked_add(child_range.count as usize)?;
                 descriptor_records.push((
-                    LodTemporalMorphDescriptor {
+                    LodViewBlendDescriptor {
                         child_physical_start: child_range.physical_start,
                         child_count: child_range.count,
                         mapping_start: 0,
@@ -5606,14 +6282,22 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             return None;
         }
 
-        Some(LodTemporalMorphBatch {
+        let mut batch = LodViewBlendBatch {
             identity,
             presentation_ranges,
             required_ranges: required,
             edges,
             descriptors,
             records,
-        })
+            memory_reservation: None,
+        };
+        let retained_bytes = batch.allocation_capacity_bytes()?;
+        let spare = memory_reservation.bytes().checked_sub(retained_bytes)?;
+        if spare != 0 {
+            drop(memory_reservation.split_off(spare).ok()?);
+        }
+        batch.memory_reservation = Some(memory_reservation);
+        Some(batch)
     }
 
     fn physical_ranges(
@@ -5625,8 +6309,8 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
             self.physical_range_rebuilds = self.physical_range_rebuilds.saturating_add(1);
         }
         // ABI16's exact child endpoint must consume the same stable equal-key
-        // source order before and after a Morphing table retires. Legacy
-        // categorical packages retain their historical node-ID ordering.
+        // source order before and after a Morphing table retires. Hierarchies
+        // without that map use deterministic node-ID ordering.
         let presentation_nodes = if self.hierarchy.manifest().morph_map.is_some() {
             manifest_ordered_presentation_nodes(&self.hierarchy, &frontier.nodes)
                 .map_err(LodRuntimeError::MissingNode)?
@@ -5783,8 +6467,7 @@ impl<T: LodPageTransport> LodStreamingRuntime<T> {
                     started.push(request.page_id);
                 }
                 Err(error) => {
-                    self.transport_failures
-                        .insert(request.page_id, T::classify_error(&error));
+                    self.record_transport_failure(request.page_id, T::classify_error(&error));
                     self.retry_or_fail(request, streaming_settings.retry_limit, failed_pages);
                 }
             }
@@ -5814,51 +6497,6 @@ fn validate_page_range(
     } else {
         Ok(())
     }
-}
-
-fn validate_shared_page_node_ranges(
-    page: &PlanarGaussian3dPage,
-    ranges: &[SharedPageNodeRange],
-    support_sigma: f32,
-) -> Result<(), LodPagePreprocessError> {
-    for entry in ranges {
-        let end = entry
-            .range
-            .end()
-            .ok_or(LodPagePreprocessError::PayloadOutsideNodeBounds {
-                page: page.id,
-                node: entry.node,
-            })? as usize;
-        let start = entry.range.offset as usize;
-        let gaussians = page.gaussians.get(start..end).ok_or(
-            LodPagePreprocessError::PayloadOutsideNodeBounds {
-                page: page.id,
-                node: entry.node,
-            },
-        )?;
-        let mut actual_bounds: Option<LodBounds> = None;
-        for gaussian in gaussians {
-            let bounds = gaussian_support_bounds(gaussian, support_sigma)
-                .map_err(|_| LodPagePreprocessError::InvalidSupportBounds(page.id))?;
-            actual_bounds = Some(match actual_bounds {
-                Some(current) => current.union(bounds),
-                None => bounds,
-            });
-        }
-        let actual_bounds =
-            actual_bounds.ok_or(LodPagePreprocessError::PayloadOutsideNodeBounds {
-                page: page.id,
-                node: entry.node,
-            })?;
-        let epsilon = 1e-5 * entry.bounds.radius().max(actual_bounds.radius()).max(1.0);
-        if !entry.bounds.contains_with_epsilon(&actual_bounds, epsilon) {
-            return Err(LodPagePreprocessError::PayloadOutsideNodeBounds {
-                page: page.id,
-                node: entry.node,
-            });
-        }
-    }
-    Ok(())
 }
 
 fn page_codec_limits(
@@ -6342,7 +6980,7 @@ mod tests {
             vec![view_blend_test_metric(0.75, 100.0)],
             0.0,
         );
-        let descriptor = LodTemporalMorphDescriptor {
+        let descriptor = LodViewBlendDescriptor {
             child_physical_start: 0,
             child_count: 1,
             mapping_start: 0,
@@ -6364,7 +7002,7 @@ mod tests {
         nested_edge.parent = edge.children[0];
         nested_edge.children = vec![LodNodeId(3)];
         nested_edge.child_metrics = vec![view_blend_test_metric(0.9, 50.0)];
-        let nested_descriptor = LodTemporalMorphDescriptor {
+        let nested_descriptor = LodViewBlendDescriptor {
             child_physical_start: 1,
             edge_index: 1,
             ..descriptor
@@ -6494,6 +7132,101 @@ mod tests {
                 .late_view_blend_edges
                 .contains(&parent)
         );
+    }
+
+    #[test]
+    fn package_target_late_demand_requires_both_resident_and_decoded_endpoints() {
+        for (keep_slot, keep_decoded) in
+            [(true, true), (true, false), (false, true), (false, false)]
+        {
+            let mut runtime = resident_abi16_morph_fixture();
+            let view_id = LodRuntimeViewId(71);
+            let parent = runtime.hierarchy.roots()[0];
+            let children = runtime.hierarchy.children(parent).to_vec();
+            assert!(!children.is_empty());
+            let page = runtime.hierarchy.page(children[0]).unwrap();
+            assert_ne!(page, runtime.hierarchy.page(parent).unwrap());
+            if !keep_slot {
+                runtime.cache.remove(page).unwrap();
+            }
+            if !keep_decoded {
+                assert!(runtime.decoded_pages.remove(&page).is_some());
+            }
+            let pending_requests = runtime.pending_request_count();
+            let cache_stats = runtime.cache.stats();
+            // The hook records already-admitted demand; it neither initiates
+            // I/O nor treats a cache slot without authenticated decode as ready.
+            runtime.record_package_target_view_blend_demand(view_id, &[parent], &children);
+            let expected = if keep_slot && keep_decoded {
+                BTreeSet::new()
+            } else {
+                BTreeSet::from([parent])
+            };
+            assert_eq!(
+                runtime.views[&view_id].late_view_blend_edges, expected,
+                "slot={keep_slot}, decoded={keep_decoded}"
+            );
+            runtime.record_package_target_view_blend_demand(view_id, &[parent], &children);
+            assert_eq!(runtime.views[&view_id].late_view_blend_edges, expected);
+            assert_eq!(runtime.pending_request_count(), pending_requests);
+            assert_eq!(runtime.cache.stats(), cache_stats);
+        }
+    }
+
+    #[test]
+    fn package_target_late_demand_is_per_view_and_survives_arrival_cancel_and_retry() {
+        let mut runtime = resident_abi16_morph_fixture();
+        let first = LodRuntimeViewId(81);
+        let second = LodRuntimeViewId(82);
+        let parent = runtime.hierarchy.roots()[0];
+        let children = runtime.hierarchy.children(parent).to_vec();
+        assert!(!children.is_empty());
+        let page = runtime.hierarchy.page(children[0]).unwrap();
+        let decoded = runtime.decoded_pages.remove(&page).unwrap();
+        runtime.record_package_target_view_blend_demand(first, &[parent], &children);
+        assert!(!runtime.views.contains_key(&second));
+        runtime.record_package_target_view_blend_demand(second, &[parent], &children);
+        assert_eq!(
+            runtime.views[&first].late_view_blend_edges,
+            BTreeSet::from([parent])
+        );
+        assert_eq!(
+            runtime.views[&second].late_view_blend_edges,
+            BTreeSet::from([parent])
+        );
+
+        // Completing the shared payload must not rewrite either camera's
+        // pre-arrival provenance. This is the direct-bootstrap resume sequence:
+        // cancel obsolete I/O, then rebase to the cut which remained drawable.
+        runtime.decoded_pages.insert(page, decoded);
+        runtime.cancel_package_view_work(&[first]).unwrap();
+        runtime
+            .retry_from_rendered_frontier(first, &[parent])
+            .unwrap();
+        runtime.restore_rendered_frontier(first, &[parent]).unwrap();
+        runtime.record_package_target_view_blend_demand(first, &[parent], &children);
+        assert_eq!(
+            runtime.views[&first].late_view_blend_edges,
+            BTreeSet::from([parent])
+        );
+        assert_eq!(
+            runtime.views[&second].late_view_blend_edges,
+            BTreeSet::from([parent])
+        );
+
+        runtime.acknowledge_rendered_frontier(first, &children);
+        assert!(runtime.views[&first].late_view_blend_edges.is_empty());
+        assert_eq!(
+            runtime.views[&second].late_view_blend_edges,
+            BTreeSet::from([parent])
+        );
+        runtime.acknowledge_rendered_frontier(second, &[parent]);
+        assert_eq!(
+            runtime.views[&second].late_view_blend_edges,
+            BTreeSet::from([parent])
+        );
+        runtime.remove_view(second).unwrap();
+        assert!(!runtime.views.contains_key(&second));
     }
 
     struct VirtualRuntimeFixture {
@@ -6695,6 +7428,204 @@ mod tests {
         let (manifest, transport, settings, streaming) = fixture();
         let manifest = upgrade_manifest_to_synthetic_abi16_lifecycle_fixture(manifest).unwrap();
         (manifest, transport, settings, streaming)
+    }
+
+    fn resident_abi16_morph_fixture() -> LodStreamingRuntime<MemoryPageTransport> {
+        let (manifest, transport, settings, streaming) = abi16_morph_fixture();
+        let mut decode_transport = transport.clone();
+        let mut runtime =
+            LodStreamingRuntime::new(manifest, transport, &settings, &streaming).unwrap();
+        // A physical range requires the decoded payload as well as its cache
+        // slot. Decode the tiny in-memory fixture synchronously, before the
+        // TransitionCpu admission under test; no worker or GPU is involved.
+        for page in runtime.hierarchy.manifest().pages.clone() {
+            let input = memory_preprocess_input(
+                runtime.hierarchy.manifest(),
+                &mut decode_transport,
+                page.id,
+                streaming.effective_max_encoded_page_bytes(),
+            );
+            let decoded = decode_page(&input.payload.bytes, input.limits).unwrap();
+            runtime.queue.remove(page.id);
+            runtime
+                .cache
+                .insert(page.id, page.decoded_len, u64::from(page.gaussian_count), 0)
+                .unwrap();
+            runtime.decoded_pages.insert(page.id, decoded);
+        }
+        runtime
+    }
+
+    #[test]
+    fn morph_memory_admission_accounts_scratch_shared_views_and_final_owner_lifetime() {
+        use crate::stream::memory::LodMemoryLimits;
+        let mut runtime = resident_abi16_morph_fixture();
+        let parent = runtime.hierarchy.roots()[0];
+        let substitution = runtime.direct_refine_substitution(parent).unwrap();
+        let ranges = substitution
+            .next_nodes
+            .iter()
+            .map(|node| runtime.physical_range_for_node(*node).unwrap())
+            .collect::<Vec<_>>();
+        let transition =
+            view_blend_transition(vec![substitution], vec![0.0_f32.to_bits()], 0, 0).unwrap();
+        let first_view = LodRuntimeViewId(901);
+        let second_view = LodRuntimeViewId(902);
+        let identity = runtime
+            .temporal_morph_identity(first_view, &ranges, &transition)
+            .unwrap();
+        let peak = temporal_morph_build_capacity_bytes(ranges.len(), 1, identity).unwrap();
+        let ledger = LodMemoryLedger::new(LodMemoryLimits {
+            max_cpu_bytes: peak - 1,
+            max_gpu_bytes: 0,
+        });
+        runtime.memory_ledger = ledger.clone();
+        assert!(
+            runtime
+                .prepare_temporal_morph_batch(
+                    first_view,
+                    view(),
+                    LodQualityTarget::Coarsest,
+                    &ranges,
+                    &transition
+                )
+                .is_none()
+        );
+        assert_eq!(
+            ledger.snapshot().cpu_bytes,
+            0,
+            "denied scratch admission cannot retain a mapping"
+        );
+
+        ledger.set_limits(LodMemoryLimits {
+            max_cpu_bytes: peak,
+            max_gpu_bytes: 0,
+        });
+        let first = runtime
+            .prepare_temporal_morph_batch(
+                first_view,
+                view(),
+                LodQualityTarget::Coarsest,
+                &ranges,
+                &transition,
+            )
+            .unwrap();
+        let retained = first.allocation_capacity_bytes().unwrap();
+        assert!(retained > 0 && retained < peak);
+        assert_eq!(
+            ledger.snapshot().cpu_bytes,
+            retained,
+            "release scratch after shrinking to actual Vec capacities"
+        );
+        assert_eq!(first.memory_reservation.as_ref().unwrap().bytes(), retained);
+        ledger.set_limits(LodMemoryLimits {
+            max_cpu_bytes: retained,
+            max_gpu_bytes: 0,
+        });
+        let cached = runtime
+            .prepare_temporal_morph_batch(
+                first_view,
+                view(),
+                LodQualityTarget::Coarsest,
+                &ranges,
+                &transition,
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &cached));
+        assert_eq!(ledger.snapshot().allocations, 1);
+        assert!(
+            runtime
+                .prepare_temporal_morph_batch(
+                    second_view,
+                    view(),
+                    LodQualityTarget::Coarsest,
+                    &ranges,
+                    &transition
+                )
+                .is_none()
+        );
+        assert!(
+            Arc::ptr_eq(
+                &first,
+                &runtime.views[&first_view]
+                    .temporal_morph_cache
+                    .as_ref()
+                    .unwrap()
+                    .batch
+            ),
+            "denied second-view mapping must preserve the first endpoint"
+        );
+
+        ledger.set_limits(LodMemoryLimits {
+            max_cpu_bytes: retained + peak,
+            max_gpu_bytes: 0,
+        });
+        let second = runtime
+            .prepare_temporal_morph_batch(
+                second_view,
+                view(),
+                LodQualityTarget::Coarsest,
+                &ranges,
+                &transition,
+            )
+            .unwrap();
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_eq!(
+            ledger.snapshot().cpu_bytes,
+            retained + second.allocation_capacity_bytes().unwrap()
+        );
+        assert_eq!(ledger.snapshot().allocations, 2);
+        runtime.remove_view(first_view).unwrap();
+        drop(first);
+        assert_eq!(
+            ledger.snapshot().allocations,
+            2,
+            "render-side Arc still owns the first mapping"
+        );
+        drop(cached);
+        assert_eq!(ledger.snapshot().allocations, 1);
+        drop(runtime);
+        assert_eq!(
+            ledger.snapshot().allocations,
+            1,
+            "package unload cannot release an extracted mapping"
+        );
+        drop(second);
+        assert_eq!(ledger.snapshot().cpu_bytes, 0);
+        assert_eq!(ledger.snapshot().allocations, 0);
+        #[cfg(target_pointer_width = "64")]
+        assert!(temporal_morph_build_capacity_bytes(usize::MAX, usize::MAX, identity).is_none());
+    }
+
+    #[test]
+    fn cancelled_morph_construction_returns_its_entire_scratch_reservation() {
+        let runtime = resident_abi16_morph_fixture();
+        let parent = runtime.hierarchy.roots()[0];
+        let substitution = runtime.direct_refine_substitution(parent).unwrap();
+        let ranges = substitution
+            .next_nodes
+            .iter()
+            .map(|node| runtime.physical_range_for_node(*node).unwrap())
+            .collect::<Vec<_>>();
+        let mut transition =
+            view_blend_transition(vec![substitution], vec![0.0_f32.to_bits()], 0, 0).unwrap();
+        let identity = runtime
+            .temporal_morph_identity(LodRuntimeViewId(1), &ranges, &transition)
+            .unwrap();
+        transition.initial_weight_bits.clear();
+        let ledger = runtime.memory_ledger.clone();
+        assert!(
+            runtime
+                .build_temporal_morph_batch_uncached(
+                    LodRuntimeViewId(1),
+                    identity,
+                    &ranges,
+                    &transition
+                )
+                .is_none()
+        );
+        assert_eq!(ledger.snapshot().cpu_bytes, 0);
+        assert_eq!(ledger.snapshot().allocations, 0);
     }
 
     fn remap_manifest_to_reverse_sparse_node_ids(
@@ -7665,11 +8596,27 @@ mod tests {
             )
             .unwrap();
         runtime.retain_resident_page(pages[0]).unwrap();
+        runtime.retain_resident_page(pages[0]).unwrap();
+        runtime.cache.pin_fallback(pages[0]).unwrap();
+        // Construction primes coverage requests, including this fixture page.
+        // A real capacity rejection has already consumed its queue entry.
+        runtime.queue.remove(pages[1]);
         runtime.capacity_blocked.insert(
             pages[1],
             PageRequest::new(pages[1], PageRequestPriority::visible(1)),
         );
 
+        runtime.release_resident_page(pages[0]).unwrap();
+        assert_eq!(runtime.capacity_blocked.len(), 1);
+        assert!(!runtime.queue.contains(pages[1]));
+
+        // The last caller lease still shares the page with an independent
+        // fallback owner. Retiring either snapshot must leave work asleep.
+        runtime.release_resident_page(pages[0]).unwrap();
+        assert_eq!(runtime.capacity_blocked.len(), 1);
+        assert!(!runtime.queue.contains(pages[1]));
+        runtime.retain_resident_page(pages[0]).unwrap();
+        runtime.cache.unpin_fallback(pages[0]).unwrap();
         runtime.release_resident_page(pages[0]).unwrap();
 
         assert!(runtime.capacity_blocked.is_empty());
@@ -7738,6 +8685,174 @@ mod tests {
         let in_flight = frame.in_flight_requests;
         drop(runtime);
         assert_eq!(cancellations.load(Ordering::Relaxed), in_flight);
+    }
+
+    #[test]
+    fn unchanged_package_demands_refresh_epochs_and_follow_retry_residency_and_view_removal() {
+        let (manifest, transport, mut settings, streaming) = fixture();
+        settings.budgets.max_resident_pages = 2;
+        let mut runtime =
+            LodStreamingRuntime::new(manifest, transport, &settings, &streaming).unwrap();
+        let pages = runtime
+            .hierarchy
+            .manifest()
+            .pages
+            .iter()
+            .map(|page| page.id)
+            .filter(|page| !runtime.coverage_guard.pages.contains(page))
+            .take(3)
+            .collect::<Vec<_>>();
+        assert_eq!(pages.len(), 3);
+        let first = LodRuntimeViewId(11);
+        let second = LodRuntimeViewId(12);
+        let first_pages = BTreeSet::from([pages[0], pages[1]]);
+        let second_pages = BTreeSet::from([pages[1], pages[2]]);
+        for _ in 0..2 {
+            let frame = runtime.begin_frame();
+            runtime
+                .prime_package_pages_in_frame(frame, first, &first_pages)
+                .unwrap();
+            runtime
+                .prime_package_pages_in_frame(frame, second, &second_pages)
+                .unwrap();
+            runtime.finish_frame(frame).unwrap();
+            assert!(pages.iter().all(|page| runtime.queue.contains(*page)));
+            for view in [first, second] {
+                assert_eq!(runtime.views[&view].requested_pages_frame, frame);
+                assert_eq!(runtime.views[&view].admitted_pages_frame, frame);
+            }
+        }
+
+        #[cfg(lod_render_path)]
+        for order in [
+            [pages[2], pages[0], pages[1]],
+            [pages[1], pages[0], pages[2]],
+        ] {
+            runtime.reprioritize_gpu_page_requests(&order);
+            let mut queue = runtime.queue.clone();
+            let actual = std::iter::from_fn(|| queue.pop())
+                .map(|request| request.page_id)
+                .filter(|page| pages.contains(page))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                actual, order,
+                "current GPU order replaces stale queued urgency"
+            );
+        }
+
+        // An unchanged demand must notice terminal failure, then explicit retry.
+        runtime.terminal_failures.insert(pages[1]);
+        runtime.terminal_requests.insert(
+            pages[1],
+            PageRequest::new(pages[1], PageRequestPriority::visible(1)),
+        );
+        let frame = runtime.begin_frame();
+        for (view, requested) in [(first, &first_pages), (second, &second_pages)] {
+            runtime
+                .prime_package_pages_in_frame(frame, view, requested)
+                .unwrap();
+            assert!(!runtime.views[&view].admitted_pages.contains(&pages[1]));
+        }
+        runtime.finish_frame(frame).unwrap();
+        assert!(!runtime.queue.contains(pages[1]));
+        assert!(runtime.retry_terminal_failure(pages[1]).unwrap());
+
+        // A resident terminal page still consumes capacity and stays admitted.
+        let descriptor = runtime.hierarchy.page_descriptor(pages[2]).unwrap();
+        runtime
+            .cache
+            .insert(
+                pages[2],
+                descriptor.decoded_len,
+                u64::from(descriptor.gaussian_count),
+                0,
+            )
+            .unwrap();
+        let descriptor = runtime.hierarchy.page_descriptor(pages[0]).unwrap();
+        runtime
+            .cache
+            .insert(
+                pages[0],
+                descriptor.decoded_len,
+                u64::from(descriptor.gaussian_count),
+                1,
+            )
+            .unwrap();
+        runtime.terminal_failures.insert(pages[2]);
+        runtime.remove_view(first).unwrap();
+        let frame = runtime.begin_frame();
+        runtime
+            .prime_package_pages_in_frame(frame, second, &second_pages)
+            .unwrap();
+        runtime.finish_frame(frame).unwrap();
+        assert!(
+            !runtime.queue.contains(pages[0]),
+            "removed view loses demand"
+        );
+        assert!(runtime.queue.contains(pages[1]), "shared retry stays live");
+        assert_eq!(runtime.views[&second].admitted_pages, second_pages);
+        let descriptor = runtime.hierarchy.page_descriptor(pages[1]).unwrap();
+        let insertion = runtime
+            .cache
+            .insert(
+                pages[1],
+                descriptor.decoded_len,
+                u64::from(descriptor.gaussian_count),
+                frame.sequence(),
+            )
+            .unwrap();
+        assert_eq!(
+            insertion.evicted,
+            vec![pages[0]],
+            "recent GPU demand keeps an older-loaded page ahead of unused arrivals"
+        );
+
+        runtime.remove_view(second).unwrap();
+        let frame = runtime.begin_frame();
+        runtime.finish_frame(frame).unwrap();
+        assert!(!runtime.queue.contains(pages[1]));
+
+        #[cfg(lod_render_path)]
+        {
+            runtime.initialize_gpu_page_demands().unwrap();
+            let stale = pages[0];
+            let current = runtime
+                .hierarchy
+                .manifest()
+                .pages
+                .iter()
+                .map(|page| page.id)
+                .find(|page| {
+                    *page != stale
+                        && !runtime.cache.contains(*page)
+                        && !runtime.terminal_failures.contains(page)
+                })
+                .unwrap();
+            runtime.queue.enqueue(PageRequest::new(
+                stale,
+                PageRequestPriority::visible(u32::MAX),
+            ));
+            settings.presentation_mode = LodPresentationMode::Discrete;
+            settings.budgets.max_requests_per_frame = 1;
+            let mut streaming = streaming;
+            streaming.max_concurrent_requests = 1;
+            let starts = runtime.transport_request_starts;
+            runtime
+                .update_gpu_page_demands(
+                    &[(first, &BTreeSet::from([current]))],
+                    &[current],
+                    &settings,
+                    &streaming,
+                )
+                .unwrap();
+            assert_eq!(runtime.transport_request_starts, starts + 1);
+            assert!(
+                runtime.in_flight.contains_key(&current),
+                "obsolete queued work must not consume the current camera's only request start"
+            );
+            assert!(!runtime.in_flight.contains_key(&stale));
+            assert!(!runtime.queue.contains(stale));
+        }
     }
 
     #[test]
@@ -7816,6 +8931,7 @@ mod tests {
                 descriptor: preprocess_descriptor,
                 max_encoded_page_bytes: streaming.effective_max_encoded_page_bytes(),
                 support_sigma: runtime.hierarchy.manifest().build.settings.support_sigma,
+                node_ranges: runtime.shared_page_node_ranges.get(&pages[4]).cloned(),
             })
             .unwrap();
         for page in &pages {
@@ -7865,6 +8981,20 @@ mod tests {
             descriptor,
             max_encoded_page_bytes,
             support_sigma: manifest.build.settings.support_sigma,
+            node_ranges: {
+                let mut ranges = manifest
+                    .nodes
+                    .iter()
+                    .filter(|node| node.representation.page == page)
+                    .map(|node| SharedPageNodeRange {
+                        node: node.id,
+                        range: node.representation,
+                        bounds: node.bounds,
+                    })
+                    .collect::<Vec<_>>();
+                ranges.sort_unstable_by_key(|entry| entry.range.offset);
+                (ranges.len() > 1).then(|| Arc::from(ranges))
+            },
         }
     }
 
@@ -7954,15 +9084,14 @@ mod tests {
         settings: &GaussianLodSettings,
         streaming: &GaussianStreamingSettings,
     ) -> Vec<LodPageId> {
-        let mut completed = Vec::new();
         let mut preprocess_failed = Vec::new();
         let mut failed = Vec::new();
-        runtime
+        let completed = runtime
             .commit_preprocessed_pages(
                 frame,
+                None,
                 settings,
                 streaming,
-                &mut completed,
                 &mut preprocess_failed,
                 &mut failed,
             )
@@ -7970,6 +9099,184 @@ mod tests {
         assert!(preprocess_failed.is_empty());
         assert!(failed.is_empty());
         completed
+    }
+
+    #[test]
+    #[cfg(lod_render_path)]
+    fn gpu_commit_keeps_required_cohort_ahead_of_ready_low_id_prefetch() {
+        let (manifest, transport, mut settings, streaming) = fixture();
+        let roots = manifest
+            .nodes
+            .iter()
+            .filter(|node| node.parent.is_none())
+            .map(|node| node.representation.page)
+            .collect::<BTreeSet<_>>();
+        let (required, prefetch) = manifest
+            .nodes
+            .iter()
+            .filter(|node| !node.is_leaf())
+            .find_map(|node| {
+                let start = node.children.start as usize;
+                let end = start + node.children.count as usize;
+                let required = manifest.nodes[start..end]
+                    .iter()
+                    .map(|child| child.representation.page)
+                    .collect::<BTreeSet<_>>();
+                if required.len() < 2 || !required.is_disjoint(&roots) {
+                    return None;
+                }
+                let prefetch = manifest.pages.iter().map(|page| page.id).find(|page| {
+                    *page < *required.first().unwrap()
+                        && !roots.contains(page)
+                        && *page != node.representation.page
+                })?;
+                Some((required.into_iter().collect::<Vec<_>>(), prefetch))
+            })
+            .expect("fixture has a high-ID complete sibling cohort and lower-ID unrelated page");
+        settings.presentation_mode = LodPresentationMode::Discrete;
+        settings.budgets.max_resident_pages = (roots.len() + required.len()) as u32;
+        settings.budgets.max_upload_bytes_per_frame = manifest
+            .pages
+            .iter()
+            .filter(|page| required.contains(&page.id))
+            .map(|page| page.decoded_len)
+            .sum();
+        let mut payload_transport = transport.clone();
+        let mut runtime =
+            LodStreamingRuntime::new(manifest.clone(), transport, &settings, &streaming).unwrap();
+        runtime.initialize_gpu_page_demands().unwrap();
+        // Discrete CPU initialization has no coverage guard to seed. GPU
+        // packages bootstrap their authenticated authored roots explicitly.
+        let root_order = roots.iter().copied().collect::<Vec<_>>();
+        stage_ready_pages(
+            &mut runtime,
+            &manifest,
+            &mut payload_transport,
+            &streaming,
+            &root_order,
+        );
+        let bootstrap = runtime
+            .update_gpu_page_demands(
+                &[(LodRuntimeViewId(1), &roots)],
+                &root_order,
+                &settings,
+                &streaming,
+            )
+            .unwrap();
+        assert_eq!(bootstrap.completed_pages, root_order);
+        for &root in &roots {
+            runtime.retain_resident_page(root).unwrap();
+        }
+        // The speculative page finished first and has the smallest storage ID.
+        // Neither fact may outrank this frame's complete required child cohort.
+        let mut ready = vec![prefetch];
+        ready.extend_from_slice(&required);
+        stage_ready_pages(
+            &mut runtime,
+            &manifest,
+            &mut payload_transport,
+            &streaming,
+            &ready,
+        );
+        let order = roots
+            .iter()
+            .copied()
+            .chain(required.iter().copied())
+            .chain([prefetch])
+            .collect::<Vec<_>>();
+        let frame = runtime.begin_frame();
+        record_test_frame_demand(
+            &mut runtime,
+            frame,
+            LodRuntimeViewId(1),
+            order.iter().copied(),
+        );
+        let mut preprocess_failed = Vec::new();
+        let mut failed = Vec::new();
+        let completed = runtime
+            .commit_preprocessed_pages(
+                frame,
+                Some(&order),
+                &settings,
+                &streaming,
+                &mut preprocess_failed,
+                &mut failed,
+            )
+            .unwrap();
+        assert_eq!(completed, required);
+        assert!(preprocess_failed.is_empty() && failed.is_empty());
+        assert_eq!(
+            runtime.frame_decoded_bytes,
+            settings.budgets.max_upload_bytes_per_frame
+        );
+        assert_eq!(
+            runtime.cache.stats().resident_pages,
+            settings.budgets.max_resident_pages
+        );
+        assert!(
+            required
+                .iter()
+                .all(|page| runtime.cache.get(*page).unwrap().pin_count == 1)
+        );
+        assert!(!runtime.cache.contains(prefetch));
+        assert!(
+            runtime.preprocessor.is_ready(prefetch),
+            "deferred work remains ready without a refetch"
+        );
+        runtime.finish_frame(frame).unwrap();
+
+        // A formerly excluded child is cached but not published. An older
+        // snapshot still owns every other slot while another page is ready.
+        // Reacquisition must precede commit, not wait for a new decode receipt.
+        let cached_child = required[0];
+        let mut published = roots
+            .iter()
+            .map(|&page| (page, runtime.cache.get(page).unwrap().slot))
+            .collect::<BTreeMap<_, _>>();
+        for &page in &required[1..] {
+            published.insert(page, runtime.retain_resident_page(page).unwrap());
+        }
+        let descriptor = runtime.hierarchy.page_descriptor(prefetch).unwrap().clone();
+        assert!(runtime.cache.can_admit_with_eviction(
+            1,
+            descriptor.decoded_len,
+            u64::from(descriptor.gaussian_count),
+        ));
+        let order = [cached_child, prefetch];
+        let mut pending = BTreeSet::new();
+        for _ in 0..2 {
+            runtime
+                .retain_gpu_pending_pages(&order, &published, &mut pending)
+                .unwrap();
+        }
+        assert_eq!(pending, BTreeSet::from([cached_child]));
+        assert_eq!(runtime.cache.get(cached_child).unwrap().pin_count, 1);
+        assert!(!runtime.cache.can_admit_with_eviction(
+            1,
+            descriptor.decoded_len,
+            u64::from(descriptor.gaussian_count),
+        ));
+        let update = runtime
+            .update_gpu_page_demands(
+                &[(LodRuntimeViewId(1), &BTreeSet::from(order))],
+                &order,
+                &settings,
+                &streaming,
+            )
+            .unwrap();
+        assert!(update.completed_pages.is_empty());
+        assert_eq!(update.capacity_blocked_requests, 1);
+        assert!(runtime.cache.contains(cached_child));
+        assert!(runtime.decoded_page(cached_child).is_some());
+        // Snapshot retirement creates real headroom; protecting the reacquired
+        // child must not prevent the other completion from retrying afterward.
+        runtime.release_resident_page(required[1]).unwrap();
+        assert!(runtime.queue.contains(prefetch));
+        assert!(runtime.cache.can_admit_with_eviction(
+            1,
+            descriptor.decoded_len,
+            u64::from(descriptor.gaussian_count),
+        ));
     }
 
     #[test]
@@ -8419,6 +9726,82 @@ mod tests {
     }
 
     #[test]
+    fn failure_details_age_out_without_erasing_validated_terminal_retry_state() {
+        let (manifest, transport, mut settings, streaming) = fixture();
+        let pages = manifest
+            .pages
+            .iter()
+            .take(3)
+            .map(|page| page.id)
+            .collect::<Vec<_>>();
+        assert_eq!(pages.len(), 3);
+        settings.budgets.max_pending_requests = 2;
+        let mut runtime =
+            LodStreamingRuntime::new(manifest, transport, &settings, &streaming).unwrap();
+        let mut failed = Vec::new();
+        for &page in &pages {
+            runtime.record_transport_failure(page, LodPageTransportFailure::transport("bad page"));
+            runtime
+                .record_preprocess_failure(page, LodPagePreprocessError::PayloadChecksumMismatch);
+            runtime.attempts.insert(page, 1);
+            runtime.retry_or_fail(
+                PageRequest::new(page, PageRequestPriority::visible(7)),
+                0,
+                &mut failed,
+            );
+        }
+        assert_eq!(runtime.failure_diagnostic_page_capacity(), 2);
+        assert_eq!(runtime.transport_failures.len(), 2);
+        assert_eq!(runtime.preprocess_failures.len(), 2);
+        assert!(runtime.page_transport_failure(pages[0]).is_none());
+        assert!(runtime.page_preprocess_error(pages[0]).is_none());
+        for &page in &pages {
+            assert!(runtime.is_terminal_failure(page));
+            assert_eq!(runtime.page_attempts(page), Some(1));
+        }
+        assert!(runtime.retry_terminal_failure(pages[0]).unwrap());
+        assert!(!runtime.is_terminal_failure(pages[0]));
+        assert!(runtime.is_terminal_failure(pages[1]));
+        let invalid = LodPageId(u64::MAX);
+        runtime.record_transport_failure(invalid, LodPageTransportFailure::transport("unknown"));
+        runtime.retry_or_fail(
+            PageRequest::new(invalid, PageRequestPriority::visible(1)),
+            0,
+            &mut failed,
+        );
+        assert!(!runtime.is_terminal_failure(invalid));
+        assert!(runtime.page_transport_failure(invalid).is_none());
+    }
+
+    #[test]
+    fn failure_detail_text_remains_bounded_utf8_and_preserves_error_kinds() {
+        let (manifest, transport, settings, streaming) = fixture();
+        let page = manifest.pages[0].id;
+        let mut runtime =
+            LodStreamingRuntime::new(manifest, transport, &settings, &streaming).unwrap();
+        let oversized = "故障".repeat(1_024);
+        runtime.record_transport_failure(page, LodPageTransportFailure::cache(oversized.clone()));
+        let transport = runtime.page_transport_failure(page).unwrap();
+        assert_eq!(
+            transport.kind(),
+            crate::stream::transport::LodPageTransportFailureKind::Cache
+        );
+        assert!(transport.detail().len() <= MAX_LOD_FAILURE_DETAIL_BYTES);
+        assert!(transport.detail().ends_with("..."));
+        runtime.record_preprocess_failure(
+            page,
+            LodPagePreprocessError::Codec(crate::io::lod::LodCodecError::Deserialize(oversized)),
+        );
+        let Some(LodPagePreprocessError::Codec(crate::io::lod::LodCodecError::Deserialize(detail))) =
+            runtime.page_preprocess_error(page)
+        else {
+            panic!("typed codec error preserved");
+        };
+        assert!(detail.len() <= MAX_LOD_FAILURE_DETAIL_BYTES);
+        assert!(detail.ends_with("..."));
+    }
+
+    #[test]
     fn runtime_retains_typed_preprocess_failure_through_terminal_retry_state() {
         let (manifest, mut transport, mut settings, mut streaming) = fixture();
         settings.quality = 0.0;
@@ -8504,59 +9887,66 @@ mod tests {
     }
 
     #[test]
-    fn shared_physical_page_validates_each_logical_node_slice() {
-        let gaussian = |x| Gaussian3d {
-            position_visibility: [x, 0.0, 0.0, 1.0].into(),
-            spherical_harmonic: SphericalHarmonicCoefficients::default(),
-            rotation: [1.0, 0.0, 0.0, 0.0].into(),
-            scale_opacity: [0.1, 0.1, 0.1, 1.0].into(),
-        };
-        let page_id = LodPageId(1);
-        let page = PlanarGaussian3dPage::new(page_id, vec![gaussian(-1.0), gaussian(1.0)]);
-        let left = gaussian_support_bounds(&page.gaussians[0], 3.0).unwrap();
-        let right = gaussian_support_bounds(&page.gaussians[1], 3.0).unwrap();
-        let ranges = [
-            SharedPageNodeRange {
-                node: LodNodeId(1),
-                range: LodPageRange {
-                    page: page_id,
-                    offset: 0,
-                    count: 1,
-                },
-                bounds: left,
-            },
-            SharedPageNodeRange {
-                node: LodNodeId(2),
-                range: LodPageRange {
-                    page: page_id,
-                    offset: 1,
-                    count: 1,
-                },
-                bounds: right,
-            },
-        ];
-        assert_eq!(
-            validate_shared_page_node_ranges(&page, &ranges, 3.0),
-            Ok(())
-        );
-
-        let swapped = [
-            SharedPageNodeRange {
-                bounds: right,
-                ..ranges[0]
-            },
-            SharedPageNodeRange {
-                bounds: left,
-                ..ranges[1]
-            },
-        ];
-        assert_eq!(
-            validate_shared_page_node_ranges(&page, &swapped, 3.0),
-            Err(LodPagePreprocessError::PayloadOutsideNodeBounds {
-                page: page_id,
-                node: LodNodeId(1),
-            })
-        );
+    fn shared_node_bounds_failure_reaches_runtime_retry_state_before_residency() {
+        let (mut manifest, mut transport, settings, mut streaming) = two_root_fixture();
+        streaming.retry_limit = 0;
+        let page_id = manifest.pages[0].id;
+        let mut gaussians = Vec::new();
+        for node in &manifest.nodes {
+            let input = memory_preprocess_input(
+                &manifest,
+                &mut transport,
+                node.representation.page,
+                streaming.effective_max_encoded_page_bytes(),
+            );
+            gaussians.extend(
+                decode_page(&input.payload.bytes, input.limits)
+                    .unwrap()
+                    .gaussians,
+            );
+        }
+        // The physical union still matches the descriptor, but both logical
+        // nodes receive the other node's support. The payload hash is valid.
+        gaussians.swap(0, 1);
+        let page = PlanarGaussian3dPage::new(page_id, gaussians);
+        let encoded = encode_page(&page).unwrap();
+        let bounds = manifest.pages[0].bounds.union(manifest.pages[1].bounds);
+        manifest.pages.truncate(1);
+        let descriptor = &mut manifest.pages[0];
+        descriptor.gaussian_count = 2;
+        descriptor.decoded_len = 2 * std::mem::size_of::<Gaussian3d>() as u64;
+        descriptor.content_hash = page.content_hash();
+        descriptor.bounds = bounds;
+        descriptor.storage.as_mut().unwrap().encoded_len = encoded.len() as u64;
+        for (offset, node) in manifest.nodes.iter_mut().enumerate() {
+            node.representation.page = page_id;
+            node.representation.offset = offset as u32;
+        }
+        manifest.header.page_count = 1;
+        manifest.header.required_features |= LOD_REQUIRED_FEATURE_SHARED_NODE_PAGES;
+        manifest.validate().unwrap();
+        let expected_node = manifest.nodes[0].id;
+        transport.insert(page_id, encoded);
+        let mut runtime =
+            LodStreamingRuntime::new(manifest, transport, &settings, &streaming).unwrap();
+        for _ in 0..16 {
+            let frame = runtime.update(view(), &settings, &streaming).unwrap();
+            assert!(frame.completed_pages().is_empty());
+            assert_eq!(runtime.cache().stats().resident_gaussians, 0);
+            if frame.preprocess_failed_pages().contains(&page_id) {
+                assert_eq!(
+                    runtime.page_preprocess_error(page_id),
+                    Some(&LodPagePreprocessError::PayloadOutsideNodeBounds {
+                        page: page_id,
+                        node: expected_node,
+                    })
+                );
+                assert!(runtime.is_terminal_failure(page_id));
+                assert!(!runtime.decoded_pages.contains_key(&page_id));
+                return;
+            }
+        }
+        panic!("shared page rejection must reach the runtime");
     }
 
     fn two_root_fixture() -> (
@@ -9835,6 +11225,120 @@ mod tests {
     }
 
     #[test]
+    fn discrete_mode_selects_exact_complete_cuts_and_keeps_cached_frames_unblended() {
+        let (manifest, transport, mut settings, streaming) = abi16_morph_fixture();
+        let source_count = manifest.header.source_gaussian_count;
+        settings.hysteresis = 0.0;
+        let mut runtime =
+            LodStreamingRuntime::new(manifest, transport, &settings, &streaming).unwrap();
+        let originals = settle_temporal_fixture(&mut runtime, &settings, &streaming);
+        assert_eq!(originals.candidate_count(), source_count);
+
+        settings.quality = 0.10;
+        settings.presentation_mode = LodPresentationMode::Discrete;
+        let oracle = select_frontier_with_visibility(
+            &runtime.hierarchy,
+            &|node| {
+                runtime
+                    .hierarchy
+                    .page(node)
+                    .is_some_and(|page| runtime.cache.contains(page))
+            },
+            view(),
+            &settings,
+            |node, _| {
+                !settings.frustum_culling
+                    || view().bounds_are_visible(
+                        runtime.hierarchy.node(node).unwrap().bounds,
+                        settings.frustum_margin,
+                    )
+            },
+        )
+        .unwrap();
+        assert!(oracle.status.active_gaussians < source_count);
+        let first = runtime.update(view(), &settings, &streaming).unwrap();
+        assert_eq!(first.frontier().nodes, oracle.nodes);
+        assert!(first.temporal_transition().is_none());
+        let candidate = first
+            .candidate_frontier(settings.max_active_gaussians_u32())
+            .unwrap();
+        assert_eq!(candidate.presentation_mode(), LodPresentationMode::Discrete);
+        assert!(candidate.temporal_transition().is_none());
+
+        let stable = settle_temporal_fixture(&mut runtime, &settings, &streaming);
+        assert_eq!(stable.frontier().nodes, oracle.nodes);
+        let traversals = runtime.selection_traversals;
+        // A late-residency marker must not survive either mode entry or a
+        // cached discrete update and resurrect a persistent blend later.
+        let parent = runtime.hierarchy.manifest().roots[0];
+        runtime
+            .views
+            .get_mut(&LodRuntimeViewId::default())
+            .unwrap()
+            .late_view_blend_edges
+            .insert(parent);
+        for _ in 0..3 {
+            let frame = runtime.update(view(), &settings, &streaming).unwrap();
+            assert!(frame.selection_stable());
+            assert!(frame.temporal_transition().is_none());
+            assert_eq!(frame.frontier().nodes, oracle.nodes);
+            assert!(
+                frame
+                    .candidate_frontier(settings.max_active_gaussians_u32())
+                    .is_ok()
+            );
+        }
+        assert_eq!(runtime.selection_traversals, traversals);
+        assert!(
+            runtime.views[&LodRuntimeViewId::default()]
+                .late_view_blend_edges
+                .is_empty()
+        );
+        assert!(!runtime.has_predictive_view_blend_work());
+
+        // Switching back must invalidate the discrete fixed point even if
+        // its logical nodes and camera happen to be unchanged.
+        settings.presentation_mode = LodPresentationMode::ContinuousMorph;
+        runtime.update(view(), &settings, &streaming).unwrap();
+        assert!(runtime.selection_traversals > traversals);
+    }
+
+    #[test]
+    fn discrete_mode_releases_resident_predictive_pins_before_request_admission() {
+        let (manifest, transport, mut settings, streaming) = abi16_morph_fixture();
+        let mut runtime =
+            LodStreamingRuntime::new(manifest, transport, &settings, &streaming).unwrap();
+        settle_temporal_fixture(&mut runtime, &settings, &streaming);
+        let parent = runtime.hierarchy.manifest().roots[0];
+        let children = runtime.hierarchy.children(parent).to_vec();
+        let page = runtime.hierarchy.page(children[0]).unwrap();
+        assert!(runtime.cache.contains(page));
+        let previous_pin_count = runtime.cache.get(page).unwrap().pin_count;
+        runtime.cache.pin_fallback(page).unwrap();
+        let state = runtime.views.get_mut(&LodRuntimeViewId::default()).unwrap();
+        state.predictive_view_blend_nodes.insert(parent, children);
+        state.pinned_predictive_pages.insert(page);
+        state.late_view_blend_edges.insert(parent);
+        assert!(state.pinned_predictive_pages.contains(&page));
+        assert_eq!(
+            runtime.cache.get(page).unwrap().pin_count,
+            previous_pin_count + 1
+        );
+        // All children are resident, so maintenance reports no pending I/O.
+        // The ownership lease still has to be released when presentation changes.
+        assert!(!runtime.has_predictive_view_blend_work());
+        settings.quality = 0.10;
+        settings.presentation_mode = LodPresentationMode::Discrete;
+        runtime.update(view(), &settings, &streaming).unwrap();
+        let state = &runtime.views[&LodRuntimeViewId::default()];
+        assert!(state.pinned_predictive_pages.is_empty());
+        assert!(state.predictive_view_blend_nodes.is_empty());
+        assert!(state.late_view_blend_edges.is_empty());
+        assert!(state.temporal_morph_cache.is_none());
+        assert!(!runtime.has_predictive_view_blend_work());
+    }
+
+    #[test]
     fn continuous_coarsening_is_bounded_and_original_endpoint_remains_categorical() {
         let (manifest, transport, mut settings, streaming) = fixture();
         let source_count = manifest.header.source_gaussian_count;
@@ -10539,6 +12043,7 @@ mod tests {
             }],
             ancestor_fallback_nodes: BTreeSet::new(),
             selection_view_frozen: true,
+            presentation_mode: LodPresentationMode::ContinuousMorph,
             selection_stable: true,
             temporal_transition: None,
             complete_resident_cut: true,
@@ -10592,6 +12097,10 @@ mod tests {
         state.commit_frontier(&frontier, &original);
 
         assert_eq!(state.hysteresis_frontier(&original), frontier);
+
+        let mut changed_presentation = original.clone();
+        changed_presentation.presentation_mode = LodPresentationMode::Discrete;
+        assert!(state.hysteresis_frontier(&changed_presentation).is_empty());
 
         let mut changed_quality = original.clone();
         changed_quality.quality = 0.75;
@@ -10848,6 +12357,7 @@ mod tests {
             quality_status,
             LodCandidateFrontierBuildOptions {
                 selection_view_frozen: false,
+                presentation_mode: LodPresentationMode::ContinuousMorph,
                 coverage_guard: false,
                 temporal_transition: None,
                 limit: 1,
@@ -10861,6 +12371,7 @@ mod tests {
             quality_status,
             LodCandidateFrontierBuildOptions {
                 selection_view_frozen: false,
+                presentation_mode: LodPresentationMode::ContinuousMorph,
                 coverage_guard: false,
                 temporal_transition: None,
                 limit: 1,
@@ -10901,8 +12412,9 @@ mod tests {
             physical_start: 8,
             count: 1,
         };
-        let morph = Arc::new(LodTemporalMorphBatch {
-            identity: LodTemporalMorphIdentity {
+        let morph = Arc::new(LodViewBlendBatch {
+            memory_reservation: None,
+            identity: LodViewBlendIdentity {
                 primary: 1,
                 secondary: 2,
                 descriptor_count: 1,
@@ -10944,13 +12456,13 @@ mod tests {
                 initial_weight_bits: 1.0_f32.to_bits(),
                 activation_requires_slew: true,
             }],
-            descriptors: vec![LodTemporalMorphDescriptor {
+            descriptors: vec![LodViewBlendDescriptor {
                 child_physical_start: presented_child.physical_start,
                 child_count: presented_child.count,
                 mapping_start: 0,
                 edge_index: 0,
             }],
-            records: vec![LodTemporalMorphRecord {
+            records: vec![LodViewBlendRecord {
                 parent_physical_index: target.physical_start,
                 split_count: 1,
             }],
@@ -10982,6 +12494,7 @@ mod tests {
             },
             LodCandidateFrontierBuildOptions {
                 selection_view_frozen: false,
+                presentation_mode: LodPresentationMode::ContinuousMorph,
                 coverage_guard: false,
                 temporal_transition: Some(transition),
                 limit: 1,
@@ -11035,7 +12548,6 @@ mod tests {
         candidate.publish_temporal_transition_mode(LodTemporalTransitionMode::BoundedHardCohort);
         assert_eq!(candidate.render_ranges(), &[target]);
         assert_eq!(candidate.required_atlas_ranges(), &[target]);
-        assert_eq!(candidate.temporal_transition_progress(), None);
         assert!(matches!(
             crate::render::lod::plan_lod_candidate_morph(&candidate, u64::MAX, u64::MAX).unwrap(),
             crate::render::lod::LodCandidateMorphPlan::Disabled
@@ -11113,6 +12625,7 @@ mod tests {
             status,
             LodCandidateFrontierBuildOptions {
                 selection_view_frozen: false,
+                presentation_mode: LodPresentationMode::ContinuousMorph,
                 coverage_guard: false,
                 temporal_transition: None,
                 limit: 1,
@@ -11127,6 +12640,7 @@ mod tests {
             status,
             LodCandidateFrontierBuildOptions {
                 selection_view_frozen: false,
+                presentation_mode: LodPresentationMode::ContinuousMorph,
                 coverage_guard: false,
                 temporal_transition: None,
                 limit: 1,
@@ -11146,7 +12660,6 @@ mod tests {
             next.temporal_transition_mode(),
             Some(LodTemporalTransitionMode::Morphing)
         );
-        assert_eq!(next.temporal_transition_progress(), None);
         assert!(
             next.temporal_transition().is_some(),
             "stable same-payload inheritance retains immutable adjacent-edge provenance"
@@ -11181,6 +12694,7 @@ mod tests {
             }],
             ancestor_fallback_nodes: BTreeSet::new(),
             selection_view_frozen: false,
+            presentation_mode: LodPresentationMode::ContinuousMorph,
             selection_stable: true,
             temporal_transition: None,
             complete_resident_cut: true,
@@ -11365,6 +12879,143 @@ mod tests {
     }
 
     #[test]
+    fn spatial_package_bootstrap_is_complete_before_deep_target_pages_arrive() {
+        let (hierarchy, transport, mut settings, budget) = package_bootstrap_fixture();
+        // Lifecycle metadata only: this regression establishes startup coverage
+        // and budgets, not spatial fitting or image quality.
+        let manifest =
+            upgrade_manifest_to_synthetic_abi16_lifecycle_fixture(hierarchy.manifest().clone())
+                .unwrap();
+        let hierarchy = CompiledManifestLodHierarchy::new(manifest.clone()).unwrap();
+        settings.quality = 0.35;
+        let streaming = GaussianStreamingSettings::default();
+        let mut decode_transport = transport.clone();
+        let mut runtime = LodStreamingRuntime::from_compiled_hierarchy(
+            hierarchy,
+            transport,
+            &settings,
+            &streaming,
+            Some(budget),
+        )
+        .unwrap();
+        assert!(runtime.has_active_package_bootstrap());
+        assert!(runtime.coverage_guard.nodes.len() > manifest.roots.len());
+        assert!(runtime.coverage_guard.pages.len() <= budget.max_pages as usize);
+        let first_view = LodRuntimeViewId(41);
+        assert!(
+            runtime
+                .package_bootstrap_candidate(first_view, view(), &settings)
+                .unwrap()
+                .is_none(),
+            "a partial bootstrap must never become drawable"
+        );
+
+        seed_resident_coverage_guard(&mut runtime, &manifest, &mut decode_transport, &streaming);
+        let candidate = runtime
+            .package_bootstrap_candidate(first_view, view(), &settings)
+            .unwrap()
+            .expect("the complete bounded spatial bootstrap must not await the deep target");
+        assert!(candidate.is_coverage_guard());
+        assert!(runtime.cache().stats().resident_pages < manifest.header.page_count);
+        assert!(candidate.quality_status().active_gaussians <= budget.max_active_gaussians);
+        assert_eq!(
+            candidate.quality_status().requested_target,
+            settings.quality_target()
+        );
+        let mut sources = runtime
+            .coverage_guard
+            .nodes
+            .iter()
+            .map(|node| runtime.hierarchy.node(*node).unwrap().source)
+            .collect::<Vec<_>>();
+        sources.sort_unstable_by_key(|range| range.start);
+        let mut covered = 0;
+        for range in sources {
+            assert_eq!(
+                range.start, covered,
+                "startup cut must have no holes or overlap"
+            );
+            covered = range.end().unwrap();
+        }
+        assert_eq!(covered, manifest.header.source_gaussian_count);
+        let second = runtime
+            .package_bootstrap_candidate(LodRuntimeViewId(42), view(), &settings)
+            .unwrap()
+            .expect("each retained view must receive the same complete bootstrap");
+        assert_eq!(candidate.physical_ranges(), second.physical_ranges());
+    }
+
+    #[test]
+    fn admitted_target_reports_live_camera_quality_and_does_not_acknowledge_a_new_cut() {
+        let (hierarchy, transport, mut settings, budget) = package_bootstrap_fixture();
+        settings.quality = 0.0;
+        settings.frustum_culling = false;
+        let manifest = hierarchy.manifest().clone();
+        let streaming = GaussianStreamingSettings::default();
+        let mut decode_transport = transport.clone();
+        let mut runtime = LodStreamingRuntime::from_compiled_hierarchy(
+            hierarchy,
+            transport,
+            &settings,
+            &streaming,
+            Some(budget),
+        )
+        .unwrap();
+        let view_id = LodRuntimeViewId(73);
+        let distant = LodView::perspective(
+            bevy::math::Vec3::new(0.0, 0.0, 1024.0),
+            720.0,
+            60_f32.to_radians(),
+            0.01,
+        );
+        let plan = runtime
+            .package_all_resident_target_plan(&[(view_id, distant)], &settings)
+            .unwrap();
+        let old_error = plan.views[0].frontier.status.achieved_max_error_px;
+        seed_resident_coverage_guard(&mut runtime, &manifest, &mut decode_transport, &streaming);
+        let current_view = view();
+        let current = runtime
+            .package_target_candidates(&plan, &[(view_id, current_view)], &settings)
+            .unwrap()
+            .unwrap();
+        assert!(current.matches_live_target);
+        let expected_error = plan.views[0]
+            .frontier
+            .nodes
+            .iter()
+            .map(|node| current_view.projected_error_px(runtime.hierarchy.metrics(*node).unwrap()))
+            .fold(0.0_f32, f32::max);
+        assert!(expected_error > old_error);
+        assert_eq!(
+            current.views[0].1.quality_status().achieved_max_error_px,
+            expected_error
+        );
+
+        // The resolver also distinguishes a complete admitted cut from a new
+        // authoritative target. Production cancels critical policy changes;
+        // this direct call isolates the metadata/acknowledgement contract.
+        settings.quality = 1.0;
+        let newer = runtime
+            .package_target_candidates(&plan, &[(view_id, current_view)], &settings)
+            .unwrap()
+            .unwrap();
+        assert!(!newer.matches_live_target);
+        assert_eq!(
+            newer.views[0].1.physical_ranges(),
+            current.views[0].1.physical_ranges()
+        );
+        assert!(!newer.views[0].1.ancestor_fallback_nodes.is_empty());
+        assert_eq!(
+            newer.views[0].1.quality_status().degradation,
+            LodDegradation::Residency
+        );
+        assert_eq!(
+            newer.views[0].1.quality_status().requested_target,
+            settings.quality_target()
+        );
+    }
+
+    #[test]
     fn released_package_bootstrap_still_streams_missing_navigation_roots() {
         let (hierarchy, transport, mut settings, budget) = package_bootstrap_fixture();
         settings.quality = 1.0;
@@ -11431,7 +13082,7 @@ mod tests {
     }
 
     #[test]
-    fn package_bootstrap_rejects_legacy_reducers_and_missing_transition_capacity() {
+    fn package_bootstrap_rejects_unbounded_refinement_and_missing_transition_capacity() {
         let (hierarchy, _, settings, budget) = package_bootstrap_fixture();
         let generous = LodRuntimeCoverageGuard::new_with_package_bootstrap(
             &hierarchy,
@@ -11466,25 +13117,28 @@ mod tests {
             replanned_plus_root.len() <= root_headroom_limited.budgets.max_resident_pages as usize
         );
 
-        let mut legacy = hierarchy.manifest().clone();
-        legacy.build.builder_abi_version = VIRTUAL_BUILDER_ABI_VERSION;
-        legacy.build.reducer_version = EXTERNAL_MOMENT_MERGE_VERSION;
-        legacy.build.config_fingerprint = lod_config_fingerprint_for_reducer(
-            legacy.build.settings,
+        let mut unbounded = hierarchy.manifest().clone();
+        unbounded.build.builder_abi_version = VIRTUAL_BUILDER_ABI_VERSION;
+        unbounded.build.reducer_version = EXTERNAL_MOMENT_MERGE_VERSION;
+        unbounded.build.config_fingerprint = lod_config_fingerprint_for_reducer(
+            unbounded.build.settings,
             None,
             EXTERNAL_MOMENT_MERGE_VERSION,
         );
-        for node in &mut legacy.nodes {
+        for node in &mut unbounded.nodes {
             if !node.is_leaf() {
                 node.high_fidelity_certificate = 0.0;
             }
         }
-        legacy.validate().unwrap();
-        let legacy = CompiledManifestLodHierarchy::new(legacy).unwrap();
-        let legacy_guard =
-            LodRuntimeCoverageGuard::new_with_package_bootstrap(&legacy, &settings, Some(budget))
-                .unwrap();
-        assert!(!legacy_guard.package_bootstrap);
+        unbounded.validate().unwrap();
+        let unbounded = CompiledManifestLodHierarchy::new(unbounded).unwrap();
+        let unbounded_guard = LodRuntimeCoverageGuard::new_with_package_bootstrap(
+            &unbounded,
+            &settings,
+            Some(budget),
+        )
+        .unwrap();
+        assert!(!unbounded_guard.package_bootstrap);
 
         let roots = hierarchy.roots().to_vec();
         let root = LodRuntimeCoverageGuard::footprint(&hierarchy, &roots).unwrap();
@@ -11524,6 +13178,61 @@ mod tests {
         assert_eq!(guard.nodes, roots);
         assert_eq!(guard.pages, root_footprint.pages);
         assert_eq!(guard.active_gaussians, root_footprint.active_gaussians);
+    }
+
+    #[test]
+    fn synchronous_page_footprint_matches_cooperative_preparation() {
+        use std::{future::Future, task::Context};
+
+        let (manifest, _, _, _) = fixture();
+        let hierarchy = CompiledManifestLodHierarchy::new(manifest).unwrap();
+        let pages = hierarchy
+            .manifest()
+            .pages
+            .iter()
+            .take(3)
+            .map(|descriptor| descriptor.id)
+            .collect::<BTreeSet<_>>();
+        assert!(pages.len() > 1);
+        let expected = LodRuntimeCoverageGuard::page_footprint(&hierarchy, &pages).unwrap();
+        let budget = PreparationBudget::new(0);
+        let mut preparation = std::pin::pin!(LodRuntimeCoverageGuard::prepare_page_footprint(
+            &hierarchy, &pages, &budget,
+        ));
+        let mut context = Context::from_waker(std::task::Waker::noop());
+        assert!(preparation.as_mut().poll(&mut context).is_pending());
+        for index in 0..pages.len() {
+            budget.reset(1);
+            let result = preparation.as_mut().poll(&mut context);
+            assert_eq!(budget.remaining(), 0);
+            if index + 1 == pages.len() {
+                assert_eq!(result, std::task::Poll::Ready(Ok(expected)));
+            } else {
+                assert!(result.is_pending());
+            }
+        }
+
+        let missing = LodPageId(u64::MAX);
+        for pages in [BTreeSet::new(), BTreeSet::from([missing])] {
+            assert_eq!(
+                LodRuntimeCoverageGuard::page_footprint(&hierarchy, &pages),
+                bevy::tasks::block_on(LodRuntimeCoverageGuard::prepare_page_footprint(
+                    &hierarchy,
+                    &pages,
+                    &PreparationBudget::new(usize::MAX),
+                )),
+            );
+        }
+        assert_eq!(
+            LodRuntimeCoverageGuard::page_footprint(&hierarchy, &BTreeSet::from([missing])),
+            Err(LodRuntimeError::MissingPageDescriptor(missing)),
+        );
+        let mut footprint = LodPageFootprint::new();
+        footprint.resident_bytes = u64::MAX;
+        assert_eq!(
+            footprint.add(&hierarchy.manifest().pages[0]),
+            Err(LodRuntimeError::PhysicalIndexOverflow),
+        );
     }
 
     #[test]

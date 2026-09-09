@@ -72,6 +72,33 @@ fn test_streaming() -> GaussianStreamingSettings {
     }
 }
 
+/// Model the production sparse recovery owner using only slots which the
+/// test's mirror has actually materialized. Unwritten capacity has no payload.
+fn transient_from_materialized_slots(
+    state: &BridgeCloudState,
+    atlas: &PlanarGaussian3d,
+) -> LodTransientAtlas {
+    let owner = LodTransientAtlas::new(state.mirror.physical_gaussians()).unwrap();
+    let stride = state.mirror.layout().gaussians_per_slot;
+    for slot in state.mirror.materialized_slots() {
+        let start = (slot.index * stride) as usize;
+        let end = start + stride as usize;
+        owner
+            .write_slot(
+                slot.index,
+                stride,
+                PlanarGaussian3d {
+                    position_visibility: atlas.position_visibility[start..end].to_vec(),
+                    spherical_harmonic: atlas.spherical_harmonic[start..end].to_vec(),
+                    rotation: atlas.rotation[start..end].to_vec(),
+                    scale_opacity: atlas.scale_opacity[start..end].to_vec(),
+                },
+            )
+            .unwrap();
+    }
+    owner
+}
+
 fn run_bridge_frame(world: &mut World, schedule: &mut Schedule) {
     schedule.run(world);
     #[cfg(not(target_arch = "wasm32"))]
@@ -368,13 +395,6 @@ fn preflight_allows_partial_final_page_for_small_source() {
         preflight_ephemeral_source(&source, &settings, &config),
         Ok(4)
     );
-}
-
-#[test]
-fn transient_sort_capacity_covers_padding_after_perfect_square_source() {
-    assert_eq!(sorted_entry_capacity_for_count(16), 16);
-    assert_eq!(sorted_entry_capacity_for_count(20), 25);
-    assert!(sorted_entry_capacity_for_count(20) > sorted_entry_capacity_for_count(16));
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1502,7 +1522,7 @@ fn partial_multi_root_guard_keeps_source_bound_until_complete_handoff() {
     let atlas = world
         .resource_mut::<Assets<PlanarGaussian3d>>()
         .reserve_handle();
-    let transient = LodTransientAtlas::new(atlas_cloud);
+    let transient = transient_from_materialized_slots(&state, &atlas_cloud);
     let generation = transient.ticket().generation();
     assert!(transient.ticket().acknowledge(generation));
     assert!(transient.ticket().is_ready());
@@ -4068,7 +4088,7 @@ fn frozen_camera_motion_preserves_selector_provenance_without_duplicate_leases()
         false,
     )
     .unwrap();
-    state.transient_atlas = Some(LodTransientAtlas::new(atlas));
+    state.transient_atlas = Some(transient_from_materialized_slots(&state, &atlas));
 
     let camera = Entity::from_bits(76);
     let frozen_view = LodView::perspective(Vec3::new(0.0, 0.0, 5.0), 720.0, 1.0, 0.1);
@@ -4246,7 +4266,7 @@ fn dynamic_single_camera_motion_retains_globally_covering_atlas_cut() {
         false,
     )
     .unwrap();
-    state.transient_atlas = Some(LodTransientAtlas::new(atlas));
+    state.transient_atlas = Some(transient_from_materialized_slots(&state, &atlas));
 
     let camera = Entity::from_bits(77);
     let mut views = [BridgeCameraView {
@@ -4360,7 +4380,7 @@ fn active_current_token_survives_progressive_page_waves() {
         false,
     )
     .unwrap();
-    state.transient_atlas = Some(LodTransientAtlas::new(atlas));
+    state.transient_atlas = Some(transient_from_materialized_slots(&state, &atlas));
 
     let camera = Entity::from_bits(78);
     let mut views = [BridgeCameraView {
@@ -4532,7 +4552,7 @@ fn active_replacement_commits_before_same_policy_pose_demand() {
         false,
     )
     .unwrap();
-    state.transient_atlas = Some(LodTransientAtlas::new(atlas));
+    state.transient_atlas = Some(transient_from_materialized_slots(&state, &atlas));
 
     let camera = Entity::from_bits(79);
     let mut views = [BridgeCameraView {
@@ -4659,7 +4679,7 @@ fn cold_capacity_stall_suppresses_degraded_guard_and_keeps_source_drawable() {
     )
     .unwrap();
     assert_eq!(state.mirror.slot_count(), 2);
-    state.transient_atlas = Some(LodTransientAtlas::new(atlas));
+    state.transient_atlas = Some(transient_from_materialized_slots(&state, &atlas));
 
     let camera = Entity::from_bits(98);
     let views = [BridgeCameraView {
@@ -4767,7 +4787,7 @@ fn cold_saturated_pipeline_suppresses_degraded_guard_without_draining() {
     )
     .unwrap();
     assert_eq!(state.mirror.slot_count(), 2);
-    state.transient_atlas = Some(LodTransientAtlas::new(atlas));
+    state.transient_atlas = Some(transient_from_materialized_slots(&state, &atlas));
     let effective = state.structural.apply(&settings);
 
     // Permit exactly the promoted guard and root requests to complete. The
@@ -4929,7 +4949,7 @@ fn saturated_refinement_publishes_stable_resident_relief_before_guard() {
     )
     .unwrap();
     assert_eq!(state.mirror.slot_count(), 8);
-    state.transient_atlas = Some(LodTransientAtlas::new(atlas));
+    state.transient_atlas = Some(transient_from_materialized_slots(&state, &atlas));
 
     let camera = Entity::from_bits(99);
     let mut views = [BridgeCameraView {
@@ -5142,7 +5162,7 @@ fn degraded_guard_never_replaces_active_nonrelieving_capacity_frontier() {
     )
     .unwrap();
     assert_eq!(state.mirror.slot_count(), 1);
-    state.transient_atlas = Some(LodTransientAtlas::new(atlas));
+    state.transient_atlas = Some(transient_from_materialized_slots(&state, &atlas));
 
     let camera = Entity::from_bits(100);
     let views = [BridgeCameraView {
@@ -5273,7 +5293,7 @@ fn active_budget_saturation_renders_bounded_degraded_cut_without_source() {
         false,
     )
     .unwrap();
-    state.transient_atlas = Some(LodTransientAtlas::new(atlas));
+    state.transient_atlas = Some(transient_from_materialized_slots(&state, &atlas));
 
     let camera = Entity::from_bits(101);
     let views = [BridgeCameraView {

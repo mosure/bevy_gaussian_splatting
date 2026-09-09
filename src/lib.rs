@@ -44,6 +44,20 @@ pub use bevy_interleave::prelude::*;
 
 pub use camera::GaussianCamera;
 
+#[cfg(lod_render_path)]
+pub use render::ordered::{
+    GaussianGlobalOrderDiagnostics, GaussianGlobalOrderFrame, GaussianGlobalOrderSettings,
+};
+
+#[cfg(lod_render_path)]
+pub use render::point::{
+    GaussianPointSplattingDiagnostics, GaussianPointSplattingFrame, GaussianPointSplattingSettings,
+    GaussianPointSplattingViewBudget, GaussianPointSplattingViewBudgetDiagnostics,
+};
+
+#[cfg(lod_render_path)]
+pub use render::traversal::{GpuLodHierarchy, GpuLodHierarchyTree, GpuLodTraversalSettings};
+
 pub use gaussian::{
     formats::{
         lodge::{
@@ -83,8 +97,8 @@ pub use gaussian::{
     lod_debug::{LodDebugPreset, LodDebugSettings},
     lod_settings::{
         GaussianLodSettings, GaussianStreamingSettings, LodBudgets, LodDegradation,
-        LodEffectiveStatus, LodQualityEndpoint, LodQualityTarget, LodSelectionMode,
-        LodSettingsError,
+        LodEffectiveStatus, LodPresentationMode, LodQualityEndpoint, LodQualityTarget,
+        LodSelectionMode, LodSettingsError,
     },
     settings::{CloudSettings, GaussianMode, RadixSortDepthBits, RasterizeMode},
 };
@@ -167,17 +181,15 @@ pub use stream::package::{
 pub use stream::package_source::GaussianLodPackageSourceError;
 
 #[cfg(feature = "lod_build")]
-pub use gaussian::lod_build_gpu::hierarchy::{
-    GpuLodHierarchyBuilder, GpuLodHierarchyError, GpuLodHierarchyLimits,
-};
+pub use gaussian::lod_build_gpu::sort::{GpuLodBatchSorter, GpuLodSortError, GpuLodSortLimits};
 
 #[cfg(all(feature = "lod_build", not(target_arch = "wasm32")))]
 pub use io::lod_build_external::{
     CpuExternalLodBatchPreprocessor, EXTERNAL_LOD_BUILDER_ABI_VERSION,
     ExternalLodBatchPreprocessor, ExternalLodBuildConfig, ExternalLodBuildError,
     ExternalLodBuildLimits, ExternalLodBuildPlan, ExternalLodBuildReport,
-    ExternalLodPreprocessorOutputOrder, GpuHierarchyExternalLodBatchPreprocessor,
-    PlanarGaussianSource, PlyGaussianSource, ReplayableGaussianSource, build_external_lod_package,
+    ExternalLodPreprocessorOutputOrder, GpuExternalLodBatchPreprocessor, PlanarGaussianSource,
+    PlyGaussianSource, ReplayableGaussianSource, build_external_lod_package,
 };
 
 #[cfg(all(feature = "lod_build", not(target_arch = "wasm32")))]
@@ -248,6 +260,13 @@ impl Plugin for GaussianSplattingPlugin {
         app.add_plugins((
             render::RenderPipelinePlugin::<Gaussian3d>::default(),
             render::RenderPipelinePlugin::<Gaussian4d>::default(),
+        ));
+
+        #[cfg(lod_render_path)]
+        app.add_plugins((
+            render::traversal::GpuLodTraversalPlugin,
+            render::point::GaussianPointSplattingPlugin,
+            render::ordered::GaussianGlobalOrderPlugin,
         ));
 
         #[cfg(feature = "lod")]

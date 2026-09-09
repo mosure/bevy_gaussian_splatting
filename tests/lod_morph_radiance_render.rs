@@ -62,7 +62,8 @@ mod headless {
         sort::SortMode,
         stream::{
             atlas_upload::LodAtlasUploadBudget,
-            hierarchy::LodView,
+            hierarchy::{LodHierarchy, LodNodeMetrics, LodView, ManifestLodHierarchy},
+            package::GaussianLodPackageTestingSnapshot,
             render_commit::{
                 LodRenderCandidates, LodViewBlendEndpoint, LodViewBlendTestingSnapshot,
             },
@@ -73,12 +74,12 @@ mod headless {
 
     const WIDTH: u32 = 128;
     const HEIGHT: u32 = 128;
-    const CAMERA_Z: f32 = 5.0;
+    const REFERENCE_CAMERA_Z: f32 = 5.0;
+    const REFERENCE_FOV: f32 = std::f32::consts::PI / 3.0;
     const MAX_FRAMES: u32 = 4_800;
     const CONTROL_SETTLE_FRAMES: u32 = 24;
     const PACKAGE_SETTLE_FRAMES: u32 = 8;
     const MAX_CAPTURE_REQUESTS_IN_FLIGHT: usize = 8;
-    const PARENT_SIDE_QUALITY: f32 = 0.25;
     // `phase_at_compaction` is an intentionally raw testing readback. Mirror
     // the production PREPARED discriminant to prove the authored endpoint was
     // drawn before the aggregate activation CAS, rather than rediscovered at
@@ -170,6 +171,28 @@ mod headless {
             fixture.parent.position_visibility.visibility.to_bits(),
             0.51_f32.to_bits()
         );
+        let (camera_z, fov) = fixture.camera();
+        let view = fixture_lod_view(camera_z, fov);
+        let parent_quality = fixture.parent_side_quality(view);
+        let [parent_pressure, child_pressure] = fixture.pressures(view, parent_quality);
+        assert!(parent_pressure <= 0.75 && child_pressure <= 1.0);
+        assert!(view.projected_error_px(fixture.parent_metric) < f32::MAX);
+        assert!(
+            (1..100).any(|step| {
+                let [parent, child] = fixture.pressures(view, step as f32 / 100.0);
+                parent > 1.0
+                    && child < 1.0
+                    && (0.15..=0.85).contains(&((parent - 1.0) / (parent - child)))
+            }),
+            "the authenticated fixture must admit a balanced morph before GPU qualification"
+        );
+        let old_view = fixture_lod_view(REFERENCE_CAMERA_Z, REFERENCE_FOV);
+        eprintln!(
+            "K=2 projection preflight: old_z5_q25_pressures={:?}, old_error_px={}, camera_z={camera_z}, fov={fov}, parent_quality={parent_quality}, parent_pressures={:?}",
+            fixture.pressures(old_view, 0.25),
+            old_view.projected_error_px(fixture.parent_metric),
+            [parent_pressure, child_pressure]
+        );
     }
 
     struct TemporaryPackageRoot {
@@ -209,6 +232,8 @@ mod headless {
         parent: Gaussian3d,
         children: [Gaussian3d; 2],
         root_id: LodNodeId,
+        parent_metric: LodNodeMetrics,
+        child_metrics: [LodNodeMetrics; 2],
         manifest_sha256: String,
         shard_sha256: String,
     }
@@ -333,6 +358,14 @@ mod headless {
                     .sum::<u32>(),
                 2
             );
+            let hierarchy = ManifestLodHierarchy::new(&manifest)
+                .expect("authenticated fixture has valid selector metrics");
+            let parent_metric = hierarchy.metrics(root_id).expect("root metric exists");
+            let child_metrics = std::array::from_fn(|index| {
+                hierarchy
+                    .metrics(child_nodes[index].id)
+                    .expect("child metric exists")
+            });
 
             let parent = record_for_node(root, &pages);
             let children = [
@@ -364,10 +397,69 @@ mod headless {
                 parent,
                 children,
                 root_id,
+                parent_metric,
+                child_metrics,
                 manifest_sha256,
                 shard_sha256,
             }
         }
+
+        fn camera(&self) -> (f32, f32) {
+            // This fixture isolates radiance/visibility. Keep the camera well
+            // outside the conservative support plus residual volume required
+            // by matrix projection. Preserve focal/depth at its coincident
+            // means, so the original Gaussian screen footprint stays fixed.
+            let camera_z = REFERENCE_CAMERA_Z
+                .max(2.0 * (self.parent_metric.radius + self.parent_metric.geometric_error) + 0.01);
+            let fov = 2.0 * ((0.5 * REFERENCE_FOV).tan() * REFERENCE_CAMERA_Z / camera_z).atan();
+            (camera_z, fov)
+        }
+
+        fn pressures(&self, view: LodView, quality: f32) -> [f32; 2] {
+            let target = GaussianLodSettings {
+                quality,
+                ..default()
+            }
+            .quality_target();
+            let pressure = |metric: LodNodeMetrics, original| {
+                target.node_pressure(
+                    metric.quality_threshold(),
+                    view.projected_error_px(metric),
+                    view.projected_coverage(metric),
+                    metric.high_fidelity_certificate,
+                    original,
+                )
+            };
+            [
+                pressure(self.parent_metric, false),
+                self.child_metrics
+                    .iter()
+                    .map(|metric| pressure(*metric, true))
+                    .fold(0.0_f32, f32::max),
+            ]
+        }
+
+        fn parent_side_quality(&self, view: LodView) -> f32 {
+            // Choose the transition trigger from the exact selector inputs,
+            // before observing an image. q=0 would disable continuous morphs.
+            (1..100)
+                .rev()
+                .map(|step| step as f32 / 100.0)
+                .find(|quality| {
+                    let [parent, child] = self.pressures(view, *quality);
+                    parent.is_finite() && child.is_finite() && parent <= 0.75 && child <= 1.0
+                })
+                .expect("authenticated K=2 fixture has a finite continuous parent-side target")
+        }
+    }
+
+    fn fixture_lod_view(camera_z: f32, fov: f32) -> LodView {
+        let camera = Vec3::new(0.0, 0.0, camera_z);
+        let clip_from_world =
+            Mat4::perspective_infinite_reverse_rh(fov, WIDTH as f32 / HEIGHT as f32, 0.01)
+                * Mat4::from_translation(-camera);
+        LodView::perspective(camera, HEIGHT as f32, fov, 0.01)
+            .with_view_projection(clip_from_world, Vec2::new(WIDTH as f32, HEIGHT as f32))
     }
 
     fn k2_source() -> Vec<Gaussian3d> {
@@ -744,6 +836,7 @@ mod headless {
         captures: BTreeMap<CaptureKey, CapturedImage>,
         interior_quality: Option<f32>,
         interior_weight: Option<f32>,
+        parent_side_quality: Option<f32>,
     }
 
     impl QualificationState {
@@ -763,6 +856,7 @@ mod headless {
                 captures: BTreeMap::new(),
                 interior_quality: None,
                 interior_weight: None,
+                parent_side_quality: None,
             }
         }
 
@@ -846,18 +940,19 @@ mod headless {
                 Name::new("k2_children_categorical_control"),
             ))
             .id();
+        let (camera_z, fov) = state.fixture.camera();
         let camera = commands
             .spawn((
                 Camera3d::default(),
                 Camera::default(),
                 Projection::Perspective(PerspectiveProjection {
-                    fov: 60.0_f32.to_radians(),
+                    fov,
                     near: 0.01,
                     far: 100.0,
                     ..default()
                 }),
                 RenderTarget::Image(target.clone().into()),
-                Transform::from_translation(Vec3::new(0.0, 0.0, CAMERA_Z)),
+                Transform::from_translation(Vec3::new(0.0, 0.0, camera_z)),
                 Tonemapping::None,
                 GaussianCamera::default(),
                 Name::new("k2_radiance_camera"),
@@ -876,6 +971,7 @@ mod headless {
         mut state: ResMut<QualificationState>,
         probe: Res<MorphRenderProbe>,
         statuses: Query<&GaussianLodStatus>,
+        package_snapshots: Query<&GaussianLodPackageTestingSnapshot>,
         mut lod_settings: Query<&mut GaussianLodSettings>,
         mut cloud_settings_query: Query<&mut CloudSettings>,
         mut visibilities: Query<&mut Visibility>,
@@ -894,9 +990,13 @@ mod headless {
         let phase = state.phase;
         let (source, quality, draw_mode) = match phase {
             Phase::PrepareFine(draw_mode) => (Source::Package, 1.0, draw_mode),
-            Phase::CaptureChildrenEndpoint(draw_mode) => {
-                (Source::Package, PARENT_SIDE_QUALITY, draw_mode)
-            }
+            Phase::CaptureChildrenEndpoint(draw_mode) => (
+                Source::Package,
+                state
+                    .parent_side_quality
+                    .expect("live-view parent target exists"),
+                draw_mode,
+            ),
             Phase::PrepareCoarse(draw_mode) => (Source::Package, 0.0, draw_mode),
             Phase::CaptureParentEndpoint(draw_mode) | Phase::CaptureInterior(draw_mode) => (
                 Source::Package,
@@ -943,8 +1043,17 @@ mod headless {
             Phase::PrepareFine(draw_mode) => {
                 if state.phase_frames >= PACKAGE_SETTLE_FRAMES
                     && categorical_package_is_ready(&probe, draw_mode, 2)
-                    && package_target_is_satisfied(&statuses, package)
+                    && package_target_is_committed(&statuses, &package_snapshots, package, 1.0)
                 {
+                    let view = probe
+                        .latest()
+                        .and_then(|frame| frame.current_view)
+                        .expect("ready package has the actual render view");
+                    let quality = state.fixture.parent_side_quality(view);
+                    if let Some(previous) = state.parent_side_quality {
+                        assert_eq!(previous.to_bits(), quality.to_bits());
+                    }
+                    state.parent_side_quality = Some(quality);
                     state.enter(Phase::CaptureChildrenEndpoint(draw_mode));
                 }
             }
@@ -961,7 +1070,7 @@ mod headless {
             Phase::PrepareCoarse(draw_mode) => {
                 if state.phase_frames >= PACKAGE_SETTLE_FRAMES
                     && categorical_package_is_ready(&probe, draw_mode, 1)
-                    && package_target_is_satisfied(&statuses, package)
+                    && package_target_is_committed(&statuses, &package_snapshots, package, 0.0)
                 {
                     state.enter(Phase::CaptureParentEndpoint(draw_mode));
                 }
@@ -1024,12 +1133,28 @@ mod headless {
         }
     }
 
-    fn package_target_is_satisfied(statuses: &Query<&GaussianLodStatus>, package: Entity) -> bool {
-        statuses
-            .get(package)
-            .ok()
-            .and_then(|status| status.target_satisfied)
-            == Some(true)
+    fn package_target_is_committed(
+        statuses: &Query<&GaussianLodStatus>,
+        snapshots: &Query<&GaussianLodPackageTestingSnapshot>,
+        package: Entity,
+        quality: f32,
+    ) -> bool {
+        let target = GaussianLodSettings {
+            quality,
+            ..default()
+        }
+        .quality_target();
+        // A render-ACTIVE pending packet is not yet the package's acknowledged
+        // predecessor. Rapid retargeting must first commit that packet, which
+        // has separate interruption coverage. This endpoint fixture starts
+        // from the exact q0/q1 cut committed in both worlds.
+        statuses.get(package).is_ok_and(|status| {
+            status.requested_target == target && status.target_satisfied == Some(true)
+        }) && snapshots.get(package).is_ok_and(|snapshot| {
+            snapshot.current_cut_request_identity_present
+                && snapshot.current_cut_matches_live_request
+                && !snapshot.pending_present
+        })
     }
 
     fn categorical_package_is_ready(

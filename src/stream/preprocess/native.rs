@@ -51,6 +51,17 @@ impl BackendState {
         Self::Cooperative(Box::new(CooperativeBackend::new()))
     }
 
+    pub(super) fn set_memory_reservations(
+        &mut self,
+        reservations: Arc<[crate::stream::memory::LodMemoryLease]>,
+    ) {
+        match self {
+            Self::Native(backend) => backend.memory_reservations = reservations,
+            #[cfg(test)]
+            Self::Cooperative(_) => {}
+        }
+    }
+
     pub(super) fn kind(&self) -> LodPagePreprocessBackend {
         match self {
             Self::Native(_) => LodPagePreprocessBackend::NativeWorkerPool,
@@ -158,6 +169,7 @@ pub(super) struct NativeBackend {
     next_job_id: u64,
     completion_tx: Sender<NativeCompletion>,
     completion_rx: Mutex<Receiver<NativeCompletion>>,
+    memory_reservations: Arc<[crate::stream::memory::LodMemoryLease]>,
 }
 
 impl NativeBackend {
@@ -175,6 +187,7 @@ impl NativeBackend {
             next_job_id: 1,
             completion_tx,
             completion_rx: Mutex::new(completion_rx),
+            memory_reservations: Arc::from([]),
         }
     }
 
@@ -199,6 +212,7 @@ impl NativeBackend {
                 input: waiting_job.input,
                 cancelled: cancelled.clone(),
                 completion_tx: self.completion_tx.clone(),
+                _memory_reservations: Arc::clone(&self.memory_reservations),
             };
             match pool.try_submit(job) {
                 Ok(()) => {
@@ -302,6 +316,7 @@ struct NativeJob {
     input: super::LodPagePreprocessInput,
     cancelled: Arc<AtomicBool>,
     completion_tx: Sender<NativeCompletion>,
+    _memory_reservations: Arc<[crate::stream::memory::LodMemoryLease]>,
 }
 
 impl NativeJob {

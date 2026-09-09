@@ -1,7 +1,7 @@
 //! Per-view exact active-count compaction and indirect argument generation.
 //!
 //! This is the GPU boundary between hierarchy selection and sorting/rendering.
-//! Today it can consume the identity source range (the legacy flat cloud) or a
+//! Today it can consume the identity source range (a flat cloud) or a
 //! [`LodCandidateFrontier`] validated by the bounded streaming runtime. A future
 //! GPU hierarchy traversal can write the same bounded candidate buffer without
 //! changing the exact-count compaction/sort boundary.
@@ -15,7 +15,7 @@ use std::{
     marker::PhantomData,
     sync::{
         Arc,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
 };
 
@@ -60,7 +60,8 @@ use crate::{
         cloud::CloudVisibilityClass,
         lod_debug::{LodDebugMetadata, LodDebugResidency},
         lod_settings::{
-            GaussianLodSettings, LodQualityEndpoint, LodQualityTarget, LodSelectionMode,
+            GaussianLodSettings, LodPresentationMode as LodPresentationPolicy, LodQualityEndpoint,
+            LodQualityTarget, LodSelectionMode,
         },
         lodge_settings::GaussianLodgeSettings,
         settings::{CloudSettings, GaussianMode, RadixSortDepthBits},
@@ -69,7 +70,13 @@ use crate::{
         CloudPipeline, CloudPipelineKey, CloudPipelineReady, CloudUniform,
         GaussianComputeViewBindGroup, GaussianUniformBindGroups, LodDebugBindGroup,
         LodDebugCandidateEpoch, ShaderDefines, cloud_pipeline_key,
-        gaussian_rasterization_is_supported, shader_defs_with_defines,
+        gaussian_rasterization_is_supported,
+        ordered::{self, GaussianGlobalOrderSettings, GlobalOrderPrepare, GlobalOrderReadiness},
+        point::{
+            GaussianPointSplattingSettings, PointSplattingPipelineReadiness, PointSplattingPrepare,
+            point_splatting_for_cloud, supports_candidate,
+        },
+        shader_defs_with_defines,
     },
     sort::{
         SortEntry, SortMode,
@@ -79,6 +86,7 @@ use crate::{
         atlas_upload::LodAtlasGpuGenerations,
         hierarchy::LodView,
         lodge::LodgeMembershipClass,
+        memory::{LodMemoryCategory, LodMemoryLease, LodMemoryLedger, LodMemoryLimits},
         render_commit::{
             LOD_RENDER_ACTIVE, LOD_RENDER_FAILED, LOD_RENDER_PREPARED, LOD_RENDER_TRANSITIONING,
             LOD_RENDER_WAITING, LodExternalActiveSetPresentation, LodRenderCandidate,
@@ -114,7 +122,7 @@ pub const DEFAULT_LOD_COMPACTION_AGGREGATE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Render-world memory policy shared by all view/cloud compaction states of a
 /// planar representation. Setting the limit to zero disables GPU compaction:
-/// fallback-capable pairs stay on the complete legacy path, while package
+/// fallback-capable pairs stay on the complete per-cloud path, while package
 /// transactions that require a candidate draw fail their render handshake.
 #[derive(Resource, Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LodCompactionMemoryBudget {
@@ -139,6 +147,8 @@ struct LodExternalVisiblePipelineKey {
 #[derive(Clone, Eq, PartialEq)]
 struct LodCompactionEnvironmentFingerprint {
     max_total_bytes: u64,
+    global_memory_limits: LodMemoryLimits,
+    gpu_release_epoch: u64,
     device_limits: WgpuLimits,
 }
 
@@ -169,6 +179,7 @@ fn publish_lod_render_environment_change(
 fn update_lod_render_environment_epoch(
     epoch: Res<LodRenderEnvironmentEpoch>,
     memory_budget: Res<LodCompactionMemoryBudget>,
+    memory_ledger: Res<LodMemoryLedger>,
     render_device: Res<RenderDevice>,
     views: Query<(&ExtractedView, &RenderVisibleEntities, Option<&Msaa>), With<GaussianCamera>>,
     clouds: Query<(&CloudSettings, Option<&GaussianLodgeSettings>)>,
@@ -202,6 +213,8 @@ fn update_lod_render_environment_epoch(
         external_visible_pipelines,
         LodCompactionEnvironmentFingerprint {
             max_total_bytes: memory_budget.max_total_bytes,
+            global_memory_limits: memory_ledger.limits(),
+            gpu_release_epoch: memory_ledger.gpu_release_epoch(),
             device_limits: render_device.limits(),
         },
     );
@@ -234,6 +247,8 @@ mod render_environment_epoch_tests {
         let epoch = LodRenderEnvironmentEpoch::default();
         let mut previous = LodRenderEnvironmentSnapshot::default();
         let base = LodCompactionEnvironmentFingerprint {
+            global_memory_limits: LodMemoryLimits::default(),
+            gpu_release_epoch: 0,
             max_total_bytes: 32,
             device_limits: WgpuLimits::default(),
         };
@@ -303,6 +318,10 @@ mod render_environment_epoch_tests {
 #[non_exhaustive]
 pub enum LodCandidateConfigError {
     UnsupportedSortMode,
+    MemoryReservationTooSmall {
+        required: u64,
+        reserved: u64,
+    },
     SourceIndexExceedsEntryEncoding {
         source_count: u32,
         max_source_count: u32,
@@ -345,6 +364,10 @@ pub enum LodCandidateConfigError {
 impl fmt::Display for LodCandidateConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::MemoryReservationTooSmall { required, reserved } => write!(
+                formatter,
+                "LoD buffer growth requires {required} reserved bytes, but only {reserved} were admitted"
+            ),
             Self::UnsupportedSortMode => {
                 write!(formatter, "LoD bridge candidates require radix sorting")
             }
@@ -459,10 +482,27 @@ pub(crate) fn representable_source_count(source_len: usize) -> Option<u32> {
 #[derive(Debug, Hash, PartialEq, Eq, Clone, SystemSet)]
 pub struct LodCompactionLabel;
 
+/// Allocation boundary used by renderers that consume the compacted frontier.
+#[derive(SystemSet, Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct LodCompactionPrepare;
+
 /// Orders render-world observers after the radix-proven view-blend aggregate
 /// has been published and any eligible Morphing candidate has activated.
 #[derive(Debug, Hash, PartialEq, Eq, Clone, SystemSet)]
 pub struct LodViewBlendPublicationLabel;
+
+/// Cleanup publication of a separately prepared capacity successor. Capture
+/// systems which copy this frame's drawn output must run before this set.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LodCapacityPublicationLabel;
+
+/// Opt-in qualification gate that pauses only atomic capacity publication.
+/// Compaction, radix, and drawing continue for both allocations while held.
+#[cfg(feature = "testing")]
+#[derive(Resource, Default)]
+pub struct LodCapacityPublicationGateForTesting {
+    pub hold: bool,
+}
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, SystemSet)]
 struct LodRenderEnvironmentUpdateLabel;
@@ -485,9 +525,12 @@ where
     R::GpuPlanarType: GpuPlanarStorage,
 {
     fn build(&self, app: &mut App) {
+        app.init_resource::<LodMemoryLedger>();
+        let memory_ledger = app.world().resource::<LodMemoryLedger>().clone();
         let install_shared_system = !app.is_plugin_added::<LodCompactionPluginFlag>();
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
+                .insert_resource(memory_ledger)
                 .init_gpu_resource::<LodCompactionBuffers<R>>()
                 .init_resource::<LodCompactionMemoryBudget>()
                 .init_resource::<LodRenderEnvironmentEpoch>()
@@ -498,9 +541,13 @@ where
                 .add_systems(
                     Render,
                     (
-                        prepare_lod_compaction_buffers::<R>.after(LodRenderEnvironmentUpdateLabel),
+                        prepare_lod_compaction_buffers::<R>
+                            .after(LodRenderEnvironmentUpdateLabel)
+                            .in_set(LodCompactionPrepare),
                         commit_lod_bridge_candidates::<R>
-                            .after(prepare_lod_compaction_buffers::<R>),
+                            .after(prepare_lod_compaction_buffers::<R>)
+                            .after(PointSplattingPrepare)
+                            .after(GlobalOrderPrepare),
                         update_lod_debug_candidate_epochs::<R>
                             .after(commit_lod_bridge_candidates::<R>),
                     )
@@ -511,6 +558,20 @@ where
                     publish_lod_view_blend_after_radix::<R>
                         .in_set(RenderSystems::Cleanup)
                         .in_set(LodViewBlendPublicationLabel),
+                )
+                .add_systems(
+                    Render,
+                    fence_lod_compaction_retirements::<R>
+                        .in_set(RenderSystems::Cleanup)
+                        .after(RenderSystems::Render)
+                        .after(LodCapacityPublicationLabel),
+                )
+                .add_systems(
+                    Render,
+                    publish_lod_capacity_successors::<R>
+                        .in_set(RenderSystems::Cleanup)
+                        .in_set(LodCapacityPublicationLabel)
+                        .after(LodViewBlendPublicationLabel),
                 );
             if install_shared_system {
                 render_app.add_systems(
@@ -682,6 +743,7 @@ pub struct LodCompactionUniform {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct LodCompactionPolicy {
     quality_endpoint: LodQualityEndpoint,
+    presentation_mode: LodPresentationPolicy,
     selection_mode: LodSelectionMode,
     max_active_gaussians: u32,
     frustum_culling: bool,
@@ -692,6 +754,7 @@ impl LodCompactionPolicy {
     fn hierarchy(settings: &GaussianLodSettings) -> Self {
         Self {
             quality_endpoint: settings.quality_endpoint(),
+            presentation_mode: settings.presentation_mode,
             selection_mode: settings.selection_mode,
             max_active_gaussians: settings.max_active_gaussians_u32(),
             frustum_culling: settings.frustum_culling,
@@ -702,6 +765,7 @@ impl LodCompactionPolicy {
     fn external_active_set(settings: &GaussianLodgeSettings) -> Self {
         Self {
             quality_endpoint: LodQualityEndpoint::Continuous,
+            presentation_mode: LodPresentationPolicy::ContinuousMorph,
             selection_mode: settings.selection_mode,
             max_active_gaussians: settings.max_active_gaussians_u32(),
             frustum_culling: settings.frustum_culling,
@@ -985,29 +1049,6 @@ fn lod_morph_word_capacity(required_words: u32) -> Result<u32, LodCandidateConfi
 
 const fn lod_morph_buffer_bytes(word_capacity: u32) -> Option<u64> {
     (word_capacity as u64).checked_mul(std::mem::size_of::<u32>() as u64)
-}
-
-/// Replaces the allocation plan's minimum 32-byte morph binding with the
-/// exact resident grow-only capacity. A real growth temporarily owns both the
-/// current and next power-of-two buffers because submitted bind groups may
-/// retain the predecessor.
-fn lod_compaction_admission_bytes_with_morph(
-    allocation_total_bytes: u64,
-    current_word_capacity: u32,
-    required_words: u32,
-) -> Option<u64> {
-    let current_word_capacity = current_word_capacity.max(LOD_MORPH_HEADER_WORDS);
-    let next_word_capacity = lod_morph_word_capacity(required_words).ok()?;
-    let current_bytes = lod_morph_buffer_bytes(current_word_capacity)?;
-    let next_bytes = lod_morph_buffer_bytes(next_word_capacity)?;
-    let morph_peak_bytes = if next_word_capacity > current_word_capacity {
-        current_bytes.checked_add(next_bytes)?
-    } else {
-        current_bytes
-    };
-    allocation_total_bytes
-        .checked_sub(LOD_MORPH_MIN_BUFFER_BYTES)?
-        .checked_add(morph_peak_bytes)
 }
 
 pub(crate) fn plan_lod_candidate_morph(
@@ -2215,7 +2256,7 @@ pub fn finalized_indirect_args(
     }
 }
 
-/// Whether a per-view state may replace the complete legacy draw path.
+/// Whether a per-view state may replace the complete per-cloud draw path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LodCompactionReadiness {
     /// Buffers exist, but no complete bounded frontier has been committed.
@@ -2363,6 +2404,7 @@ struct LodRadixCandidateSnapshot {
     candidate_content_signature: Option<u64>,
     candidate_atlas_allocation_epoch: Option<u64>,
     rendered_candidate_count: u32,
+    selected_gaussians: Option<u64>,
     morph_identity: Option<LodViewBlendIdentity>,
     compute_input_generation: u64,
     compaction_signature: u64,
@@ -2397,10 +2439,16 @@ impl LodRadixDrawableTracker {
         if pending.compaction_signature != compaction_signature {
             return false;
         }
-        self.drawable = Some(pending);
+        self.publish_snapshot(pending);
+        true
+    }
+
+    /// Publishes a completed renderer's captured snapshot while retaining any
+    /// newer in-flight camera evaluation in `pending`.
+    fn publish_snapshot(&mut self, snapshot: LodRadixCandidateSnapshot) {
+        self.drawable = Some(snapshot);
         self.drawable_publication_generation =
             self.drawable_publication_generation.saturating_add(1);
-        true
     }
 
     /// Attaches a newer checked selector oracle to an unchanged physical
@@ -2719,9 +2767,9 @@ fn lod_live_camera_sort_signature(view: &ExtractedView) -> u64 {
 }
 
 /// Reconstructs the selector's compact projection view from Bevy's extracted
-/// matrices. This intentionally omits the frustum: view-blend pressure uses
-/// projection, distance, and coverage, while compaction independently applies
-/// the exact extracted frustum to the interpolated Gaussian support.
+/// matrices. Host-derived morph weights and main-world selection share the same
+/// conservative projection, including orientation and off-axis perspective.
+/// Compaction independently applies the frustum to interpolated Gaussian support.
 fn lod_view_blend_view(
     view: &ExtractedView,
     world_from_local: &GlobalTransform,
@@ -2760,7 +2808,17 @@ fn lod_view_blend_view(
     } else {
         return None;
     };
-    Some(lod_view.with_world_from_local(world_from_local.to_matrix()))
+    let clip_from_world = view
+        .clip_from_world
+        .unwrap_or_else(|| clip * view.world_from_view.to_matrix().inverse());
+    let lod_view = lod_view
+        .with_view_projection(
+            clip_from_world,
+            bevy::math::Vec2::new(view.viewport.z as f32, viewport_height_px),
+        )
+        .with_world_from_local(world_from_local.to_matrix());
+    lod_view.validate().ok()?;
+    Some(lod_view)
 }
 
 /// Reconstructs the exact selector view used by render-owned blending. This
@@ -3045,6 +3103,22 @@ struct LodCompactionAllocationPlan {
     morph_base_bytes: u64,
 }
 
+impl LodCompactionAllocationPlan {
+    /// Projection consumers need the compacted entries, but no radix workspace.
+    fn without_radix(mut self) -> Self {
+        let bytes = self.radix_scratch_bytes
+            + self.sorting_global_bytes
+            + self.sorting_status_counter_bytes
+            + self.sorting_pass_bytes * 4;
+        self.total_bytes -= bytes;
+        self.radix_scratch_bytes = 0;
+        self.sorting_global_bytes = 0;
+        self.sorting_status_counter_bytes = 0;
+        self.sorting_pass_bytes = 0;
+        self
+    }
+}
+
 fn checked_lod_compaction_total_bytes(
     buffers: impl IntoIterator<Item = u64>,
 ) -> Result<u64, LodCompactionAllocationError> {
@@ -3078,7 +3152,7 @@ fn reserve_lod_compaction_bytes(used: &mut u64, requested: u64, limit: u64) -> b
 }
 
 /// Aggregate admission favors package outputs that are already drawable, then
-/// package requests that have no complete legacy fallback. Stable identity
+/// package requests that have no complete per-cloud fallback. Stable identity
 /// order remains the tie-breaker within each class.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum LodCompactionAdmissionClass {
@@ -3099,18 +3173,31 @@ struct LodCompactionAdmissionRequest<'a, T> {
     pinned_existing: bool,
 }
 
+#[cfg(test)]
 fn admit_lod_compaction_requests<T>(
-    mut requests: Vec<LodCompactionAdmissionRequest<'_, T>>,
+    requests: Vec<LodCompactionAdmissionRequest<'_, T>>,
     aggregate_limit: u64,
 ) -> Vec<T> {
-    // This is a stable sort: callers first establish deterministic identity
-    // order, which remains the tie-breaker within each admission class.
-    requests.sort_by_key(|request| (!request.pinned_existing, request.class));
+    admit_lod_compaction_requests_with_existing(requests, aggregate_limit, 0, |_| None)
+}
 
-    let mut aggregate_bytes = 0u64;
+/// Existing allocations (including retired queue work) are charged once before
+/// considering incremental allocations. A failed replacement may retain the
+/// previous complete output; it must never make that allocation disappear from
+/// either the draw path or the accounting ledger.
+fn admit_lod_compaction_requests_with_existing<T>(
+    mut requests: Vec<LodCompactionAdmissionRequest<'_, T>>,
+    aggregate_limit: u64,
+    existing_bytes: u64,
+    mut retain_rejected: impl FnMut(&T) -> Option<T>,
+) -> Vec<T> {
+    requests.sort_by_key(|request| (!request.pinned_existing, request.class));
+    let mut aggregate_bytes = existing_bytes;
     let mut admitted = Vec::new();
     for request in requests {
-        if request.pinned_existing {
+        if request.pinned_existing || request.total_bytes == 0 {
+            // A lowered ceiling blocks growth, but does not invalidate an
+            // already allocated output or an update requiring no allocation.
             aggregate_bytes = aggregate_bytes.saturating_add(request.total_bytes);
             admitted.push(request.payload);
         } else if reserve_lod_compaction_bytes(
@@ -3119,14 +3206,51 @@ fn admit_lod_compaction_requests<T>(
             aggregate_limit,
         ) {
             admitted.push(request.payload);
-        } else if let Some(phase) = request.required_phase {
-            // Candidate-required package atlases have no safe raw-atlas draw.
-            // Publish a terminal cross-world result instead of leaving their
-            // main-world transaction WAITING forever behind a fixed prefix.
-            phase.store(LOD_RENDER_FAILED, Ordering::Release);
+        } else {
+            if let Some(phase) = request.required_phase {
+                phase.store(LOD_RENDER_FAILED, Ordering::Release);
+            }
+            if let Some(retained) = retain_rejected(&request.payload) {
+                admitted.push(retained);
+            }
         }
     }
     admitted
+}
+
+/// Extra allocation while the current buffers may still be referenced by a
+/// submitted frame. The caller has already charged all existing allocations.
+fn lod_compaction_incremental_bytes(
+    allocation: &LodCompactionAllocationPlan,
+    current: Option<(u32, u32, u32)>, // output, descriptor words, morph words
+    required_morph_words: u32,
+) -> Option<u64> {
+    let next_morph_words = lod_morph_word_capacity(required_morph_words).ok()?;
+    let next_morph_bytes = lod_morph_buffer_bytes(next_morph_words)?;
+    let Some((current_output, current_source_words, current_morph_words)) = current else {
+        // New state initially allocates its small header; a larger table is a
+        // separate allocation until that header's submission is retired.
+        return allocation
+            .total_bytes
+            .checked_add(if next_morph_words > LOD_MORPH_HEADER_WORDS {
+                next_morph_bytes
+            } else {
+                0
+            });
+    };
+    if current_output != allocation.effective_capacity {
+        return lod_compaction_incremental_bytes(allocation, None, required_morph_words);
+    }
+    let source_growth = allocation.candidate_indices_bytes > u64::from(current_source_words) * 4;
+    let mut extra = if source_growth {
+        allocation.candidate_and_scan_records_bytes
+    } else {
+        0
+    };
+    if next_morph_words > current_morph_words {
+        extra = extra.checked_add(next_morph_bytes)?;
+    }
+    Some(extra)
 }
 
 fn checked_record_buffer_bytes(
@@ -3215,10 +3339,8 @@ fn maximum_candidate_source_words(candidate_capacity: u64) -> Option<u64> {
     candidate_capacity.checked_mul(u64::from(LOD_PHYSICAL_RANGE_DESCRIPTOR_WORDS))
 }
 
-/// Candidate prefixes are grow-only for a state's lifetime. The initial
-/// four-word allocation covers a single physical range; the first larger
-/// payload grows directly to the validated maximum so later range-descriptor
-/// churn only rewrites bytes and cannot accumulate retired full-tail buffers.
+/// Grow descriptors according to descriptor demand, independently of splat
+/// capacity. Submitted predecessors are accounted until queue completion.
 fn candidate_source_capacity_after_upload(
     current_words: u32,
     required_words: u32,
@@ -3228,9 +3350,11 @@ fn candidate_source_capacity_after_upload(
     if required_words <= current_words {
         current_words
     } else {
-        maximum_words
+        required_words
+            .checked_next_power_of_two()
+            .unwrap_or(maximum_words)
+            .min(maximum_words)
             .max(required_words)
-            .max(LOD_MIN_CANDIDATE_SOURCE_WORDS)
     }
 }
 
@@ -3262,8 +3386,42 @@ fn max_candidate_capacity_for_combined_storage(storage_buffer_limit: u64) -> u64
     low
 }
 
+#[cfg(test)]
 fn plan_lod_compaction_allocation(
     requested_capacity: u32,
+    max_buffer_size: u64,
+    max_storage_buffer_binding_size: u64,
+    max_uniform_buffer_binding_size: u64,
+    max_compute_workgroups_per_dimension: u32,
+) -> Result<LodCompactionAllocationPlan, LodCompactionAllocationError> {
+    plan_lod_compaction_allocation_impl(
+        requested_capacity,
+        None,
+        max_buffer_size,
+        max_storage_buffer_binding_size,
+        max_uniform_buffer_binding_size,
+        max_compute_workgroups_per_dimension,
+    )
+}
+
+fn plan_lod_compaction_allocation_for_ranges(
+    requested_capacity: u32,
+    source_words: u32,
+    limits: &wgpu::Limits,
+) -> Result<LodCompactionAllocationPlan, LodCompactionAllocationError> {
+    plan_lod_compaction_allocation_impl(
+        requested_capacity,
+        Some(source_words.max(LOD_MIN_CANDIDATE_SOURCE_WORDS)),
+        limits.max_buffer_size,
+        limits.max_storage_buffer_binding_size,
+        limits.max_uniform_buffer_binding_size,
+        limits.max_compute_workgroups_per_dimension,
+    )
+}
+
+fn plan_lod_compaction_allocation_impl(
+    requested_capacity: u32,
+    source_words: Option<u32>,
     max_buffer_size: u64,
     max_storage_buffer_binding_size: u64,
     max_uniform_buffer_binding_size: u64,
@@ -3324,10 +3482,29 @@ fn plan_lod_compaction_allocation(
         .ok_or(LodCompactionAllocationError::SizeOverflow(
             LodCompactionBufferRole::CandidateIndices,
         ))?;
-    let combined_storage_capacity =
-        max_candidate_capacity_for_combined_storage(storage_buffer_limit);
+    let combined_storage_capacity = if let Some(words) = source_words {
+        let mut low = 0u64;
+        let mut high = u64::from(requested_capacity) + 1;
+        while low + 1 < high {
+            let middle = low + (high - low) / 2;
+            if candidate_binding_bytes(middle, u64::from(words))
+                .is_some_and(|bytes| bytes <= storage_buffer_limit)
+            {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        low
+    } else {
+        max_candidate_capacity_for_combined_storage(storage_buffer_limit)
+    };
     let effective_capacity = u64::from(requested_capacity)
-        .min(storage_buffer_limit / candidate_descriptor_stride)
+        .min(
+            source_words.map_or(storage_buffer_limit / candidate_descriptor_stride, |_| {
+                u64::MAX
+            }),
+        )
         .min(storage_buffer_limit / sort_entry_stride)
         .min(status_record_capacity)
         .min(dispatch_record_capacity)
@@ -3344,11 +3521,15 @@ fn plan_lod_compaction_allocation(
         });
     }
 
-    let candidate_indices_bytes = checked_record_buffer_bytes(
-        LodCompactionBufferRole::CandidateIndices,
-        effective_capacity,
-        candidate_descriptor_stride,
-    )?;
+    let candidate_indices_bytes = if let Some(words) = source_words {
+        u64::from(words) * std::mem::size_of::<u32>() as u64
+    } else {
+        checked_record_buffer_bytes(
+            LodCompactionBufferRole::CandidateIndices,
+            effective_capacity,
+            candidate_descriptor_stride,
+        )?
+    };
     let candidate_evaluations_bytes = checked_record_buffer_bytes(
         LodCompactionBufferRole::CandidateEvaluations,
         effective_capacity,
@@ -3421,13 +3602,19 @@ fn plan_lod_compaction_allocation(
     // capacity is grow-only after that one replacement, so charging the exact
     // initial binding keeps aggregate admission a hard peak bound without a
     // recurring two-full-buffer penalty.
-    let candidate_replacement_reserve_bytes = candidate_binding_bytes(
-        u64::from(effective_capacity),
-        u64::from(LOD_MIN_CANDIDATE_SOURCE_WORDS),
-    )
-    .ok_or(LodCompactionAllocationError::SizeOverflow(
-        LodCompactionBufferRole::CandidateAndScanRecords,
-    ))?;
+    let candidate_replacement_reserve_bytes = if source_words.is_some() {
+        // Production starts at its admitted descriptor capacity and charges
+        // every submitted predecessor separately during subsequent growth.
+        0
+    } else {
+        candidate_binding_bytes(
+            u64::from(effective_capacity),
+            u64::from(LOD_MIN_CANDIDATE_SOURCE_WORDS),
+        )
+        .ok_or(LodCompactionAllocationError::SizeOverflow(
+            LodCompactionBufferRole::CandidateAndScanRecords,
+        ))?
+    };
     let total_bytes = checked_lod_compaction_total_bytes([
         config_bytes,
         candidate_and_scan_records_bytes,
@@ -3550,6 +3737,9 @@ pub struct LodLastRadixDrawableForTesting {
     pub compute_input_generation: u64,
     pub radix_publication_generation: u64,
     pub rendered_candidate_count: u32,
+    /// Complete selector frontier count paired with this drawable generation.
+    /// Absent for raw testing or external uploads with no selector metadata.
+    pub selected_gaussians: Option<u64>,
     pub phase_at_compaction: Option<u8>,
     pub candidate_token_matches: bool,
     pub candidate_content_matches: bool,
@@ -3624,16 +3814,299 @@ fn refresh_complete_view_blend_evaluation_for_testing(
     publication.desired_evaluation_complete = true;
 }
 
+struct LodRetiredAllocation {
+    bytes: u64,
+    memory_leases: Vec<LodMemoryLease>,
+    complete: Arc<AtomicBool>,
+    /// Callback registration waits for Cleanup, after the submission containing
+    /// any writes queued earlier in the retirement frame.
+    armed: bool,
+}
+
+impl LodRetiredAllocation {
+    fn new(bytes: u64) -> Self {
+        Self {
+            bytes,
+            memory_leases: Vec::new(),
+            complete: Arc::new(AtomicBool::new(false)),
+            armed: false,
+        }
+    }
+}
+
+fn take_lod_memory_lease_bytes(
+    leases: &mut Vec<LodMemoryLease>,
+    mut bytes: u64,
+) -> Vec<LodMemoryLease> {
+    let mut taken = Vec::new();
+    while bytes != 0 {
+        let mut lease = leases
+            .pop()
+            .expect("physical LoD allocation was admitted before creation");
+        if lease.bytes() <= bytes {
+            bytes -= lease.bytes();
+            taken.push(lease);
+        } else {
+            taken.push(
+                lease
+                    .split_off(bytes)
+                    .expect("compaction reservation ownership is exclusive"),
+            );
+            leases.push(lease);
+            bytes = 0;
+        }
+    }
+    taken
+}
+
+fn pending_lod_allocation_bytes(retired: &[LodRetiredAllocation]) -> u64 {
+    retired
+        .iter()
+        .filter(|entry| !entry.complete.load(Ordering::Acquire))
+        .fold(0u64, |bytes, entry| bytes.saturating_add(entry.bytes))
+}
+
+/// Device-scoped allocation charges survive removal/recreation of individual
+/// view/cloud states. Tokens own no GPU handles: wgpu retains submitted work,
+/// while this ledger prevents admitting replacement memory before completion.
+#[derive(Default)]
+struct LodCompactionRetirementLedger {
+    retired: Vec<LodRetiredAllocation>,
+}
+
+impl LodCompactionRetirementLedger {
+    fn pending_bytes(&self) -> u64 {
+        pending_lod_allocation_bytes(&self.retired)
+    }
+
+    fn prune_completed(&mut self) {
+        self.retired
+            .retain(|entry| !entry.complete.load(Ordering::Acquire));
+    }
+
+    fn absorb(&mut self, retired: &mut Vec<LodRetiredAllocation>) {
+        self.retired.append(retired);
+    }
+
+    fn retire_allocations(&mut self, live_bytes: u64, retired: &mut Vec<LodRetiredAllocation>) {
+        self.absorb(retired);
+        if live_bytes != 0 {
+            self.retired.push(LodRetiredAllocation::new(live_bytes));
+        }
+    }
+
+    fn retire_state(&mut self, mut state: GpuLodCompaction) {
+        let live_bytes = state.actual_allocation_bytes();
+        self.absorb(&mut state.retired_allocations);
+        let mut retired = LodRetiredAllocation::new(live_bytes);
+        retired.memory_leases = std::mem::take(&mut state.memory_leases);
+        if live_bytes != 0 {
+            for lease in &retired.memory_leases {
+                lease.mark_gpu_materialized();
+            }
+        }
+        self.retired.push(retired);
+        drop(state);
+    }
+
+    /// Called only after Bevy submits the frame. A previous-submit callback
+    /// registered while preparing buffers would miss queued write_buffer work.
+    fn arm_after_submit(&mut self, mut register: impl FnMut(Arc<AtomicBool>)) {
+        for entry in &mut self.retired {
+            if !entry.armed {
+                entry.armed = true;
+                register(Arc::clone(&entry.complete));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod retirement_ledger_tests {
+    use super::*;
+
+    #[test]
+    fn state_removal_keeps_live_and_replaced_allocations_until_their_fences_complete() {
+        let mut ledger = LodCompactionRetirementLedger::default();
+        let mut state_retirements = vec![
+            LodRetiredAllocation::new(128),
+            LodRetiredAllocation::new(256),
+        ];
+        // This is the transfer used by retire_state: removed live buffers and
+        // previous prefix/morph generations all outlive the per-view owner.
+        ledger.retire_allocations(1_024, &mut state_retirements);
+        assert!(state_retirements.is_empty());
+        drop(state_retirements);
+        assert_eq!(ledger.pending_bytes(), 1_408);
+
+        let mut callbacks = Vec::new();
+        ledger.arm_after_submit(|complete| callbacks.push(complete));
+        assert_eq!(callbacks.len(), 3);
+        callbacks[1].store(true, Ordering::Release);
+        ledger.prune_completed();
+        assert_eq!(ledger.pending_bytes(), 1_152);
+
+        // Recreation/removal of another state cannot overwrite the earlier
+        // outstanding charges, even when completion arrives out of order.
+        ledger.retire_allocations(2_048, &mut Vec::new());
+        assert_eq!(ledger.pending_bytes(), 3_200);
+        ledger.arm_after_submit(|complete| callbacks.push(complete));
+        assert_eq!(callbacks.len(), 4, "old fences are armed only once");
+        callbacks[3].store(true, Ordering::Release);
+        ledger.prune_completed();
+        assert_eq!(ledger.pending_bytes(), 1_152);
+        for complete in callbacks {
+            complete.store(true, Ordering::Release);
+        }
+        ledger.prune_completed();
+        assert_eq!(ledger.pending_bytes(), 0);
+        assert!(ledger.retired.is_empty());
+    }
+
+    #[test]
+    fn retirement_stays_charged_until_cleanup_arms_a_submission_fence() {
+        let mut ledger = LodCompactionRetirementLedger::default();
+        let mut pending = vec![LodRetiredAllocation::new(64)];
+        ledger.absorb(&mut pending);
+        ledger.prune_completed();
+        assert_eq!(ledger.pending_bytes(), 64);
+        assert!(!ledger.retired[0].armed);
+
+        // Production calls this only in Cleanup after RenderSystems::Render,
+        // so earlier write_buffer operations belong to the observed submit.
+        let mut complete = None;
+        ledger.arm_after_submit(|flag| complete = Some(flag));
+        assert!(ledger.retired[0].armed);
+        assert_eq!(ledger.pending_bytes(), 64);
+        ledger.arm_after_submit(|_| panic!("a pending fence must not be replaced"));
+        complete.unwrap().store(true, Ordering::Release);
+        assert_eq!(ledger.pending_bytes(), 0);
+    }
+
+    #[test]
+    fn global_reservations_survive_partial_buffer_and_whole_state_retirement() {
+        let memory = LodMemoryLedger::default();
+        let mut live = vec![
+            memory
+                .try_reserve(LodMemoryCategory::CompactionGpu, 100)
+                .unwrap(),
+        ];
+        let mut old_prefix = LodRetiredAllocation::new(40);
+        old_prefix.memory_leases = take_lod_memory_lease_bytes(&mut live, 40);
+        let mut retirement = LodCompactionRetirementLedger::default();
+        retirement.retired.push(old_prefix);
+        assert_eq!(memory.snapshot().gpu_bytes, 100);
+        assert_eq!(live.iter().map(LodMemoryLease::bytes).sum::<u64>(), 60);
+        let mut removed_state = LodRetiredAllocation::new(60);
+        removed_state.memory_leases = live;
+        retirement.retired.push(removed_state);
+        let mut callbacks = Vec::new();
+        retirement.arm_after_submit(|callback| callbacks.push(callback));
+        callbacks[1].store(true, Ordering::Release);
+        retirement.prune_completed();
+        assert_eq!(memory.snapshot().gpu_bytes, 40);
+        callbacks[0].store(true, Ordering::Release);
+        retirement.prune_completed();
+        assert_eq!(memory.snapshot().gpu_bytes, 0);
+    }
+
+    #[test]
+    fn retirement_overflow_saturates_instead_of_reopening_admission() {
+        let mut ledger = LodCompactionRetirementLedger::default();
+        ledger.retire_allocations(u64::MAX, &mut Vec::new());
+        ledger.retire_allocations(1, &mut Vec::new());
+        assert_eq!(ledger.pending_bytes(), u64::MAX);
+    }
+
+    #[test]
+    fn memory_snapshot_reports_retired_allocations_after_the_last_state_is_removed() {
+        use crate::gaussian::formats::planar_3d::Gaussian3d;
+
+        let mut buffers = LodCompactionBuffers::<Gaussian3d>::default();
+        assert_eq!(
+            buffers.memory_snapshot(),
+            LodCompactionMemorySnapshot::default()
+        );
+        buffers.retirement.retire_allocations(128, &mut Vec::new());
+        assert_eq!(
+            buffers.memory_snapshot(),
+            LodCompactionMemorySnapshot {
+                view_cloud_states: 0,
+                live_buffer_bytes: 0,
+                retired_buffer_bytes: 128,
+                tracked_buffer_bytes: 128,
+            }
+        );
+        buffers.retirement.arm_after_submit(|complete| {
+            complete.store(true, Ordering::Release);
+        });
+        assert_eq!(
+            buffers.memory_snapshot(),
+            LodCompactionMemorySnapshot::default()
+        );
+    }
+}
+
+/// Exact compaction identity retained by asynchronous point-render feedback.
+/// Fields are private so only a live, committed state can issue this proof.
+#[derive(Clone, Debug)]
+pub(crate) struct LodPointOutputProof {
+    generation: u64,
+    signature: u64,
+    compute_input_generation: u64,
+    fingerprint: LodCandidateFrontierFingerprint,
+    content_signature: Option<u64>,
+    atlas_allocation_epoch: Option<u64>,
+    candidate: Arc<AtomicU8>,
+    #[cfg(any(test, feature = "testing"))]
+    snapshot: LodRadixCandidateSnapshot,
+}
+
+impl LodPointOutputProof {
+    fn matches_current(&self, current: &Self) -> bool {
+        self.generation == current.generation
+            && self.compute_input_generation == current.compute_input_generation
+            && self.fingerprint == current.fingerprint
+            && self.content_signature == current.content_signature
+            && self.atlas_allocation_epoch == current.atlas_allocation_epoch
+            && Arc::ptr_eq(&self.candidate, &current.candidate)
+            && matches!(
+                current.candidate.load(Ordering::Acquire),
+                LOD_RENDER_PREPARED | LOD_RENDER_ACTIVE | LOD_RENDER_TRANSITIONING
+            )
+    }
+}
+
+/// Allocated only for a conventional sorted consumer. The owning compaction
+/// state and its dependent bindings retire together through the existing fence.
+pub(crate) struct LodRadixWorkspace {
+    pub scratch: Buffer,
+    pub global: Buffer,
+    pub status: Buffer,
+    pub passes: [Buffer; 4],
+}
+
+impl LodRadixWorkspace {
+    fn bytes(&self) -> u64 {
+        self.scratch.size()
+            + self.global.size()
+            + self.status.size()
+            + self.passes.iter().map(|buffer| buffer.size()).sum::<u64>()
+    }
+}
+
 pub struct GpuLodCompaction {
+    /// A successor may compute/sort while its predecessor remains the draw
+    /// source. Only Cleanup can publish this exact candidate's new allocation.
+    capacity_successor: Option<Arc<AtomicU8>>,
+    capacity_publication_held: bool,
+    capacity_activation_preflight_valid: bool,
     /// A dynamically-sized range-descriptor prefix followed by fixed-capacity
     /// cached evaluations and stable-scan records. Keeping these roles in one
     /// binding preserves the WebGPU minimum storage-buffer binding budget.
     pub candidate_and_scan_buffer: Option<Buffer>,
     pub active_entries_buffer: Buffer,
-    pub radix_scratch_buffer: Buffer,
-    pub sorting_global_buffer: Buffer,
-    pub sorting_status_counter_buffer: Buffer,
-    pub sorting_pass_buffers: [Buffer; 4],
+    pub(crate) radix: Option<LodRadixWorkspace>,
     pub indirect_args_buffer: Buffer,
     /// Compact per-transition direct parent map shared by compaction and the
     /// LoD raster pipeline. The allocation grows only when a larger bounded
@@ -3690,9 +4163,12 @@ pub struct GpuLodCompaction {
     compaction_layout: BindGroupLayout,
     sorted_layout: BindGroupLayout,
     candidate_evaluations_and_scan_records_bytes: u64,
-    /// Base allocation charge including the minimum morph header. The resident
-    /// charge replaces that header with the grow-only current table capacity.
-    allocation_total_bytes: u64,
+    candidate_source_word_limit: u32,
+    retired_allocations: Vec<LodRetiredAllocation>,
+    /// Admitted live buffers plus unused Prepare-time growth capacity. Shared
+    /// bind-group handles add no charge; retirement transfers the same leases.
+    memory_leases: Vec<LodMemoryLease>,
+    memory_admission_required: bool,
     config: LodCompactionUniform,
     readiness: LodCompactionReadiness,
     /// True only after candidate compaction and radix have produced a complete
@@ -3703,6 +4179,10 @@ pub struct GpuLodCompaction {
     candidate_upload: LodCandidateUploadTracker,
     #[cfg(any(test, feature = "testing"))]
     radix_drawable: LodRadixDrawableTracker,
+    #[cfg(any(test, feature = "testing"))]
+    candidate_selected_gaussians: Option<u64>,
+    #[cfg(any(test, feature = "testing"))]
+    candidate_handshake_stage: Option<&'static str>,
     /// Content epoch for exactly the physical slots described by the current
     /// bridge candidate. Unlike the atlas-wide upload revision, this remains
     /// stable while unrelated replacement slots are staged.
@@ -3725,6 +4205,10 @@ pub struct GpuLodCompaction {
     last_compaction_signature: Option<u64>,
     pending_sort_signature: Option<u64>,
     last_sorted_signature: Option<u64>,
+    point_output: bool,
+    /// Successfully rendered discrete candidate, possibly from an earlier
+    /// camera position. Its signature never describes a newer unrendered view.
+    point_drawable: Option<LodPointOutputProof>,
 }
 
 impl GpuLodCompaction {
@@ -3758,7 +4242,10 @@ impl GpuLodCompaction {
             policy.quality_endpoint,
             policy.frustum_culling,
         );
-        let config = config.with_policy(policy);
+        let mut config = config.with_policy(policy);
+        config.candidate_source_word_capacity = (allocation.candidate_indices_bytes / 4)
+            .try_into()
+            .expect("validated descriptor word capacity");
         debug_assert_eq!(
             allocation.config_bytes,
             std::mem::size_of::<LodCompactionUniform>() as u64
@@ -3770,13 +4257,14 @@ impl GpuLodCompaction {
         });
         let initial_candidate_and_scan_bytes = candidate_binding_bytes(
             u64::from(output_capacity),
-            u64::from(LOD_MIN_CANDIDATE_SOURCE_WORDS),
+            u64::from(config.candidate_source_word_capacity),
         )
         .expect("validated candidate binding byte size");
         debug_assert_eq!(
             initial_candidate_and_scan_bytes,
             allocation.candidate_evaluations_and_scan_records_bytes
-                + u64::from(LOD_MIN_CANDIDATE_SOURCE_WORDS) * std::mem::size_of::<u32>() as u64
+                + u64::from(config.candidate_source_word_capacity)
+                    * std::mem::size_of::<u32>() as u64
         );
         let candidate_and_scan_buffer = render_device.create_buffer(&BufferDescriptor {
             label: Some("gaussian_lod_candidate_and_scan_records"),
@@ -3790,36 +4278,43 @@ impl GpuLodCompaction {
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        let radix_scratch_buffer = render_device.create_buffer(&BufferDescriptor {
-            label: Some("gaussian_lod_radix_scratch"),
-            size: allocation.radix_scratch_bytes,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let sorting_global_buffer = render_device.create_buffer(&BufferDescriptor {
-            label: Some("gaussian_lod_sorting_global"),
-            size: allocation.sorting_global_bytes,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let sorting_status_counter_buffer = render_device.create_buffer(&BufferDescriptor {
-            label: Some("gaussian_lod_sorting_status_counters"),
-            size: allocation.sorting_status_counter_bytes,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let sorting_pass_buffers = (0..4)
-            .map(|index| {
-                render_device.create_buffer_with_data(&BufferInitDescriptor {
-                    label: Some("gaussian_lod_sorting_pass_index"),
-                    contents: &[index, 0, 0, 0],
-                    usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        let radix = (allocation.radix_scratch_bytes != 0).then(|| {
+            let radix_scratch_buffer = render_device.create_buffer(&BufferDescriptor {
+                label: Some("gaussian_lod_radix_scratch"),
+                size: allocation.radix_scratch_bytes,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            let sorting_global_buffer = render_device.create_buffer(&BufferDescriptor {
+                label: Some("gaussian_lod_sorting_global"),
+                size: allocation.sorting_global_bytes,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            let sorting_status_counter_buffer = render_device.create_buffer(&BufferDescriptor {
+                label: Some("gaussian_lod_sorting_status_counters"),
+                size: allocation.sorting_status_counter_bytes,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            let sorting_pass_buffers = (0..4)
+                .map(|index| {
+                    render_device.create_buffer_with_data(&BufferInitDescriptor {
+                        label: Some("gaussian_lod_sorting_pass_index"),
+                        contents: &[index, 0, 0, 0],
+                        usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+                    })
                 })
-            })
-            .collect::<Vec<_>>()
-            .try_into()
-            .expect("four radix pass buffers");
-        debug_assert_eq!(allocation.sorting_pass_bytes, LOD_SORTING_PASS_UNIFORM_SIZE);
+                .collect::<Vec<_>>()
+                .try_into()
+                .expect("four radix pass buffers");
+            LodRadixWorkspace {
+                scratch: radix_scratch_buffer,
+                global: sorting_global_buffer,
+                status: sorting_status_counter_buffer,
+                passes: sorting_pass_buffers,
+            }
+        });
         let initial_args = finalized_indirect_args(
             0,
             output_capacity,
@@ -3863,17 +4358,19 @@ impl GpuLodCompaction {
             create_sorted_entry_bind_group(
                 render_device,
                 &pipeline.sorted_layout,
-                &radix_scratch_buffer,
+                radix
+                    .as_ref()
+                    .map_or(&active_entries_buffer, |workspace| &workspace.scratch),
                 &morph_buffer,
             ),
         ];
         Self {
+            capacity_successor: None,
+            capacity_publication_held: false,
+            capacity_activation_preflight_valid: false,
             candidate_and_scan_buffer: Some(candidate_and_scan_buffer),
             active_entries_buffer,
-            radix_scratch_buffer,
-            sorting_global_buffer,
-            sorting_status_counter_buffer,
-            sorting_pass_buffers,
+            radix,
             indirect_args_buffer,
             morph_buffer,
             presentation_header: inactive_presentation_header,
@@ -3917,7 +4414,10 @@ impl GpuLodCompaction {
             sorted_layout: pipeline.sorted_layout.clone(),
             candidate_evaluations_and_scan_records_bytes: allocation
                 .candidate_evaluations_and_scan_records_bytes,
-            allocation_total_bytes: allocation.total_bytes,
+            candidate_source_word_limit: config.candidate_source_word_capacity,
+            retired_allocations: Vec::new(),
+            memory_leases: Vec::new(),
+            memory_admission_required: false,
             config,
             readiness,
             has_drawable_bridge_output: false,
@@ -3925,6 +4425,10 @@ impl GpuLodCompaction {
             candidate_upload: LodCandidateUploadTracker::default(),
             #[cfg(any(test, feature = "testing"))]
             radix_drawable: LodRadixDrawableTracker::default(),
+            #[cfg(any(test, feature = "testing"))]
+            candidate_selected_gaussians: None,
+            #[cfg(any(test, feature = "testing"))]
+            candidate_handshake_stage: None,
             candidate_content_signature: None,
             candidate_atlas_content_revision: None,
             candidate_atlas_allocation_epoch: None,
@@ -3936,6 +4440,8 @@ impl GpuLodCompaction {
             last_compaction_signature: None,
             pending_sort_signature: None,
             last_sorted_signature: None,
+            point_output: false,
+            point_drawable: None,
         }
     }
 
@@ -3948,12 +4454,25 @@ impl GpuLodCompaction {
     }
 
     fn resident_admission_bytes(&self) -> u64 {
-        lod_compaction_admission_bytes_with_morph(
-            self.allocation_total_bytes,
-            self.morph_word_capacity,
-            self.morph_word_capacity,
-        )
-        .unwrap_or(u64::MAX)
+        self.actual_allocation_bytes()
+            .saturating_add(pending_lod_allocation_bytes(&self.retired_allocations))
+    }
+
+    /// Current physical buffers only: excludes future admission reserves and
+    /// already-retired bindings, which have independent completion tokens.
+    fn actual_allocation_bytes(&self) -> u64 {
+        [
+            self.candidate_and_scan_buffer
+                .as_ref()
+                .map_or(0, |buffer| buffer.size()),
+            self.active_entries_buffer.size(),
+            self.radix.as_ref().map_or(0, LodRadixWorkspace::bytes),
+            self.indirect_args_buffer.size(),
+            self.morph_buffer.size(),
+            self.config_buffer.size(),
+        ]
+        .into_iter()
+        .fold(0u64, u64::saturating_add)
     }
 
     /// Device-safe capacity after applying buffer and storage-binding limits.
@@ -4038,6 +4557,7 @@ impl GpuLodCompaction {
             compute_input_generation: drawable.compute_input_generation,
             radix_publication_generation: self.radix_drawable.drawable_publication_generation,
             rendered_candidate_count: drawable.rendered_candidate_count,
+            selected_gaussians: drawable.selected_gaussians,
             phase_at_compaction: drawable.phase_at_compaction,
             candidate_token_matches,
             candidate_content_matches,
@@ -4051,34 +4571,92 @@ impl GpuLodCompaction {
         })
     }
 
+    #[cfg(any(test, feature = "testing"))]
+    pub fn candidate_handshake_stage_for_testing(&self) -> Option<&'static str> {
+        self.candidate_handshake_stage
+    }
+
+    fn record_candidate_handshake_stage(&mut self, stage: &'static str) {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            self.candidate_handshake_stage = Some(stage);
+        }
+        #[cfg(not(any(test, feature = "testing")))]
+        {
+            let _ = stage;
+        }
+    }
+
+    fn memory_reserved_bytes(&self) -> u64 {
+        self.memory_leases
+            .iter()
+            .fold(0u64, |bytes, lease| bytes.saturating_add(lease.bytes()))
+    }
+
+    fn validate_memory_growth(&self, new_bytes: u64) -> Result<(), LodCandidateConfigError> {
+        if !self.memory_admission_required {
+            return Ok(());
+        }
+        let required = self.actual_allocation_bytes().saturating_add(new_bytes);
+        let reserved = self.memory_reserved_bytes();
+        if reserved < required {
+            return Err(LodCandidateConfigError::MemoryReservationTooSmall { required, reserved });
+        }
+        Ok(())
+    }
+
+    fn retire_buffer_allocation(&mut self, bytes: u64) {
+        let mut retirement = LodRetiredAllocation::new(bytes);
+        if self.memory_admission_required {
+            retirement.memory_leases = take_lod_memory_lease_bytes(&mut self.memory_leases, bytes);
+            for lease in &retirement.memory_leases {
+                lease.mark_gpu_materialized();
+            }
+        }
+        self.retired_allocations.push(retirement);
+    }
+
+    fn release_unused_memory_reservations(&mut self) {
+        if !self.memory_admission_required {
+            return;
+        }
+        self.memory_leases.retain(|lease| lease.bytes() != 0);
+        let unused = self
+            .memory_reserved_bytes()
+            .saturating_sub(self.actual_allocation_bytes());
+        drop(take_lod_memory_lease_bytes(&mut self.memory_leases, unused));
+    }
+
     fn resize_candidate_source_prefix(
         &mut self,
         render_device: &RenderDevice,
+        _render_queue: &RenderQueue,
         required_words: u32,
-    ) {
+    ) -> Result<(), LodCandidateConfigError> {
+        if required_words > self.candidate_source_word_limit {
+            return Err(LodCandidateConfigError::PhysicalRangeCountOverflow);
+        }
         let source_words = candidate_source_capacity_after_upload(
             self.config.candidate_source_word_capacity,
             required_words,
-            self.config
-                .output_capacity
-                .checked_mul(LOD_PHYSICAL_RANGE_DESCRIPTOR_WORDS)
-                .expect("validated LoD capacity has a representable descriptor prefix"),
+            self.candidate_source_word_limit,
         );
         if self.config.candidate_source_word_capacity == source_words {
-            return;
+            return Ok(());
         }
         debug_assert!(source_words > self.config.candidate_source_word_capacity);
         let size = u64::from(source_words) * std::mem::size_of::<u32>() as u64
             + self.candidate_evaluations_and_scan_records_bytes;
+        self.validate_memory_growth(size)?;
 
-        // Drop the dependent bind group first, then the old buffer handle,
-        // before allocating its one lifetime replacement. Capacity grows
-        // directly to the validated maximum and never shrinks in place, so
-        // later stable<->packed churn cannot form a chain of in-flight full
-        // evaluation/scan generations.
+        // Previous submissions can still own the old binding. Reserve their
+        // bytes until queue completion; dropping a Rust handle is not a fence.
         let old_bind_group = self.bind_group.take();
         drop(old_bind_group);
         let old_candidate_and_scan_buffer = self.candidate_and_scan_buffer.take();
+        if let Some(buffer) = old_candidate_and_scan_buffer.as_ref() {
+            self.retire_buffer_allocation(buffer.size());
+        }
         drop(old_candidate_and_scan_buffer);
 
         let candidate_and_scan_buffer = render_device.create_buffer(&BufferDescriptor {
@@ -4099,14 +4677,20 @@ impl GpuLodCompaction {
         self.candidate_and_scan_buffer = Some(candidate_and_scan_buffer);
         self.bind_group = Some(bind_group);
         self.config.candidate_source_word_capacity = source_words;
+        Ok(())
     }
 
-    fn resize_morph_buffer(&mut self, render_device: &RenderDevice, required_words: u32) {
+    fn resize_morph_buffer(
+        &mut self,
+        render_device: &RenderDevice,
+        required_words: u32,
+    ) -> Result<(), LodCandidateConfigError> {
         if required_words <= self.morph_word_capacity {
-            return;
+            return Ok(());
         }
         let word_capacity = lod_morph_word_capacity(required_words)
             .expect("validated LoD morph capacity remains representable");
+        self.validate_memory_growth(u64::from(word_capacity) * 4)?;
         let morph_buffer = render_device.create_buffer(&BufferDescriptor {
             label: Some("gaussian_lod_morph_table"),
             size: u64::from(word_capacity) * std::mem::size_of::<u32>() as u64,
@@ -4134,13 +4718,17 @@ impl GpuLodCompaction {
             create_sorted_entry_bind_group(
                 render_device,
                 &self.sorted_layout,
-                &self.radix_scratch_buffer,
+                self.radix
+                    .as_ref()
+                    .map_or(&self.active_entries_buffer, |workspace| &workspace.scratch),
                 &morph_buffer,
             ),
         ];
+        self.retire_buffer_allocation(self.morph_buffer.size());
         self.morph_buffer = morph_buffer;
         self.morph_word_capacity = word_capacity;
         self.morph_buffer_allocation_count = self.morph_buffer_allocation_count.saturating_add(1);
+        Ok(())
     }
 
     fn deactivate_morph(&mut self, render_queue: &RenderQueue) {
@@ -4227,7 +4815,7 @@ impl GpuLodCompaction {
                 first_weight_bits: words[6],
                 second_weight_bits: words[7],
             };
-            self.resize_morph_buffer(render_device, required_words);
+            self.resize_morph_buffer(render_device, required_words)?;
             render_queue.write_buffer(&self.morph_buffer, 0, bytemuck::cast_slice(&words));
             self.presentation_header = presentation_header;
             self.morph_identity = Some(identity);
@@ -4273,7 +4861,7 @@ impl GpuLodCompaction {
         };
         let Some(sort_signature) = self
             .last_sorted_signature
-            .filter(|_| self.radix_sort_is_current())
+            .filter(|_| self.output_is_current())
         else {
             return Ok(());
         };
@@ -4516,21 +5104,22 @@ impl GpuLodCompaction {
                 Err(LodCandidateConfigError::MorphPayloadOverflow)
             };
         };
-        let next_keys = (candidate.view_blend_mode() == Some(LodTemporalTransitionMode::Morphing))
-            .then(|| {
-                candidate
-                    .temporal_transition()
-                    .and_then(|transition| transition.morph())
-            })
-            .flatten()
-            .map(|morph| {
-                morph
-                    .edges()
-                    .iter()
-                    .map(LodViewBlendEdgeKey::from_edge)
-                    .collect::<HashSet<_>>()
-            })
-            .unwrap_or_default();
+        let next_keys = (candidate.temporal_transition_mode()
+            == Some(LodTemporalTransitionMode::Morphing))
+        .then(|| {
+            candidate
+                .temporal_transition()
+                .and_then(|transition| transition.morph())
+        })
+        .flatten()
+        .map(|morph| {
+            morph
+                .edges()
+                .iter()
+                .map(LodViewBlendEdgeKey::from_edge)
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
         let Some(drawable_states) = self
             .morph_radix_state
             .reconciliation_seed(Some(drawable_identity), &self.morph_edge_states)?
@@ -4553,7 +5142,8 @@ impl GpuLodCompaction {
             .iter()
             .enumerate()
             .filter(|(_, state)| !next_keys.contains(&state.key))
-            .collect::<Vec<_>>();
+            .map(|(index, state)| (&state.key, (index, state)))
+            .collect::<HashMap<_, _>>();
         if removed.is_empty() {
             return Ok(true);
         }
@@ -4574,8 +5164,7 @@ impl GpuLodCompaction {
         let mut matched = HashSet::with_capacity(removed.len());
         for requirement in attestation.requirements() {
             let key = LodViewBlendEdgeKey::from_edge(requirement.edge());
-            let Some((index, state)) = removed.iter().copied().find(|(_, state)| state.key == key)
-            else {
+            let Some(&(index, state)) = removed.get(&key) else {
                 return Ok(false);
             };
             if !matched.insert(index) {
@@ -4979,14 +5568,14 @@ impl GpuLodCompaction {
     }
 
     /// Whether this private retained-view output is already the complete
-    /// radix-published result for the exact shared candidate token. This is
+    /// renderer-published result for the exact shared candidate token. This is
     /// stronger than general drawability: an older retained cut remains
     /// drawable while a replacement is being compacted, but cannot satisfy a
     /// multi-subview atomic activation barrier.
     fn has_current_drawable_bridge_candidate(&self, candidate: &LodRenderCandidate) -> bool {
         self.candidate_descriptor_committed
             && self.has_drawable_bridge_output
-            && self.radix_sort_is_current()
+            && self.candidate_output_is_ready()
             && self.candidate_upload.plan(candidate) == LodCandidateUploadPlan::ReuseVersion
     }
 
@@ -5001,7 +5590,7 @@ impl GpuLodCompaction {
         self.readiness != LodCompactionReadiness::AwaitingCandidates
     }
 
-    /// Returns this state to the complete legacy draw path until a new
+    /// Returns this state to the complete per-cloud draw path until a new
     /// identity or candidate frontier is explicitly committed.
     pub fn invalidate_candidates(&mut self, render_queue: &RenderQueue) {
         // Shrinking is synchronized with state destruction/recreation. Keeping
@@ -5012,6 +5601,10 @@ impl GpuLodCompaction {
         self.has_drawable_bridge_output = false;
         self.candidate_descriptor_committed = false;
         self.candidate_content_signature = None;
+        #[cfg(any(test, feature = "testing"))]
+        {
+            self.candidate_selected_gaussians = None;
+        }
         self.candidate_atlas_content_revision = None;
         self.candidate_atlas_allocation_epoch = None;
         self.pending_bridge_activation = None;
@@ -5057,11 +5650,14 @@ impl GpuLodCompaction {
             self.morph_identity.is_none(),
             "Morphing activation is published only after Cleanup aggregates every retained view"
         );
-        if bridge_activation_can_publish_immediately(
-            self.candidate_descriptor_committed,
-            self.has_drawable_bridge_output,
-            self.radix_sort_is_current(),
-        ) {
+        self.capacity_activation_preflight_valid = true;
+        if !self.capacity_publication_held
+            && bridge_activation_can_publish_immediately(
+                self.candidate_descriptor_committed,
+                self.has_drawable_bridge_output,
+                self.candidate_output_is_ready(),
+            )
+        {
             self.pending_bridge_activation = None;
             self.publish_candidate_phase_after_radix(&candidate.phase);
         } else {
@@ -5071,7 +5667,7 @@ impl GpuLodCompaction {
 
     fn publish_candidate_phase_after_radix(&mut self, phase: &Arc<AtomicU8>) -> bool {
         debug_assert!(self.morph_identity.is_none());
-        publish_bridge_activation_after_radix(phase)
+        !self.capacity_publication_held && publish_bridge_activation_after_radix(phase)
     }
 
     fn defer_bridge_activation_for(&mut self, candidate: &LodRenderCandidate) {
@@ -5087,7 +5683,7 @@ impl GpuLodCompaction {
     fn synchronize_pipeline_readiness(&mut self, pipelines_ready: bool) {
         let was_ready = self.pipelines_ready;
         self.pipelines_ready = pipelines_ready;
-        // Shader invalidation/hot reload must return to the complete legacy draw
+        // Shader invalidation/hot reload must return to the complete per-cloud draw
         // until compaction and active radix can produce fresh sorted arguments.
         self.readiness = self
             .readiness
@@ -5120,20 +5716,37 @@ impl GpuLodCompaction {
         if self.candidate_upload.fingerprint == Some(fingerprint) {
             self.candidate_upload.mark_unversioned(fingerprint);
             self.candidate_content_signature = None;
+            #[cfg(any(test, feature = "testing"))]
+            {
+                self.candidate_selected_gaussians = None;
+            }
             self.candidate_atlas_content_revision = None;
             self.candidate_atlas_allocation_epoch = None;
             self.readiness = self.readiness.after_candidate_commit(self.pipelines_ready);
             self.candidate_descriptor_committed = true;
             self.candidate_ownership = LodCandidateOwnership::Bridge;
+            #[cfg(any(test, feature = "testing"))]
+            {
+                self.candidate_selected_gaussians =
+                    Some(frontier.quality_status().active_gaussians);
+            }
             return Ok(());
         }
         self.upload_candidate_frontier_data(render_device, render_queue, frontier)?;
         self.candidate_upload.mark_unversioned(fingerprint);
         self.candidate_content_signature = None;
+        #[cfg(any(test, feature = "testing"))]
+        {
+            self.candidate_selected_gaussians = None;
+        }
         self.candidate_atlas_content_revision = None;
         self.candidate_atlas_allocation_epoch = None;
         self.candidate_descriptor_committed = true;
         self.candidate_ownership = LodCandidateOwnership::Bridge;
+        #[cfg(any(test, feature = "testing"))]
+        {
+            self.candidate_selected_gaussians = Some(frontier.quality_status().active_gaussians);
+        }
         Ok(())
     }
 
@@ -5204,6 +5817,11 @@ impl GpuLodCompaction {
             }
         }
         debug_assert!(!plan.requires_recompute() || self.last_compaction_signature.is_none());
+        #[cfg(any(test, feature = "testing"))]
+        {
+            self.candidate_selected_gaussians =
+                Some(candidate.frontier().quality_status().active_gaussians);
+        }
         self.candidate_content_signature = Some(content_signature);
         self.candidate_atlas_content_revision = Some(atlas_content_revision);
         self.candidate_atlas_allocation_epoch = atlas_allocation_epoch;
@@ -5282,6 +5900,11 @@ impl GpuLodCompaction {
             }
         }
         debug_assert!(!plan.requires_recompute() || self.last_compaction_signature.is_none());
+        #[cfg(any(test, feature = "testing"))]
+        {
+            self.candidate_selected_gaussians =
+                Some(candidate.frontier().quality_status().active_gaussians);
+        }
         self.candidate_content_signature = Some(content_signature);
         self.candidate_atlas_content_revision = Some(catalog_content_revision);
         self.candidate_atlas_allocation_epoch = Some(catalog_allocation_epoch);
@@ -5453,7 +6076,7 @@ impl GpuLodCompaction {
             .with_physical_ranges(candidate_count, descriptor_count)?;
         let payload = bytemuck::cast_slice(&descriptors);
 
-        self.resize_candidate_source_prefix(render_device, required_source_words);
+        self.resize_candidate_source_prefix(render_device, render_queue, required_source_words)?;
         next.candidate_source_word_capacity = self.config.candidate_source_word_capacity;
         if !payload.is_empty() {
             render_queue.write_buffer(
@@ -5528,9 +6151,12 @@ impl GpuLodCompaction {
                 range_count: descriptors.len(),
             }
         })?;
-        descriptor_count
+        let required_source_words = descriptor_count
             .checked_mul(LOD_PHYSICAL_RANGE_DESCRIPTOR_WORDS)
             .ok_or(LodCandidateConfigError::PhysicalRangeCountOverflow)?;
+        if required_source_words > self.candidate_source_word_limit {
+            return Err(LodCandidateConfigError::PhysicalRangeCountOverflow);
+        }
         // Complete all fallible admission checks before changing either side
         // of the mode-qualified descriptor/header capability.
         self.config
@@ -5555,6 +6181,10 @@ impl GpuLodCompaction {
         // before activation in the integration patch.
         self.candidate_upload = LodCandidateUploadTracker::default();
         self.candidate_content_signature = None;
+        #[cfg(any(test, feature = "testing"))]
+        {
+            self.candidate_selected_gaussians = None;
+        }
         self.candidate_atlas_content_revision = None;
         self.candidate_atlas_allocation_epoch = None;
         self.candidate_descriptor_committed = true;
@@ -5586,6 +6216,10 @@ impl GpuLodCompaction {
         // reuses the exact Arc/version that was current before this override.
         self.candidate_upload.revoke_for_testing_override();
         self.candidate_content_signature = None;
+        #[cfg(any(test, feature = "testing"))]
+        {
+            self.candidate_selected_gaussians = None;
+        }
         self.candidate_atlas_content_revision = None;
         self.candidate_descriptor_committed = true;
         self.candidate_ownership = LodCandidateOwnership::TestingPhysicalRanges;
@@ -5703,6 +6337,7 @@ impl GpuLodCompaction {
         self.compute_input_generation = self.compute_input_generation.wrapping_add(1).max(1);
         self.last_compaction_signature = None;
         self.pending_sort_signature = None;
+        self.point_drawable = None;
         self.morph_radix_state.discard_pending();
         #[cfg(any(test, feature = "testing"))]
         self.radix_drawable.discard_pending();
@@ -5756,6 +6391,7 @@ impl GpuLodCompaction {
                 candidate_content_signature: self.candidate_content_signature,
                 candidate_atlas_allocation_epoch: self.candidate_atlas_allocation_epoch,
                 rendered_candidate_count: self.config.candidate_count,
+                selected_gaussians: self.candidate_selected_gaussians,
                 morph_identity: self.morph_identity,
                 compute_input_generation: self.compute_input_generation,
                 compaction_signature: signature,
@@ -5768,8 +6404,95 @@ impl GpuLodCompaction {
     }
 
     pub(crate) fn radix_sort_is_current(&self) -> bool {
+        !self.point_output && self.output_is_current()
+    }
+
+    fn output_is_current(&self) -> bool {
         self.pending_sort_signature
             .is_some_and(|signature| self.last_sorted_signature == Some(signature))
+    }
+
+    fn candidate_output_is_ready(&self) -> bool {
+        if self.point_output {
+            self.point_drawable
+                .as_ref()
+                .zip(self.point_output_proof())
+                .is_some_and(|(rendered, current)| rendered.matches_current(&current))
+        } else {
+            self.output_is_current()
+        }
+    }
+
+    fn synchronize_point_output(&mut self, point_output: bool) {
+        if self.point_output != point_output {
+            self.point_output = point_output;
+            self.has_drawable_bridge_output = false;
+            self.mark_compute_input_dirty();
+        }
+    }
+
+    /// Captures the compacted discrete frontier and the camera evaluation which
+    /// the point renderer is about to consume. Physical identity remains strict
+    /// while camera motion alone may advance during asynchronous completion.
+    pub(crate) fn point_output_proof(&self) -> Option<LodPointOutputProof> {
+        if !self.point_output
+            || !self.is_ready()
+            || !self.candidate_descriptor_committed
+            || self.presentation_header.mode != LodPresentationMode::None as u32
+        {
+            return None;
+        }
+        Some(LodPointOutputProof {
+            generation: self.generation,
+            signature: self.last_compaction_signature?,
+            compute_input_generation: self.compute_input_generation,
+            fingerprint: self.candidate_upload.fingerprint?,
+            content_signature: self.candidate_content_signature,
+            atlas_allocation_epoch: self.candidate_atlas_allocation_epoch,
+            candidate: self.candidate_upload.version.clone()?,
+            #[cfg(any(test, feature = "testing"))]
+            snapshot: self
+                .radix_drawable
+                .pending
+                .as_ref()
+                .filter(|snapshot| {
+                    Some(snapshot.compaction_signature) == self.last_compaction_signature
+                })?
+                .clone(),
+        })
+    }
+
+    /// Activates a successfully rendered discrete frontier whose physical
+    /// candidate is unchanged. A newer camera evaluation does not prevent
+    /// progress, but its unsampled output never inherits the completed proof.
+    /// Candidate replacement, source mutation and allocation changes reject it.
+    pub(crate) fn mark_point_output_ready(&mut self, proof: &LodPointOutputProof) -> bool {
+        let Some(current) = self.point_output_proof() else {
+            return false;
+        };
+        if !proof.matches_current(&current) {
+            return false;
+        }
+        self.last_sorted_signature = Some(proof.signature);
+        self.point_drawable = Some(proof.clone());
+        self.has_drawable_bridge_output = true;
+        #[cfg(any(test, feature = "testing"))]
+        self.radix_drawable.publish_snapshot(proof.snapshot.clone());
+        if !self.capacity_publication_held
+            && self.capacity_activation_preflight_valid
+            && self
+                .pending_bridge_activation
+                .as_ref()
+                .is_some_and(|phase| Arc::ptr_eq(phase, &proof.candidate))
+        {
+            let phase = self.pending_bridge_activation.take().unwrap();
+            self.publish_candidate_phase_after_radix(&phase);
+        }
+        true
+    }
+
+    pub(crate) fn compaction_signature(&self) -> Option<u64> {
+        self.last_compaction_signature
     }
 
     pub(crate) fn sorted_signature(&self) -> Option<u64> {
@@ -5780,11 +6503,19 @@ impl GpuLodCompaction {
         if radix_sorted_output_buffer_index(radix_depth_bits) == 0 {
             &self.active_entries_buffer
         } else {
-            &self.radix_scratch_buffer
+            self.radix
+                .as_ref()
+                .map_or(&self.active_entries_buffer, |workspace| &workspace.scratch)
         }
     }
 
     pub(crate) fn mark_radix_sorted(&mut self) {
+        if !self.point_output {
+            self.mark_output_ready();
+        }
+    }
+
+    fn mark_output_ready(&mut self) {
         if let Some(signature) = self.pending_sort_signature {
             self.last_sorted_signature = Some(signature);
             let morph_promoted = self.morph_radix_state.promote(signature);
@@ -5807,7 +6538,9 @@ impl GpuLodCompaction {
                     "a committed candidate radix output must promote its compacted metadata"
                 );
                 self.has_drawable_bridge_output = true;
-                if let Some(phase) = self.pending_bridge_activation.take() {
+                if !self.capacity_publication_held
+                    && let Some(phase) = self.pending_bridge_activation.take()
+                {
                     // A Morphing candidate is not an ACTIVE capability until
                     // Cleanup has reduced and Release-published the exact
                     // promoted state from every private retained view. Hard
@@ -6048,19 +6781,87 @@ fn create_compaction_bind_group(
 #[derive(Resource)]
 pub struct LodCompactionBuffers<R: PlanarSync> {
     entries: HashMap<(RetainedViewEntity, Entity, AssetId<R::PlanarType>), GpuLodCompaction>,
+    predecessors: HashMap<(RetainedViewEntity, Entity, AssetId<R::PlanarType>), GpuLodCompaction>,
     next_generation: u64,
+    retirement: LodCompactionRetirementLedger,
+}
+
+/// CPU bookkeeping for one planar representation's private LoD compaction and
+/// radix buffers. This is allocation accounting, not device-memory measurement.
+///
+/// Excludes atlas/cloud storage, debug metadata, per-cloud sort buffers, CPU
+/// mirrors, Bevy/wgpu staging and driver allocations. Completed queue tokens
+/// cease to be charged, but the backend may retain physical allocation pools.
+/// Byte sums saturate at `u64::MAX` if bookkeeping exceeds the integer range.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LodCompactionMemorySnapshot {
+    /// Number of live compaction allocations. A view/cloud undergoing capacity
+    /// handoff contributes both its predecessor and its staged successor.
+    pub view_cloud_states: usize,
+    /// Actual sizes of the buffers held by current compaction states.
+    pub live_buffer_bytes: u64,
+    /// Replaced/removed buffers still awaiting their queue-completion fences.
+    pub retired_buffer_bytes: u64,
+    /// Saturating sum of current and outstanding retired buffer bytes.
+    pub tracked_buffer_bytes: u64,
 }
 
 impl<R: PlanarSync> Default for LodCompactionBuffers<R> {
     fn default() -> Self {
         Self {
             entries: HashMap::new(),
+            predecessors: HashMap::new(),
             next_generation: 1,
+            retirement: LodCompactionRetirementLedger::default(),
         }
     }
 }
 
+fn fence_lod_compaction_retirements<R: PlanarSync>(
+    mut buffers: ResMut<LodCompactionBuffers<R>>,
+    render_queue: Res<RenderQueue>,
+) {
+    let buffers = buffers.as_mut();
+    for state in buffers
+        .entries
+        .values_mut()
+        .chain(buffers.predecessors.values_mut())
+    {
+        buffers.retirement.absorb(&mut state.retired_allocations);
+    }
+    buffers.retirement.prune_completed();
+    buffers.retirement.arm_after_submit(|complete| {
+        render_queue.on_submitted_work_done(move || complete.store(true, Ordering::Release));
+    });
+}
+
 impl<R: PlanarSync> LodCompactionBuffers<R> {
+    fn capacity_successor_tokens(&self) -> HashSet<usize> {
+        self.entries
+            .values()
+            .filter_map(|state| state.capacity_successor.as_ref())
+            .map(|phase| Arc::as_ptr(phase) as usize)
+            .collect()
+    }
+    /// Samples allocation sizes and retirement flags without GPU readback,
+    /// submission, polling or waiting. Pending tokens on both current states
+    /// and removed states are counted, including before Cleanup moves them.
+    pub fn memory_snapshot(&self) -> LodCompactionMemorySnapshot {
+        let mut live_buffer_bytes = 0u64;
+        let mut retired_buffer_bytes = self.retirement.pending_bytes();
+        for state in self.entries.values().chain(self.predecessors.values()) {
+            live_buffer_bytes = live_buffer_bytes.saturating_add(state.actual_allocation_bytes());
+            retired_buffer_bytes = retired_buffer_bytes
+                .saturating_add(pending_lod_allocation_bytes(&state.retired_allocations));
+        }
+        LodCompactionMemorySnapshot {
+            view_cloud_states: self.entries.len() + self.predecessors.len(),
+            live_buffer_bytes,
+            retired_buffer_bytes,
+            tracked_buffer_bytes: live_buffer_bytes.saturating_add(retired_buffer_bytes),
+        }
+    }
+
     /// Whether any view for `entity` will replace its retained output at the
     /// next completed compaction/radix pass.
     ///
@@ -6088,15 +6889,38 @@ impl<R: PlanarSync> LodCompactionBuffers<R> {
             .get(&lod_view_cloud_key(retained_view, entity, cloud))
     }
 
-    /// Returns only state that may safely replace the complete legacy draw.
+    /// Returns only state that may safely replace the complete per-cloud draw.
     pub fn get_ready(
         &self,
         retained_view: RetainedViewEntity,
         entity: Entity,
         cloud: AssetId<R::PlanarType>,
     ) -> Option<&GpuLodCompaction> {
-        self.get(retained_view, entity, cloud)
+        let key = lod_view_cloud_key(retained_view, entity, cloud);
+        self.predecessors
+            .get(&key)
+            .or_else(|| self.entries.get(&key))
             .filter(|state| state.is_ready() && state.has_drawable_bridge_output())
+    }
+
+    pub(crate) fn states_for_key(
+        &self,
+        key: &(RetainedViewEntity, Entity, AssetId<R::PlanarType>),
+    ) -> impl Iterator<Item = &GpuLodCompaction> {
+        self.predecessors
+            .get(key)
+            .into_iter()
+            .chain(self.entries.get(key))
+    }
+
+    pub(crate) fn states_for_key_mut(
+        &mut self,
+        key: &(RetainedViewEntity, Entity, AssetId<R::PlanarType>),
+    ) -> impl Iterator<Item = &mut GpuLodCompaction> {
+        self.predecessors
+            .get_mut(key)
+            .into_iter()
+            .chain(self.entries.get_mut(key))
     }
 
     /// Returns allocated state for uploads or invalidation, including states
@@ -6357,14 +7181,15 @@ fn lod_candidate_matches_extracted_policy(
         return false;
     };
     let frontier = candidate.frontier();
-    lod_frontier_matches_extracted_policy(
-        settings.quality_target(),
-        settings.max_active_gaussians_u32(),
-        settings.selection_mode == LodSelectionMode::Frozen,
-        frontier.quality_status().requested_target,
-        frontier.candidate_count(),
-        frontier.selection_view_frozen(),
-    )
+    frontier.presentation_mode() == settings.presentation_mode
+        && lod_frontier_matches_extracted_policy(
+            settings.quality_target(),
+            settings.max_active_gaussians_u32(),
+            settings.selection_mode == LodSelectionMode::Frozen,
+            frontier.quality_status().requested_target,
+            frontier.candidate_count(),
+            frontier.selection_view_frozen(),
+        )
 }
 
 fn lod_compaction_policy_for_candidate(
@@ -6413,10 +7238,10 @@ fn lod_compaction_requested_capacity(
 }
 
 /// Resolves the storage that candidate descriptors address independently from
-/// the storage currently bound to the entity's legacy draw. A cold transient
+/// the storage currently bound to the entity's per-cloud draw. A cold transient
 /// bridge deliberately leaves `source` on the entity while its bounded atlas
 /// is uploaded and its pipelines are prepared.
-fn lod_compaction_asset_id<A: Asset>(
+pub(crate) fn lod_compaction_asset_id<A: Asset>(
     source: AssetId<A>,
     candidates: Option<&LodRenderCandidates>,
 ) -> Option<AssetId<A>> {
@@ -6575,7 +7400,7 @@ fn record_drawable_view_blend_publication<'a>(
     state: Option<&GpuLodCompaction>,
     selection_mode: LodSelectionMode,
 ) -> Result<bool, LodCandidateConfigError> {
-    if candidate.view_blend_mode() != Some(LodTemporalTransitionMode::Morphing) {
+    if candidate.temporal_transition_mode() != Some(LodTemporalTransitionMode::Morphing) {
         return Ok(false);
     }
     let candidate_identity = Arc::as_ptr(&candidate.phase) as usize;
@@ -6758,12 +7583,21 @@ fn prepare_lod_compaction_buffers<R: PlanarSync>(
     mut radix_groups: ResMut<LodRadixBindGroups<R>>,
     mut pipeline: ResMut<LodCompactionPipeline<R>>,
     memory_budget: Res<LodCompactionMemoryBudget>,
+    memory_ledger: Res<LodMemoryLedger>,
     radix_pipeline: Res<RadixSortPipeline<R>>,
     pipeline_cache: Res<PipelineCache>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
     gpu_clouds: Res<RenderAssets<R::GpuPlanarType>>,
-    views: Query<(&ExtractedView, &RenderVisibleEntities), With<GaussianCamera>>,
+    views: Query<
+        (
+            &ExtractedView,
+            &RenderVisibleEntities,
+            Option<&GaussianPointSplattingSettings>,
+            Option<&GaussianGlobalOrderSettings>,
+        ),
+        With<GaussianCamera>,
+    >,
     clouds: Query<(
         Entity,
         &R::PlanarTypeHandle,
@@ -6776,6 +7610,64 @@ fn prepare_lod_compaction_buffers<R: PlanarSync>(
     R::GpuPlanarType: GpuPlanarStorage,
 {
     let mut active = HashSet::new();
+    let mut retained_required_keys = HashSet::new();
+    // A staged allocation belongs to one immutable publication token. Camera
+    // churn/cancellation must never promote that work for a later request.
+    let canceled_successors = buffers
+        .predecessors
+        .keys()
+        .filter(|key| {
+            let candidate = clouds
+                .get(key.1)
+                .ok()
+                .and_then(|(_, handle, _, _, _, candidates)| {
+                    (lod_compaction_asset_id(handle.handle().id(), candidates) == Some(key.2))
+                        .then(|| {
+                            candidates.and_then(|set| set.by_camera.get(&key.0.main_entity.id()))
+                        })
+                        .flatten()
+                });
+            !candidate.is_some_and(|candidate| {
+                !candidate.failed()
+                    && buffers
+                        .entries
+                        .get(*key)
+                        .and_then(|state| state.capacity_successor.as_ref())
+                        .is_some_and(|phase| Arc::ptr_eq(phase, &candidate.phase))
+            })
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    for key in canceled_successors {
+        if let Some(successor) = buffers.entries.remove(&key) {
+            radix_groups.remove_generation(&key, successor.generation());
+            buffers.retirement.retire_state(successor);
+        }
+        if let Some(predecessor) = buffers.predecessors.remove(&key) {
+            buffers.entries.insert(key, predecessor);
+        }
+    }
+    buffers.retirement.prune_completed();
+    let buffer_maps = buffers.as_mut();
+    for state in buffer_maps
+        .entries
+        .values_mut()
+        .chain(buffer_maps.predecessors.values_mut())
+    {
+        state.release_unused_memory_reservations();
+        state
+            .retired_allocations
+            .retain(|entry| !entry.complete.load(Ordering::Acquire));
+    }
+    // Queue work can retain allocations after their owning state disappears.
+    // Charge every existing byte before deciding which additional buffers fit.
+    let existing_bytes = buffers
+        .entries
+        .values()
+        .chain(buffers.predecessors.values())
+        .fold(buffers.retirement.pending_bytes(), |bytes, state| {
+            bytes.saturating_add(state.resident_admission_bytes())
+        });
     let device_limits = render_device.limits();
     let aggregate_limit = effective_lod_compaction_aggregate_budget(
         memory_budget.max_total_bytes,
@@ -6786,7 +7678,9 @@ fn prepare_lod_compaction_buffers<R: PlanarSync>(
         device_limits.max_storage_buffers_per_shader_stage,
     );
     let mut requests = Vec::new();
-    for (view, visible_entities) in &views {
+    let mut whole_successor_bytes = HashMap::new();
+    let mut point_consumers = HashSet::new();
+    for (view, visible_entities, point_settings, ordered_settings) in &views {
         let Some(visible_clouds) = visible_entities.get::<CloudVisibilityClass>() else {
             continue;
         };
@@ -6797,6 +7691,18 @@ fn prepare_lod_compaction_buffers<R: PlanarSync>(
             else {
                 continue;
             };
+            if candidates.is_some_and(|set| set.candidate_draw_required)
+                && let Some(id) = lod_compaction_asset_id(handle.handle().id(), candidates)
+                && let Some(state) = buffers.get_ready(view.retained_view_entity, entity, id)
+                && state.is_ready()
+                && state.has_drawable_bridge_output()
+            {
+                retained_required_keys.insert(lod_view_cloud_key(
+                    view.retained_view_entity,
+                    entity,
+                    id,
+                ));
+            }
             let candidate = candidates.and_then(|set| set.by_camera.get(&camera));
             let candidate_present = candidate.is_some_and(|candidate| !candidate.failed());
             let candidate_matches_policy = candidate
@@ -6814,6 +7720,11 @@ fn prepare_lod_compaction_buffers<R: PlanarSync>(
                 continue;
             }
             let candidate = candidate.expect("eligible LoD request has a candidate");
+            let point_consumer = (point_splatting_for_cloud(point_settings, cloud_settings)
+                && supports_candidate(candidate))
+                || (point_settings.is_none()
+                    && ordered::global_order_for_cloud(ordered_settings, cloud_settings)
+                    && ordered::supports_candidate(candidate));
             let Some(policy) =
                 lod_compaction_policy_for_candidate(candidate, lod_settings, lodge_settings)
             else {
@@ -6891,7 +7802,7 @@ fn prepare_lod_compaction_buffers<R: PlanarSync>(
                             policy,
                             true,
                         ),
-                        total_bytes: state.resident_admission_bytes(),
+                        total_bytes: 0,
                         class: LodCompactionAdmissionClass::RetainedRequiredOutput,
                         required_phase: Some(candidate.phase.as_ref()),
                         pinned_existing: true,
@@ -6914,8 +7825,17 @@ fn prepare_lod_compaction_buffers<R: PlanarSync>(
                 candidate.phase.store(LOD_RENDER_FAILED, Ordering::Release);
                 continue;
             }
-            if validate_bridge_candidate_sort_mode(&cloud_settings.sort_mode).is_err() {
+            if !point_consumer
+                && validate_bridge_candidate_sort_mode(&cloud_settings.sort_mode).is_err()
+            {
                 continue;
+            }
+            if point_consumer {
+                point_consumers.insert(lod_view_cloud_key(
+                    view.retained_view_entity,
+                    entity,
+                    compaction_id,
+                ));
             }
             let Some(cloud) = gpu_clouds.get(compaction_id) else {
                 continue;
@@ -6929,8 +7849,6 @@ fn prepare_lod_compaction_buffers<R: PlanarSync>(
             };
             let current_state = buffers.get(view.retained_view_entity, entity, compaction_id);
             let current_output_capacity = current_state.map(GpuLodCompaction::output_capacity);
-            let current_morph_word_capacity =
-                current_state.map_or(LOD_MORPH_HEADER_WORDS, |state| state.morph_word_capacity);
             let retained_output_capacity = if retained_current {
                 current_output_capacity
             } else {
@@ -6949,26 +7867,86 @@ fn prepare_lod_compaction_buffers<R: PlanarSync>(
                 retained_output_capacity,
                 current_candidate_count,
             );
-            let Ok(allocation) = plan_lod_compaction_allocation(
-                requested_capacity,
-                device_limits.max_buffer_size,
-                device_limits.max_storage_buffer_binding_size,
-                device_limits.max_uniform_buffer_binding_size,
-                device_limits.max_compute_workgroups_per_dimension,
-            ) else {
-                // No buffers are created. The key is intentionally not marked
-                // active, so any prior state is removed and rendering stays on
-                // the complete legacy path.
-                continue;
+            // Keep an already sufficient drawable capacity. A larger candidate
+            // receives a separate successor; the predecessor remains drawable.
+            let requested_capacity = if retained_required_keys.contains(&lod_view_cloud_key(
+                view.retained_view_entity,
+                entity,
+                compaction_id,
+            )) {
+                let state = buffers
+                    .get_ready(view.retained_view_entity, entity, compaction_id)
+                    .expect("retained key has a drawable state");
+                if state.source_count() == source_count
+                    && candidate.rendered_candidate_count() <= state.output_capacity()
+                {
+                    state.output_capacity()
+                } else {
+                    requested_capacity.max(candidate.rendered_candidate_count())
+                }
+            } else {
+                requested_capacity
             };
-            let Some(admission_total_bytes) = lod_compaction_admission_bytes_with_morph(
-                allocation.total_bytes,
-                current_morph_word_capacity,
-                required_morph_words,
-            ) else {
+            let Some(required_source_words) = u32::try_from(candidate.render_ranges().len())
+                .ok()
+                .and_then(|count| count.checked_mul(LOD_PHYSICAL_RANGE_DESCRIPTOR_WORDS))
+            else {
                 candidate.phase.store(LOD_RENDER_FAILED, Ordering::Release);
                 continue;
             };
+            let source_words = candidate_source_capacity_after_upload(
+                current_state.map_or(LOD_MIN_CANDIDATE_SOURCE_WORDS, |state| {
+                    state.config.candidate_source_word_capacity
+                }),
+                required_source_words,
+                requested_capacity.saturating_mul(LOD_PHYSICAL_RANGE_DESCRIPTOR_WORDS),
+            );
+            let Ok(allocation) = plan_lod_compaction_allocation_for_ranges(
+                requested_capacity,
+                source_words,
+                &device_limits,
+            ) else {
+                // Reject the pending token while retaining a required complete
+                // output. A raw package atlas is never a safe fallback.
+                candidate.phase.store(LOD_RENDER_FAILED, Ordering::Release);
+                continue;
+            };
+            let allocation = if point_consumer {
+                allocation.without_radix()
+            } else {
+                allocation
+            };
+            if candidate.rendered_candidate_count() > allocation.effective_capacity {
+                candidate.phase.store(LOD_RENDER_FAILED, Ordering::Release);
+                continue;
+            }
+            let reusable = current_state
+                .filter(|state| {
+                    state.source_count() == source_count && state.radix.is_some() != point_consumer
+                })
+                .map(|state| {
+                    (
+                        state.output_capacity(),
+                        state.config.candidate_source_word_capacity,
+                        state.morph_word_capacity,
+                    )
+                });
+            let Some(admission_total_bytes) =
+                lod_compaction_incremental_bytes(&allocation, reusable, required_morph_words)
+            else {
+                candidate.phase.store(LOD_RENDER_FAILED, Ordering::Release);
+                continue;
+            };
+            let Some(whole_allocation_bytes) =
+                lod_compaction_incremental_bytes(&allocation, None, required_morph_words)
+            else {
+                candidate.phase.store(LOD_RENDER_FAILED, Ordering::Release);
+                continue;
+            };
+            whole_successor_bytes.insert(
+                lod_view_cloud_key(view.retained_view_entity, entity, compaction_id),
+                whole_allocation_bytes,
+            );
             let required_phase = candidates
                 .filter(|set| set.candidate_draw_required)
                 .map(|_| candidate.phase.as_ref());
@@ -7003,6 +7981,47 @@ fn prepare_lod_compaction_buffers<R: PlanarSync>(
         }
     }
 
+    // A candidate token is shared by its retained subviews. Once one subview
+    // needs a larger allocation, all currently drawable members must stage
+    // separately: changing even a sufficient sibling in place would expose a
+    // mixed old/new cut before the shared atomic publication.
+    let mut successor_tokens = buffers.capacity_successor_tokens();
+    for request in &requests {
+        let key = lod_view_cloud_key(request.payload.0, request.payload.1, request.payload.2);
+        if request.payload.8 || !retained_required_keys.contains(&key) {
+            continue;
+        }
+        let Some(phase) = request.required_phase else {
+            continue;
+        };
+        let Some(allocation) = request.payload.4 else {
+            continue;
+        };
+        if buffers.entries.get(&key).is_some_and(|state| {
+            state.source_count() != request.payload.3
+                || state.output_capacity() != allocation.effective_capacity
+        }) {
+            successor_tokens.insert(phase as *const AtomicU8 as usize);
+        }
+    }
+    let mut force_successor_keys = HashSet::new();
+    for request in &mut requests {
+        let key = lod_view_cloud_key(request.payload.0, request.payload.1, request.payload.2);
+        if request.payload.8
+            || !retained_required_keys.contains(&key)
+            || buffers.predecessors.contains_key(&key)
+        {
+            continue;
+        }
+        if request
+            .required_phase
+            .is_some_and(|phase| successor_tokens.contains(&(phase as *const AtomicU8 as usize)))
+        {
+            force_successor_keys.insert(key);
+            request.total_bytes = whole_successor_bytes[&key];
+        }
+    }
+
     // Query/archetype order is not a memory-priority contract. Stable identity
     // order is the reproducible tie-breaker within each admission class.
     requests.sort_by(|left, right| {
@@ -7031,11 +8050,98 @@ fn prepare_lod_compaction_buffers<R: PlanarSync>(
             && right.payload.2 == left.payload.2
     });
 
-    let admitted = admit_lod_compaction_requests(requests, aggregate_limit);
+    let global_requests = requests
+        .iter()
+        .map(|request| {
+            (
+                lod_view_cloud_key(request.payload.0, request.payload.1, request.payload.2),
+                (request.total_bytes, request.required_phase),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let admitted = admit_lod_compaction_requests_with_existing(
+        requests,
+        aggregate_limit,
+        existing_bytes,
+        |request| {
+            let key = lod_view_cloud_key(request.0, request.1, request.2);
+            retained_required_keys.contains(&key).then(|| {
+                let mut retained = *request;
+                retained.4 = None;
+                retained.8 = true;
+                retained
+            })
+        },
+    );
 
-    // Drop states that are not part of the admitted set before creating any
-    // replacements. This makes the configured aggregate limit a peak live
-    // allocation bound during view/cloud churn, not only a steady-state bound.
+    // Reserve every retained subview sharing one publication token together.
+    // Partial local rejection already marks that token FAILED; do not create
+    // transient GPU allocations for its otherwise admissible siblings.
+    let mut groups = Vec::<Vec<_>>::new();
+    let mut group_indices = HashMap::new();
+    for (index, request) in admitted.into_iter().enumerate() {
+        let key = lod_view_cloud_key(request.0, request.1, request.2);
+        let phase = global_requests[&key].1;
+        let identity = phase.map_or((0, index + 1), |phase| {
+            (phase as *const AtomicU8 as usize, 0)
+        });
+        let group = *group_indices.entry(identity).or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
+        groups[group].push(request);
+    }
+    let mut admitted_memory = HashMap::new();
+    let mut admitted = Vec::new();
+    for group in groups {
+        let rejected_token = group.iter().any(|request| {
+            let key = lod_view_cloud_key(request.0, request.1, request.2);
+            global_requests[&key]
+                .1
+                .is_some_and(|phase| phase.load(Ordering::Acquire) == LOD_RENDER_FAILED)
+        });
+        let charges = group
+            .iter()
+            .filter(|request| !request.8)
+            .map(|request| {
+                let key = lod_view_cloud_key(request.0, request.1, request.2);
+                (LodMemoryCategory::CompactionGpu, global_requests[&key].0)
+            })
+            .collect::<Vec<_>>();
+        let leases = (!rejected_token)
+            .then(|| memory_ledger.try_reserve_many(&charges).ok())
+            .flatten();
+        if let Some(leases) = leases {
+            let mut leases = leases.into_iter();
+            for request in group {
+                if !request.8 {
+                    admitted_memory.insert(
+                        lod_view_cloud_key(request.0, request.1, request.2),
+                        leases.next().expect("all subviews reserved atomically"),
+                    );
+                }
+                admitted.push(request);
+            }
+        } else {
+            for mut request in group {
+                let key = lod_view_cloud_key(request.0, request.1, request.2);
+                if let Some(phase) = global_requests[&key].1 {
+                    phase.store(LOD_RENDER_FAILED, Ordering::Release);
+                }
+                if request.8 || retained_required_keys.contains(&key) {
+                    request.4 = None;
+                    request.8 = true;
+                    admitted.push(request);
+                }
+            }
+        }
+    }
+
+    // Preserve the last complete package cut when a pending replacement is
+    // invalid or cannot fit. Its bytes were already charged in existing_bytes.
+    active.extend(retained_required_keys.iter().copied());
+    // Removed/replaced buffers remain charged until queue completion. Dropping
+    // Rust handles alone is not evidence that GPU memory has been released.
     for (retained_view, entity, cloud_id, ..) in &admitted {
         active.insert(lod_view_cloud_key(*retained_view, *entity, *cloud_id));
     }
@@ -7043,12 +8149,23 @@ fn prepare_lod_compaction_buffers<R: PlanarSync>(
     // states before dropping the states themselves, otherwise churn can retain
     // the entire old allocation while the replacement is created.
     radix_groups.retain_keys(&active);
-    buffers.entries.retain(|key, _| active.contains(key));
+    let removed_keys = buffers
+        .entries
+        .keys()
+        .filter(|key| !active.contains(*key))
+        .copied()
+        .collect::<Vec<_>>();
+    for key in removed_keys {
+        if let Some(state) = buffers.entries.remove(&key) {
+            buffers.retirement.retire_state(state);
+        }
+        if let Some(state) = buffers.predecessors.remove(&key) {
+            buffers.retirement.retire_state(state);
+        }
+    }
 
-    // Determine the complete replacement set before allocating anything. If
-    // two admitted keys cross sizes (old-large/new-small and
-    // old-small/new-large), replacing them one at a time can exceed the
-    // aggregate limit even though both the old and admitted totals fit.
+    // Whole-state replacement was admitted with both the old and new bytes.
+    // Retire all predecessors before constructing their successors.
     let recreate_keys = admitted
         .iter()
         .filter_map(|request| {
@@ -7063,21 +8180,30 @@ fn prepare_lod_compaction_buffers<R: PlanarSync>(
                 .entries
                 .get(&key)
                 .is_none_or(|entry| {
-                    entry.source_count() != request.3
+                    force_successor_keys.contains(&key)
+                        || entry.source_count() != request.3
                         || entry.output_capacity() != allocation.effective_capacity
+                        || entry.radix.is_some() != (allocation.radix_scratch_bytes != 0)
                 })
                 .then_some(key)
         })
         .collect::<HashSet<_>>();
 
-    // Bind groups retain their buffers, so every dependent group in the full
-    // replacement set must be dropped before any corresponding state. Only
-    // after all old replacement allocations are gone may new allocation begin.
+    // Bind groups retain their buffers. Release the groups before moving their
+    // allocations into the retirement ledger; Cleanup fences this submission.
     for key in &recreate_keys {
-        radix_groups.remove(key);
-    }
-    for key in &recreate_keys {
-        buffers.entries.remove(key);
+        if let Some(state) = buffers.entries.remove(key) {
+            if retained_required_keys.contains(key)
+                && !buffers.predecessors.contains_key(key)
+                && state.is_ready()
+                && state.has_drawable_bridge_output()
+            {
+                buffers.predecessors.insert(*key, state);
+            } else {
+                radix_groups.remove_generation(key, state.generation());
+                buffers.retirement.retire_state(state);
+            }
+        }
     }
 
     for (
@@ -7106,9 +8232,10 @@ fn prepare_lod_compaction_buffers<R: PlanarSync>(
             .get(&compaction_variant_key)
             .copied()
             .is_some_and(|pipelines| pipelines.loaded(&pipeline_cache));
-        let pipelines_ready = compaction_pipelines_ready
-            && radix_pipeline.variant_is_loaded(&pipeline_cache, radix_sort_depth_bits);
         let key = lod_view_cloud_key(retained_view, entity, cloud_id);
+        let pipelines_ready = compaction_pipelines_ready
+            && (point_consumers.contains(&key)
+                || radix_pipeline.variant_is_loaded(&pipeline_cache, radix_sort_depth_bits));
         if recreate_keys.contains(&key) {
             let generation = buffers.next_generation;
             buffers.next_generation = buffers.next_generation.wrapping_add(1).max(1);
@@ -7120,6 +8247,42 @@ fn prepare_lod_compaction_buffers<R: PlanarSync>(
                 policy,
                 generation,
             );
+            entry.memory_admission_required = true;
+            entry.memory_leases.push(
+                admitted_memory
+                    .remove(&key)
+                    .expect("new allocation has a global lease"),
+            );
+            debug_assert!(entry.memory_reserved_bytes() >= entry.actual_allocation_bytes());
+            if buffers.predecessors.contains_key(&key) {
+                entry.capacity_successor = clouds
+                    .get(entity)
+                    .ok()
+                    .and_then(|(_, _, _, _, _, candidates)| candidates)
+                    .and_then(|set| set.by_camera.get(&retained_view.main_entity.id()))
+                    .map(|candidate| Arc::clone(&candidate.phase));
+                debug_assert!(entry.capacity_successor.is_some());
+                // Preserve the last radix-proven displayed suffix when common
+                // morph edges cross allocations. Keep identity unset so the
+                // successor still uploads its own complete immutable table.
+                let previous = &buffers.predecessors[&key];
+                match previous
+                    .morph_radix_state
+                    .reconciliation_seed(previous.morph_identity, &previous.morph_edge_states)
+                {
+                    Ok(seed) => {
+                        entry.morph_edge_states =
+                            seed.unwrap_or_else(|| previous.morph_edge_states.clone())
+                    }
+                    Err(_) => {
+                        entry
+                            .capacity_successor
+                            .as_ref()
+                            .unwrap()
+                            .store(LOD_RENDER_FAILED, Ordering::Release);
+                    }
+                }
+            }
             let defines = ShaderDefines::for_radix_depth_bits(radix_sort_depth_bits);
             entry.configure_sort_dispatch(
                 &render_queue,
@@ -7129,6 +8292,14 @@ fn prepare_lod_compaction_buffers<R: PlanarSync>(
             entry.synchronize_pipeline_readiness(pipelines_ready);
             buffers.entries.insert(key, entry);
         } else if let Some(entry) = buffers.entries.get_mut(&key) {
+            entry.memory_leases.push(
+                admitted_memory
+                    .remove(&key)
+                    .expect("growth has a global lease"),
+            );
+            entry.candidate_source_word_limit = (allocation.candidate_indices_bytes / 4)
+                .try_into()
+                .expect("validated descriptor word limit");
             // Identity and first candidate commits remain staged until the
             // compute variant is compiled; fallback rendering stays complete.
             entry.synchronize_pipeline_readiness(pipelines_ready);
@@ -7152,10 +8323,22 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
     pipeline: Res<CloudPipeline<R>>,
+    radix_pipeline: Res<RadixSortPipeline<R>>,
+    point_readiness: Option<Res<PointSplattingPipelineReadiness>>,
+    ordered_readiness: Option<Res<GlobalOrderReadiness>>,
     mut raster_pipelines: ResMut<SpecializedRenderPipelines<CloudPipeline<R>>>,
     pipeline_cache: Res<PipelineCache>,
     gpu_clouds: Res<RenderAssets<R::GpuPlanarType>>,
-    views: Query<(&ExtractedView, &RenderVisibleEntities, Option<&Msaa>), With<GaussianCamera>>,
+    views: Query<
+        (
+            &ExtractedView,
+            &RenderVisibleEntities,
+            Option<&Msaa>,
+            Option<&GaussianPointSplattingSettings>,
+            Option<&GaussianGlobalOrderSettings>,
+        ),
+        With<GaussianCamera>,
+    >,
     clouds: Query<(
         Entity,
         &R::PlanarTypeHandle,
@@ -7177,7 +8360,7 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
     // Queue every exact permutation first, then reduce them to one fail-closed
     // gate keyed by the immutable candidate identity.
     let mut raster_gates = HashMap::<(Entity, Entity, usize), LodCandidateRasterGate>::new();
-    for (view, visible_entities, msaa) in &views {
+    for (view, visible_entities, msaa, point_settings, ordered_settings) in &views {
         let Some(visible_clouds) = visible_entities.get::<CloudVisibilityClass>() else {
             continue;
         };
@@ -7201,6 +8384,37 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
             let Some(candidate) = candidates.and_then(|set| set.by_camera.get(&camera)) else {
                 continue;
             };
+            let point_consumer = point_splatting_for_cloud(point_settings, cloud_settings)
+                && supports_candidate(candidate);
+            let ordered_consumer = point_settings.is_none()
+                && ordered::global_order_for_cloud(ordered_settings, cloud_settings)
+                && ordered::supports_candidate(candidate);
+            if point_consumer || ordered_consumer {
+                let prepared = if point_consumer {
+                    point_readiness
+                        .as_ref()
+                        .is_some_and(|readiness| readiness.is_prepared(view.retained_view_entity))
+                } else {
+                    ordered_readiness
+                        .as_ref()
+                        .is_some_and(|readiness| readiness.is_prepared(view.retained_view_entity))
+                };
+                let gate = LodCandidateRasterGate {
+                    readiness: if prepared {
+                        LodCandidateRasterPipelineReadiness::Ready
+                    } else {
+                        LodCandidateRasterPipelineReadiness::Pending
+                    },
+                    debug_activation_ready: true,
+                    consumer_count: 1,
+                };
+                let identity = Arc::as_ptr(&candidate.phase) as usize;
+                raster_gates
+                    .entry((camera, entity, identity))
+                    .and_modify(|aggregate| *aggregate = aggregate.merge(gate))
+                    .or_insert(gate);
+                continue;
+            }
             if !gaussian_rasterization_is_supported(
                 cloud_settings.gaussian_mode,
                 cloud_settings.rasterize_mode,
@@ -7277,7 +8491,16 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
             // SetItemPipeline's asynchronous `Skip` window. The initial cold
             // handoff waits for both variants while the immutable source is
             // still drawable.
-            let mut readiness = LodCandidateRasterPipelineReadiness::Ready;
+            // A point-capable view allocates compaction independently of radix.
+            // Its per-cloud fallback must still wait for the complete sort path
+            // before overwriting a retained candidate's descriptor table.
+            let mut readiness = if radix_pipeline
+                .variant_is_loaded(&pipeline_cache, cloud_settings.radix_sort_depth_bits)
+            {
+                LodCandidateRasterPipelineReadiness::Ready
+            } else {
+                LodCandidateRasterPipelineReadiness::Pending
+            };
             let debug_variant_count = if !candidate.is_external_active_set()
                 && pipeline.lod_debug_layout_desc.is_some()
             {
@@ -7327,7 +8550,8 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
 
     let mut cold_staging_updates = HashMap::<usize, (Arc<AtomicU8>, u8)>::new();
     let mut multi_subview_drawable_outputs = HashMap::<usize, (Arc<AtomicU8>, u32, u32)>::new();
-    for (view, visible_entities, _) in &views {
+    let capacity_tokens = buffers.capacity_successor_tokens();
+    for (view, visible_entities, _, point_settings, ordered_settings) in &views {
         let Some(visible_clouds) = visible_entities.get::<CloudVisibilityClass>() else {
             continue;
         };
@@ -7349,6 +8573,87 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
                 continue;
             };
             let candidate = candidates.and_then(|set| set.by_camera.get(&camera));
+            let point_consumer = (point_splatting_for_cloud(point_settings, cloud_settings)
+                && candidate.is_none_or(supports_candidate))
+                || (point_settings.is_none()
+                    && ordered::global_order_for_cloud(ordered_settings, cloud_settings)
+                    && candidate.is_none_or(ordered::supports_candidate));
+            if let Some(id) = lod_compaction_asset_id(handle.handle().id(), candidates) {
+                for state in buffers.states_for_key_mut(&lod_view_cloud_key(
+                    view.retained_view_entity,
+                    entity,
+                    id,
+                )) {
+                    state.synchronize_point_output(point_consumer);
+                }
+            }
+            if let Some(id) = lod_compaction_asset_id(handle.handle().id(), candidates)
+                && let Some(state) = buffers.get_mut(view.retained_view_entity, entity, id)
+            {
+                state.record_candidate_handshake_stage(if let Some(candidate) = candidate {
+                    if candidate.failed() {
+                        "candidate_failed"
+                    } else if candidate.render_hard_fallback_requested() {
+                        "hard_fallback_requested"
+                    } else if candidate.view_blend_replan_requested() {
+                        "view_blend_replan_requested"
+                    } else if candidate.frontier.view().0 != camera.to_bits() {
+                        "candidate_view_mismatch"
+                    } else if lod_settings.is_none() && lodge_settings.is_none() {
+                        "missing_lod_policy"
+                    } else if !lod_candidate_matches_extracted_policy(
+                        candidate,
+                        lod_settings,
+                        lodge_settings,
+                    ) {
+                        "policy_mismatch_before_state"
+                    } else {
+                        "before_state_synchronization"
+                    }
+                } else {
+                    "no_candidate"
+                });
+                state.capacity_activation_preflight_valid = false;
+                state.capacity_publication_held = candidate.is_some_and(|candidate| {
+                    capacity_tokens.contains(&(Arc::as_ptr(&candidate.phase) as usize))
+                });
+            }
+            // A held/failed replacement may keep the old cut only while its
+            // physical atlas is still the same allocation. Validate before all
+            // candidate phase, raster and hard-fallback early returns.
+            if let Some(candidate) = candidate
+                && let Some(id) = lod_compaction_asset_id(handle.handle().id(), candidates)
+            {
+                let resident_catalog = candidate.is_external_active_set()
+                    && id == handle.handle().id()
+                    && candidates.is_some_and(|set| set.staging_atlas.is_none());
+                let epoch = if resident_catalog {
+                    Some(lod_resident_catalog_epoch(
+                        cloud_bind_group.last_changed().get(),
+                    ))
+                } else {
+                    atlas_generations.allocation_epoch(id.untyped())
+                };
+                for state in buffers.states_for_key_mut(&lod_view_cloud_key(
+                    view.retained_view_entity,
+                    entity,
+                    id,
+                )) {
+                    if !lod_drawable_atlas_allocation_is_current(
+                        state.has_drawable_bridge_output,
+                        state.candidate_atlas_allocation_epoch,
+                        epoch,
+                    ) {
+                        state.invalidate_candidates(&render_queue);
+                        if matches!(
+                            candidate.phase.load(Ordering::Acquire),
+                            LOD_RENDER_ACTIVE | LOD_RENDER_TRANSITIONING
+                        ) {
+                            candidate.phase.store(LOD_RENDER_WAITING, Ordering::Release);
+                        }
+                    }
+                }
+            }
             let retained_package_replacement = candidates.is_some_and(|set| {
                 set.candidate_draw_required && set.retained_current && !set.candidates_are_current
             });
@@ -7458,7 +8763,9 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
                 continue;
             };
             let candidate_atlas = compaction_id.untyped();
-            if validate_bridge_candidate_sort_mode(&cloud_settings.sort_mode).is_err() {
+            if !point_consumer
+                && validate_bridge_candidate_sort_mode(&cloud_settings.sort_mode).is_err()
+            {
                 if let Some(state) =
                     buffers.get_mut(view.retained_view_entity, entity, compaction_id)
                 {
@@ -7501,6 +8808,27 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
                     continue;
                 }
             }
+            if let Some(candidate) = candidate
+                && !candidate.is_external_active_set()
+                && candidates
+                    .is_some_and(LodRenderCandidates::requires_package_hard_fallback_handshake)
+                && let Some(predecessor) = buffers.predecessors.get(&lod_view_cloud_key(
+                    view.retained_view_entity,
+                    entity,
+                    compaction_id,
+                ))
+                && !lod_settings.is_some_and(|settings| {
+                    matches!(
+                        predecessor.view_blend_predecessor_attestation_is_current(
+                            view, transform, settings, candidate,
+                        ),
+                        Ok(true)
+                    )
+                })
+            {
+                candidate.request_view_blend_replan();
+                continue;
+            }
             let Some(state) = buffers.get_mut(view.retained_view_entity, entity, compaction_id)
             else {
                 // Revoke an extracted capability if aggregate/device limits
@@ -7519,6 +8847,7 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
                 }
                 continue;
             };
+            state.record_candidate_handshake_stage("state_synchronization");
             state.morph_activation_preflight_valid = false;
             let Some(candidate) = candidate else {
                 if readiness_without_bridge_candidate(state.readiness, state.candidate_ownership)
@@ -7571,6 +8900,7 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
                 continue;
             }
             if cold_staging {
+                state.record_candidate_handshake_stage("cold_staging_atlas");
                 let atlas = candidate_atlas;
                 let atlas_current = candidates.is_some_and(|set| {
                     set.by_camera.values().all(|candidate| {
@@ -7636,6 +8966,7 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
             };
             match lod_bridge_atlas_decision(requested_phase, atlas_current) {
                 LodBridgeAtlasDecision::RejectActive => {
+                    state.record_candidate_handshake_stage("atlas_rejected_active");
                     // ACTIVE is a capability, not merely a main-world intent. If
                     // any physical slot upload is absent or has since been reused,
                     // revoke the cut before compaction can read stale atlas data.
@@ -7644,6 +8975,7 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
                     continue;
                 }
                 LodBridgeAtlasDecision::RetainCurrent => {
+                    state.record_candidate_handshake_stage("atlas_not_current");
                     // Validate the pending payload without replacing the one GPU
                     // descriptor buffer. The previous active descriptor/output can
                     // therefore be recomputed for a moving camera while arbitrarily
@@ -7663,7 +8995,9 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
                     );
                     continue;
                 }
-                LodBridgeAtlasDecision::SynchronizePending => {}
+                LodBridgeAtlasDecision::SynchronizePending => {
+                    state.record_candidate_handshake_stage("atlas_current");
+                }
             }
             if retained_package_replacement
                 && !retained_replacement_synchronization_ready(
@@ -7673,6 +9007,7 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
                     debug_activation_ready,
                 )
             {
+                state.record_candidate_handshake_stage("retained_pipeline_pending");
                 // This state still backs the retained package draw. Validate
                 // the replacement without writing its descriptor/table bytes;
                 // otherwise a skipped compute/radix/raster stage could pair
@@ -7693,7 +9028,10 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
                 state.defer_bridge_activation_for(candidate);
                 continue;
             }
+            state.capacity_activation_preflight_valid =
+                state.pipelines_ready() && raster_pipeline_ready && debug_activation_ready;
             if !debug_activation_ready {
+                state.record_candidate_handshake_stage("debug_activation_pending");
                 // A retained package replacement needs PREPARED to let the
                 // main world finish its bounded debug-sidecar staging, but it
                 // must not replace the descriptor/output which still draws the
@@ -7734,6 +9072,7 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
                     candidate,
                 );
                 if !matches!(predecessor_current, Ok(true)) {
+                    state.record_candidate_handshake_stage("predecessor_replan");
                     // The pipelined main world approved retirement from older
                     // endpoint evidence, or this private view no longer agrees
                     // with the unanimous categorical side. Preserve the exact
@@ -7744,6 +9083,7 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
                     continue;
                 }
             }
+            state.record_candidate_handshake_stage("descriptor_synchronization");
             if let Some(presentation) = external_presentation {
                 let Some((first_weight, second_weight)) =
                     lod_external_active_set_weights(view, transform, presentation)
@@ -7817,6 +9157,7 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
                 }
             }
 
+            state.record_candidate_handshake_stage("descriptor_synchronized");
             if matches!(
                 requested_phase,
                 LOD_RENDER_ACTIVE | LOD_RENDER_TRANSITIONING
@@ -7832,7 +9173,7 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
                     // remains valid while a private subview prepares its next
                     // camera-conditioned suffix, so all subviews can be
                     // reduced without requiring coincident sort completion.
-                    if state.radix_sort_is_current()
+                    if state.output_is_current()
                         && state
                             .prime_initial_recovery_view_blend_desired(
                                 view,
@@ -7848,7 +9189,7 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
                     }
                     let drawable_before_update =
                         state.has_current_drawable_bridge_candidate(candidate);
-                    if state.radix_sort_is_current()
+                    if state.output_is_current()
                         && state
                             .update_view_blend_weights(
                                 &render_queue,
@@ -7871,7 +9212,7 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
                 }
                 // Cleanup publishes the exact current radix generation. An
                 // already-ACTIVE adjacency remains ACTIVE while camera weights
-                // update; a legacy TRANSITIONING token waits at the aggregate
+                // update; a timed TRANSITIONING token waits at the aggregate
                 // barrier instead of bypassing it here.
                 state.defer_bridge_activation_for(candidate);
                 continue;
@@ -7888,7 +9229,7 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
                     // retained-view pressure pair has evaluated successfully.
                     // This catches view-dependent invalidity which can arise
                     // after runtime constructed the immutable edge table.
-                    if !state.radix_sort_is_current() {
+                    if !state.output_is_current() {
                         candidate
                             .phase
                             .store(LOD_RENDER_PREPARED, Ordering::Release);
@@ -7982,7 +9323,9 @@ fn commit_lod_bridge_candidates<R: PlanarSync>(
     for (_, (candidate_phase, expected_consumers, ready_consumers)) in
         multi_subview_drawable_outputs
     {
-        if multi_subview_activation_ready(expected_consumers, ready_consumers) {
+        if multi_subview_activation_ready(expected_consumers, ready_consumers)
+            && !capacity_tokens.contains(&(Arc::as_ptr(&candidate_phase) as usize))
+        {
             // Every private output is descriptor-current, drawable, and radix
             // current for this exact Arc identity. Each retained view owns its
             // private camera-conditioned weights and sorted output; only this
@@ -8036,7 +9379,7 @@ fn publish_lod_view_blend_after_radix<R: PlanarSync>(
             else {
                 continue;
             };
-            if candidate.view_blend_mode() != Some(LodTemporalTransitionMode::Morphing) {
+            if candidate.temporal_transition_mode() != Some(LodTemporalTransitionMode::Morphing) {
                 continue;
             }
             let state = lod_compaction_asset_id(handle.handle().id(), Some(candidates)).and_then(
@@ -8055,6 +9398,7 @@ fn publish_lod_view_blend_after_radix<R: PlanarSync>(
         }
     }
 
+    let successor_tokens = buffers.capacity_successor_tokens();
     for (_, publication) in publications {
         let candidate = publication.candidate;
         if candidate.phase.load(Ordering::Acquire) == LOD_RENDER_FAILED {
@@ -8066,7 +9410,9 @@ fn publish_lod_view_blend_after_radix<R: PlanarSync>(
                 candidate.phase.store(LOD_RENDER_FAILED, Ordering::Release);
                 continue;
             }
-            if activation_allowed {
+            if activation_allowed
+                && !successor_tokens.contains(&(Arc::as_ptr(&candidate.phase) as usize))
+            {
                 // Aggregate publication above completes its seqlock with a
                 // Release store before this phase CAS. Main-world package
                 // ownership can therefore never observe ACTIVE with older
@@ -8075,6 +9421,155 @@ fn publish_lod_view_blend_after_radix<R: PlanarSync>(
             }
         } else if !publish_incomplete_view_blend_hold(&publication) {
             candidate.phase.store(LOD_RENDER_FAILED, Ordering::Release);
+        }
+    }
+}
+
+/// Switches every retained subview before publishing its shared capability.
+/// A concurrent rejection restores every predecessor before returning.
+fn publish_capacity_transaction<K: Clone + Eq + Hash, V>(
+    keys: &[K],
+    predecessors: &mut HashMap<K, V>,
+    publish: impl FnOnce() -> bool,
+    mut retire: impl FnMut(K, V),
+) -> bool {
+    if keys.is_empty()
+        || keys.iter().collect::<HashSet<_>>().len() != keys.len()
+        || keys.iter().any(|key| !predecessors.contains_key(key))
+    {
+        return false;
+    }
+    let removed = keys
+        .iter()
+        .map(|key| {
+            (
+                key.clone(),
+                predecessors.remove(key).expect("checked predecessor"),
+            )
+        })
+        .collect::<Vec<_>>();
+    if !publish() {
+        predecessors.extend(removed);
+        return false;
+    }
+    for (key, predecessor) in removed {
+        retire(key, predecessor);
+    }
+    true
+}
+
+#[allow(clippy::type_complexity)]
+fn publish_lod_capacity_successors<R: PlanarSync>(
+    mut buffers: ResMut<LodCompactionBuffers<R>>,
+    mut radix_groups: ResMut<LodRadixBindGroups<R>>,
+    atlas_generations: Res<LodAtlasGpuGenerations>,
+    #[cfg(feature = "testing")] gate: Option<Res<LodCapacityPublicationGateForTesting>>,
+    views: Query<(&ExtractedView, &RenderVisibleEntities), With<GaussianCamera>>,
+    clouds: Query<(
+        Entity,
+        &R::PlanarTypeHandle,
+        Ref<PlanarStorageBindGroup<R>>,
+        Option<&GaussianLodSettings>,
+        Option<&LodRenderCandidates>,
+    )>,
+) {
+    #[cfg(feature = "testing")]
+    if gate.is_some_and(|gate| gate.hold) {
+        return;
+    }
+    let tokens = buffers.capacity_successor_tokens();
+    let mut transactions = HashMap::<usize, (Arc<AtomicU8>, u32, u32, Vec<_>)>::new();
+    for (view, visible) in &views {
+        let Some(visible) = visible.get::<CloudVisibilityClass>() else {
+            continue;
+        };
+        for (render_entity, _) in &visible.entities_cpu_culling {
+            let Ok((entity, handle, storage, settings, Some(candidates))) =
+                clouds.get(*render_entity)
+            else {
+                continue;
+            };
+            let Some(candidate) = candidates
+                .by_camera
+                .get(&view.retained_view_entity.main_entity.id())
+            else {
+                continue;
+            };
+            let token = Arc::as_ptr(&candidate.phase) as usize;
+            if !tokens.contains(&token) {
+                continue;
+            }
+            let transaction = transactions
+                .entry(token)
+                .or_insert_with(|| (Arc::clone(&candidate.phase), 0, 0, Vec::new()));
+            transaction.1 += 1;
+            let Some(id) = lod_compaction_asset_id(handle.handle().id(), Some(candidates)) else {
+                continue;
+            };
+            let key = lod_view_cloud_key(view.retained_view_entity, entity, id);
+            let Some(state) = buffers.entries.get(&key) else {
+                continue;
+            };
+            let epoch = if candidate.is_external_active_set()
+                && candidates.staging_atlas.is_none()
+                && id == handle.handle().id()
+            {
+                Some(lod_resident_catalog_epoch(storage.last_changed().get()))
+            } else {
+                atlas_generations.allocation_epoch(id.untyped())
+            };
+            let presentation_ready = if state.morph_identity.is_some() {
+                settings.is_some_and(|settings| {
+                    state.morph_activation_allowed(candidate, settings.selection_mode)
+                })
+            } else {
+                state.capacity_activation_preflight_valid
+            };
+            let token_matches = state
+                .capacity_successor
+                .as_ref()
+                .is_none_or(|phase| Arc::ptr_eq(phase, &candidate.phase));
+            if !candidate.failed()
+                && !candidate.render_hard_fallback_requested()
+                && !candidate.view_blend_replan_requested()
+                && token_matches
+                && state.is_ready()
+                && state.has_current_drawable_bridge_candidate(candidate)
+                && state.candidate_atlas_allocation_epoch == epoch
+                && presentation_ready
+            {
+                transaction.2 += 1;
+            }
+            if buffers.predecessors.contains_key(&key) {
+                transaction.3.push(key);
+            }
+        }
+    }
+    let buffers = buffers.as_mut();
+    for (_, (phase, expected, ready, keys)) in transactions {
+        if expected == 0
+            || ready != expected
+            || phase.load(Ordering::Acquire) != LOD_RENDER_PREPARED
+        {
+            continue;
+        }
+        let published = publish_capacity_transaction(
+            &keys,
+            &mut buffers.predecessors,
+            || publish_bridge_activation_after_radix(&phase),
+            |key, predecessor| {
+                radix_groups.remove_generation(&key, predecessor.generation());
+                buffers.retirement.retire_state(predecessor);
+            },
+        );
+        if published {
+            for key in keys {
+                if let Some(state) = buffers.entries.get_mut(&key) {
+                    state.capacity_successor = None;
+                    state.capacity_publication_held = false;
+                    state.pending_bridge_activation = None;
+                }
+            }
         }
     }
 }
@@ -8256,125 +9751,123 @@ fn run_lod_compaction<R: PlanarSync>(
             entity,
             handle.handle().id(),
         );
-        let Some(state) = buffers.entries.get_mut(&key) else {
-            continue;
-        };
-        if !state.is_ready() {
-            continue;
-        }
-        let Some(pipelines) = pipeline
-            .variants
-            .get(&(
-                cloud_settings.gaussian_mode,
-                cloud_settings.radix_sort_depth_bits,
-            ))
-            .copied()
-        else {
-            continue;
-        };
-        if !pipelines.loaded(&pipeline_cache) {
-            continue;
-        }
+        for state in buffers.states_for_key_mut(&key) {
+            if !state.is_ready() {
+                continue;
+            }
+            let Some(pipelines) = pipeline
+                .variants
+                .get(&(
+                    cloud_settings.gaussian_mode,
+                    cloud_settings.radix_sort_depth_bits,
+                ))
+                .copied()
+            else {
+                continue;
+            };
+            if !pipelines.loaded(&pipeline_cache) {
+                continue;
+            }
 
-        #[cfg(feature = "morph_interpolate")]
-        let has_interpolate = interpolate_writers.get(entity).is_ok();
-        #[cfg(not(feature = "morph_interpolate"))]
-        let has_interpolate = false;
-        #[cfg(feature = "morph_particles")]
-        let has_particles = particle_writers.get(entity).is_ok();
-        #[cfg(not(feature = "morph_particles"))]
-        let has_particles = false;
-        if !lod_compaction_cache_allowed(has_interpolate, has_particles) {
-            // These compute writers mutate positions/visibility in-place, so
-            // neither the asset identity nor storage bind-group tick changes.
-            state.mark_compute_input_dirty();
-        }
-        state.update_view_cloud_invariants(&render_queue, extracted_view, transform);
-        let signature = state.compute_signature(
-            extracted_view,
-            transform,
-            cloud_settings,
-            cloud_bind_group.last_changed().get(),
-        );
-        if state.compaction_is_current(signature) {
-            continue;
-        }
+            #[cfg(feature = "morph_interpolate")]
+            let has_interpolate = interpolate_writers.get(entity).is_ok();
+            #[cfg(not(feature = "morph_interpolate"))]
+            let has_interpolate = false;
+            #[cfg(feature = "morph_particles")]
+            let has_particles = particle_writers.get(entity).is_ok();
+            #[cfg(not(feature = "morph_particles"))]
+            let has_particles = false;
+            if !lod_compaction_cache_allowed(has_interpolate, has_particles) {
+                // These compute writers mutate positions/visibility in-place, so
+                // neither the asset identity nor storage bind-group tick changes.
+                state.mark_compute_input_dirty();
+            }
+            state.update_view_cloud_invariants(&render_queue, extracted_view, transform);
+            let signature = state.compute_signature(
+                extracted_view,
+                transform,
+                cloud_settings,
+                cloud_bind_group.last_changed().get(),
+            );
+            if state.compaction_is_current(signature) {
+                continue;
+            }
 
-        macro_rules! dispatch_stage {
-            ($label:literal, $pipeline_id:expr, $x:expr, $y:expr, $z:expr) => {{
-                let mut pass =
-                    render_context
-                        .command_encoder()
-                        .begin_compute_pass(&ComputePassDescriptor {
+            macro_rules! dispatch_stage {
+                ($label:literal, $pipeline_id:expr, $x:expr, $y:expr, $z:expr) => {{
+                    let mut pass = render_context.command_encoder().begin_compute_pass(
+                        &ComputePassDescriptor {
                             label: Some($label),
                             ..default()
-                        });
-                pass.set_bind_group(
-                    0,
-                    &view_bind_group.value,
-                    &[view_offset.offset, previous_view_offset.offset],
+                        },
+                    );
+                    pass.set_bind_group(
+                        0,
+                        &view_bind_group.value,
+                        &[view_offset.offset, previous_view_offset.offset],
+                    );
+                    pass.set_bind_group(1, uniform_bind_group, &[cloud_uniform_index.index()]);
+                    pass.set_bind_group(2, &cloud_bind_group.bind_group, &[]);
+                    pass.set_bind_group(
+                        3,
+                        state
+                            .bind_group
+                            .as_ref()
+                            .expect("ready compaction state has a candidate bind group"),
+                        &[],
+                    );
+                    pass.set_pipeline(
+                        pipeline_cache
+                            .get_compute_pipeline($pipeline_id)
+                            .expect("loaded LoD compaction pipeline"),
+                    );
+                    pass.dispatch_workgroups($x, $y, $z);
+                }};
+            }
+
+            dispatch_stage!("lod_compaction_reset", pipelines.reset, 1, 1, 1);
+
+            if state.candidate_count() > 0 {
+                let candidate_workgroups = state
+                    .candidate_count()
+                    .div_ceil(LOD_COMPACTION_WORKGROUP_SIZE);
+                let scan_blocks = candidate_workgroups.div_ceil(LOD_COMPACTION_SCAN_BLOCK_SIZE);
+                debug_assert!(scan_blocks <= LOD_COMPACTION_MAX_SCAN_BLOCKS);
+
+                dispatch_stage!(
+                    "lod_compaction_count",
+                    pipelines.count,
+                    candidate_workgroups,
+                    1,
+                    1
                 );
-                pass.set_bind_group(1, uniform_bind_group, &[cloud_uniform_index.index()]);
-                pass.set_bind_group(2, &cloud_bind_group.bind_group, &[]);
-                pass.set_bind_group(
-                    3,
-                    state
-                        .bind_group
-                        .as_ref()
-                        .expect("ready compaction state has a candidate bind group"),
-                    &[],
+                dispatch_stage!(
+                    "lod_compaction_scan_groups",
+                    pipelines.scan_groups,
+                    scan_blocks,
+                    1,
+                    1
                 );
-                pass.set_pipeline(
-                    pipeline_cache
-                        .get_compute_pipeline($pipeline_id)
-                        .expect("loaded LoD compaction pipeline"),
+                dispatch_stage!("lod_compaction_scan_blocks", pipelines.scan_blocks, 1, 1, 1);
+                dispatch_stage!(
+                    "lod_compaction_add_block_offsets",
+                    pipelines.add_block_offsets,
+                    scan_blocks,
+                    1,
+                    1
                 );
-                pass.dispatch_workgroups($x, $y, $z);
-            }};
+                dispatch_stage!(
+                    "lod_compaction_scatter",
+                    pipelines.scatter,
+                    candidate_workgroups,
+                    1,
+                    1
+                );
+            }
+
+            dispatch_stage!("lod_compaction_finalize", pipelines.finalize, 1, 1, 1);
+            state.mark_compacted(signature);
         }
-
-        dispatch_stage!("lod_compaction_reset", pipelines.reset, 1, 1, 1);
-
-        if state.candidate_count() > 0 {
-            let candidate_workgroups = state
-                .candidate_count()
-                .div_ceil(LOD_COMPACTION_WORKGROUP_SIZE);
-            let scan_blocks = candidate_workgroups.div_ceil(LOD_COMPACTION_SCAN_BLOCK_SIZE);
-            debug_assert!(scan_blocks <= LOD_COMPACTION_MAX_SCAN_BLOCKS);
-
-            dispatch_stage!(
-                "lod_compaction_count",
-                pipelines.count,
-                candidate_workgroups,
-                1,
-                1
-            );
-            dispatch_stage!(
-                "lod_compaction_scan_groups",
-                pipelines.scan_groups,
-                scan_blocks,
-                1,
-                1
-            );
-            dispatch_stage!("lod_compaction_scan_blocks", pipelines.scan_blocks, 1, 1, 1);
-            dispatch_stage!(
-                "lod_compaction_add_block_offsets",
-                pipelines.add_block_offsets,
-                scan_blocks,
-                1,
-                1
-            );
-            dispatch_stage!(
-                "lod_compaction_scatter",
-                pipelines.scatter,
-                candidate_workgroups,
-                1,
-                1
-            );
-        }
-
-        dispatch_stage!("lod_compaction_finalize", pipelines.finalize, 1, 1, 1);
-        state.mark_compacted(signature);
     }
 }
 
@@ -8388,3 +9881,114 @@ fn quality_endpoint_code(endpoint: LodQualityEndpoint) -> u32 {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
+
+#[cfg(test)]
+mod point_output_tests {
+    use super::*;
+
+    fn proof_fixture() -> LodPointOutputProof {
+        let candidate = Arc::new(AtomicU8::new(LOD_RENDER_PREPARED));
+        let fingerprint = LodCandidateFrontierFingerprint {
+            primary: 3,
+            secondary: 5,
+            range_count: 1,
+            candidate_count: 4,
+        };
+        LodPointOutputProof {
+            generation: 7,
+            signature: 11,
+            compute_input_generation: 13,
+            fingerprint,
+            content_signature: Some(17),
+            atlas_allocation_epoch: Some(19),
+            candidate: candidate.clone(),
+            snapshot: LodRadixCandidateSnapshot {
+                version: Some(candidate),
+                phase_at_compaction: Some(LOD_RENDER_PREPARED),
+                fingerprint: Some(fingerprint),
+                candidate_content_signature: Some(17),
+                candidate_atlas_allocation_epoch: Some(19),
+                rendered_candidate_count: 4,
+                selected_gaussians: Some(4),
+                morph_identity: None,
+                compute_input_generation: 13,
+                compaction_signature: 11,
+                view_blend: None,
+            },
+        }
+    }
+
+    #[test]
+    fn point_feedback_requires_the_exact_physical_candidate() {
+        let proof = proof_fixture();
+        assert!(proof.matches_current(&proof.clone()));
+        for current in [
+            LodPointOutputProof {
+                generation: 8,
+                ..proof.clone()
+            },
+            LodPointOutputProof {
+                compute_input_generation: 14,
+                ..proof.clone()
+            },
+            LodPointOutputProof {
+                content_signature: Some(18),
+                ..proof.clone()
+            },
+            LodPointOutputProof {
+                atlas_allocation_epoch: Some(20),
+                ..proof.clone()
+            },
+            LodPointOutputProof {
+                fingerprint: LodCandidateFrontierFingerprint {
+                    primary: 4,
+                    ..proof.fingerprint
+                },
+                ..proof.clone()
+            },
+            LodPointOutputProof {
+                candidate: Arc::new(AtomicU8::new(LOD_RENDER_PREPARED)),
+                ..proof.clone()
+            },
+        ] {
+            assert!(!proof.matches_current(&current));
+        }
+    }
+
+    #[test]
+    fn moving_camera_feedback_activates_only_the_captured_candidate_snapshot() {
+        let rendered = proof_fixture();
+        let mut current = rendered.clone();
+        current.signature = 23;
+        current.snapshot.compaction_signature = 23;
+        let mut tracker = LodRadixDrawableTracker::default();
+        tracker.latch_compacted(current.snapshot.clone());
+
+        assert!(
+            rendered.matches_current(&current),
+            "camera motion must not starve activation"
+        );
+        tracker.publish_snapshot(rendered.snapshot.clone());
+        assert!(publish_bridge_activation_after_radix(&rendered.candidate));
+        assert_eq!(
+            rendered.candidate.load(Ordering::Acquire),
+            LOD_RENDER_ACTIVE
+        );
+        assert_eq!(tracker.drawable.as_ref().unwrap().compaction_signature, 11);
+        assert_eq!(tracker.pending.as_ref().unwrap().compaction_signature, 23);
+        assert_ne!(
+            rendered.signature, current.signature,
+            "newer output remains unproven"
+        );
+    }
+
+    #[test]
+    fn withdrawn_candidate_cannot_be_revived_by_successful_point_feedback() {
+        let proof = proof_fixture();
+        let feedback = proof.clone();
+        for phase in [LOD_RENDER_WAITING, LOD_RENDER_FAILED] {
+            proof.candidate.store(phase, Ordering::Release);
+            assert!(!feedback.matches_current(&proof));
+        }
+    }
+}

@@ -10,7 +10,7 @@ use std::{
     mem::size_of,
     num::{NonZeroU32, NonZeroU64},
     sync::{
-        Arc, RwLock, Weak,
+        Arc, Mutex, RwLock, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -37,10 +37,15 @@ use bytemuck::Zeroable;
 use crate::{
     gaussian::{
         f32::{PositionVisibility, Rotation, ScaleOpacity},
-        formats::planar_3d::{PlanarGaussian3d, PlanarStorageGaussian3d},
+        formats::planar_3d::{
+            Gaussian3d, PlanarGaussian3d, PlanarStorageGaussian3d, gaussian_3d_gpu_bytes_per_record,
+        },
     },
     material::spherical_harmonics::SphericalHarmonicCoefficients,
-    stream::cache::AtlasSlot,
+    stream::{
+        cache::AtlasSlot,
+        memory::{LodMemoryCategory, LodMemoryLease, LodMemoryLedger},
+    },
 };
 
 #[cfg(feature = "precompute_covariance_3d")]
@@ -216,6 +221,8 @@ impl LodAtlasUploadQueue {
 
 #[derive(Debug)]
 struct LodTransientAtlasTicketInner {
+    gpu_memory_reservation: Mutex<Option<LodMemoryLease>>,
+    recovery_memory_reservation: Mutex<Option<LodMemoryLease>>,
     generation: AtomicU64,
     ready_generation: AtomicU64,
     failed_generation: AtomicU64,
@@ -233,6 +240,8 @@ pub(crate) struct LodTransientAtlasTicket(Arc<LodTransientAtlasTicketInner>);
 impl Default for LodTransientAtlasTicket {
     fn default() -> Self {
         Self(Arc::new(LodTransientAtlasTicketInner {
+            gpu_memory_reservation: Mutex::new(None),
+            recovery_memory_reservation: Mutex::new(None),
             generation: AtomicU64::new(1),
             ready_generation: AtomicU64::new(0),
             failed_generation: AtomicU64::new(0),
@@ -305,44 +314,25 @@ impl LodTransientAtlasTicket {
     }
 }
 
-/// Strong main-world owner of the worker-produced planar atlas. It is never
+/// Strong main-world owner of sparse, immutable atlas-slot payloads. It is never
 /// inserted into [`Assets`], so Bevy's generic RenderAsset extraction cannot
 /// clone or upload the complete allocation in one frame.
 pub(crate) struct LodTransientAtlas {
     physical_gaussians: u32,
-    // Kept only for the legacy dense constructor while bridge callers migrate
-    // to `new_empty` + `write_slot`. Empty transient atlases never reserve
-    // capacity in these planes.
-    planes: Arc<RwLock<PlanarGaussian3d>>,
-    slots: Arc<RwLock<HashMap<u32, PlanarGaussian3d>>>,
+    // Immutable slot payloads are shared with extraction. Retaining them is a
+    // deliberate recovery policy: account up to one canonical CPU atlas in
+    // addition to decoded pages, GPU storage and bounded coalescing buffers.
+    slots: Arc<RwLock<HashMap<u32, Arc<PlanarGaussian3d>>>>,
     ticket: LodTransientAtlasTicket,
 }
 
 impl LodTransientAtlas {
-    /// Wraps an already materialized bounded atlas.
-    ///
-    /// New transient bridges should use [`Self::new_empty`] so cold
-    /// initialization does not allocate or zero every physical slot.
-    #[cfg(test)]
-    pub(crate) fn new(planes: PlanarGaussian3d) -> Self {
-        let physical_gaussians = planes
-            .len()
-            .try_into()
-            .expect("bounded transient atlas length fits u32");
-        Self {
-            physical_gaussians,
-            planes: Arc::new(RwLock::new(planes)),
-            slots: Arc::new(RwLock::new(HashMap::new())),
-            ticket: default(),
-        }
-    }
-
     /// Creates a fixed-size GPU atlas owner with no CPU Gaussian payload.
     ///
     /// CPU memory grows only when [`Self::write_slot`] materializes a page and
     /// is bounded by the number of distinct physical slots written. The render
     /// world still allocates `physical_gaussians` entries on the GPU.
-    pub(crate) fn new_empty(physical_gaussians: u32) -> Result<Self, LodAtlasUploadError> {
+    pub(crate) fn new(physical_gaussians: u32) -> Result<Self, LodAtlasUploadError> {
         if physical_gaussians == 0 {
             return Err(LodAtlasUploadError::InvalidAtlasLength {
                 physical_gaussians,
@@ -351,7 +341,6 @@ impl LodTransientAtlas {
         }
         Ok(Self {
             physical_gaussians,
-            planes: Arc::new(RwLock::new(PlanarGaussian3d::default())),
             slots: Arc::new(RwLock::new(HashMap::new())),
             ticket: default(),
         })
@@ -379,7 +368,7 @@ impl LodTransientAtlas {
         self.slots
             .write()
             .map_err(|_| LodAtlasUploadError::TransientAtlasLockPoisoned)?
-            .insert(slot_index, planes);
+            .insert(slot_index, Arc::new(planes));
         Ok(())
     }
 
@@ -399,13 +388,8 @@ impl LodTransientAtlas {
     pub(crate) fn snapshot_slot(
         &self,
         descriptor: LodAtlasSlotUpload,
-    ) -> Result<PlanarGaussian3d, LodAtlasUploadError> {
-        snapshot_transient_slot(
-            self.physical_gaussians,
-            &self.planes,
-            &self.slots,
-            descriptor,
-        )
+    ) -> Result<Arc<PlanarGaussian3d>, LodAtlasUploadError> {
+        snapshot_transient_slot(self.physical_gaussians, &self.slots, descriptor)
     }
 
     #[cfg(test)]
@@ -430,11 +414,31 @@ impl LodTransientAtlas {
             })
     }
 
-    /// Legacy mutable dense mirror access. Empty transient atlases deliberately
-    /// return zero-length planes; production page writes use `write_slot`.
-    #[cfg(test)]
-    pub(crate) fn planes(&self) -> Arc<RwLock<PlanarGaussian3d>> {
-        Arc::clone(&self.planes)
+    /// Transfers the package's pre-admitted GPU capacity into the first actual
+    /// render allocation. Ticket clones preserve one allocation identity.
+    pub(crate) fn set_gpu_memory_reservation(&self, reservation: LodMemoryLease) {
+        debug_assert_eq!(reservation.category(), LodMemoryCategory::AtlasGpu);
+        *self
+            .ticket
+            .0
+            .gpu_memory_reservation
+            .lock()
+            .expect("atlas reservation lock poisoned") = Some(reservation);
+    }
+
+    /// Shares the canonical CPU recovery capacity with render snapshots. The
+    /// charge survives package teardown until the last queued payload is gone.
+    pub(crate) fn set_recovery_memory_reservation(&self, reservation: LodMemoryLease) {
+        debug_assert_eq!(
+            reservation.category(),
+            LodMemoryCategory::RecoveryStagingCpu
+        );
+        *self
+            .ticket
+            .0
+            .recovery_memory_reservation
+            .lock()
+            .expect("atlas recovery reservation lock poisoned") = Some(reservation);
     }
 
     pub(crate) fn ticket(&self) -> &LodTransientAtlasTicket {
@@ -496,10 +500,9 @@ fn validate_transient_slot(
 
 fn snapshot_transient_slot(
     physical_gaussians: u32,
-    dense_planes: &Arc<RwLock<PlanarGaussian3d>>,
-    slots: &Arc<RwLock<HashMap<u32, PlanarGaussian3d>>>,
+    slots: &Arc<RwLock<HashMap<u32, Arc<PlanarGaussian3d>>>>,
     descriptor: LodAtlasSlotUpload,
-) -> Result<PlanarGaussian3d, LodAtlasUploadError> {
+) -> Result<Arc<PlanarGaussian3d>, LodAtlasUploadError> {
     descriptor.validate_address()?;
     let end = descriptor.physical_end()?;
     if end > physical_gaussians {
@@ -520,15 +523,9 @@ fn snapshot_transient_slot(
             descriptor.gaussians_per_slot,
             planes,
         )?;
-        return Ok(planes.clone());
+        return Ok(Arc::clone(planes));
     }
 
-    let dense = dense_planes
-        .read()
-        .map_err(|_| LodAtlasUploadError::TransientAtlasLockPoisoned)?;
-    if dense.len() == physical_gaussians as usize {
-        return snapshot_slot(Some(&dense), descriptor, None).map(|upload| upload.planes);
-    }
     Err(LodAtlasUploadError::MissingTransientAtlasSlot {
         slot_index: descriptor.slot.index,
     })
@@ -538,8 +535,7 @@ struct LodTransientAtlasRegistryEntry {
     source: AssetId<PlanarGaussian3d>,
     physical_gaussians: u32,
     gaussians_per_slot: u32,
-    planes: Weak<RwLock<PlanarGaussian3d>>,
-    slots: Weak<RwLock<HashMap<u32, PlanarGaussian3d>>>,
+    slots: Weak<RwLock<HashMap<u32, Arc<PlanarGaussian3d>>>>,
     ticket: Weak<LodTransientAtlasTicketInner>,
 }
 
@@ -548,34 +544,102 @@ struct LiveLodTransientAtlas {
     source: AssetId<PlanarGaussian3d>,
     physical_gaussians: u32,
     gaussians_per_slot: u32,
-    planes: Arc<RwLock<PlanarGaussian3d>>,
-    slots: Arc<RwLock<HashMap<u32, PlanarGaussian3d>>>,
+    slots: Arc<RwLock<HashMap<u32, Arc<PlanarGaussian3d>>>>,
     ticket: LodTransientAtlasTicket,
     generation: u64,
 }
 
 impl LiveLodTransientAtlas {
-    fn snapshot_slot(
+    fn snapshot_upload(
         &self,
         descriptor: LodAtlasSlotUpload,
-    ) -> Result<PlanarGaussian3d, LodAtlasUploadError> {
-        snapshot_transient_slot(
-            self.physical_gaussians,
-            &self.planes,
-            &self.slots,
+    ) -> Result<ExtractedLodAtlasSlotUpload, LodAtlasUploadError> {
+        let planes = snapshot_transient_slot(self.physical_gaussians, &self.slots, descriptor)?;
+        Ok(ExtractedLodAtlasSlotUpload {
             descriptor,
-        )
+            planes,
+            transient_generation: Some(self.generation),
+            recovery_memory_reservation: self
+                .ticket
+                .0
+                .recovery_memory_reservation
+                .lock()
+                .expect("atlas recovery reservation lock poisoned")
+                .clone(),
+            staging_memory_reservations: Vec::new(),
+        })
     }
 }
 
 /// Main-world registry for reserved-handle atlases whose large CPU allocation
 /// stays outside Bevy's generic asset extraction path.
 #[derive(Resource, Default)]
-pub(crate) struct LodTransientAtlasRegistry {
+pub struct LodTransientAtlasRegistry {
     entries: HashMap<AssetId<PlanarGaussian3d>, LodTransientAtlasRegistryEntry>,
 }
 
 impl LodTransientAtlasRegistry {
+    /// Samples at most 4096 finite, visible, nontransparent resident means.
+    ///
+    /// This diagnostic view performs at most four physical-address probes per
+    /// requested sample, with no page I/O, full atlas scan, or payload clone.
+    /// Sparse/unfilled allocations may return fewer samples. `None` means the
+    /// atlas is absent or its owner has been canceled/dropped. Zero samples is
+    /// a cheap liveness check. Positions remain in cloud-local coordinates.
+    pub fn sample_positions(
+        &self,
+        atlas: AssetId<PlanarGaussian3d>,
+        max_samples: usize,
+    ) -> Result<Option<Vec<Vec3>>, LodAtlasUploadError> {
+        use rand::{Rng, SeedableRng, rngs::StdRng};
+        let Some(entry) = self.entries.get(&atlas) else {
+            return Ok(None);
+        };
+        let Some(ticket) = entry.ticket.upgrade().map(LodTransientAtlasTicket) else {
+            return Ok(None);
+        };
+        if ticket.is_canceled() {
+            return Ok(None);
+        }
+        let Some(slots) = entry.slots.upgrade() else {
+            return Ok(None);
+        };
+        if max_samples == 0 {
+            return Ok(Some(Vec::new()));
+        }
+        let slots = slots
+            .read()
+            .map_err(|_| LodAtlasUploadError::TransientAtlasLockPoisoned)?;
+        let max_samples = max_samples.min(4096);
+        let mut samples = Vec::with_capacity(max_samples);
+        let mut visited = BTreeSet::new();
+        let mut rng = StdRng::seed_from_u64(0x6772_6f75_6e64);
+        for _ in 0..max_samples * 4 {
+            let address = rng.random_range(0..entry.physical_gaussians);
+            if !visited.insert(address) {
+                continue;
+            }
+            let Some(planes) = slots.get(&(address / entry.gaussians_per_slot)) else {
+                continue;
+            };
+            let index = (address % entry.gaussians_per_slot) as usize;
+            let Some(position) = planes.position_visibility.get(index) else {
+                continue;
+            };
+            let point = Vec3::from(position.position);
+            if position.visibility > 0.0
+                && planes.scale_opacity[index].opacity > 0.0
+                && point.is_finite()
+            {
+                samples.push(point);
+                if samples.len() == max_samples {
+                    break;
+                }
+            }
+        }
+        Ok(Some(samples))
+    }
+
     /// Returns the fixed GPU length of one live transient 3D atlas.
     ///
     /// Transient atlases deliberately have no dense main-world asset, so
@@ -586,10 +650,7 @@ impl LodTransientAtlasRegistry {
         let atlas = atlas.try_typed::<PlanarGaussian3d>().ok()?;
         let entry = self.entries.get(&atlas)?;
         let ticket = entry.ticket.upgrade().map(LodTransientAtlasTicket)?;
-        if ticket.is_canceled()
-            || entry.planes.upgrade().is_none()
-            || entry.slots.upgrade().is_none()
-        {
+        if ticket.is_canceled() || entry.slots.upgrade().is_none() {
             return None;
         }
         Some(entry.physical_gaussians)
@@ -599,7 +660,6 @@ impl LodTransientAtlasRegistry {
         &mut self,
         atlas: AssetId<PlanarGaussian3d>,
         source: AssetId<PlanarGaussian3d>,
-        _source_gaussians: u32,
         gaussians_per_slot: u32,
         owner: &LodTransientAtlas,
     ) -> Result<(), LodAtlasUploadError> {
@@ -619,7 +679,6 @@ impl LodTransientAtlasRegistry {
                 source,
                 physical_gaussians,
                 gaussians_per_slot,
-                planes: Arc::downgrade(&owner.planes),
                 slots: Arc::downgrade(&owner.slots),
                 ticket: Arc::downgrade(&owner.ticket.0),
             },
@@ -636,12 +695,7 @@ impl LodTransientAtlasRegistry {
         self.entries.remove(&atlas).is_some()
     }
 
-    #[cfg(all(
-        test,
-        not(target_arch = "wasm32"),
-        feature = "sort_radix",
-        not(feature = "buffer_texture")
-    ))]
+    #[cfg(all(test, not(target_arch = "wasm32"), feature = "sort_radix"))]
     pub(crate) fn contains(&self, atlas: AssetId<PlanarGaussian3d>) -> bool {
         self.entries.contains_key(&atlas)
     }
@@ -661,10 +715,7 @@ impl LodTransientAtlasRegistry {
                 stale.push(atlas);
                 continue;
             };
-            if ticket.is_canceled()
-                || entry.planes.upgrade().is_none()
-                || entry.slots.upgrade().is_none()
-            {
+            if ticket.is_canceled() || entry.slots.upgrade().is_none() {
                 stale.push(atlas);
                 continue;
             }
@@ -680,7 +731,6 @@ impl LodTransientAtlasRegistry {
         self.entries
             .iter()
             .filter_map(|(&atlas, entry)| {
-                let planes = entry.planes.upgrade()?;
                 let slots = entry.slots.upgrade()?;
                 let ticket = entry.ticket.upgrade().map(LodTransientAtlasTicket)?;
                 if ticket.is_canceled() {
@@ -692,7 +742,6 @@ impl LodTransientAtlasRegistry {
                         source: entry.source,
                         physical_gaussians: entry.physical_gaussians,
                         gaussians_per_slot: entry.gaussians_per_slot,
-                        planes,
                         slots,
                         generation: ticket.generation(),
                         ticket,
@@ -834,15 +883,19 @@ impl LodAtlasUploadBudgetStatus {
 #[derive(Debug)]
 struct ExtractedLodAtlasSlotUpload {
     descriptor: LodAtlasSlotUpload,
-    planes: PlanarGaussian3d,
+    planes: Arc<PlanarGaussian3d>,
     transient_generation: Option<u64>,
+    recovery_memory_reservation: Option<LodMemoryLease>,
+    staging_memory_reservations: Vec<LodMemoryLease>,
 }
 
 #[derive(Debug)]
 struct CoalescedLodAtlasUpload {
     descriptors: Vec<LodAtlasSlotUpload>,
-    planes: PlanarGaussian3d,
+    planes: Arc<PlanarGaussian3d>,
     transient_generation: Option<u64>,
+    recovery_memory_reservation: Option<LodMemoryLease>,
+    staging_memory_reservations: Vec<LodMemoryLease>,
 }
 
 impl CoalescedLodAtlasUpload {
@@ -1196,6 +1249,7 @@ struct ExtractedLodTransientAtlases {
 }
 
 struct LodTransientGpuAtlas {
+    memory_reservation: LodMemoryLease,
     source: AssetId<PlanarGaussian3d>,
     physical_gaussians: u32,
     gaussians_per_slot: u32,
@@ -1216,9 +1270,17 @@ struct LodTransientGpuAtlas {
 #[derive(Resource, Default)]
 struct LodTransientGpuAtlases {
     atlases: HashMap<AssetId<PlanarGaussian3d>, LodTransientGpuAtlas>,
+    pending_retired: Vec<LodMemoryLease>,
 }
 
 impl LodTransientGpuAtlases {
+    fn retire(&mut self, atlas: AssetId<PlanarGaussian3d>) {
+        if let Some(previous) = self.atlases.remove(&atlas) {
+            previous.memory_reservation.mark_gpu_materialized();
+            self.pending_retired.push(previous.memory_reservation);
+        }
+    }
+
     fn accepts_upload_generation(
         &self,
         atlas: AssetId<PlanarGaussian3d>,
@@ -1236,8 +1298,8 @@ fn transient_upload_generation_is_current(
     upload_generation: Option<u64>,
 ) -> bool {
     let Some(upload_generation) = upload_generation else {
-        // Package-owned atlases are ordinary render assets and do not
-        // participate in transient allocation generations.
+        // Ordinary Assets uploads do not participate in transient allocation
+        // generations; sparse bridge/package atlases carry a generation.
         return true;
     };
     state_generation == upload_generation && ticket.generation() == upload_generation
@@ -1389,6 +1451,8 @@ pub struct GaussianLodAtlasUploadPlugin;
 
 impl Plugin for GaussianLodAtlasUploadPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<LodMemoryLedger>();
+        let memory_ledger = app.world().resource::<LodMemoryLedger>().clone();
         app.init_resource::<LodAtlasUploadQueue>()
             .init_resource::<LodAtlasUploadBudget>()
             .init_resource::<LodAtlasUploadBudgetStatus>()
@@ -1396,6 +1460,7 @@ impl Plugin for GaussianLodAtlasUploadPlugin {
             .init_resource::<LodTransientAtlasRegistry>();
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
+                .insert_resource(memory_ledger)
                 .init_resource::<ExtractedLodAtlasUploads>()
                 .init_resource::<ExtractedLodTransientAtlases>()
                 .init_gpu_resource::<LodTransientGpuAtlases>()
@@ -1407,6 +1472,12 @@ impl Plugin for GaussianLodAtlasUploadPlugin {
                         .chain()
                         .in_set(RenderSystems::PrepareAssets)
                         .after(prepare_assets::<PlanarStorageGaussian3d>),
+                )
+                .add_systems(
+                    Render,
+                    fence_transient_atlas_retirements
+                        .in_set(RenderSystems::Cleanup)
+                        .after(RenderSystems::Render),
                 );
             #[cfg(feature = "precompute_covariance_3d")]
             render_app.init_gpu_resource::<LodCovariancePipeline>();
@@ -1523,6 +1594,8 @@ fn extract_lod_atlas_uploads(
         }
     }
 
+    let memory_ledger = main_world.resource::<LodMemoryLedger>().clone();
+    let mut memory_deferred = Vec::new();
     let assets = main_world.resource::<Assets<PlanarGaussian3d>>();
     for descriptor in plan.admitted {
         let key = (descriptor.atlas, descriptor.slot.index);
@@ -1531,15 +1604,19 @@ fn extract_lod_atlas_uploads(
         }
         let transient_source = transient_sources.get(&descriptor.atlas);
         let upload = if let Some(source) = transient_source {
-            source
-                .snapshot_slot(descriptor)
-                .map(|planes| ExtractedLodAtlasSlotUpload {
-                    descriptor,
-                    planes,
-                    transient_generation: Some(source.generation),
-                })
+            source.snapshot_upload(descriptor)
         } else {
-            snapshot_slot(assets.get(descriptor.atlas), descriptor, None)
+            let bytes = u64::from(descriptor.gaussians_per_slot) * size_of::<Gaussian3d>() as u64;
+            let Ok(reservation) =
+                memory_ledger.try_reserve(LodMemoryCategory::UploadStagingCpu, bytes)
+            else {
+                memory_deferred.push(descriptor);
+                continue;
+            };
+            snapshot_slot(assets.get(descriptor.atlas), descriptor, None).map(|mut upload| {
+                upload.staging_memory_reservations.push(reservation);
+                upload
+            })
         };
         match upload {
             Ok(upload) => {
@@ -1561,6 +1638,16 @@ fn extract_lod_atlas_uploads(
                 }
             }
         }
+    }
+    for descriptor in memory_deferred {
+        extracted.deferred_slots = extracted.deferred_slots.saturating_add(1);
+        extracted.deferred_canonical_bytes = extracted.deferred_canonical_bytes.saturating_add(
+            u64::from(descriptor.gaussians_per_slot) * size_of::<Gaussian3d>() as u64,
+        );
+        main_world
+            .resource_mut::<LodAtlasUploadQueue>()
+            .slots
+            .insert((descriptor.atlas, descriptor.slot.index), descriptor);
     }
 }
 
@@ -1590,12 +1677,14 @@ fn snapshot_slot(
     Ok(ExtractedLodAtlasSlotUpload {
         descriptor,
         transient_generation,
-        planes: PlanarGaussian3d {
+        recovery_memory_reservation: None,
+        staging_memory_reservations: Vec::new(),
+        planes: Arc::new(PlanarGaussian3d {
             position_visibility: atlas.position_visibility[start..end].to_vec(),
             spherical_harmonic: atlas.spherical_harmonic[start..end].to_vec(),
             rotation: atlas.rotation[start..end].to_vec(),
             scale_opacity: atlas.scale_opacity[start..end].to_vec(),
-        },
+        }),
     })
 }
 
@@ -1898,6 +1987,7 @@ fn prepare_transient_lod_atlases(
     mut generations: ResMut<LodAtlasGpuGenerations>,
     mut gpu_assets: ResMut<RenderAssets<PlanarStorageGaussian3d>>,
     render_device: Res<RenderDevice>,
+    memory_ledger: Res<LodMemoryLedger>,
 ) {
     let stale = owned
         .atlases
@@ -1906,14 +1996,14 @@ fn prepare_transient_lod_atlases(
         .copied()
         .collect::<Vec<_>>();
     for atlas in stale {
-        owned.atlases.remove(&atlas);
+        owned.retire(atlas);
         gpu_assets.remove(atlas);
         generations.invalidate_atlas(atlas);
     }
 
     for (&atlas, spec) in &desired.atlases {
         if spec.ticket.is_canceled() {
-            owned.atlases.remove(&atlas);
+            owned.retire(atlas);
             gpu_assets.remove(atlas);
             generations.invalidate_atlas(atlas);
             continue;
@@ -1956,23 +2046,56 @@ fn prepare_transient_lod_atlases(
             LodTransientAtlasMaintenance::AllocateCurrentGeneration
             | LodTransientAtlasMaintenance::AllocateNewGeneration => {}
         }
-        let generation = if maintenance == LodTransientAtlasMaintenance::AllocateNewGeneration {
-            spec.ticket.request_reupload()
-        } else {
-            ticket_generation
+        let allocation_bytes = u64::from(spec.physical_gaussians)
+            .checked_mul(gaussian_3d_gpu_bytes_per_record())
+            .and_then(|bytes| bytes.checked_add(size_of::<wgpu::util::DrawIndirectArgs>() as u64));
+        let Some(allocation_bytes) = allocation_bytes else {
+            spec.ticket.fail(ticket_generation);
+            continue;
         };
-        gpu_assets.remove(atlas);
-        // A recreated allocation contains no resident pages, even when the
-        // allocator happens to reuse the same logical slot generations.
-        generations.invalidate_atlas(atlas);
+        let initial_reservation = spec
+            .ticket
+            .0
+            .gpu_memory_reservation
+            .lock()
+            .expect("atlas reservation lock poisoned")
+            .take();
+        let memory_reservation = if let Some(reservation) =
+            initial_reservation.filter(|reservation| reservation.bytes() == allocation_bytes)
+        {
+            reservation
+        } else {
+            match memory_ledger.try_reserve(LodMemoryCategory::AtlasGpu, allocation_bytes) {
+                Ok(reservation) => reservation,
+                Err(_) => {
+                    // Keep any current physical atlas and its covered endpoint
+                    // while the replacement cannot acquire overlap capacity.
+                    spec.ticket.fail(ticket_generation);
+                    continue;
+                }
+            }
+        };
+        // Both allocations were admitted above. Preserve the complete old
+        // atlas and its generation proof until every new plane was validated
+        // and created successfully.
         let allocation = create_transient_lod_atlas(&render_device, spec.physical_gaussians);
         match allocation {
             Ok(gpu_atlas) => {
+                let generation =
+                    if maintenance == LodTransientAtlasMaintenance::AllocateNewGeneration {
+                        spec.ticket.request_reupload()
+                    } else {
+                        ticket_generation
+                    };
+                owned.retire(atlas);
+                gpu_assets.remove(atlas);
+                generations.invalidate_atlas(atlas);
                 gpu_assets.insert(atlas, gpu_atlas.clone());
                 generations.mark_new_allocation(atlas);
                 owned.atlases.insert(
                     atlas,
                     LodTransientGpuAtlas {
+                        memory_reservation,
                         source: spec.source,
                         physical_gaussians: spec.physical_gaussians,
                         gaussians_per_slot: spec.gaussians_per_slot,
@@ -1989,12 +2112,23 @@ fn prepare_transient_lod_atlases(
             }
             Err(error) => {
                 error!("failed to allocate transient LoD atlas {atlas:?}: {error}");
-                spec.ticket.fail(generation);
-                owned.atlases.remove(&atlas);
-                gpu_assets.remove(atlas);
+                spec.ticket.fail(ticket_generation);
             }
         }
     }
+}
+
+/// Arm only after this frame's submit: old atlas writes and draws may have
+/// been queued after Prepare removed the last CPU lookup handle.
+fn fence_transient_atlas_retirements(
+    mut owned: ResMut<LodTransientGpuAtlases>,
+    render_queue: Res<RenderQueue>,
+) {
+    if owned.pending_retired.is_empty() {
+        return;
+    }
+    let retired = std::mem::take(&mut owned.pending_retired);
+    render_queue.on_submitted_work_done(move || drop(retired));
 }
 
 fn apply_lod_atlas_uploads(
@@ -2002,6 +2136,7 @@ fn apply_lod_atlas_uploads(
     mut generations: ResMut<LodAtlasGpuGenerations>,
     transient: Res<LodTransientGpuAtlases>,
     gpu: LodAtlasUploadGpuParams,
+    memory_ledger: Res<LodMemoryLedger>,
 ) {
     uploads.deferred_slots = 0;
     uploads.deferred_canonical_bytes = 0;
@@ -2054,7 +2189,19 @@ fn apply_lod_atlas_uploads(
     // is decomposed back into its exact fixed-stride slot payloads only if both
     // batch submission and its per-range fallback fail, avoiding a full hot-
     // path clone of every admitted plane.
-    let coalesced = coalesce_atlas_uploads(gpu_ready);
+    let coalesced = match coalesce_atlas_uploads_with_reservation(gpu_ready, &memory_ledger) {
+        Ok(coalesced) => coalesced,
+        Err(deferred) => {
+            for upload in deferred {
+                let descriptor = upload.descriptor;
+                uploads.slots.insert(
+                    (descriptor.atlas, descriptor.slot.index),
+                    PendingLodAtlasSlotUpload::Ready(upload),
+                );
+            }
+            return;
+        }
+    };
     let mut batches = BTreeMap::<AssetId<PlanarGaussian3d>, Vec<CoalescedLodAtlasUpload>>::new();
     for upload in coalesced {
         let descriptor = upload.descriptors[0];
@@ -2131,7 +2278,7 @@ fn apply_lod_atlas_uploads(
 ///
 /// `is_current` deliberately runs before any splitting/allocation so an
 /// obsolete transient allocation generation remains fail-closed at no extra
-/// cost. Package atlases pass `None` and are always current. The next extraction
+/// cost. Ordinary Assets uploads pass `None` and are always current. The next extraction
 /// pass subjects every restored slot to the ordinary global byte/slot budgets.
 fn retain_unsubmitted_coalesced_lod_atlas_upload(
     slots: &mut HashMap<LodAtlasUploadKey, PendingLodAtlasSlotUpload>,
@@ -2143,8 +2290,10 @@ fn retain_unsubmitted_coalesced_lod_atlas_upload(
     }
     let CoalescedLodAtlasUpload {
         descriptors,
-        mut planes,
+        planes,
         transient_generation,
+        recovery_memory_reservation,
+        staging_memory_reservations,
     } = upload;
     let expected = descriptors.iter().try_fold(0_usize, |total, descriptor| {
         total.checked_add(descriptor.gaussians_per_slot as usize)
@@ -2160,6 +2309,23 @@ fn retain_unsubmitted_coalesced_lod_atlas_upload(
     {
         return;
     }
+    if descriptors.len() == 1 {
+        let descriptor = descriptors[0];
+        slots.insert(
+            (descriptor.atlas, descriptor.slot.index),
+            PendingLodAtlasSlotUpload::Ready(ExtractedLodAtlasSlotUpload {
+                descriptor,
+                planes,
+                transient_generation,
+                recovery_memory_reservation,
+                staging_memory_reservations,
+            }),
+        );
+        return;
+    }
+    // Multi-slot coalescing owns its newly built planes exclusively; a
+    // singleton above can still share the retained recovery payload.
+    let mut planes = Arc::unwrap_or_clone(planes);
     for descriptor in descriptors.into_iter().rev() {
         let count = descriptor.gaussians_per_slot as usize;
         let start = planes.position_visibility.len() - count;
@@ -2173,11 +2339,41 @@ fn retain_unsubmitted_coalesced_lod_atlas_upload(
             (descriptor.atlas, descriptor.slot.index),
             PendingLodAtlasSlotUpload::Ready(ExtractedLodAtlasSlotUpload {
                 descriptor,
-                planes: slot_planes,
+                planes: Arc::new(slot_planes),
                 transient_generation,
+                recovery_memory_reservation: recovery_memory_reservation.clone(),
+                staging_memory_reservations: staging_memory_reservations.clone(),
             }),
         );
     }
+}
+
+/// Reserve packing headroom before any canonical copy. Vec growth and retry
+/// splitting can retain up to twice the admitted canonical payload capacity.
+/// This is a capacity reservation shared across one bounded packing batch.
+fn coalesce_atlas_uploads_with_reservation(
+    uploads: Vec<ExtractedLodAtlasSlotUpload>,
+    ledger: &LodMemoryLedger,
+) -> Result<Vec<CoalescedLodAtlasUpload>, Vec<ExtractedLodAtlasSlotUpload>> {
+    if uploads.len() < 2 {
+        return Ok(coalesce_atlas_uploads(uploads));
+    }
+    let Some(bytes) = uploads.iter().try_fold(0_u64, |total, upload| {
+        (upload.planes.len() as u64)
+            .checked_mul(size_of::<Gaussian3d>() as u64)
+            .and_then(|bytes| bytes.checked_mul(2))
+            .and_then(|bytes| total.checked_add(bytes))
+    }) else {
+        return Err(uploads);
+    };
+    let Ok(reservation) = ledger.try_reserve(LodMemoryCategory::UploadStagingCpu, bytes) else {
+        return Err(uploads);
+    };
+    let mut coalesced = coalesce_atlas_uploads(uploads);
+    for upload in &mut coalesced {
+        upload.staging_memory_reservations.push(reservation.clone());
+    }
+    Ok(coalesced)
 }
 
 fn coalesce_atlas_uploads(
@@ -2197,7 +2393,7 @@ fn coalesce_atlas_uploads(
     for (_, mut group) in groups {
         group.sort_unstable_by_key(|upload| upload.descriptor.slot.index);
         let mut current: Option<CoalescedLodAtlasUpload> = None;
-        for mut upload in group {
+        for upload in group {
             let contiguous = current.as_ref().is_some_and(|current| {
                 current.transient_generation == upload.transient_generation
                     && current
@@ -2211,26 +2407,33 @@ fn coalesce_atlas_uploads(
                     coalesced.push(current);
                 }
                 current = Some(CoalescedLodAtlasUpload {
-                    descriptors: Vec::new(),
-                    planes: PlanarGaussian3d::default(),
+                    descriptors: vec![upload.descriptor],
+                    planes: upload.planes,
                     transient_generation: upload.transient_generation,
+                    recovery_memory_reservation: upload.recovery_memory_reservation,
+                    staging_memory_reservations: upload.staging_memory_reservations,
                 });
+                continue;
             }
             let current = current.as_mut().expect("coalesced range initialized");
             current.descriptors.push(upload.descriptor);
             current
-                .planes
+                .staging_memory_reservations
+                .extend(upload.staging_memory_reservations);
+            // Only a contiguous multi-slot range needs new packed planes.
+            // A standalone upload keeps the immutable recovery payload all
+            // the way through submission without a second CPU allocation.
+            let planes = Arc::make_mut(&mut current.planes);
+            planes
                 .position_visibility
-                .append(&mut upload.planes.position_visibility);
-            current
-                .planes
+                .extend_from_slice(&upload.planes.position_visibility);
+            planes
                 .spherical_harmonic
-                .append(&mut upload.planes.spherical_harmonic);
-            current.planes.rotation.append(&mut upload.planes.rotation);
-            current
-                .planes
+                .extend_from_slice(&upload.planes.spherical_harmonic);
+            planes.rotation.extend_from_slice(&upload.planes.rotation);
+            planes
                 .scale_opacity
-                .append(&mut upload.planes.scale_opacity);
+                .extend_from_slice(&upload.planes.scale_opacity);
         }
         if let Some(current) = current {
             coalesced.push(current);
@@ -2355,7 +2558,33 @@ impl std::error::Error for LodAtlasUploadError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gaussian::formats::planar_3d::Gaussian3d;
+
+    #[test]
+    fn bounded_resident_position_samples_skip_padding_and_expired_owners() {
+        let owner = LodTransientAtlas::new(4).unwrap();
+        let mut records = vec![gaussian(1.0), gaussian(2.0), gaussian(3.0), gaussian(4.0)];
+        records[1].scale_opacity.opacity = 0.0;
+        records[2].position_visibility.visibility = 0.0;
+        records[3].position_visibility.position[0] = f32::NAN;
+        owner
+            .write_slot(0, 4, PlanarGaussian3d::from(records))
+            .unwrap();
+        let atlas = atlas_id(0x6772);
+        let mut registry = LodTransientAtlasRegistry::default();
+        registry.register(atlas, atlas, 4, &owner).unwrap();
+        let samples = registry.sample_positions(atlas, 16).unwrap().unwrap();
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].x, 1.0);
+        assert!(
+            registry
+                .sample_positions(atlas, 0)
+                .unwrap()
+                .unwrap()
+                .is_empty()
+        );
+        drop(owner);
+        assert!(registry.sample_positions(atlas, 16).unwrap().is_none());
+    }
 
     fn atlas_id(value: u128) -> AssetId<PlanarGaussian3d> {
         AssetId::Uuid {
@@ -2392,17 +2621,16 @@ mod tests {
         let assets = Assets::<PlanarGaussian3d>::default();
         let atlas = assets.reserve_handle();
         let source = assets.reserve_handle();
-        let owner = LodTransientAtlas::new_empty(4).unwrap();
+        let owner = LodTransientAtlas::new(4).unwrap();
         let mut registry = LodTransientAtlasRegistry::default();
         registry
-            .register(atlas.id(), source.id(), 100_000_000, 2, &owner)
+            .register(atlas.id(), source.id(), 2, &owner)
             .unwrap();
         let mut queue = LodAtlasUploadQueue::default();
         registry.queue_pending_initialization(&mut queue).unwrap();
 
         assert!(assets.get(&atlas).is_none());
         assert_eq!(owner.physical_gaussians(), 4);
-        assert_eq!(owner.planes().read().unwrap().len(), 0);
         assert_eq!(owner.materialized_slot_count().unwrap(), 0);
         assert_eq!(owner.materialized_gaussian_count().unwrap(), 0);
         assert_eq!(queue.queued_slot_count(), 0);
@@ -2423,19 +2651,12 @@ mod tests {
     fn hundred_million_entry_transient_has_zero_cold_cpu_materialization() {
         const PHYSICAL_GAUSSIANS: u32 = 100_000_000;
         const STRIDE: u32 = 1_000;
-        let owner = LodTransientAtlas::new_empty(PHYSICAL_GAUSSIANS).unwrap();
+        let owner = LodTransientAtlas::new(PHYSICAL_GAUSSIANS).unwrap();
 
         assert_eq!(owner.physical_gaussians(), PHYSICAL_GAUSSIANS);
         assert_eq!(owner.materialized_slot_count().unwrap(), 0);
         assert_eq!(owner.materialized_gaussian_count().unwrap(), 0);
-        let dense_planes = owner.planes();
-        let dense = dense_planes.read().unwrap();
-        assert_eq!(dense.len(), 0);
-        assert_eq!(dense.position_visibility.capacity(), 0);
-        assert_eq!(dense.spherical_harmonic.capacity(), 0);
-        assert_eq!(dense.rotation.capacity(), 0);
-        assert_eq!(dense.scale_opacity.capacity(), 0);
-        drop(dense);
+        assert_eq!(owner.slots.read().unwrap().capacity(), 0);
 
         let slot_index = PHYSICAL_GAUSSIANS / STRIDE - 1;
         let slot = PlanarGaussian3d::from(
@@ -2475,8 +2696,177 @@ mod tests {
     }
 
     #[test]
+    fn recovery_capacity_survives_owner_teardown_and_coalesced_retry() {
+        let ledger = LodMemoryLedger::default();
+        let bytes = 4 * size_of::<Gaussian3d>() as u64;
+        let owner = LodTransientAtlas::new(4).unwrap();
+        owner.set_recovery_memory_reservation(
+            ledger
+                .try_reserve(LodMemoryCategory::RecoveryStagingCpu, bytes)
+                .unwrap(),
+        );
+        for slot in 0..2 {
+            owner
+                .write_slot(
+                    slot,
+                    2,
+                    PlanarGaussian3d::from(vec![gaussian(slot as f32); 2]),
+                )
+                .unwrap();
+        }
+        let atlas = atlas_id(0xfeed);
+        let mut registry = LodTransientAtlasRegistry::default();
+        registry.register(atlas, atlas, 2, &owner).unwrap();
+        let live = registry.live();
+        let uploads = (0..2)
+            .map(|slot| {
+                live[&atlas]
+                    .snapshot_upload(descriptor(atlas, slot, 2))
+                    .unwrap()
+            })
+            .collect();
+        drop(live);
+        drop(owner);
+        assert_eq!(ledger.snapshot().cpu_bytes, bytes);
+        let upload = coalesce_atlas_uploads(uploads).pop().unwrap();
+        let mut retries = HashMap::new();
+        retain_unsubmitted_coalesced_lod_atlas_upload(&mut retries, upload, |_| true);
+        assert_eq!(retries.len(), 2);
+        assert_eq!(ledger.snapshot().cpu_bytes, bytes);
+        retries.remove(&(atlas, 0));
+        assert_eq!(ledger.snapshot().cpu_bytes, bytes);
+        drop(retries);
+        assert_eq!(ledger.snapshot().cpu_bytes, 0);
+    }
+
+    #[test]
+    fn packing_admission_preserves_snapshots_and_retains_charge_through_retry() {
+        use crate::stream::memory::LodMemoryLimits;
+        let owner = LodTransientAtlas::new(4).unwrap();
+        for slot in 0..2 {
+            owner
+                .write_slot(
+                    slot,
+                    2,
+                    PlanarGaussian3d::from(vec![gaussian(slot as f32); 2]),
+                )
+                .unwrap();
+        }
+        let atlas = atlas_id(0xfeed);
+        let mut registry = LodTransientAtlasRegistry::default();
+        registry.register(atlas, atlas, 2, &owner).unwrap();
+        let live = registry.live();
+        let snapshots = (0..2)
+            .map(|slot| {
+                live[&atlas]
+                    .snapshot_upload(descriptor(atlas, slot, 2))
+                    .unwrap()
+            })
+            .collect();
+        let original = owner.snapshot_slot(descriptor(atlas, 0, 2)).unwrap();
+        let constrained = LodMemoryLedger::new(LodMemoryLimits {
+            max_cpu_bytes: 1,
+            max_gpu_bytes: 0,
+        });
+        let rejected =
+            coalesce_atlas_uploads_with_reservation(snapshots, &constrained).unwrap_err();
+        assert_eq!(rejected.len(), 2);
+        assert!(Arc::ptr_eq(&original, &rejected[0].planes));
+        assert_eq!(constrained.snapshot().total_bytes, 0);
+        let ledger = LodMemoryLedger::default();
+        let mut admitted = coalesce_atlas_uploads_with_reservation(rejected, &ledger).unwrap();
+        let bytes = 2 * 4 * size_of::<Gaussian3d>() as u64;
+        assert_eq!(ledger.snapshot().cpu_bytes, bytes);
+        assert_eq!(admitted.len(), 1);
+        assert!(!Arc::ptr_eq(&original, &admitted[0].planes));
+        let mut retries = HashMap::new();
+        retain_unsubmitted_coalesced_lod_atlas_upload(
+            &mut retries,
+            admitted.pop().unwrap(),
+            |_| true,
+        );
+        assert_eq!(ledger.snapshot().cpu_bytes, bytes);
+        retries.remove(&(atlas, 0));
+        assert_eq!(ledger.snapshot().cpu_bytes, bytes);
+        drop(retries);
+        assert_eq!(ledger.snapshot().cpu_bytes, 0);
+    }
+
+    #[test]
+    fn immutable_slot_snapshots_share_storage_and_survive_slot_reuse() {
+        let owner = LodTransientAtlas::new(4).unwrap();
+        owner
+            .write_slot(0, 2, PlanarGaussian3d::from(vec![gaussian(1.0); 2]))
+            .unwrap();
+        let descriptor = descriptor(atlas_id(0xfeed), 0, 2);
+        let first = owner.snapshot_slot(descriptor).unwrap();
+        let extracted = owner.snapshot_slot(descriptor).unwrap();
+        assert!(Arc::ptr_eq(&first, &extracted));
+        let upload = coalesce_atlas_uploads(vec![ExtractedLodAtlasSlotUpload {
+            descriptor,
+            planes: extracted,
+            transient_generation: Some(1),
+            recovery_memory_reservation: None,
+            staging_memory_reservations: Vec::new(),
+        }])
+        .pop()
+        .unwrap();
+        assert!(Arc::ptr_eq(&first, &upload.planes));
+        let mut retries = HashMap::new();
+        retain_unsubmitted_coalesced_lod_atlas_upload(&mut retries, upload, |_| true);
+        let PendingLodAtlasSlotUpload::Ready(retry) =
+            &retries[&(descriptor.atlas, descriptor.slot.index)];
+        assert!(Arc::ptr_eq(&first, &retry.planes));
+
+        owner
+            .write_slot(0, 2, PlanarGaussian3d::from(vec![gaussian(9.0); 2]))
+            .unwrap();
+        let replacement = owner.snapshot_slot(descriptor).unwrap();
+        assert!(!Arc::ptr_eq(&first, &replacement));
+        assert_eq!(first.position_visibility[0].position[0], 1.0);
+        assert_eq!(replacement.position_visibility[0].position[0], 9.0);
+        assert_eq!(owner.materialized_slot_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn coalescing_adjacent_shared_slots_preserves_recovery_payloads() {
+        let owner = LodTransientAtlas::new(4).unwrap();
+        for slot in 0..2 {
+            owner
+                .write_slot(
+                    slot,
+                    2,
+                    PlanarGaussian3d::from(vec![gaussian(slot as f32); 2]),
+                )
+                .unwrap();
+        }
+        let snapshots = (0..2)
+            .map(|slot| {
+                let descriptor = descriptor(atlas_id(0xfeed), slot, 2);
+                ExtractedLodAtlasSlotUpload {
+                    descriptor,
+                    planes: owner.snapshot_slot(descriptor).unwrap(),
+                    transient_generation: Some(1),
+                    recovery_memory_reservation: None,
+                    staging_memory_reservations: Vec::new(),
+                }
+            })
+            .collect();
+        let upload = coalesce_atlas_uploads(snapshots).pop().unwrap();
+        assert_eq!(upload.planes.len(), 4);
+        for slot in 0..2 {
+            let recovered = owner
+                .snapshot_slot(descriptor(atlas_id(0xfeed), slot, 2))
+                .unwrap();
+            assert_eq!(recovered.len(), 2);
+            assert_eq!(recovered.position_visibility[0].position[0], slot as f32);
+            assert!(!Arc::ptr_eq(&recovered, &upload.planes));
+        }
+    }
+
+    #[test]
     fn sparse_transient_slot_writes_validate_stride_and_bounds() {
-        let owner = LodTransientAtlas::new_empty(8).unwrap();
+        let owner = LodTransientAtlas::new(8).unwrap();
         assert_eq!(
             owner
                 .write_slot(0, 4, PlanarGaussian3d::from(vec![Gaussian3d::default(); 3]),)
@@ -2583,7 +2973,7 @@ mod tests {
 
     #[test]
     fn dropping_transient_owner_cancels_late_completion() {
-        let owner = LodTransientAtlas::new(PlanarGaussian3d::from(vec![gaussian(1.0)]));
+        let owner = LodTransientAtlas::new(1).unwrap();
         let ticket = owner.ticket().clone();
         let generation = ticket.generation();
         drop(owner);

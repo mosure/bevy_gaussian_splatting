@@ -12,13 +12,6 @@ where
 {
     type PackedType;
 
-    fn len_sqrt_ceil(&self) -> usize {
-        (self.len() as f32).sqrt().ceil() as usize
-    }
-    fn square_len(&self) -> usize {
-        self.len_sqrt_ceil().pow(2)
-    }
-
     fn compute_aabb(&self) -> Option<Aabb3d> {
         if self.is_empty() {
             return None;

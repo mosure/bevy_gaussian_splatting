@@ -1,0 +1,207 @@
+{
+  "source": {
+    "path": "/media/mosure/hyper2/repos/_tmp_bevy_gaussian_splatting/assets/scenes/icecream.ply",
+    "sha256": "131205a37bfb30c90ddb8a5a686a67c27729c69c5ca9cec591c79d9b5fdc202a"
+  },
+  "initial_rung": {
+    "path": "/home/mosure/repos/bevy_gaussian_splatting/target/lod-roadmap/2026-09-07/icecream-branch4-depth3.ply",
+    "sha256": "c301cd8021f4901510205984c383fe58b82c70fb59461e390f99da099eb6913a"
+  },
+  "rung_sidecar": {
+    "path": "/home/mosure/repos/bevy_gaussian_splatting/target/lod-roadmap/2026-09-07/icecream-branch4-depth3.rung.json",
+    "sha256": "99b0b98e203e93e22793daecec7167d5a67b203cab5a4fcbe90a56c8b0a4489d"
+  },
+  "build_record": {
+    "path": "/home/mosure/repos/bevy_gaussian_splatting/target/lod-roadmap/2026-09-07/icecream-branch4-build.json",
+    "sha256": "b138571afedcd8eee133d6f2dbd706280e2fd453fa14d77918967c68516ab521"
+  },
+  "output_directory": "/home/mosure/repos/bevy_gaussian_splatting/target/lod-roadmap/2026-09-07/icecream-fit-rung-screen-24",
+  "expected_source_gaussians": 84348,
+  "expected_rung_gaussians": 21087,
+  "viewport": [
+    384,
+    216
+  ],
+  "training": [
+    {
+      "id": "train_front",
+      "from": [
+        0,
+        0,
+        2.5
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "vertical_fov_radians": 0.7853982,
+      "near": 0.01,
+      "far": 100000.0
+    },
+    {
+      "id": "train_rear",
+      "from": [
+        0,
+        0.2,
+        -2.5
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "vertical_fov_radians": 0.7853982,
+      "near": 0.01,
+      "far": 100000.0
+    }
+  ],
+  "heldout": [
+    {
+      "id": "heldout_front_far",
+      "from": [
+        0,
+        0,
+        5
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "vertical_fov_radians": 0.7853982,
+      "near": 0.01,
+      "far": 100000.0
+    },
+    {
+      "id": "heldout_front_right",
+      "from": [
+        2,
+        0.5,
+        2
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "vertical_fov_radians": 0.7853982,
+      "near": 0.01,
+      "far": 100000.0
+    },
+    {
+      "id": "heldout_front_left",
+      "from": [
+        -2,
+        0.5,
+        2
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "vertical_fov_radians": 0.7853982,
+      "near": 0.01,
+      "far": 100000.0
+    },
+    {
+      "id": "heldout_rear_right",
+      "from": [
+        2,
+        0.4,
+        -2
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "vertical_fov_radians": 0.7853982,
+      "near": 0.01,
+      "far": 100000.0
+    },
+    {
+      "id": "heldout_rear_left",
+      "from": [
+        -2,
+        0.4,
+        -2
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "vertical_fov_radians": 0.7853982,
+      "near": 0.01,
+      "far": 100000.0
+    },
+    {
+      "id": "heldout_top",
+      "from": [
+        0,
+        2.5,
+        1
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "vertical_fov_radians": 0.7853982,
+      "near": 0.01,
+      "far": 100000.0
+    }
+  ],
+  "options": {
+    "max_steps": 24,
+    "max_seconds": 180,
+    "max_tape_bytes": 134217728,
+    "max_pixel_visits_per_forward": 128000000,
+    "learning_rate": 0.03,
+    "alpha_weight": 1,
+    "fit_geometry": false,
+    "mean_step_limit": 0.002
+  }
+}

@@ -202,7 +202,7 @@ impl GaussianLodBridgeStatus {
         }
     }
 
-    /// Human-readable context retained for compatibility with logging and UI
+    /// Human-readable error context for logging and UI
     /// code that previously consumed an untyped error string.
     pub fn error_detail(&self) -> Option<&str> {
         self.failure.as_ref().and_then(|failure| failure.detail())
@@ -1093,18 +1093,11 @@ impl Plugin for GaussianLodBridgePlugin {
     }
 }
 
-fn sorted_entry_capacity_for_count(count: u32) -> usize {
-    let count = usize::try_from(count).unwrap_or(usize::MAX);
-    let side = (count as f64).sqrt().ceil() as usize;
-    side.saturating_mul(side)
-}
-
 fn prepare_transient_sorted_entry_capacity(
     manager: Res<GaussianLodBridgeManager>,
     sorted_entries: Option<ResMut<Assets<SortedEntries>>>,
     clouds: Query<(Entity, &SortedEntriesHandle)>,
     cameras: Query<Entity, (With<Camera>, With<GaussianCamera>)>,
-    #[cfg(feature = "buffer_texture")] mut images: ResMut<Assets<Image>>,
 ) {
     let Some(mut sorted_entries) = sorted_entries else {
         return;
@@ -1121,7 +1114,7 @@ fn prepare_transient_sorted_entry_capacity(
         else {
             continue;
         };
-        let required = sorted_entry_capacity_for_count(state.mirror.physical_gaussians());
+        let required = state.mirror.physical_gaussians() as usize;
         let Some(current) = sorted_entries.get(&sorted_handle.0) else {
             continue;
         };
@@ -1129,12 +1122,7 @@ fn prepare_transient_sorted_entry_capacity(
             continue;
         }
         let retained = current.entry_count.max(required);
-        let replacement = SortedEntries::new(
-            camera_count,
-            retained,
-            #[cfg(feature = "buffer_texture")]
-            &mut images,
-        );
+        let replacement = SortedEntries::new(camera_count, retained);
         let _ = sorted_entries.insert(sorted_handle.0.id(), replacement);
     }
 }
@@ -1652,14 +1640,13 @@ fn update_gaussian_lod_bridges(
                         source_debug_metadata.cloned().unwrap_or_default();
                     let publication = if let Some(registry) = transient_atlases.as_deref_mut() {
                         let atlas = assets.reserve_handle();
-                        match LodTransientAtlas::new_empty(state.mirror.physical_gaussians()) {
+                        match LodTransientAtlas::new(state.mirror.physical_gaussians()) {
                             Err(error) => Err(LodBridgeError::AtlasUpload(error.to_string())),
                             Ok(transient) => {
                                 let registration = registry
                                     .register(
                                         atlas.id(),
                                         state.source.id(),
-                                        state.source_gaussian_count,
                                         state.mirror.layout().gaussians_per_slot,
                                         &transient,
                                     )
@@ -2097,12 +2084,17 @@ fn lod_view_from_camera(
     projection: &Projection,
     transform: &GlobalTransform,
 ) -> Option<LodView> {
-    let viewport_height = camera.physical_viewport_size()?.y as f32;
+    let viewport_size = camera.physical_viewport_size()?.as_vec2();
+    let viewport_height = viewport_size.y;
     if viewport_height <= 0.0 {
         return None;
     }
     let world_from_view = transform.to_matrix();
-    let clip_from_world = projection.get_clip_from_view() * world_from_view.inverse();
+    let clip_from_view = camera.sub_camera_view.as_ref().map_or_else(
+        || projection.get_clip_from_view(),
+        |sub_view| projection.get_clip_from_view_for_sub(sub_view),
+    );
+    let clip_from_world = clip_from_view * world_from_view.inverse();
     let camera_position = transform.translation();
     let view = match projection {
         Projection::Perspective(perspective) => LodView::perspective(
@@ -2119,9 +2111,17 @@ fn lod_view_from_camera(
                 .max(f32::EPSILON),
             orthographic.near.abs().max(f32::EPSILON),
         ),
-        Projection::Custom(_) => return None,
+        Projection::Custom(custom) => {
+            let calibrated = custom.get::<crate::camera::path::GaussianCameraIntrinsics>()?;
+            LodView::perspective(
+                camera_position,
+                viewport_height,
+                calibrated.vertical_fov_radians(),
+                calibrated.near(),
+            )
+        }
     };
-    Some(view.with_clip_from_world(clip_from_world))
+    Some(view.with_view_projection(clip_from_world, viewport_size))
 }
 
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -2379,7 +2379,7 @@ fn create_ephemeral_bridge_owned_cancelable(
     ensure_current()?;
     // Native transient publication owns sparse per-slot CPU payloads. Returning
     // an empty seed here avoids zeroing the entire physical page-cache capacity
-    // on the worker; the legacy direct/Assets path densifies explicitly.
+    // on the worker; the small synchronous Assets path densifies explicitly.
     let fallback = PlanarGaussian3d::default();
     ensure_current()?;
     debug_assert!(physical_gpu_bytes <= config.max_atlas_bytes);
@@ -3628,6 +3628,7 @@ fn bridge_handshakes_match_policy(
         frontier.quality_status().requested_target == requested_target
             && frontier.candidate_count() <= max_active_gaussians
             && frontier.selection_view_frozen() == selection_view_frozen
+            && frontier.presentation_mode() == settings.presentation_mode
     })
 }
 

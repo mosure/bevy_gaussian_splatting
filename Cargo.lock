@@ -888,6 +888,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_flycam"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "981267629600f36fe5c71c6fb5bfa16eac2d244f449f6f5e3be12abee9bdafc8"
+dependencies = [
+ "bevy",
+]
+
+[[package]]
 name = "bevy_gaussian_splatting"
 version = "9.0.0"
 dependencies = [
@@ -895,6 +904,7 @@ dependencies = [
  "bevy",
  "bevy-inspector-egui",
  "bevy_args",
+ "bevy_flycam",
  "bevy_interleave",
  "bevy_panorbit_camera",
  "bincode2",
@@ -6355,7 +6365,6 @@ dependencies = [
  "thiserror 2.0.18",
  "wgpu-core-deps-apple",
  "wgpu-core-deps-emscripten",
- "wgpu-core-deps-wasm",
  "wgpu-core-deps-windows-linux-android",
  "wgpu-hal",
  "wgpu-naga-bridge",
@@ -6376,15 +6385,6 @@ name = "wgpu-core-deps-emscripten"
 version = "29.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3487cd6293a963bc5c0c0396f6a2192043c50003c07f4efdccbad3d90ec9d819"
-dependencies = [
- "wgpu-hal",
-]
-
-[[package]]
-name = "wgpu-core-deps-wasm"
-version = "29.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c2f2fb042f36920771deb0b966543c5751b18f3d327760ffc90f74e20b2dcd4"
 dependencies = [
  "wgpu-hal",
 ]

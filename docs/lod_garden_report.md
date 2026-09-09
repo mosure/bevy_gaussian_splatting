@@ -239,7 +239,7 @@ decision. Stale topology or predecessor evidence requests a fail-closed replan.
 If the exact target itself cannot fit, the runtime keeps the prior valid cut and
 reports capacity degradation instead of exposing an incomplete cut.
 
-Package request ownership follows drawable presentation. A categorical legacy
+Package request ownership follows drawable presentation. A categorical
 cohort remains an intermediate topology step until selector convergence. An
 ABI 16 ACTIVE fractional table may itself own the stationary request once the
 selector is stable, every expected consumer has coherent aggregate evidence,
@@ -252,7 +252,7 @@ all-consumer aggregate, zero recovery lag, invalid pressure, missing consumers,
 and rendered requested pages, plus `target_satisfied = true`, no degradation,
 and exact agreement with public count and quality status. A stable fractional
 ABI 16 table may meet that contract; it is not an intermediate merely because
-its edges are fractional. Categorical legacy work must additionally have no
+its edges are fractional. Categorical work must additionally have no
 remaining topology-transition provenance. A debug gate is a presentation and
 cut-preservation contract during preset changes; it does not independently
 redefine package settlement.
@@ -358,7 +358,7 @@ derived from the branch-eight operational budget-filling estimate
 `172 * 17 + 120 + 10 = 3,054` frames. It is not a strict
 scheduler bound. Its `1/24` morph-energy policy and 256-substitution cohort cap
 describe the superseded scheduler; current ABI 16 presentation has no shared
-cohort clock, while those bounds remain relevant to categorical legacy work.
+cohort clock, while those bounds remain relevant to categorical work.
 
 The debug gate changed `Off -> Page -> Off` on one unchanged ACTIVE cut. Every
 captured frame was nonblack and nonempty, retained the logical cut and a

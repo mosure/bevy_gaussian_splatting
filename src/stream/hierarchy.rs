@@ -16,12 +16,12 @@ use std::{
 #[cfg(any(feature = "lod", test))]
 use std::collections::BTreeSet;
 
-use bevy::math::{Mat4, Vec3, Vec4};
+use bevy::math::{Mat4, Vec2, Vec3, Vec4};
 
 use crate::{
     gaussian::{
         formats::{
-            planar_3d_chunked::{LodIndexRange, LodNodeId, LodPageId, LodPageRange},
+            planar_3d_chunked::{LodBounds, LodIndexRange, LodNodeId, LodPageId, LodPageRange},
             planar_3d_lod::GaussianLodManifest,
         },
         lod_settings::{
@@ -49,8 +49,8 @@ pub struct LodNodeMetrics {
     pub quality_min: f32,
     pub quality_max: f32,
     /// Builder-authored confidence that this representation is safe for the
-    /// near-original fidelity regime. Exact source leaves use one; legacy or
-    /// otherwise uncertified internal representatives use zero.
+    /// near-original fidelity regime. Exact source leaves use one;
+    /// uncertified internal representatives use zero.
     pub high_fidelity_certificate: f32,
     /// Number of representatives drawn when this node is in the frontier.
     pub representative_count: u32,
@@ -142,7 +142,94 @@ enum CompiledManifestPageIndices {
     /// web/streaming path.
     DenseOneBased,
     /// The portable format permits arbitrary nonzero page identifiers.
-    Sparse(HashMap<LodPageId, usize>),
+    Sparse(Arc<HashMap<LodPageId, usize>>),
+}
+
+/// Record-bounded index construction shared by native package workers and
+/// cooperative browser startup. Dense canonical IDs never allocate hash maps.
+pub(crate) struct CompiledManifestLodHierarchyCompiler {
+    manifest: Arc<GaussianLodManifest>,
+    node_ids: Vec<LodNodeId>,
+    nodes: HashMap<LodNodeId, usize>,
+    #[cfg(any(feature = "lod", test))]
+    pages: HashMap<LodPageId, usize>,
+    nodes_dense: bool,
+    pages_dense: bool,
+    phase: u8,
+    cursor: usize,
+}
+
+impl CompiledManifestLodHierarchyCompiler {
+    pub(crate) fn new(manifest: Arc<GaussianLodManifest>) -> Self {
+        Self {
+            node_ids: Vec::with_capacity(manifest.nodes.len()),
+            manifest,
+            nodes: HashMap::new(),
+            #[cfg(any(feature = "lod", test))]
+            pages: HashMap::new(),
+            nodes_dense: true,
+            pages_dense: true,
+            phase: 0,
+            cursor: 0,
+        }
+    }
+
+    pub(crate) fn advance(&mut self, mut budget: usize) -> Option<CompiledManifestLodHierarchy> {
+        while budget > 0 && self.phase < 4 {
+            let count = if self.phase.is_multiple_of(2) {
+                self.manifest.nodes.len()
+            } else {
+                self.manifest.pages.len()
+            };
+            let skip =
+                (self.phase == 2 && self.nodes_dense) || (self.phase == 3 && self.pages_dense);
+            if self.cursor == count || skip {
+                self.phase += 1;
+                self.cursor = 0;
+                continue;
+            }
+            let index = self.cursor;
+            match self.phase {
+                0 => {
+                    let id = self.manifest.nodes[index].id;
+                    self.node_ids.push(id);
+                    self.nodes_dense &= id.0 == index as u64 + 1;
+                }
+                1 => {
+                    self.pages_dense &= self.manifest.pages[index].id.0 == index as u64 + 1;
+                }
+                2 => {
+                    self.nodes.insert(self.manifest.nodes[index].id, index);
+                }
+                3 => {
+                    #[cfg(any(feature = "lod", test))]
+                    self.pages.insert(self.manifest.pages[index].id, index);
+                }
+                _ => unreachable!(),
+            }
+            self.cursor += 1;
+            budget -= 1;
+        }
+        if self.phase != 4 {
+            return None;
+        }
+        self.phase = 5;
+        Some(CompiledManifestLodHierarchy {
+            manifest: Arc::clone(&self.manifest),
+            node_ids: std::mem::take(&mut self.node_ids),
+            node_indices: if self.nodes_dense {
+                CompiledManifestNodeIndices::DenseOneBased
+            } else {
+                CompiledManifestNodeIndices::Sparse(std::mem::take(&mut self.nodes))
+            },
+            #[cfg(any(feature = "lod", test))]
+            page_indices: if self.pages_dense {
+                CompiledManifestPageIndices::DenseOneBased
+            } else {
+                CompiledManifestPageIndices::Sparse(Arc::new(std::mem::take(&mut self.pages)))
+            },
+        })
+    }
 }
 
 impl CompiledManifestLodHierarchy {
@@ -159,52 +246,28 @@ impl CompiledManifestLodHierarchy {
     /// Keeping this constructor crate-private preserves validation on the
     /// public owned API while allowing package startup to share its asset Arc.
     pub(crate) fn from_validated_shared_manifest(manifest: Arc<GaussianLodManifest>) -> Self {
-        let dense_one_based = manifest.nodes.iter().enumerate().all(|(index, node)| {
-            u64::try_from(index)
-                .ok()
-                .and_then(|index| index.checked_add(1))
-                .is_some_and(|expected| node.id == LodNodeId(expected))
-        });
-        let node_indices = if dense_one_based {
-            CompiledManifestNodeIndices::DenseOneBased
-        } else {
-            CompiledManifestNodeIndices::Sparse(
-                manifest
-                    .nodes
-                    .iter()
-                    .enumerate()
-                    .map(|(index, node)| (node.id, index))
-                    .collect(),
-            )
-        };
-        #[cfg(any(feature = "lod", test))]
-        let dense_pages_one_based = manifest.pages.iter().enumerate().all(|(index, page)| {
-            u64::try_from(index)
-                .ok()
-                .and_then(|index| index.checked_add(1))
-                .is_some_and(|expected| page.id == LodPageId(expected))
-        });
-        #[cfg(any(feature = "lod", test))]
-        let page_indices = if dense_pages_one_based {
-            CompiledManifestPageIndices::DenseOneBased
-        } else {
-            CompiledManifestPageIndices::Sparse(
-                manifest
-                    .pages
-                    .iter()
-                    .enumerate()
-                    .map(|(index, page)| (page.id, index))
-                    .collect(),
-            )
-        };
-        let node_ids = manifest.nodes.iter().map(|node| node.id).collect();
-        Self {
-            manifest,
-            node_indices,
-            #[cfg(any(feature = "lod", test))]
-            page_indices,
-            node_ids,
+        let mut compiler = CompiledManifestLodHierarchyCompiler::new(manifest);
+        loop {
+            if let Some(hierarchy) = compiler.advance(usize::MAX) {
+                return hierarchy;
+            }
         }
+    }
+
+    #[cfg(any(feature = "lod", test))]
+    pub(crate) fn compiled_page_index(&self) -> crate::stream::transport::CompiledPageIndex {
+        match &self.page_indices {
+            CompiledManifestPageIndices::DenseOneBased => {
+                crate::stream::transport::CompiledPageIndex::DenseOneBased
+            }
+            CompiledManifestPageIndices::Sparse(indices) => {
+                crate::stream::transport::CompiledPageIndex::Sparse(Arc::clone(indices))
+            }
+        }
+    }
+
+    pub(crate) fn shared_manifest(&self) -> Arc<GaussianLodManifest> {
+        Arc::clone(&self.manifest)
     }
 
     pub fn manifest(&self) -> &GaussianLodManifest {
@@ -438,11 +501,23 @@ where
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LodViewProjection {
-    Perspective { vertical_fov_radians: f32 },
-    Orthographic { vertical_world_size: f32 },
+    /// Orientation-free distance estimate for callers without camera matrices.
+    /// Use [`LodView::with_view_projection`] for conservative screen-space bounds.
+    Perspective {
+        vertical_fov_radians: f32,
+    },
+    Orthographic {
+        vertical_world_size: f32,
+    },
+    /// Actual Bevy/WGPU reverse-Z camera projection, including camera orientation,
+    /// asymmetric frusta and physical-pixel horizontal scale.
+    Matrix {
+        clip_from_world: Mat4,
+        viewport_width_px: f32,
+    },
 }
 
-/// Six normalized world-space half-spaces for conservative node-sphere tests.
+/// Six normalized world-space half-spaces for conservative node support tests.
 /// A point is inside a plane when `normal.dot(point) + d > 0`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LodFrustum {
@@ -491,6 +566,57 @@ impl LodFrustum {
     }
 }
 
+/// World planes expressed in cloud coordinates. Magnitudes retain the absolute
+/// matrix-product terms so cancellation cannot shrink the rounding allowance.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LodLocalFrustum {
+    planes: [Vec4; 6],
+    magnitudes: [Vec4; 6],
+}
+
+impl LodLocalFrustum {
+    fn new(frustum: LodFrustum, world_from_local: Mat4) -> Self {
+        let transpose = world_from_local.transpose();
+        let absolute_transpose = Mat4::from_cols(
+            world_from_local.x_axis.abs(),
+            world_from_local.y_axis.abs(),
+            world_from_local.z_axis.abs(),
+            world_from_local.w_axis.abs(),
+        )
+        .transpose();
+        Self {
+            planes: frustum.half_spaces.map(|plane| transpose * plane),
+            magnitudes: frustum
+                .half_spaces
+                .map(|plane| absolute_transpose * plane.abs()),
+        }
+    }
+
+    fn intersects_bounds(self, bounds: LodBounds, margin: f32) -> bool {
+        let center = Vec3::from_array(bounds.center());
+        let half_extents =
+            (Vec3::from_array(bounds.max) - center).max(center - Vec3::from_array(bounds.min));
+        let extent_magnitude = (center.abs() + half_extents).extend(1.0);
+        let center = center.extend(1.0);
+        let margin = margin.max(0.0);
+        self.planes
+            .iter()
+            .zip(self.magnitudes)
+            .all(|(plane, magnitude)| {
+                let support = plane.truncate().abs().dot(half_extents) + margin;
+                let distance = plane.dot(center);
+                // Match traversal.wgsl. This covers plane transformation,
+                // midpoint/extent rounding, and the final support dot products.
+                // Non-finite intermediate arithmetic conservatively retains
+                // refinement instead of rejecting potentially visible geometry.
+                let allowance =
+                    64.0 * f32::EPSILON * (magnitude.dot(extent_magnitude) + margin).max(1.0);
+                let separated = distance + support < -allowance;
+                !separated
+            })
+    }
+}
+
 fn normalize_half_space(plane: Vec4) -> Vec4 {
     let length = plane.truncate().length();
     if length.is_finite() && length > 0.0 {
@@ -505,7 +631,9 @@ fn normalize_half_space(plane: Vec4) -> Vec4 {
     }
 }
 
-/// Camera quantities required for conservative perspective or orthographic error projection.
+/// Camera quantities used for hierarchy selection. Production cameras should
+/// supply [`Self::with_view_projection`]; the orientation-free perspective
+/// constructor estimates screen size from distance without camera orientation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LodView {
     /// Camera origin in world space.
@@ -531,15 +659,131 @@ struct LodProjectedNode {
 enum LodViewEvaluatorProjection {
     Perspective { focal_length_px: f32 },
     Orthographic { scale_px_per_world: f32 },
+    Matrix(LodScreenProjection),
+}
+
+/// Pixel numerators and homogeneous denominator of the world-to-screen map.
+/// Precomputed once per traversal; no matrix inverse is needed per node.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LodScreenProjection {
+    pixel_x: Vec4,
+    pixel_y: Vec4,
+    clip_w: Vec4,
+    near_half_space: Vec4,
+    denominator_gradient_length: f32,
+    orthographic_scale: f32,
+}
+
+impl LodScreenProjection {
+    fn new(clip_from_world: Mat4, viewport_size_px: Vec2) -> Self {
+        let pixel_x = clip_from_world.row(0) * (0.5 * viewport_size_px.x);
+        let pixel_y = clip_from_world.row(1) * (0.5 * viewport_size_px.y);
+        let clip_w = clip_from_world.row(3);
+        let denominator_gradient_length = clip_w.truncate().length();
+        let orthographic_scale = if denominator_gradient_length == 0.0 {
+            screen_linear_norm(pixel_x.truncate(), pixel_y.truncate()) / clip_w.w.abs()
+        } else {
+            0.0
+        };
+        Self {
+            pixel_x,
+            pixel_y,
+            clip_w,
+            near_half_space: normalize_half_space(clip_from_world.row(3) - clip_from_world.row(2)),
+            denominator_gradient_length,
+            orthographic_scale,
+        }
+    }
+
+    fn project(self, center: Vec3, radius: f32, error: f32) -> (f32, f32) {
+        let homogeneous_center = center.extend(1.0);
+        let w = self.clip_w.dot(homogeneous_center);
+        let denominator_gradient = self.clip_w.truncate();
+        let denominator_gradient_length = self.denominator_gradient_length;
+        // Orthographic projection is linear. This singular value is the exact
+        // largest pixel/world scale, including anisotropic camera transforms.
+        if denominator_gradient_length == 0.0 {
+            return (
+                finite_projected_product(error, self.orthographic_scale),
+                finite_projected_product(radius, self.orthographic_scale),
+            );
+        }
+        if w <= 0.0 || !w.is_finite() {
+            return (
+                finite_projected_product(error, f32::MAX),
+                finite_projected_product(radius, f32::MAX),
+            );
+        }
+        // For F(x) = A*x / w(x), let B = A - F(center)*grad(w).
+        // F(center+d)-F(center) = B*d / w(center+d). The principal-point
+        // offset cancels in B, so off-axis/asymmetric cameras need no special case.
+        let row_x = self.pixel_x.truncate()
+            - denominator_gradient * (self.pixel_x.dot(homogeneous_center) / w);
+        let row_y = self.pixel_y.truncate()
+            - denominator_gradient * (self.pixel_y.dot(homogeneous_center) / w);
+        let numerator_norm = screen_linear_norm(row_x, row_y);
+        let near_distance = self.near_half_space.dot(homogeneous_center);
+        let minimum_w = w - radius * denominator_gradient_length;
+        let support_scale = if minimum_w <= 0.0 || near_distance <= radius {
+            f32::MAX
+        } else {
+            numerator_norm / minimum_w
+        };
+        // Include a possible residual displacement outside the support sphere.
+        // Over this convex volume, ||J|| <= ||B||/w_min * (1+r*|grad(w)|/w_min)
+        // = ||B||*w_center/w_min^2. Multiplying by the spatial residual bounds
+        // any segment from a point in support to its displaced representative.
+        let error_radius = radius + error;
+        let error_minimum_w = w - error_radius * denominator_gradient_length;
+        let error_scale = if error_minimum_w <= 0.0 || near_distance <= error_radius {
+            f32::MAX
+        } else {
+            (numerator_norm / error_minimum_w) * (w / error_minimum_w)
+        };
+        (
+            finite_projected_product(error, error_scale),
+            finite_projected_product(radius, support_scale),
+        )
+    }
+}
+
+/// Largest singular value of a 2x3 linear map. Scaling avoids overflow while
+/// forming its 2x2 Gram matrix. Keep the scalar operations in lod_debug.wgsl in sync.
+fn screen_linear_norm(row_x: Vec3, row_y: Vec3) -> f32 {
+    let scale = row_x.abs().max_element().max(row_y.abs().max_element());
+    if scale == 0.0 {
+        return 0.0;
+    }
+    if !scale.is_finite() {
+        return f32::MAX;
+    }
+    let x = row_x / scale;
+    let y = row_y / scale;
+    let xx = x.dot(x);
+    let xy = x.dot(y);
+    let yy = y.dot(y);
+    let discriminant = ((xx - yy) * (xx - yy) + 4.0 * xy * xy).sqrt();
+    scale * (0.5 * (xx + yy + discriminant)).sqrt()
+}
+
+fn finite_projected_product(extent: f32, scale: f32) -> f32 {
+    if extent == 0.0 {
+        0.0
+    } else if scale >= f32::MAX || !scale.is_finite() {
+        f32::MAX
+    } else {
+        (extent * scale).min(f32::MAX)
+    }
 }
 
 /// Validated, per-selection projection state. Expensive view-only quantities
 /// are computed once and reused for every hierarchy node in the traversal.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct LodViewEvaluator {
+pub(crate) struct LodViewEvaluator {
     view: LodView,
     world_scale_upper_bound: f32,
     projection: LodViewEvaluatorProjection,
+    local_frustum: Option<LodLocalFrustum>,
 }
 
 impl LodView {
@@ -585,6 +829,19 @@ impl LodView {
         self
     }
 
+    /// Uses the actual camera matrix and physical viewport for conservative
+    /// error/support projection and visibility. Unlike [`Self::with_clip_from_world`],
+    /// this replaces the orientation-free perspective estimate. Viewport origin
+    /// does not affect differences in pixel position.
+    pub fn with_view_projection(mut self, clip_from_world: Mat4, viewport_size_px: Vec2) -> Self {
+        self.viewport_height_px = viewport_size_px.y;
+        self.projection = LodViewProjection::Matrix {
+            clip_from_world,
+            viewport_width_px: viewport_size_px.x,
+        };
+        self.with_clip_from_world(clip_from_world)
+    }
+
     pub fn with_frustum(mut self, frustum: LodFrustum) -> Self {
         self.frustum = Some(frustum);
         self
@@ -628,6 +885,20 @@ impl LodView {
             } if !vertical_world_size.is_finite() || vertical_world_size <= 0.0 => {
                 return Err(LodSelectionError::InvalidView("vertical_world_size"));
             }
+            LodViewProjection::Matrix {
+                clip_from_world,
+                viewport_width_px,
+            } => {
+                if !clip_from_world.is_finite()
+                    || !clip_from_world.determinant().is_finite()
+                    || clip_from_world.determinant() == 0.0
+                {
+                    return Err(LodSelectionError::InvalidView("clip_from_world"));
+                }
+                if !viewport_width_px.is_finite() || viewport_width_px <= 0.0 {
+                    return Err(LodSelectionError::InvalidView("viewport_width_px"));
+                }
+            }
             _ => {}
         }
         if !self.near_plane.is_finite() || self.near_plane <= 0.0 {
@@ -645,6 +916,16 @@ impl LodView {
         let (center, radius) = self.world_support_sphere(metrics);
         self.frustum.is_none_or(|frustum| {
             frustum.intersects_sphere(center, (radius + margin.max(0.0)).max(0.0))
+        })
+    }
+
+    /// Tests cloud-local support bounds against the camera frustum under the
+    /// complete affine cloud transform. The non-negative margin is in world
+    /// units. This gates refinement only; a rejected branch retains its coarse
+    /// representation in the complete hierarchy cut.
+    pub fn bounds_are_visible(self, bounds: LodBounds, margin: f32) -> bool {
+        self.frustum.is_none_or(|frustum| {
+            LodLocalFrustum::new(frustum, self.world_from_local).intersects_bounds(bounds, margin)
         })
     }
 
@@ -744,7 +1025,7 @@ impl LodViewEvaluator {
         Ok(Self::from_view(view))
     }
 
-    fn from_view(view: LodView) -> Self {
+    pub(crate) fn from_view(view: LodView) -> Self {
         let projection = match view.projection {
             LodViewProjection::Perspective {
                 vertical_fov_radians,
@@ -756,20 +1037,35 @@ impl LodViewEvaluator {
             } => LodViewEvaluatorProjection::Orthographic {
                 scale_px_per_world: view.viewport_height_px / vertical_world_size,
             },
+            LodViewProjection::Matrix {
+                clip_from_world,
+                viewport_width_px,
+            } => LodViewEvaluatorProjection::Matrix(LodScreenProjection::new(
+                clip_from_world,
+                Vec2::new(viewport_width_px, view.viewport_height_px),
+            )),
         };
         Self {
             view,
             world_scale_upper_bound: view.world_scale_upper_bound(),
             projection,
+            local_frustum: view
+                .frustum
+                .map(|frustum| LodLocalFrustum::new(frustum, view.world_from_local)),
         }
     }
 
     #[cfg(test)]
-    fn node_is_visible(self, metrics: LodNodeMetrics, margin: f32) -> bool {
+    pub(crate) fn node_is_visible(self, metrics: LodNodeMetrics, margin: f32) -> bool {
         let (center, radius) = self.world_support_sphere(metrics);
         self.view.frustum.is_none_or(|frustum| {
             frustum.intersects_sphere(center, (radius + margin.max(0.0)).max(0.0))
         })
+    }
+
+    pub(crate) fn bounds_are_visible(self, bounds: LodBounds, margin: f32) -> bool {
+        self.local_frustum
+            .is_none_or(|frustum| frustum.intersects_bounds(bounds, margin))
     }
 
     #[cfg(test)]
@@ -787,6 +1083,18 @@ impl LodViewEvaluator {
 
     fn projected_node(self, metrics: LodNodeMetrics) -> LodProjectedNode {
         let (center, radius) = self.world_support_sphere(metrics);
+        if let LodViewEvaluatorProjection::Matrix(projection) = self.projection {
+            let (error_px, support_radius_px) = projection.project(
+                center,
+                radius,
+                metrics.geometric_error * self.world_scale_upper_bound,
+            );
+            return LodProjectedNode {
+                error_px,
+                support_radius_px,
+                coverage: (2.0 * support_radius_px / self.view.viewport_height_px).clamp(0.0, 1.0),
+            };
+        }
         let projection_scale_px_per_world = match self.projection {
             LodViewEvaluatorProjection::Perspective { focal_length_px } => {
                 let distance_to_surface =
@@ -794,6 +1102,9 @@ impl LodViewEvaluator {
                 focal_length_px / distance_to_surface
             }
             LodViewEvaluatorProjection::Orthographic { scale_px_per_world } => scale_px_per_world,
+            LodViewEvaluatorProjection::Matrix(_) => {
+                unreachable!("matrix projection handled above")
+            }
         };
         let support_radius_px = radius * projection_scale_px_per_world;
         LodProjectedNode {
@@ -803,6 +1114,25 @@ impl LodViewEvaluator {
             support_radius_px,
             coverage: (2.0 * support_radius_px / self.view.viewport_height_px).clamp(0.0, 1.0),
         }
+    }
+
+    /// Error and selection pressure share the same projected support bound.
+    /// Package planning uses both, so compute the matrix bound only once.
+    pub(crate) fn projected_quality(
+        self,
+        metrics: LodNodeMetrics,
+        target: LodQualityTarget,
+        is_original_representation: bool,
+    ) -> (f32, f32) {
+        let projected = self.projected_node(metrics);
+        let pressure = target.node_pressure(
+            metrics.quality_threshold(),
+            projected.error_px,
+            projected.coverage,
+            metrics.high_fidelity_certificate,
+            is_original_representation,
+        );
+        (projected.error_px, pressure)
     }
 
     fn selection_error_limit_px(
@@ -854,7 +1184,7 @@ pub struct LodTemporalSubstitutionKey<NodeId> {
 ///
 /// `previous_gaussians + next_gaussians` is the conservative transition-energy
 /// charge. ABI 16 packages consume this explicit transaction together with
-/// their authored monotone parent-record runs; legacy packages or adapters
+/// their authored monotone parent-record runs; hierarchies or adapters
 /// without the morph capability retain the bounded categorical endpoint.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LodTemporalSubstitution<NodeId> {
@@ -1134,12 +1464,15 @@ where
     let current = current_frontier.iter().copied().collect::<HashSet<_>>();
     let target = target_frontier.iter().copied().collect::<HashSet<_>>();
     let mut coarsening_parents = BTreeSet::new();
+    let mut checked_parents = HashSet::new();
+    let mut target_coverage = HashMap::new();
     for &node in current_frontier {
         checked_metrics(hierarchy, node)?;
         let Some(parent) = hierarchy.parent(node) else {
             continue;
         };
-        if hierarchy.children(parent).is_empty()
+        if !checked_parents.insert(parent)
+            || hierarchy.children(parent).is_empty()
             || !hierarchy
                 .children(parent)
                 .iter()
@@ -1158,7 +1491,14 @@ where
                 covered_by_target_ancestor = true;
                 break;
             }
+            if let Some(&covered) = target_coverage.get(&candidate) {
+                covered_by_target_ancestor = covered;
+                break;
+            }
             cursor = hierarchy.parent(candidate);
+        }
+        for ancestor in chain {
+            target_coverage.insert(ancestor, covered_by_target_ancestor);
         }
         if covered_by_target_ancestor {
             coarsening_parents.insert(parent);
@@ -1166,6 +1506,7 @@ where
     }
 
     let mut refinement_parents = BTreeSet::new();
+    let mut checked_refinement_paths = HashSet::new();
     for &target_node in target_frontier {
         checked_metrics(hierarchy, target_node)?;
         let mut cursor = target_node;
@@ -1178,8 +1519,15 @@ where
                 refinement_parents.insert(parent);
                 break;
             }
+            if checked_refinement_paths.contains(&parent) {
+                break;
+            }
             cursor = parent;
         }
+        // The first target on a shared ancestor path already discovered its
+        // current-cut endpoint. Validate that path once, while keeping the
+        // per-walk cycle check for generic hierarchy implementations.
+        checked_refinement_paths.extend(chain);
     }
 
     let mut substitutions = Vec::with_capacity(
@@ -1254,12 +1602,48 @@ pub(crate) fn apply_temporal_substitution_step<NodeId, R>(
     current_active_gaussians: u64,
     substitutions: &[LodTemporalSubstitution<NodeId>],
     eligible: &BTreeSet<LodTemporalSubstitutionKey<NodeId>>,
-    mut is_resident: R,
+    is_resident: R,
     budget: LodTemporalStepBudget,
 ) -> Result<LodTemporalFrontierStep<NodeId>, LodSelectionError<NodeId>>
 where
     NodeId: Copy + Debug + Eq + Hash + Ord,
     R: FnMut(NodeId) -> bool,
+{
+    apply_temporal_substitution_step_with_admission(
+        current_frontier,
+        target_frontier,
+        current_active_gaussians,
+        substitutions,
+        eligible,
+        is_resident,
+        budget,
+        false,
+        |_| Ok(true),
+    )
+}
+
+/// Commits external admission only after a cohort passes the complete logical
+/// transaction budget. Rejected cohorts cannot reserve pages needed by another
+/// view. The opt-in over-budget exception only lowers an inherited over-limit
+/// cut; refinement continues to obey the hard active limit.
+#[cfg(any(feature = "lod", test))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_temporal_substitution_step_with_admission<NodeId, R, A, E>(
+    current_frontier: &[NodeId],
+    target_frontier: &[NodeId],
+    current_active_gaussians: u64,
+    substitutions: &[LodTemporalSubstitution<NodeId>],
+    eligible: &BTreeSet<LodTemporalSubstitutionKey<NodeId>>,
+    mut is_resident: R,
+    budget: LodTemporalStepBudget,
+    allow_decreasing_over_budget: bool,
+    mut admit: A,
+) -> Result<LodTemporalFrontierStep<NodeId>, E>
+where
+    NodeId: Copy + Debug + Eq + Hash + Ord,
+    R: FnMut(NodeId) -> bool,
+    A: FnMut(&LodTemporalSubstitution<NodeId>) -> Result<bool, E>,
+    E: From<LodSelectionError<NodeId>>,
 {
     let mut nodes = current_frontier.iter().copied().collect::<BTreeSet<_>>();
     let mut active_gaussians = current_active_gaussians;
@@ -1293,16 +1677,23 @@ where
             .checked_sub(substitution.previous_gaussians)
             .and_then(|count| count.checked_add(substitution.next_gaussians))
         else {
-            return Err(LodSelectionError::CountOverflow);
+            return Err(LodSelectionError::CountOverflow.into());
         };
-        if next_active > budget.max_active_gaussians {
+        let decreases_inherited_over_budget = allow_decreasing_over_budget
+            && substitution.key.direction == LodTemporalDirection::Coarsen
+            && active_gaussians > budget.max_active_gaussians
+            && next_active < active_gaussians;
+        if next_active > budget.max_active_gaussians && !decreases_inherited_over_budget {
             continue;
         }
         let work = substitution.changed_gaussians();
         let Some(next_work) = changed_gaussians.checked_add(work) else {
-            return Err(LodSelectionError::CountOverflow);
+            return Err(LodSelectionError::CountOverflow.into());
         };
         if !applied.is_empty() && next_work > budget.max_changed_gaussians.max(1) {
+            continue;
+        }
+        if !admit(substitution)? {
             continue;
         }
         if applied.is_empty() && next_work > budget.max_changed_gaussians.max(1) {
@@ -1854,6 +2245,56 @@ mod tests {
         LodView::perspective(Vec3::ZERO, 1080.0, std::f32::consts::FRAC_PI_2, 0.1)
     }
 
+    #[test]
+    fn temporal_candidates_visit_shared_ancestor_paths_once() {
+        struct CountedHierarchy {
+            inner: DenseBenchmarkHierarchy,
+            parent_calls: std::cell::Cell<usize>,
+        }
+        impl LodHierarchy for CountedHierarchy {
+            type NodeId = u32;
+
+            fn roots(&self) -> &[u32] {
+                self.inner.roots()
+            }
+
+            fn parent(&self, node: u32) -> Option<u32> {
+                self.parent_calls.set(self.parent_calls.get() + 1);
+                self.inner.parent(node)
+            }
+
+            fn children(&self, node: u32) -> &[u32] {
+                self.inner.children(node)
+            }
+
+            fn metrics(&self, node: u32) -> Option<LodNodeMetrics> {
+                self.inner.metrics(node)
+            }
+        }
+        let mut hierarchy = CountedHierarchy {
+            inner: DenseBenchmarkHierarchy::binary(7),
+            parent_calls: std::cell::Cell::new(0),
+        };
+        let leaves = (63..127).collect::<Vec<_>>();
+        let refine = temporal_substitution_candidates(&hierarchy, &[0], &leaves).unwrap();
+        assert_eq!(refine.len(), 1);
+        assert_eq!(refine[0].previous_nodes, vec![0]);
+        assert_eq!(refine[0].next_nodes, vec![1, 2]);
+        assert!(hierarchy.parent_calls.get() <= 2 * hierarchy.inner.nodes.len());
+
+        hierarchy.parent_calls.set(0);
+        let coarsen = temporal_substitution_candidates(&hierarchy, &leaves, &[0]).unwrap();
+        assert_eq!(coarsen.len(), 32);
+        assert!(coarsen.iter().all(|step| step.previous_nodes.len() == 2));
+        assert!(hierarchy.parent_calls.get() <= 2 * hierarchy.inner.nodes.len());
+
+        hierarchy.inner.nodes[1].0 = Some(1);
+        assert_eq!(
+            temporal_substitution_candidates(&hierarchy, &[0], &leaves).unwrap_err(),
+            LodSelectionError::HierarchyCycle(1)
+        );
+    }
+
     fn hierarchy_source_range(node: u32) -> std::ops::Range<u32> {
         match node {
             0 => 0..16,
@@ -1914,6 +2355,63 @@ mod tests {
         assert!(frustum_view.node_is_visible(metric(Vec3::new(0.0, 0.0, 0.5)), 0.0));
         assert!(!frustum_view.node_is_visible(metric(Vec3::new(2.0, 0.0, 0.5)), 0.0));
         assert!(frustum_view.node_is_visible(metric(Vec3::new(2.0, 0.0, 0.5)), 1.0));
+
+        let thin = LodBounds::new([2.0, -10.0, 0.4], [2.1, 10.0, 0.6]).unwrap();
+        assert!(frustum_view.node_is_visible(
+            LodNodeMetrics {
+                radius: thin.radius(),
+                ..metric(Vec3::from_array(thin.center()))
+            },
+            0.0,
+        ));
+        assert!(!frustum_view.bounds_are_visible(thin, 0.0));
+        let touching = LodBounds::new([1.0, -0.1, 0.4], [1.1, 0.1, 0.6]).unwrap();
+        let margin_touching = LodBounds::new([1.1, -0.1, 0.4], [1.2, 0.1, 0.6]).unwrap();
+        assert!(frustum_view.bounds_are_visible(touching, 0.0));
+        assert!(!frustum_view.bounds_are_visible(margin_touching, 0.0));
+        assert!(frustum_view.bounds_are_visible(margin_touching, 0.1));
+
+        // An independent eight-corner oracle checks the affine plane support,
+        // including rotation, nonuniform scale, shear, and reflection. Margin
+        // remains in world units rather than being scaled with the local box.
+        for world in [
+            Mat4::IDENTITY,
+            Mat4::from_scale_rotation_translation(
+                Vec3::new(0.2, 2.0, 0.5),
+                bevy::math::Quat::from_rotation_z(0.37),
+                Vec3::new(0.4, 0.0, 0.2),
+            ),
+            Mat4::from_cols(
+                Vec4::new(-0.5, 0.2, 0.0, 0.0),
+                Vec4::new(0.3, 1.5, 0.1, 0.0),
+                Vec4::new(0.0, 0.2, 0.7, 0.0),
+                Vec4::new(1.0, 0.0, 0.2, 1.0),
+            ),
+        ] {
+            let transformed = frustum_view.with_world_from_local(world);
+            let evaluator = LodViewEvaluator::from_validated(transformed).unwrap();
+            for (bounds, margin) in [(thin, 0.0), (touching, 0.0), (margin_touching, 0.1)] {
+                let expected = transformed
+                    .frustum
+                    .unwrap()
+                    .half_spaces
+                    .iter()
+                    .all(|plane| {
+                        (0..8).any(|corner| {
+                            let point = Vec3::from_array(std::array::from_fn(|axis| {
+                                if corner & (1 << axis) == 0 {
+                                    bounds.min[axis]
+                                } else {
+                                    bounds.max[axis]
+                                }
+                            }));
+                            plane.dot(world.transform_point3(point).extend(1.0)) + margin >= -1e-5
+                        })
+                    });
+                assert_eq!(transformed.bounds_are_visible(bounds, margin), expected);
+                assert_eq!(evaluator.bounds_are_visible(bounds, margin), expected);
+            }
+        }
 
         let invalid = view().with_clip_from_world(Mat4::ZERO);
         assert!(matches!(
@@ -2010,6 +2508,9 @@ mod tests {
                 LodViewProjection::Orthographic {
                     vertical_world_size,
                 } => view.viewport_height_px / vertical_world_size,
+                LodViewProjection::Matrix { .. } => {
+                    unreachable!("matrix bounds have independent projection tests")
+                }
             };
             let support_radius_px = radius * projection_scale_px_per_world;
             LodProjectedNode {
@@ -2929,6 +3430,206 @@ mod tests {
     }
 
     #[test]
+    fn matrix_projection_bounds_off_axis_support_and_spatial_residuals() {
+        let projection =
+            Mat4::perspective_infinite_reverse_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1);
+        let view = LodView::perspective(Vec3::ZERO, 2_000.0, std::f32::consts::FRAC_PI_2, 0.1)
+            .with_view_projection(projection, Vec2::splat(2_000.0));
+        let metrics = LodNodeMetrics {
+            center: Vec3::new(5.0, 0.0, -5.0),
+            radius: 0.1,
+            geometric_error: 0.01,
+            appearance_error: 0.0,
+            opacity_error: 0.0,
+            quality_min: 0.0,
+            quality_max: 1.0,
+            high_fidelity_certificate: 1.0,
+            representative_count: 1,
+        };
+        assert!(view.validate().is_ok());
+        // The old radial estimate was 1.4345px and even missed the 2px
+        // horizontal displacement. The off-axis Jacobian exceeds 2.828px.
+        assert!(view.projected_error_px(metrics) > 2.828);
+        assert!(view.projected_error_px(metrics) < 3.0);
+        assert!(view.projected_support_radius_px(metrics) > 28.28);
+        assert_matrix_projection_bounds_displacements(view, metrics);
+    }
+
+    fn assert_matrix_projection_bounds_displacements(view: LodView, metrics: LodNodeMetrics) {
+        let LodViewProjection::Matrix {
+            clip_from_world,
+            viewport_width_px,
+        } = view.projection
+        else {
+            panic!("matrix projection required");
+        };
+        // Independent f64 direct projection of actual points, rather than a
+        // second implementation of the Jacobian bound under test.
+        let local_to_clip = clip_from_world.as_dmat4() * view.world_from_local.as_dmat4();
+        let project = |point: bevy::math::DVec3| {
+            let clip = local_to_clip * point.extend(1.0);
+            bevy::math::DVec2::new(
+                clip.x / clip.w * f64::from(viewport_width_px) * 0.5,
+                clip.y / clip.w * f64::from(view.viewport_height_px) * 0.5,
+            )
+        };
+        let directions: Vec<_> = (-1..=1)
+            .flat_map(|x| (-1..=1).flat_map(move |y| (-1..=1).map(move |z| (x, y, z))))
+            .filter(|&(x, y, z)| (x, y, z) != (0, 0, 0))
+            .map(|(x, y, z)| bevy::math::DVec3::new(x as f64, y as f64, z as f64).normalize())
+            .collect();
+        let center = metrics.center.as_dvec3();
+        let screen_center = project(center);
+        let support_bound = f64::from(view.projected_support_radius_px(metrics));
+        let error_bound = f64::from(view.projected_error_px(metrics));
+        for direction in &directions {
+            let point = center + *direction * f64::from(metrics.radius);
+            let screen_point = project(point);
+            assert!(
+                screen_point.distance(screen_center) <= support_bound * (1.0 + 1e-5),
+                "projected support escaped bound: {view:?}"
+            );
+            for displacement in &directions {
+                let displaced = point + *displacement * f64::from(metrics.geometric_error);
+                assert!(
+                    project(displaced).distance(screen_point) <= error_bound * (1.0 + 1e-5),
+                    "projected residual escaped bound: {view:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn matrix_projection_covers_rotated_asymmetric_and_transformed_cameras() {
+        let world_from_view = Mat4::from_scale_rotation_translation(
+            Vec3::new(1.0, 1.2, 0.9),
+            bevy::math::Quat::from_rotation_y(0.65),
+            Vec3::new(12.0, -2.0, 3.0),
+        );
+        let viewport = Vec2::new(2_400.0, 700.0);
+        let mut perspective = Mat4::perspective_infinite_reverse_rh(1.8, 2.0, 0.1);
+        // Deliberately asymmetric frustum and non-square pixel scale.
+        perspective.z_axis.x = 0.35;
+        perspective.z_axis.y = -0.2;
+        let orthographic = Mat4::orthographic_rh(-4.0, 7.0, -2.0, 3.0, 100.0, 0.1);
+        let metrics = LodNodeMetrics {
+            center: Vec3::new(1.0, -0.5, -8.0),
+            radius: 0.3,
+            geometric_error: 0.04,
+            appearance_error: 0.0,
+            opacity_error: 0.0,
+            quality_min: 0.0,
+            quality_max: 1.0,
+            high_fidelity_certificate: 1.0,
+            representative_count: 1,
+        };
+        let transforms = [
+            Mat4::IDENTITY,
+            Mat4::from_scale(Vec3::new(-2.0, 0.75, 1.5)),
+            Mat4::from_cols(
+                Vec4::new(1.25, 0.15, 0.0, 0.0),
+                Vec4::new(0.35, 0.9, 0.1, 0.0),
+                Vec4::new(0.0, 0.2, 1.5, 0.0),
+                Vec4::new(-2.0, 0.5, 0.0, 1.0),
+            ),
+        ];
+        for clip_from_view in [perspective, orthographic] {
+            for transform in transforms {
+                let view = view()
+                    .with_view_projection(clip_from_view * world_from_view.inverse(), viewport)
+                    .with_world_from_local(world_from_view * transform);
+                assert!(view.validate().is_ok());
+                assert!(view.projected_error_px(metrics) < 1_000.0);
+                assert_matrix_projection_bounds_displacements(view, metrics);
+            }
+        }
+    }
+
+    #[test]
+    fn matrix_orthographic_scale_is_exact_and_distance_invariant() {
+        let clip = Mat4::orthographic_rh(-4.0, 4.0, -1.0, 1.0, 100.0, 0.1);
+        let view = view()
+            .with_view_projection(clip, Vec2::new(800.0, 400.0))
+            .with_world_from_local(Mat4::from_scale(Vec3::new(-2.0, 3.0, 0.5)));
+        let metrics = LodNodeMetrics {
+            center: Vec3::new(0.0, 0.0, -5.0),
+            radius: 0.5,
+            geometric_error: 0.25,
+            appearance_error: 0.0,
+            opacity_error: 0.0,
+            quality_min: 0.0,
+            quality_max: 1.0,
+            high_fidelity_certificate: 1.0,
+            representative_count: 1,
+        };
+        // 200 px/world maximum projection scale times 3x instance scale.
+        assert_eq!(view.projected_error_px(metrics), 150.0);
+        assert_eq!(view.projected_support_radius_px(metrics), 300.0);
+        let distant = LodNodeMetrics {
+            center: Vec3::new(10.0, 10.0, -90.0),
+            ..metrics
+        };
+        assert_eq!(view.projected_node(metrics), view.projected_node(distant));
+    }
+
+    #[test]
+    fn matrix_near_plane_crossing_demands_refinement_without_nan() {
+        let clip = Mat4::perspective_infinite_reverse_rh(1.0, 1.0, 0.1);
+        let view = view().with_view_projection(clip, Vec2::splat(1_000.0));
+        let metrics = LodNodeMetrics {
+            center: Vec3::new(0.0, 0.0, -0.15),
+            radius: 0.1,
+            geometric_error: 0.01,
+            appearance_error: 0.0,
+            opacity_error: 0.0,
+            quality_min: 0.0,
+            quality_max: 1.0,
+            high_fidelity_certificate: 1.0,
+            representative_count: 1,
+        };
+        for center in [metrics.center, Vec3::ZERO, Vec3::Z] {
+            let crossing = LodNodeMetrics { center, ..metrics };
+            assert_eq!(view.projected_error_px(crossing), f32::MAX);
+            assert_eq!(view.projected_support_radius_px(crossing), f32::MAX);
+            assert_eq!(view.projected_coverage(crossing), 1.0);
+            let exact = LodNodeMetrics {
+                geometric_error: 0.0,
+                ..crossing
+            };
+            assert_eq!(view.projected_error_px(exact), 0.0);
+        }
+        let point = LodNodeMetrics {
+            radius: 0.0,
+            geometric_error: 0.1,
+            ..metrics
+        };
+        assert_eq!(view.projected_error_px(point), f32::MAX);
+        assert_eq!(view.projected_support_radius_px(point), 0.0);
+    }
+
+    #[test]
+    fn matrix_projection_rejects_invalid_camera_and_viewport() {
+        assert!(
+            view()
+                .with_view_projection(Mat4::ZERO, Vec2::splat(1_000.0))
+                .validate()
+                .is_err()
+        );
+        assert!(
+            view()
+                .with_view_projection(Mat4::IDENTITY, Vec2::new(0.0, 1_000.0))
+                .validate()
+                .is_err()
+        );
+        assert!(
+            view()
+                .with_view_projection(Mat4::IDENTITY, Vec2::new(f32::NAN, 1_000.0))
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
     fn orthographic_error_is_distance_invariant() {
         let orthographic = LodView::orthographic(Vec3::ZERO, 1_000.0, 10.0, 0.1);
         orthographic.validate().unwrap();
@@ -3154,7 +3855,8 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(index, page)| (page.id, index))
-                .collect(),
+                .collect::<HashMap<_, _>>()
+                .into(),
         );
         hierarchy
     }

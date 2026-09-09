@@ -1,0 +1,47 @@
+{
+  "output": "../../target/lod-roadmap/captures/poland-camera-300-ordered",
+  "source": "../../assets/20K-Photo-103Mspats-4x2KM-Andrii_Shramko_Poland-JG.ply",
+  "synthetic": false,
+  "render_mode": "hierarchy_ordered",
+  "max_source_gaussians": 106447647,
+  "capture_images": true,
+  "builder_revision": "647de5d136afcbdacce7239cd683a1ece81003ffdcc90e3341b12ffedeba7eff",
+  "viewport": [
+    960,
+    638
+  ],
+  "vertical_fov_radians": 0.7,
+  "near": 0.1,
+  "quality": 1.0,
+  "presentation_mode": "Discrete",
+  "max_active_gaussians": 16000000,
+  "max_resident_gaussians": 24000000,
+  "max_resident_bytes": 4294967296,
+  "max_resident_pages": 23437,
+  "max_upload_bytes_per_frame": 16777216,
+  "capture_every": 900,
+  "readback_slots": 3,
+  "timeout_seconds": 180,
+  "request_timestamps": true,
+  "camera_path": "../../assets/Jastrz\u0119bia_G\u00f3ra_camera_path.json",
+  "segments": [
+    {
+      "scenario": "camera_300",
+      "frames": 9000,
+      "camera_frame": 300
+    }
+  ],
+  "max_cpu_bytes": 16107127360,
+  "max_gpu_bytes": 8589934592,
+  "max_manifest_bytes": 268435456,
+  "manifest": "../../target/lod-packages/poland-sh0-v17/scene.gsplatlod",
+  "ordered_gpu": {
+    "max_projected_gaussians": 16000000,
+    "max_gpu_bytes": 4294967296,
+    "max_traversal_gpu_bytes": 1073741824,
+    "max_frontier_nodes": 32768,
+    "max_visited_nodes": 262144,
+    "max_page_requests": 1024
+  },
+  "max_concurrent_requests": 64
+}

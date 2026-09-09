@@ -1367,7 +1367,13 @@ mod headless {
                 GARDEN_VIEWER_FOV,
                 GARDEN_VIEWER_NEAR,
             )
-            .with_clip_from_world(clip_from_world);
+            .with_view_projection(
+                clip_from_world,
+                Vec2::new(
+                    GARDEN_VIEWPORT_HEIGHT_PX * GARDEN_VIEWPORT_ASPECT,
+                    GARDEN_VIEWPORT_HEIGHT_PX,
+                ),
+            );
             let selected = select_frontier_with_visibility(
                 &hierarchy,
                 &AllResident,
@@ -1386,6 +1392,7 @@ mod headless {
                     position: camera_position,
                     target: center,
                     up: Vec3::Y,
+                    world_rotation: None,
                     projection: LodProjection::Perspective {
                         vertical_fov_radians: GARDEN_VIEWER_FOV,
                     },
@@ -2424,13 +2431,21 @@ mod headless {
                 metrics.boundary.pixels, metrics.control.pixels
             ));
         }
-        if !(metrics.reference_alpha_gap <= GARDEN_MAX_REFERENCE_MATCH_GAP) {
+        if metrics
+            .reference_alpha_gap
+            .partial_cmp(&GARDEN_MAX_REFERENCE_MATCH_GAP)
+            .is_none_or(|order| order.is_gt())
+        {
             failures.push(format!(
                 "{label} reference-alpha control mismatch is too large: {}",
                 metrics.reference_alpha_gap
             ));
         }
-        if !(metrics.reference_gradient_gap <= GARDEN_MAX_REFERENCE_MATCH_GAP) {
+        if metrics
+            .reference_gradient_gap
+            .partial_cmp(&GARDEN_MAX_REFERENCE_MATCH_GAP)
+            .is_none_or(|order| order.is_gt())
+        {
             failures.push(format!(
                 "{label} reference-gradient control mismatch is too large: {}",
                 metrics.reference_gradient_gap
@@ -2439,35 +2454,59 @@ mod headless {
         let luminance_bias_gap =
             metrics.boundary.signed_luminance_mean - metrics.control.signed_luminance_mean;
         let alpha_bias_gap = metrics.boundary.signed_alpha_mean - metrics.control.signed_alpha_mean;
-        if !(luminance_bias_gap.abs() <= GARDEN_MAX_MATCHED_SIGNED_BIAS_GAP) {
+        if luminance_bias_gap
+            .abs()
+            .partial_cmp(&GARDEN_MAX_MATCHED_SIGNED_BIAS_GAP)
+            .is_none_or(|order| order.is_gt())
+        {
             failures.push(format!(
                 "{label} matched boundary luminance bias gap is {luminance_bias_gap:+.6}"
             ));
         }
-        if !(alpha_bias_gap.abs() <= GARDEN_MAX_MATCHED_SIGNED_BIAS_GAP) {
+        if alpha_bias_gap
+            .abs()
+            .partial_cmp(&GARDEN_MAX_MATCHED_SIGNED_BIAS_GAP)
+            .is_none_or(|order| order.is_gt())
+        {
             failures.push(format!(
                 "{label} matched boundary alpha bias gap is {alpha_bias_gap:+.6}"
             ));
         }
-        if !(metrics.rgb_rmse_enrichment <= GARDEN_MAX_MATCHED_ENRICHMENT) {
+        if metrics
+            .rgb_rmse_enrichment
+            .partial_cmp(&GARDEN_MAX_MATCHED_ENRICHMENT)
+            .is_none_or(|order| order.is_gt())
+        {
             failures.push(format!(
                 "{label} matched boundary RGB enrichment is {}",
                 metrics.rgb_rmse_enrichment
             ));
         }
-        if !(metrics.alpha_abs_enrichment <= GARDEN_MAX_MATCHED_ENRICHMENT) {
+        if metrics
+            .alpha_abs_enrichment
+            .partial_cmp(&GARDEN_MAX_MATCHED_ENRICHMENT)
+            .is_none_or(|order| order.is_gt())
+        {
             failures.push(format!(
                 "{label} matched boundary alpha enrichment is {}",
                 metrics.alpha_abs_enrichment
             ));
         }
-        if !(metrics.rgb_jump_enrichment <= GARDEN_MAX_MATCHED_ENRICHMENT) {
+        if metrics
+            .rgb_jump_enrichment
+            .partial_cmp(&GARDEN_MAX_MATCHED_ENRICHMENT)
+            .is_none_or(|order| order.is_gt())
+        {
             failures.push(format!(
                 "{label} cross-interface residual RGB jump enrichment is {}",
                 metrics.rgb_jump_enrichment
             ));
         }
-        if !(metrics.alpha_jump_enrichment <= GARDEN_MAX_MATCHED_ENRICHMENT) {
+        if metrics
+            .alpha_jump_enrichment
+            .partial_cmp(&GARDEN_MAX_MATCHED_ENRICHMENT)
+            .is_none_or(|order| order.is_gt())
+        {
             failures.push(format!(
                 "{label} cross-interface residual alpha jump enrichment is {}",
                 metrics.alpha_jump_enrichment
@@ -2556,7 +2595,13 @@ mod headless {
         let topology = BTreeMap::from([(1, (3, Some(10))), (2, (3, Some(10)))]);
         let reference = vec![[0.40; 4]; (WIDTH * HEIGHT) as usize];
         let labels = (0..WIDTH * HEIGHT)
-            .map(|index| Some(if index % WIDTH % 2 == 0 { 1 } else { 2 }))
+            .map(|index| {
+                Some(if (index % WIDTH).is_multiple_of(2) {
+                    1
+                } else {
+                    2
+                })
+            })
             .collect::<Vec<_>>();
         let interfaces =
             garden_boundary_interfaces_with_topology(&topology, &reference, &labels, WIDTH, HEIGHT);
@@ -2862,6 +2907,7 @@ mod headless {
             position: authored_position,
             target: authored_target,
             up: authored_up,
+            world_rotation: None,
             projection: LodProjection::Perspective {
                 vertical_fov_radians: TRELLIS_FOV_Y,
             },
@@ -2906,6 +2952,7 @@ mod headless {
                 position: metrics.center - forward * distance,
                 target: metrics.center,
                 up,
+                world_rotation: None,
                 projection: LodProjection::Perspective {
                     vertical_fov_radians: TRELLIS_FOV_Y,
                 },
@@ -3067,17 +3114,8 @@ mod headless {
     }
 
     fn trellis_lod_view(camera: LodTestCamera, viewport_height_px: f32) -> LodView {
-        LodView::perspective(
-            camera.position,
-            viewport_height_px,
-            match camera.projection {
-                LodProjection::Perspective {
-                    vertical_fov_radians,
-                } => vertical_fov_radians,
-                LodProjection::Orthographic { .. } => unreachable!(),
-            },
-            camera.near,
-        )
+        let aspect = camera.viewport[0] as f32 / camera.viewport[1] as f32;
+        camera.lod_view(Vec2::new(viewport_height_px * aspect, viewport_height_px))
     }
 
     #[derive(Clone, Copy, Debug, Default)]
@@ -3164,6 +3202,9 @@ mod headless {
         spherical_harmonic: &SphericalHarmonicCoefficients,
         maximum_degree: usize,
     ) -> Vec3 {
+        // This oracle evaluates the renderer's SH0..SH3 profile, even when
+        // records also carry degree-four coefficients.
+        let maximum_degree = maximum_degree.min(3);
         let squared = ray_direction * ray_direction;
         let mut color =
             Vec3::splat(0.5) + sh_coefficient_rgb(spherical_harmonic, 0) * SH_BASIS_CONSTANTS[0];
@@ -3224,7 +3265,7 @@ mod headless {
         color_space: GaussianColorSpace,
     ) -> Vec3 {
         let display_color =
-            spherical_harmonics_lookup_degree(ray_direction, spherical_harmonic, SH_DEGREE.min(3));
+            spherical_harmonics_lookup_degree(ray_direction, spherical_harmonic, SH_DEGREE);
         match color_space {
             GaussianColorSpace::LinRec709Display => display_color,
             GaussianColorSpace::SrgbRec709Display => Vec3::new(
@@ -3345,7 +3386,7 @@ mod headless {
             LodProjection::Perspective {
                 vertical_fov_radians,
             } => vertical_fov_radians,
-            LodProjection::Orthographic { .. } => {
+            LodProjection::Orthographic { .. } | LodProjection::Calibrated { .. } => {
                 panic!("Trellis color/covariance audit requires perspective cameras")
             }
         };

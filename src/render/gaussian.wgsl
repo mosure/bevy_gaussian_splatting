@@ -1,3 +1,4 @@
+#import bevy_gaussian_splatting::support::gaussian_support_weight
 #import bevy_gaussian_splatting::bindings::{
     view,
     gaussian_uniforms,
@@ -65,28 +66,7 @@
     }
 #endif
 
-#ifdef PACKED
-    #ifdef PRECOMPUTE_COVARIANCE_3D
-        #import bevy_gaussian_splatting::packed::{
-            get_position,
-            get_color,
-            get_visibility,
-            get_opacity,
-            get_cov3d,
-            get_rotation,
-            get_scale,
-        }
-    #else
-        #import bevy_gaussian_splatting::packed::{
-            get_position,
-            get_color,
-            get_visibility,
-            get_opacity,
-            get_rotation,
-            get_scale,
-        }
-    #endif
-#else ifdef BUFFER_STORAGE
+#ifdef BUFFER_STORAGE
     #ifdef PRECOMPUTE_COVARIANCE_3D
         #import bevy_gaussian_splatting::planar::{
             get_position,
@@ -105,29 +85,6 @@
             get_opacity,
             get_rotation,
             get_scale,
-        }
-    #endif
-#else ifdef BUFFER_TEXTURE
-    #ifdef PRECOMPUTE_COVARIANCE_3D
-        #import bevy_gaussian_splatting::texture::{
-            get_position,
-            get_color,
-            get_visibility,
-            get_opacity,
-            get_cov3d,
-            get_rotation,
-            get_scale,
-            location,
-        }
-    #else
-        #import bevy_gaussian_splatting::texture::{
-            get_position,
-            get_color,
-            get_visibility,
-            get_opacity,
-            get_rotation,
-            get_scale,
-            location,
         }
     #endif
 #endif
@@ -136,20 +93,6 @@
     @group(3) @binding(0) var<storage, read> sorted_entries: array<Entry>;
     fn get_entry(index: u32) -> Entry {
         return sorted_entries[index];
-    }
-#else ifdef BUFFER_TEXTURE
-    @group(3) @binding(0) var sorted_entries: texture_2d<u32>;
-    fn get_entry(index: u32) -> Entry {
-        let sample = textureLoad(
-            sorted_entries,
-            location(index),
-            0,
-        );
-
-        return Entry(
-            sample.r,
-            sample.g,
-        );
     }
 #endif
 
@@ -206,67 +149,51 @@ fn gaussian_support_cutoff(opacity: f32) -> f32 {
 #endif
 }
 
-#ifdef WEBGL2
-    struct GaussianVertexOutput {
-        @builtin(position) position: vec4<f32>,
-        @location(0) color: vec4<f32>,
-        @location(1) uv: vec2<f32>,
-    #ifdef GAUSSIAN_2D
-        @location(2) local_to_pixel_u: vec3<f32>,
-        @location(3) local_to_pixel_v: vec3<f32>,
-        @location(4) local_to_pixel_w: vec3<f32>,
-        @location(5) mean_2d: vec2<f32>,
-        @location(6) radius: vec2<f32>,
-        @location(8) cutoff_squared: f32,
-    #else #ifdef GAUSSIAN_3D
-        @location(2) conic: vec3<f32>,
-        @location(3) major_minor: vec2<f32>,
-        @location(4) cutoff_squared: f32,
-    #else #ifdef GAUSSIAN_4D
-        @location(2) conic: vec3<f32>,
-        @location(3) major_minor: vec2<f32>,
-        @location(4) cutoff_squared: f32,
-    #endif
-    #ifdef LOD_MORPH
-        @location(7) lod_morph_alpha: vec4<f32>,
-        @location(9) lod_morph_parent_color: vec4<f32>,
-    #endif
-    };
+struct GaussianVertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) @interpolate(flat) color: vec4<f32>,
+    @location(1) @interpolate(linear) uv: vec2<f32>,
+#ifdef GAUSSIAN_2D
+    @location(2) @interpolate(flat) local_to_pixel_u: vec3<f32>,
+    @location(3) @interpolate(flat) local_to_pixel_v: vec3<f32>,
+    @location(4) @interpolate(flat) local_to_pixel_w: vec3<f32>,
+    @location(5) @interpolate(flat) mean_2d: vec2<f32>,
+    @location(6) @interpolate(flat) radius: vec2<f32>,
+    @location(8) @interpolate(flat) cutoff_squared: f32,
+#else ifdef GAUSSIAN_3D
+    @location(2) @interpolate(flat) conic: vec3<f32>,
+#ifdef USE_OBB
+    // OBB density uses an absolute physical-pixel mean, identical at
+    // every vertex. Coverage UV remains separate from density evaluation.
+    @location(3) @interpolate(flat) conic_position: vec2<f32>,
 #else
-    struct GaussianVertexOutput {
-        @builtin(position) position: vec4<f32>,
-        @location(0) @interpolate(flat) color: vec4<f32>,
-        @location(1) @interpolate(linear) uv: vec2<f32>,
-    #ifdef GAUSSIAN_2D
-        @location(2) @interpolate(flat) local_to_pixel_u: vec3<f32>,
-        @location(3) @interpolate(flat) local_to_pixel_v: vec3<f32>,
-        @location(4) @interpolate(flat) local_to_pixel_w: vec3<f32>,
-        @location(5) @interpolate(flat) mean_2d: vec2<f32>,
-        @location(6) @interpolate(flat) radius: vec2<f32>,
-        @location(8) @interpolate(flat) cutoff_squared: f32,
-    #else ifdef GAUSSIAN_3D
-        @location(2) @interpolate(flat) conic: vec3<f32>,
-        @location(3) @interpolate(linear) major_minor: vec2<f32>,
-        @location(4) @interpolate(flat) cutoff_squared: f32,
-    #else ifdef GAUSSIAN_4D
-        @location(2) @interpolate(flat) conic: vec3<f32>,
-        @location(3) @interpolate(linear) major_minor: vec2<f32>,
-        @location(4) @interpolate(flat) cutoff_squared: f32,
-    #endif
-    #ifdef LOD_MORPH
-        // {parent peak alpha, child peak alpha, parent optical-depth
-        // coefficient, child optical-depth coefficient}. The coefficients
-        // include per-edge weight, parent run splitting, and filtered
-        // projected-area conservation.
-        @location(7) @interpolate(flat) lod_morph_alpha: vec4<f32>,
-        // Parent endpoint radiance in linear light plus the exact blend weight
-        // in `.w`. Child endpoint radiance occupies `color.rgb`; the fragment
-        // combines both by optical depth and uses `.w` only to identify exact
-        // endpoint fast paths.
-        @location(9) @interpolate(flat) lod_morph_parent_color: vec4<f32>,
-    #endif
-    };
+    @location(3) @interpolate(linear) conic_position: vec2<f32>,
 #endif
+    @location(4) @interpolate(flat) cutoff_squared: f32,
+#else ifdef GAUSSIAN_4D
+    @location(2) @interpolate(flat) conic: vec3<f32>,
+#ifdef USE_OBB
+    // OBB density uses an absolute physical-pixel mean, identical at
+    // every vertex. Coverage UV remains separate from density evaluation.
+    @location(3) @interpolate(flat) conic_position: vec2<f32>,
+#else
+    @location(3) @interpolate(linear) conic_position: vec2<f32>,
+#endif
+    @location(4) @interpolate(flat) cutoff_squared: f32,
+#endif
+#ifdef LOD_MORPH
+    // {parent peak alpha, child peak alpha, parent optical-depth
+    // coefficient, child optical-depth coefficient}. The coefficients
+    // include per-edge weight, parent run splitting, and filtered
+    // projected-area conservation.
+    @location(7) @interpolate(flat) lod_morph_alpha: vec4<f32>,
+    // Parent endpoint radiance in linear light plus the exact blend weight
+    // in `.w`. Child endpoint radiance occupies `color.rgb`; the fragment
+    // combines both by optical depth and uses `.w` only to identify exact
+    // endpoint fast paths.
+    @location(9) @interpolate(flat) lod_morph_parent_color: vec4<f32>,
+#endif
+};
 
 fn world_to_local_direction(ray_direction_world: vec3<f32>, transform: mat4x4<f32>) -> vec3<f32> {
     let basis = mat3x3<f32>(
@@ -628,16 +555,23 @@ fn vs_points(
         cutoff,
     );
 
+    let det = gaussian_cov2d.x * gaussian_cov2d.z - gaussian_cov2d.y * gaussian_cov2d.y;
+    let det_inv = 1.0 / det;
+    let conic = vec3<f32>(
+        gaussian_cov2d.z * det_inv,
+        -gaussian_cov2d.y * det_inv,
+        gaussian_cov2d.x * det_inv
+    );
+    output.conic = conic;
     #ifdef USE_AABB
-        let det = gaussian_cov2d.x * gaussian_cov2d.z - gaussian_cov2d.y * gaussian_cov2d.y;
-        let det_inv = 1.0 / det;
-        let conic = vec3<f32>(
-            gaussian_cov2d.z * det_inv,
-            -gaussian_cov2d.y * det_inv,
-            gaussian_cov2d.x * det_inv
-        );
-        output.conic = conic;
-        output.major_minor = bb.zw;
+        // AABB retains its interpolated doubled-coordinate quad offset.
+        output.conic_position = bb.zw;
+    #else
+        // cov2d already uses a screen-down Y Jacobian. Reflect NDC Y exactly
+        // once when converting the mean to absolute framebuffer pixels.
+        output.conic_position = view.viewport.xy
+            + (projected_position.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5))
+                * view.viewport.zw;
     #endif
 #endif
 
@@ -957,7 +891,7 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
         mean_2d,
     );
 #else ifdef GAUSSIAN_3D
-    let d = -input.major_minor;
+    let d = -input.conic_position;
     let conic = input.conic;
     let power = -0.5 * (
         conic.x * d.x * d.x
@@ -965,7 +899,7 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
             + conic.z * d.y * d.y
     );
 #else ifdef GAUSSIAN_4D
-    let d = -input.major_minor;
+    let d = -input.conic_position;
     let conic = input.conic;
     let power = -0.5 * (
         conic.x * d.x * d.x
@@ -980,11 +914,27 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
 #endif
 
 #ifdef USE_OBB
-    let distance_squared = dot(input.uv, input.uv);
-    let power = -0.5 * input.cutoff_squared * distance_squared;
+    #ifdef GAUSSIAN_2D
+        let distance_squared = dot(input.uv, input.uv);
+        let power = -0.5 * input.cutoff_squared * distance_squared;
+    #else
+        // Raster coverage still uses the original quad. Gaussian density uses
+        // the actual fragment sample coordinate instead of interpolated UV.
+        // Two shader covariance units equal one physical framebuffer pixel.
+        let d = 2.0 * (input.position.xy - input.conic_position);
+        let conic = input.conic;
+        let power = -0.5 * (
+            conic.x * d.x * d.x
+                + 2.0 * conic.y * d.x * d.y
+                + conic.z * d.y * d.y
+        );
+        if (power > 0.0) {
+            discard;
+        }
+    #endif
 
-    // The OBB remains a conservative rectangle. Clipping its [-1, 1] quad to
-    // a unit circle would drop valid anisotropic support at its corners.
+    // The OBB conservatively contains the radial support. Density tapers to
+    // zero in Mahalanobis coordinates, independent of the chosen eigenbasis.
 #endif
 
 #ifdef VISUALIZE_BOUNDING_BOX
@@ -998,7 +948,7 @@ fn fs_main(input: GaussianVertexOutput) -> @location(0) vec4<f32> {
     }
 #endif
 
-    let gaussian_weight = exp(power);
+    let gaussian_weight = gaussian_support_weight(-2.0 * power, input.cutoff_squared);
     #ifdef LOD_MORPH
         if input.lod_morph_alpha.z > 0.0 || input.lod_morph_alpha.w > 0.0 {
             return lod_morph_fragment_color(

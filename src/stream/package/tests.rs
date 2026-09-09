@@ -1,10 +1,6 @@
 #![allow(clippy::field_reassign_with_default)]
 
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    feature = "sort_radix",
-    not(feature = "buffer_texture")
-))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "sort_radix"))]
 use std::num::NonZeroU32;
 
 use super::platform::validate_native_root;
@@ -28,7 +24,7 @@ fn package_poll_preserves_backend_failure_category() {
         LodOrchestrationFailureCode::TransportRequestFailed
     );
 }
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 use crate::stream::atlas_upload::LodAtlasSlotUpload;
 use crate::{
     GaussianLodBuildSettings, LodNodeId,
@@ -287,7 +283,7 @@ fn morph_union_over_atlas_headroom_downgrades_to_the_valid_target_cut() {
 }
 
 #[test]
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn downgraded_view_blend_cannot_use_progressive_admission() {
     let settings = GaussianLodSettings::default();
     let frontier =
@@ -306,7 +302,7 @@ fn downgraded_view_blend_cannot_use_progressive_admission() {
 }
 
 #[test]
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn sticky_hard_same_payload_inherits_the_active_commit() {
     let settings = GaussianLodSettings::default();
     let frontier = || {
@@ -332,7 +328,7 @@ fn sticky_hard_same_payload_inherits_the_active_commit() {
 }
 
 #[test]
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn invalid_active_view_blend_pressure_is_explicit_and_auto_clears() {
     let valid = LodViewBlendStatusSnapshot {
         edge_count: 1,
@@ -361,7 +357,7 @@ fn invalid_active_view_blend_pressure_is_explicit_and_auto_clears() {
 }
 
 #[test]
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn missing_view_blend_consumers_are_not_fixed_point_evidence() {
     let complete = LodViewBlendStatusSnapshot {
         edge_count: 2,
@@ -597,7 +593,7 @@ fn active_view_blend_union_retains_both_endpoint_ranges_and_recovery_slots() {
         "generation-loss recovery retains every slot referenced by the endpoint union"
     );
 }
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 use crate::{
     gaussian::{
         formats::{
@@ -620,10 +616,10 @@ use crate::{
         transport::PageRequest,
     },
 };
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 use std::sync::Arc;
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 struct NativeTestPackage {
     root: std::path::PathBuf,
     manifest: crate::GaussianLodManifest,
@@ -631,18 +627,14 @@ struct NativeTestPackage {
     omitted_page: Option<LodPageId>,
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 impl Drop for NativeTestPackage {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    feature = "sort_radix",
-    not(feature = "buffer_texture")
-))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "sort_radix"))]
 struct LocalPackageHttpServer {
     address: std::net::SocketAddr,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -651,18 +643,10 @@ struct LocalPackageHttpServer {
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    feature = "sort_radix",
-    not(feature = "buffer_texture")
-))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "sort_radix"))]
 type RequestedByteRanges = std::sync::Arc<std::sync::Mutex<Vec<Option<(u64, u64)>>>>;
 
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    feature = "sort_radix",
-    not(feature = "buffer_texture")
-))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "sort_radix"))]
 impl LocalPackageHttpServer {
     fn start(root: std::path::PathBuf) -> Self {
         use std::io::{Read as _, Write as _};
@@ -764,11 +748,7 @@ impl LocalPackageHttpServer {
     }
 }
 
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    feature = "sort_radix",
-    not(feature = "buffer_texture")
-))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "sort_radix"))]
 impl Drop for LocalPackageHttpServer {
     fn drop(&mut self) {
         self.stop.store(true, std::sync::atomic::Ordering::Release);
@@ -778,11 +758,7 @@ impl Drop for LocalPackageHttpServer {
     }
 }
 
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    feature = "sort_radix",
-    not(feature = "buffer_texture")
-))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "sort_radix"))]
 fn poll_package_transport(
     transport: &mut PackagePageTransport,
     request: PageRequest,
@@ -798,17 +774,17 @@ fn poll_package_transport(
     panic!("package transport timed out")
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn write_native_test_package(omit_leaf: bool) -> NativeTestPackage {
     write_native_test_package_with_degree(omit_leaf, None)
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn write_native_test_package_with_levels(levels: u32) -> NativeTestPackage {
     write_native_test_package_with_degree_and_levels(false, None, levels)
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn write_native_test_package_with_levels_and_leaf_capacity(
     levels: u32,
     leaf_capacity: u32,
@@ -816,7 +792,7 @@ fn write_native_test_package_with_levels_and_leaf_capacity(
     write_native_test_package_with_build(false, None, levels, leaf_capacity)
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn write_native_test_package_with_degree(
     omit_leaf: bool,
     representative_degree: Option<u8>,
@@ -824,7 +800,7 @@ fn write_native_test_package_with_degree(
     write_native_test_package_with_degree_and_levels(omit_leaf, representative_degree, 2)
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn write_native_test_package_with_degree_and_levels(
     omit_leaf: bool,
     representative_degree: Option<u8>,
@@ -833,7 +809,7 @@ fn write_native_test_package_with_degree_and_levels(
     write_native_test_package_with_build(omit_leaf, representative_degree, levels, 8)
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn write_native_test_package_with_build(
     omit_leaf: bool,
     representative_degree: Option<u8>,
@@ -973,7 +949,7 @@ fn write_native_test_package_with_build(
     }
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn package_test_settings(quality: f32) -> GaussianLodSettings {
     let mut settings = GaussianLodSettings::default();
     settings.quality = quality;
@@ -988,7 +964,7 @@ fn package_test_settings(quality: f32) -> GaussianLodSettings {
     settings
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn mark_package_cloud_visible(world: &mut World, camera: Entity, cloud: Entity) {
     let mut visible = world
         .get_mut::<VisibleEntities>(camera)
@@ -1001,7 +977,7 @@ fn mark_package_cloud_visible(world: &mut World, camera: Entity, cloud: Entity) 
     }
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn package_test_world(
     package: &NativeTestPackage,
     settings: GaussianLodSettings,
@@ -1021,6 +997,7 @@ fn package_test_world(
     config.streaming.retry_limit = retry_limit;
     world.insert_resource(config);
     world.init_resource::<GaussianLodPackageManager>();
+    world.init_resource::<LodMemoryLedger>();
     world.init_resource::<GaussianLodPackageStagingScheduler>();
     world.init_resource::<LodAtlasUploadBudget>();
     world.init_resource::<LodAtlasUploadQueue>();
@@ -1053,7 +1030,7 @@ fn package_test_world(
     (world, cloud, camera, manifest_handle)
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn spawn_package_test_cloud(
     world: &mut World,
     package: &NativeTestPackage,
@@ -1080,12 +1057,12 @@ fn spawn_package_test_cloud(
         .id()
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn run_package_frame(schedule: &mut Schedule, world: &mut World, cloud: Entity) -> usize {
     run_package_frame_for_clouds(schedule, world, &[cloud])
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn run_package_frame_for_clouds(
     schedule: &mut Schedule,
     world: &mut World,
@@ -1102,7 +1079,7 @@ fn run_package_frame_for_clouds(
     world.resource::<LodAtlasUploadQueue>().queued_slot_count()
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn advance_package_render_candidates(world: &mut World, cloud: Entity) {
     let pending_is_activation_ready = world
         .resource::<GaussianLodPackageManager>()
@@ -1132,7 +1109,7 @@ fn advance_package_render_candidates(world: &mut World, cloud: Entity) {
     }
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn sparse_package_atlas_snapshot(state: &PackageInstantiation) -> Vec<Gaussian3d> {
     let mut snapshot = vec![Gaussian3d::default(); state.plan.physical_gaussians as usize];
     for slot in state.mirror.materialized_slots() {
@@ -1152,7 +1129,7 @@ fn sparse_package_atlas_snapshot(state: &PackageInstantiation) -> Vec<Gaussian3d
     snapshot
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn drive_package_to_active_count(
     schedule: &mut Schedule,
     world: &mut World,
@@ -1194,7 +1171,7 @@ fn drive_package_to_active_count(
     );
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn package_test_camera_view(entity: Entity, position: Vec3) -> PackageCameraView {
     PackageCameraView {
         entity,
@@ -1202,7 +1179,7 @@ fn package_test_camera_view(entity: Entity, position: Vec3) -> PackageCameraView
     }
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn install_complete_empty_test_pending(
     state: &mut PackageInstantiation,
     settings: &GaussianLodSettings,
@@ -1239,7 +1216,7 @@ fn install_complete_empty_test_pending(
     phase
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn package_transition_candidate_set(
     settings: &GaussianLodSettings,
     candidates: &[(Entity, u8)],
@@ -1263,7 +1240,7 @@ fn package_transition_candidate_set(
 }
 
 #[test]
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn two_bounded_steps_leave_request_unowned_until_the_stable_followup() {
     let settings = GaussianLodSettings::default();
     let camera = Entity::from_bits(103);
@@ -1327,7 +1304,7 @@ fn stationary_owned_request_keeps_driving_predictive_maintenance() {
 }
 
 #[test]
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn stale_settings_finish_live_transition_and_companion_before_superseding() {
     use crate::stream::render_commit::{
         LOD_RENDER_ACTIVE, LOD_RENDER_PREPARED, LOD_RENDER_TRANSITIONING,
@@ -1376,7 +1353,7 @@ fn stale_settings_finish_live_transition_and_companion_before_superseding() {
 }
 
 #[test]
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 fn stale_transition_camera_removal_retires_only_nondrawable_consumers() {
     use crate::stream::render_commit::{
         LOD_RENDER_PREPARED, LOD_RENDER_TRANSITIONING, LOD_RENDER_WAITING,
@@ -1447,11 +1424,7 @@ fn native_roots_reject_url_schemes_while_http_sources_validate() {
     );
 }
 
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    feature = "sort_radix",
-    not(feature = "buffer_texture")
-))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "sort_radix"))]
 #[test]
 fn two_http_packages_share_one_writer_and_reuse_it_offline() {
     let package = write_native_test_package(false);
@@ -1545,11 +1518,7 @@ fn two_http_packages_share_one_writer_and_reuse_it_offline() {
     assert!(manager.caches.is_empty());
 }
 
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    feature = "sort_radix",
-    not(feature = "buffer_texture")
-))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "sort_radix"))]
 #[test]
 fn corrupt_http_package_page_reaches_preprocessor_without_codec_retry() {
     let package = write_native_test_package(false);
@@ -1618,6 +1587,7 @@ fn corrupt_http_package_page_reaches_preprocessor_without_codec_retry() {
             limits,
             max_encoded_page_bytes: streaming.effective_max_encoded_page_bytes(),
             support_sigma: package.manifest.build.settings.support_sigma,
+            node_ranges: None,
         })
         .unwrap();
     let full_page_budget = NonZeroU32::new(u32::MAX).unwrap();
@@ -1650,11 +1620,7 @@ fn corrupt_http_package_page_reaches_preprocessor_without_codec_retry() {
     );
 }
 
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    feature = "sort_radix",
-    not(feature = "buffer_texture")
-))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "sort_radix"))]
 #[test]
 fn package_runtime_invalidates_rejected_cache_before_bounded_retry() {
     let package = write_native_test_package(false);
@@ -1779,7 +1745,7 @@ fn package_runtime_invalidates_rejected_cache_before_bounded_retry() {
     assert!(!state.preprocess_cache_repairs.contains(&root_page));
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn mirror_current_package_replacement_can_activate_before_next_main_poll() {
     let package = write_native_test_package(false);
@@ -2091,7 +2057,7 @@ fn retained_debug_replacement_stages_before_sync_and_radix_activation() {
     assert!(state.last_failure.is_none());
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn retired_resident_package_slots_are_reused_without_upload() {
     let package = write_native_test_package(false);
@@ -2205,7 +2171,7 @@ fn retired_resident_package_slots_are_reused_without_upload() {
     );
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn automatic_native_package_bridge_streams_rebuilds_and_cleans_up() {
     let package = write_native_test_package(false);
@@ -2580,7 +2546,7 @@ fn automatic_native_package_bridge_streams_rebuilds_and_cleans_up() {
     );
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn debug_sidecar_toggle_preserves_active_package_and_primes_boundedly() {
     let package = write_native_test_package(false);
@@ -2628,7 +2594,7 @@ fn debug_sidecar_toggle_preserves_active_package_and_primes_boundedly() {
         (
             state.atlas.id(),
             std::ptr::from_ref(&state.runtime) as usize,
-            Arc::as_ptr(&state.debug_index) as usize,
+            Arc::as_ptr(state.debug_index.as_ref().unwrap()) as usize,
             candidate_phases,
             candidate_ranges,
             state.visible_ranges.clone(),
@@ -2727,7 +2693,10 @@ fn debug_sidecar_toggle_preserves_active_package_and_primes_boundedly() {
         let state = manager.clouds.get_mut(&cloud).unwrap();
         sync_package_debug_annotations(state, true).unwrap();
         let debug = state.debug.as_ref().unwrap();
-        assert!(Arc::ptr_eq(&debug.index, &state.debug_index));
+        assert!(Arc::ptr_eq(
+            &debug.index,
+            state.debug_index.as_ref().unwrap()
+        ));
         let mut restored = debug
             .page_bases
             .iter()
@@ -2749,7 +2718,11 @@ fn debug_sidecar_toggle_preserves_active_package_and_primes_boundedly() {
             .filter(|slot| slot.records().is_some())
             .count();
 
-        let validation_count_before = state.debug_index.page_payload_validation_count_for_test();
+        let validation_count_before = state
+            .debug_index
+            .as_ref()
+            .unwrap()
+            .page_payload_validation_count_for_test();
         let gaussian_validation_count_before = crate::gaussian::formats::planar_3d_lod::
             gaussian_support_full_validation_count_for_test();
         let mut work = PackageDebugPreparationWork::default();
@@ -2788,7 +2761,11 @@ fn debug_sidecar_toggle_preserves_active_package_and_primes_boundedly() {
             populated_after.saturating_sub(populated_before)
         );
         assert_eq!(
-            state.debug_index.page_payload_validation_count_for_test(),
+            state
+                .debug_index
+                .as_ref()
+                .unwrap()
+                .page_payload_validation_count_for_test(),
             validation_count_before,
             "trusted runtime-decoded pages must not be revalidated or rehashed during debug initialization"
         );
@@ -2851,6 +2828,8 @@ fn debug_sidecar_toggle_preserves_active_package_and_primes_boundedly() {
         .apply_preset(LodDebugPreset::Page);
     let page_validations_before = world.resource::<GaussianLodPackageManager>().clouds[&cloud]
         .debug_index
+        .as_ref()
+        .unwrap()
         .page_payload_validation_count_for_test();
     let gaussian_validations_before =
         crate::gaussian::formats::planar_3d_lod::gaussian_support_full_validation_count_for_test();
@@ -2907,7 +2886,7 @@ fn debug_sidecar_toggle_preserves_active_package_and_primes_boundedly() {
     let state = &manager.clouds[&cloud];
     assert!(Arc::ptr_eq(
         &state.debug.as_ref().unwrap().index,
-        &state.debug_index
+        state.debug_index.as_ref().unwrap()
     ));
     assert_eq!(package_identity(&world), initial_identity);
     assert!(
@@ -2922,7 +2901,11 @@ fn debug_sidecar_toggle_preserves_active_package_and_primes_boundedly() {
         "debug Off/On toggles must never revalidate the immutable package manifest"
     );
     assert_eq!(
-        state.debug_index.page_payload_validation_count_for_test(),
+        state
+            .debug_index
+            .as_ref()
+            .unwrap()
+            .page_payload_validation_count_for_test(),
         page_validations_before,
         "the second cached toggle must not revalidate or rehash decoded pages"
     );
@@ -2933,7 +2916,7 @@ fn debug_sidecar_toggle_preserves_active_package_and_primes_boundedly() {
     );
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn pending_residency_provenance_commits_atomically_with_the_visible_cut() {
     let package = write_native_test_package(false);
@@ -2989,7 +2972,11 @@ fn pending_residency_provenance_commits_atomically_with_the_visible_cut() {
         .map(|(_, slot)| sparse_before.slots()[slot.index as usize].invariant_revision())
         .collect::<Vec<_>>();
 
-    let validation_count_before = state.debug_index.page_payload_validation_count_for_test();
+    let validation_count_before = state
+        .debug_index
+        .as_ref()
+        .unwrap()
+        .page_payload_validation_count_for_test();
     let mut staged = prepare_package_staged_cut(state, &ranges, &pending_fallback).unwrap();
     assert!(staged.complete);
     assert_eq!(state.visible_fallback_nodes, current_fallback);
@@ -3065,7 +3052,11 @@ fn pending_residency_provenance_commits_atomically_with_the_visible_cut() {
         assert!(preparation_frames <= targets.len());
     }
     assert_eq!(
-        state.debug_index.page_payload_validation_count_for_test(),
+        state
+            .debug_index
+            .as_ref()
+            .unwrap()
+            .page_payload_validation_count_for_test(),
         validation_count_before,
         "staged debug preparation must trust pages already validated by the decoder"
     );
@@ -3114,7 +3105,7 @@ fn pending_residency_provenance_commits_atomically_with_the_visible_cut() {
     );
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn debug_page_basis_cache_replaces_the_entry_when_a_physical_slot_is_reused() {
     let built = build_planar_3d_lod(
@@ -3190,7 +3181,7 @@ fn debug_page_basis_cache_replaces_the_entry_when_a_physical_slot_is_reused() {
     );
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn lost_gpu_generations_requeue_the_retained_current_cut_once_per_recovery() {
     let package = write_native_test_package(false);
@@ -3288,7 +3279,7 @@ fn lost_gpu_generations_requeue_the_retained_current_cut_once_per_recovery() {
     assert_eq!(phase.load(Ordering::Acquire), LOD_RENDER_WAITING);
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn globally_covering_offscreen_camera_does_not_stall_visible_camera_transaction() {
     let package = write_native_test_package(false);
@@ -3346,7 +3337,7 @@ fn globally_covering_offscreen_camera_does_not_stall_visible_camera_transaction(
     assert!(published.get(offscreen_camera).is_none());
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn cold_complete_empty_package_cut_activates_atomically() {
     let package = write_native_test_package(false);
@@ -3411,7 +3402,7 @@ fn cold_complete_empty_package_cut_activates_atomically() {
     assert!(state.last_failure.is_none());
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn nonempty_to_complete_empty_package_cut_retains_runtime_cache() {
     let package = write_native_test_package(false);
@@ -3483,7 +3474,7 @@ fn nonempty_to_complete_empty_package_cut_retains_runtime_cache() {
     assert!(state.last_failure.is_none());
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn stale_empty_motion_candidate_cannot_blank_a_visible_current_cut() {
     let package = write_native_test_package(false);
@@ -3538,7 +3529,7 @@ fn stale_empty_motion_candidate_cannot_blank_a_visible_current_cut() {
     assert_eq!(package_status_phase(state), GaussianLodPackagePhase::Active);
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn per_cloud_camera_limit_isolated_for_disjoint_visibility_sets() {
     let package = write_native_test_package(false);
@@ -3591,7 +3582,7 @@ fn per_cloud_camera_limit_isolated_for_disjoint_visibility_sets() {
     assert!(second.get(first_camera).is_none());
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn unsupported_camera_only_fails_its_visible_package() {
     let package = write_native_test_package(false);
@@ -3652,7 +3643,7 @@ fn unsupported_camera_only_fails_its_visible_package() {
     );
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn failed_stale_and_multiview_pending_cuts_retain_the_current_transaction() {
     let package = write_native_test_package(false);
@@ -4028,7 +4019,7 @@ fn failed_stale_and_multiview_pending_cuts_retain_the_current_transaction() {
     assert_eq!(state.visible_slots, two_camera_slots);
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn compressed_representative_pages_stream_through_the_canonical_atlas() {
     let representative_degree =
@@ -4092,7 +4083,7 @@ fn compressed_representative_pages_stream_through_the_canonical_atlas() {
     );
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn native_package_missing_leaf_marks_ancestor_fallback_and_despawn_cleans_atlas() {
     let package = write_native_test_package(true);
@@ -4190,7 +4181,7 @@ fn native_package_missing_leaf_marks_ancestor_fallback_and_despawn_cleans_atlas(
     assert!(!ticket.is_ready());
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn preprocessed_package_open_allocates_no_capacity_sized_cpu_payload() {
     let package = write_native_test_package(false);
@@ -4233,10 +4224,1573 @@ fn preprocessed_package_open_allocates_no_capacity_sized_cpu_payload() {
     assert_eq!(atlas_uploads.queued_slot_count(), 0);
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn stationary_cold_package_publishes_one_bootstrap_then_one_fixed_point_cut() {
     let package = write_native_test_package_with_levels(3);
+    assert_stationary_cold_package_publishes_bootstrap_then_fixed_point(package);
+}
+
+#[cfg(feature = "sort_radix")]
+#[test]
+fn spatial_cold_package_publishes_bootstrap_while_target_pages_are_missing() {
+    let mut package = write_native_test_package_with_levels(3);
+    package.manifest = crate::testing::upgrade_manifest_to_synthetic_abi16_lifecycle_fixture(
+        package.manifest.clone(),
+    )
+    .unwrap();
+    assert_stationary_cold_package_publishes_bootstrap_then_fixed_point(package);
+}
+
+#[cfg(all(feature = "lod_build", feature = "sort_radix"))]
+fn resident_original_bootstrap_package(
+    presentation_mode: LodPresentationMode,
+) -> (NativeTestPackage, World, Entity, Entity, Schedule) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_PACKAGE: AtomicU64 = AtomicU64::new(1);
+    let root = std::env::temp_dir().join(format!(
+        "bevy-gaussian-resident-bootstrap-{}-{}",
+        std::process::id(),
+        NEXT_PACKAGE.fetch_add(1, Ordering::Relaxed),
+    ));
+    let source = PlanarGaussian3d::from(
+        [0.4_f32, 0.6]
+            .into_iter()
+            .map(|opacity| Gaussian3d {
+                position_visibility: [0.0, 0.0, 0.0, 1.0].into(),
+                spherical_harmonic: default(),
+                rotation: crate::gaussian::f32::Rotation {
+                    rotation: [1.0, 0.0, 0.0, 0.0],
+                },
+                scale_opacity: [0.1, 0.1, 0.1, opacity].into(),
+            })
+            .collect::<Vec<_>>(),
+    );
+    crate::build_external_lod_package(
+        &crate::PlanarGaussianSource::new(&source),
+        &root,
+        crate::ExternalLodBuildConfig {
+            settings: GaussianLodBuildSettings {
+                branching_factor: 2,
+                leaf_capacity: 1,
+                support_sigma: 3.0,
+            },
+            ..default()
+        },
+        &mut crate::CpuExternalLodBatchPreprocessor,
+    )
+    .unwrap();
+    let manifest = decode_manifest(
+        &std::fs::read(root.join("scene.gsplatlod")).unwrap(),
+        LodCodecLimits::default(),
+    )
+    .unwrap();
+    assert!(manifest.morph_map.is_some());
+    assert_eq!(manifest.nodes.len(), 3);
+    let package = NativeTestPackage {
+        root,
+        manifest,
+        source_count: 2,
+        omitted_page: None,
+    };
+    let mut settings = package_test_settings(1.0);
+    settings.presentation_mode = presentation_mode;
+    let (mut world, cloud, camera, _) = package_test_world(&package, settings, false, 0);
+    world
+        .entity_mut(camera)
+        .insert(GlobalTransform::from(Transform::from_xyz(0.0, 0.0, 100.0)));
+    let mut schedule = Schedule::default();
+    schedule.add_systems(update_lod_packages);
+    drive_package_to_active_count(&mut schedule, &mut world, cloud, camera, 2);
+    for _ in 0..16 {
+        run_package_frame(&mut schedule, &mut world, cloud);
+    }
+    let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+    let current = state.current.as_ref().unwrap().get(camera).unwrap();
+    assert!(current.render_is_active());
+    assert!(current.frontier().is_coverage_guard());
+    assert_eq!(current.rendered_candidate_count(), 2);
+    assert!(state.pending.is_none());
+    assert!(state.current_request.is_some());
+    (package, world, cloud, camera, schedule)
+}
+
+#[cfg(all(feature = "lod_build", feature = "sort_radix"))]
+#[test]
+fn resident_original_bootstrap_handoff_preserves_owned_continuous_morph() {
+    let (package, mut world, cloud, camera, mut schedule) =
+        resident_original_bootstrap_package(LodPresentationMode::ContinuousMorph);
+    let (previous, retained_ranges, request_starts) = {
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        (
+            state.current.as_ref().unwrap().get(camera).unwrap().clone(),
+            state.visible_ranges.clone(),
+            state
+                .runtime
+                .lock()
+                .unwrap()
+                .transport_request_starts_for_test(),
+        )
+    };
+    world.get_mut::<GaussianLodSettings>(cloud).unwrap().quality = 0.01;
+    let mut owned = None;
+    for _ in 0..32 {
+        run_package_frame(&mut schedule, &mut world, cloud);
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        let current = state.current.as_ref().unwrap().get(camera).unwrap();
+        assert!(Arc::ptr_eq(&current.phase, &previous.phase));
+        assert_eq!(state.visible_ranges, retained_ranges);
+        if let Some(pending) = state.pending.as_ref().and_then(|cut| cut.get(camera)) {
+            owned = Some(pending.clone());
+            break;
+        }
+    }
+    let owned = owned.expect("a resident q1 guard must produce an owned adjacent replacement");
+    assert!(!Arc::ptr_eq(&owned.phase, &previous.phase));
+    assert_eq!(
+        owned.temporal_transition_mode(),
+        Some(LodTemporalTransitionMode::Morphing)
+    );
+    let morph = owned.temporal_transition().unwrap().morph().unwrap();
+    let identity = morph.identity();
+    let records = morph.records().to_vec();
+    assert_eq!(owned.frontier().candidate_count(), 1);
+    assert_eq!(owned.rendered_candidate_count(), 2);
+    assert_eq!(morph.edges().len(), 1);
+    assert_eq!(morph.edges()[0].parent(), package.manifest.roots[0]);
+    assert_eq!(morph.edges()[0].initial_weight(), 1.0);
+    assert_eq!(morph.required_ranges().len(), 3);
+    assert_eq!(records.len(), 2);
+    let required_pages = morph
+        .required_ranges()
+        .iter()
+        .map(|range| range.page)
+        .collect::<BTreeSet<_>>();
+    {
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        assert_eq!(state.pending_page_leases, required_pages);
+        assert!(state.cold_direct_target.is_none());
+        assert!(state.bootstrap_handoff.is_none());
+    }
+
+    // Model the render handshake without a GPU: PREPARED is still the old
+    // visible children, and an ACTIVE lagging edge continues owning its whole
+    // union. No parent endpoint has yet been attested.
+    run_package_frame(&mut schedule, &mut world, cloud);
+    assert!(owned.render_is_prepared());
+    assert!(!owned.render_is_active());
+    assert!(owned.publish_view_blend_aggregate_snapshot(
+        &[1.0],
+        &[0.0],
+        1,
+        0,
+        0,
+        1.0,
+        0.0,
+        0.0,
+        &[LodViewBlendEndpoint::ChildrenExact],
+    ));
+    for _ in 0..8 {
+        run_package_frame(&mut schedule, &mut world, cloud);
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        let current = state.current.as_ref().unwrap().get(camera).unwrap();
+        assert!(Arc::ptr_eq(&current.phase, &owned.phase));
+        assert!(current.render_is_active());
+        assert_eq!(state.current_page_leases, required_pages);
+        assert!(state.pending.is_none());
+        assert!(state.cold_direct_target.is_none());
+        assert_eq!(
+            state
+                .runtime
+                .lock()
+                .unwrap()
+                .transport_request_starts_for_test(),
+            request_starts,
+            "resident morph handoff must not replay cold page demand",
+        );
+    }
+    // The extracted immutable packet owns its data independently of runtime
+    // caches and package/world lifetime.
+    drop(world);
+    let retained_packet = owned.temporal_transition().unwrap().morph().unwrap();
+    assert_eq!(retained_packet.identity(), identity);
+    assert_eq!(retained_packet.records(), records);
+}
+
+#[cfg(all(feature = "lod_build", feature = "sort_radix"))]
+#[test]
+fn resident_original_bootstrap_discrete_handoff_remains_categorical() {
+    let (_package, mut world, cloud, camera, mut schedule) =
+        resident_original_bootstrap_package(LodPresentationMode::Discrete);
+    world.get_mut::<GaussianLodSettings>(cloud).unwrap().quality = 0.01;
+    drive_package_to_active_count(&mut schedule, &mut world, cloud, camera, 1);
+    let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+    let current = state.current.as_ref().unwrap().get(camera).unwrap();
+    assert_eq!(current.frontier().candidate_count(), 1);
+    assert_eq!(current.rendered_candidate_count(), 1);
+    assert!(current.temporal_transition().is_none());
+    assert_eq!(state.current_page_leases.len(), 1);
+}
+
+#[cfg(all(feature = "lod_build", feature = "sort_radix"))]
+#[test]
+fn active_parent_commit_survives_prepared_sibling_camera_removal() {
+    let (_package, mut world, cloud, camera, mut schedule) =
+        resident_original_bootstrap_package(LodPresentationMode::ContinuousMorph);
+    let second_camera = world
+        .spawn((
+            Camera {
+                viewport: Some(bevy::camera::Viewport {
+                    physical_size: UVec2::new(1280, 720),
+                    ..default()
+                }),
+                ..default()
+            },
+            Projection::Perspective(default()),
+            GlobalTransform::from(Transform::from_xyz(1.0, 0.0, 100.0)),
+            crate::GaussianCamera::default(),
+        ))
+        .id();
+    mark_package_cloud_visible(&mut world, second_camera, cloud);
+    for _ in 0..32 {
+        run_package_frame(&mut schedule, &mut world, cloud);
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        if state.pending.is_none()
+            && state
+                .current
+                .as_ref()
+                .is_some_and(|cut| cut.len() == 2 && package_candidate_set_is_active(cut))
+        {
+            break;
+        }
+    }
+    {
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        assert!(state.pending.is_none());
+        assert_eq!(state.current.as_ref().unwrap().len(), 2);
+    }
+    // Both retained cuts must own actual morph retirement proofs. A categorical
+    // bootstrap would miss the removed-current-camera validation path.
+    world.get_mut::<GaussianLodSettings>(cloud).unwrap().quality = 0.01;
+    let mut morphing = None;
+    for _ in 0..32 {
+        run_package_frame(&mut schedule, &mut world, cloud);
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        if let Some(pending) = state.pending.as_ref() {
+            morphing = Some(pending.clone());
+            break;
+        }
+    }
+    let morphing = morphing.expect("both original cuts must stage owned morphs");
+    assert_eq!(morphing.len(), 2);
+    run_package_frame(&mut schedule, &mut world, cloud);
+    for candidate in morphing.by_camera.values() {
+        assert!(candidate.render_is_prepared());
+        assert_eq!(
+            candidate.temporal_transition_mode(),
+            Some(LodTemporalTransitionMode::Morphing)
+        );
+        assert!(candidate.publish_view_blend_aggregate_snapshot(
+            &[0.0],
+            &[0.0],
+            0,
+            0,
+            0,
+            0.0,
+            0.0,
+            0.0,
+            &[LodViewBlendEndpoint::ParentExact],
+        ));
+    }
+    run_package_frame(&mut schedule, &mut world, cloud);
+    {
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        assert!(state.pending.is_none());
+        assert_eq!(state.current_page_leases.len(), 3);
+        for (view, candidate) in &state.current.as_ref().unwrap().by_camera {
+            assert!(candidate.render_is_active());
+            assert!(Arc::ptr_eq(
+                &candidate.phase,
+                &morphing.get(*view).unwrap().phase
+            ));
+            assert_eq!(
+                candidate.temporal_transition_mode(),
+                Some(LodTemporalTransitionMode::Morphing)
+            );
+        }
+    }
+    // Removing a view while its surviving sibling is still fractional must
+    // not recreate the removed runtime view through the retirement retry path.
+    let current_owner = morphing.get(camera).unwrap();
+    assert!(current_owner.publish_view_blend_aggregate_snapshot(
+        &[0.5],
+        &[0.5],
+        0,
+        0,
+        0,
+        0.0,
+        0.0,
+        0.0,
+        &[LodViewBlendEndpoint::Fractional],
+    ));
+    world.get_mut::<Camera>(second_camera).unwrap().is_active = false;
+    world.get_mut::<GaussianLodSettings>(cloud).unwrap().quality = 0.0;
+    for _ in 0..4 {
+        run_package_frame(&mut schedule, &mut world, cloud);
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        assert!(
+            state.pending.is_none(),
+            "fractional survivor cannot retire yet"
+        );
+        assert_eq!(state.views, BTreeSet::from([camera]));
+        assert_eq!(state.current_page_leases.len(), 3);
+        let runtime = state.runtime.lock().unwrap();
+        assert!(runtime.contains_view_for_test(LodRuntimeViewId(camera.to_bits())));
+        assert!(
+            !runtime.contains_view_for_test(LodRuntimeViewId(second_camera.to_bits())),
+            "retirement retry must not recreate a removed runtime view"
+        );
+    }
+    assert!(current_owner.publish_view_blend_aggregate_snapshot(
+        &[0.0],
+        &[0.0],
+        0,
+        0,
+        0,
+        0.0,
+        0.0,
+        0.0,
+        &[LodViewBlendEndpoint::ParentExact],
+    ));
+    world.get_mut::<Camera>(second_camera).unwrap().is_active = true;
+    run_package_frame(&mut schedule, &mut world, cloud);
+    let (owner, companion) = {
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        let pending = state.pending.as_ref().expect("two-view parent cut stages");
+        assert_eq!(pending.len(), 2);
+        (
+            pending.get(camera).unwrap().clone(),
+            pending.get(second_camera).unwrap().clone(),
+        )
+    };
+    run_package_frame(&mut schedule, &mut world, cloud);
+    assert!(owner.render_is_prepared() && companion.render_is_prepared());
+    {
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        let mut replacement = state.pending.clone().unwrap();
+        replacement.by_camera.remove(&second_camera);
+        let runtime = state.runtime.lock().unwrap();
+        assert!(
+            package_candidate_set_view_blend_retirement_attestations(
+                runtime.hierarchy(),
+                state.current.as_ref().unwrap(),
+                &replacement,
+                &state.views,
+            )
+            .is_none(),
+            "a missing live morph consumer must still fail retirement validation"
+        );
+        assert!(
+            package_candidate_set_view_blend_retirement_attestations(
+                runtime.hierarchy(),
+                state.current.as_ref().unwrap(),
+                &replacement,
+                &BTreeSet::from([camera]),
+            )
+            .is_some(),
+            "only a removed consumer may be omitted from retirement validation"
+        );
+    }
+    owner.phase.store(LOD_RENDER_ACTIVE, Ordering::Release);
+    assert!(!companion.render_is_active());
+    assert!(owner.predecessor_view_blend_attestation().is_some());
+    assert!(owner.predecessor_view_blend_attestation_epoch_is_current());
+    assert!(world.despawn(second_camera));
+    // One view already drew the pending parent, while the removed sibling had
+    // only reached PREPARED. The surviving owner must commit with its existing
+    // token and authored mode, without rolling back to the old children.
+    world.insert_resource(LodAtlasUploadQueue::default());
+    schedule.run(&mut world);
+    let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+    assert!(
+        state.pending.is_none(),
+        "surviving exact endpoint must commit: failure={:?}, progressive={}, modes={:?}",
+        state.last_failure,
+        state.pending_progressive_view_blend,
+        state.pending_presentation_modes
+    );
+    let current = state.current.as_ref().unwrap();
+    assert_eq!(current.len(), 1);
+    let retained = current.get(camera).unwrap();
+    assert!(Arc::ptr_eq(&retained.phase, &owner.phase));
+    assert!(retained.render_is_active());
+    assert_eq!(retained.rendered_candidate_count(), 1);
+    assert_eq!(state.current_page_leases.len(), 1);
+    assert_eq!(companion.phase.load(Ordering::Acquire), LOD_RENDER_WAITING);
+    assert!(state.last_failure.is_none());
+    assert!(state.pending_presentation_modes.is_empty());
+}
+
+#[cfg(all(feature = "lod_build", feature = "sort_radix"))]
+#[test]
+fn unchanged_request_active_owner_survives_failed_sibling_until_recovery() {
+    let (_package, mut world, cloud, camera, mut schedule) =
+        resident_original_bootstrap_package(LodPresentationMode::ContinuousMorph);
+    let second_camera = world
+        .spawn((
+            Camera {
+                viewport: Some(bevy::camera::Viewport {
+                    physical_size: UVec2::new(1280, 720),
+                    ..default()
+                }),
+                ..default()
+            },
+            Projection::Perspective(default()),
+            GlobalTransform::from(Transform::from_xyz(1.0, 0.0, 100.0)),
+            crate::GaussianCamera::default(),
+        ))
+        .id();
+    mark_package_cloud_visible(&mut world, second_camera, cloud);
+    for _ in 0..32 {
+        run_package_frame(&mut schedule, &mut world, cloud);
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        if state.pending.is_none()
+            && state
+                .current
+                .as_ref()
+                .is_some_and(|cut| cut.len() == 2 && package_candidate_set_is_active(cut))
+        {
+            break;
+        }
+    }
+    let (previous, previous_pages, previous_ranges) = {
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        assert!(state.pending.is_none());
+        assert_eq!(state.current.as_ref().unwrap().len(), 2);
+        (
+            state.current.clone().unwrap(),
+            state.current_page_leases.clone(),
+            state.visible_ranges.clone(),
+        )
+    };
+    world.get_mut::<GaussianLodSettings>(cloud).unwrap().quality = 0.0;
+    run_package_frame(&mut schedule, &mut world, cloud);
+    let (owner, companion, request, pending_pages) = {
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        let pending = state.pending.as_ref().expect("both parent cuts stage");
+        assert_eq!(pending.len(), 2);
+        (
+            pending.get(camera).unwrap().clone(),
+            pending.get(second_camera).unwrap().clone(),
+            state.pending_request.clone(),
+            state.pending_page_leases.clone(),
+        )
+    };
+    run_package_frame(&mut schedule, &mut world, cloud);
+    assert!(owner.render_is_prepared() && companion.render_is_prepared());
+    owner.phase.store(LOD_RENDER_ACTIVE, Ordering::Release);
+    companion.phase.store(
+        crate::stream::render_commit::LOD_RENDER_FAILED,
+        Ordering::Release,
+    );
+    // A per-view raster failure can follow a sibling's activation even when
+    // camera, quality, capacity, and request identity have never changed.
+    for _ in 0..4 {
+        world.insert_resource(LodAtlasUploadQueue::default());
+        schedule.run(&mut world);
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        assert!(state.pending_transition_must_commit);
+        assert_eq!(state.pending_request, request);
+        assert_eq!(state.pending_page_leases, pending_pages);
+        assert_eq!(state.current_page_leases, previous_pages);
+        assert_eq!(state.visible_ranges, previous_ranges);
+        assert!(state.staged.as_ref().unwrap().complete);
+        assert_eq!(state.pending_presentation_modes.len(), 2);
+        let pending = state.pending.as_ref().unwrap();
+        assert!(Arc::ptr_eq(
+            &pending.get(camera).unwrap().phase,
+            &owner.phase
+        ));
+        assert!(owner.render_is_active());
+        assert!(companion.failed());
+        for (view, retained) in &state.current.as_ref().unwrap().by_camera {
+            assert!(Arc::ptr_eq(
+                &retained.phase,
+                &previous.get(*view).unwrap().phase
+            ));
+        }
+        assert_eq!(
+            state
+                .last_failure
+                .as_ref()
+                .map(LodOrchestrationFailure::code),
+            Some(LodOrchestrationFailureCode::RenderCommitFailed)
+        );
+    }
+    {
+        // Error cleanup uses the same ownership guard as normal orchestration.
+        let mut manager = world.resource_mut::<GaussianLodPackageManager>();
+        let state = manager.clouds.get_mut(&cloud).unwrap();
+        assert!(matches!(
+            clear_package_pending_transaction(state),
+            Err(GaussianLodPackageError::RenderCommitFailed { .. })
+        ));
+        assert_eq!(state.pending_page_leases, pending_pages);
+        assert!(owner.render_is_active());
+    }
+    // Model render recovery of the failed sibling. Publication still requires
+    // both exact pending tokens to activate and pass the original validation.
+    companion.phase.store(
+        crate::stream::render_commit::LOD_RENDER_PREPARED,
+        Ordering::Release,
+    );
+    advance_package_render_candidates(&mut world, cloud);
+    assert!(owner.render_is_active() && companion.render_is_active());
+    let expected_companion_mode = {
+        // Fault injection: reaching ACTIVE does not waive independent main
+        // presentation validation. A rejected all-ACTIVE packet must preserve
+        // ownership just as a mixed ACTIVE/FAILED packet does.
+        let mut manager = world.resource_mut::<GaussianLodPackageManager>();
+        let state = manager.clouds.get_mut(&cloud).unwrap();
+        let mode = state
+            .pending_presentation_modes
+            .remove(&second_camera)
+            .unwrap();
+        assert!(!package_pending_active_presentation_is_safe(state).unwrap());
+        mode
+    };
+    world.insert_resource(LodAtlasUploadQueue::default());
+    schedule.run(&mut world);
+    {
+        let mut manager = world.resource_mut::<GaussianLodPackageManager>();
+        let state = manager.clouds.get_mut(&cloud).unwrap();
+        assert!(state.pending.is_some());
+        assert!(state.pending_transition_must_commit);
+        assert_eq!(state.pending_page_leases, pending_pages);
+        assert_eq!(state.current_page_leases, previous_pages);
+        assert_eq!(state.visible_ranges, previous_ranges);
+        assert!(owner.render_is_active() && companion.render_is_active());
+        assert_eq!(
+            state
+                .last_failure
+                .as_ref()
+                .map(LodOrchestrationFailure::code),
+            Some(LodOrchestrationFailureCode::RenderCommitFailed)
+        );
+        state
+            .pending_presentation_modes
+            .insert(second_camera, expected_companion_mode);
+    }
+    run_package_frame(&mut schedule, &mut world, cloud);
+    let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+    assert!(state.pending.is_none());
+    assert!(!state.pending_transition_must_commit);
+    assert!(state.pending_page_leases.is_empty());
+    assert_eq!(state.current_page_leases.len(), 1);
+    assert!(state.last_failure.is_none());
+    let current = state.current.as_ref().unwrap();
+    assert_eq!(current.len(), 2);
+    assert!(package_candidate_set_is_active(current));
+    assert!(Arc::ptr_eq(
+        &current.get(camera).unwrap().phase,
+        &owner.phase
+    ));
+    assert!(Arc::ptr_eq(
+        &current.get(second_camera).unwrap().phase,
+        &companion.phase
+    ));
+}
+
+#[cfg(all(feature = "lod_build", feature = "sort_radix"))]
+#[test]
+fn current_active_owner_survives_failed_sibling_and_its_removal() {
+    let (_package, mut world, cloud, camera, mut schedule) =
+        resident_original_bootstrap_package(LodPresentationMode::ContinuousMorph);
+    let second_camera = world
+        .spawn((
+            Camera {
+                viewport: Some(bevy::camera::Viewport {
+                    physical_size: UVec2::new(1280, 720),
+                    ..default()
+                }),
+                ..default()
+            },
+            Projection::Perspective(default()),
+            GlobalTransform::from(Transform::from_xyz(1.0, 0.0, 100.0)),
+            crate::GaussianCamera::default(),
+        ))
+        .id();
+    mark_package_cloud_visible(&mut world, second_camera, cloud);
+    for _ in 0..32 {
+        run_package_frame(&mut schedule, &mut world, cloud);
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        if state.pending.is_none()
+            && state
+                .current
+                .as_ref()
+                .is_some_and(|cut| cut.len() == 2 && package_candidate_set_is_active(cut))
+        {
+            break;
+        }
+    }
+    let (owner, companion, current_pages, current_ranges) = {
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        assert!(state.pending.is_none());
+        let current = state.current.as_ref().unwrap();
+        assert_eq!(current.len(), 2);
+        (
+            current.get(camera).unwrap().clone(),
+            current.get(second_camera).unwrap().clone(),
+            state.current_page_leases.clone(),
+            state.visible_ranges.clone(),
+        )
+    };
+    companion.phase.store(
+        crate::stream::render_commit::LOD_RENDER_FAILED,
+        Ordering::Release,
+    );
+    for _ in 0..4 {
+        run_package_frame(&mut schedule, &mut world, cloud);
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        assert!(state.pending.is_none());
+        assert_eq!(state.current_page_leases, current_pages);
+        assert_eq!(state.visible_ranges, current_ranges);
+        assert!(!state.current_request_matches_live);
+        let current = state.current.as_ref().unwrap();
+        assert_eq!(current.len(), 2);
+        assert!(Arc::ptr_eq(
+            &current.get(camera).unwrap().phase,
+            &owner.phase
+        ));
+        assert!(owner.render_is_active());
+        assert!(companion.failed());
+        assert_eq!(
+            state
+                .last_failure
+                .as_ref()
+                .map(LodOrchestrationFailure::code),
+            Some(LodOrchestrationFailureCode::RenderCommitFailed)
+        );
+        let runtime = state.runtime.lock().unwrap();
+        for page in &current_pages {
+            assert!(runtime.cache().get(*page).unwrap().pin_count > 0);
+        }
+    }
+    // Recovery republishes the same current tokens; no categorical replan or
+    // atlas lease transfer is needed for the unaffected owner.
+    companion.phase.store(LOD_RENDER_ACTIVE, Ordering::Release);
+    run_package_frame(&mut schedule, &mut world, cloud);
+    {
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        assert!(state.pending.is_none());
+        assert!(state.last_failure.is_none());
+        assert_eq!(state.current_page_leases, current_pages);
+        assert!(Arc::ptr_eq(
+            &state.current.as_ref().unwrap().get(camera).unwrap().phase,
+            &owner.phase
+        ));
+    }
+    // A removed failed consumer must not trigger failure teardown or an
+    // impossible recovery wait after it no longer has a render view.
+    companion.phase.store(
+        crate::stream::render_commit::LOD_RENDER_FAILED,
+        Ordering::Release,
+    );
+    assert!(world.despawn(second_camera));
+    for _ in 0..4 {
+        run_package_frame(&mut schedule, &mut world, cloud);
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        assert_eq!(state.current_page_leases, current_pages);
+        assert_eq!(state.visible_ranges, current_ranges);
+        assert!(state.last_failure.is_none());
+        assert!(owner.render_is_active());
+        assert!(Arc::ptr_eq(
+            &state.current.as_ref().unwrap().get(camera).unwrap().phase,
+            &owner.phase
+        ));
+        assert!(
+            !state
+                .runtime
+                .lock()
+                .unwrap()
+                .contains_view_for_test(LodRuntimeViewId(second_camera.to_bits()))
+        );
+    }
+    let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+    assert!(state.pending.is_none());
+    assert_eq!(state.current.as_ref().unwrap().len(), 1);
+    assert_eq!(state.views, BTreeSet::from([camera]));
+}
+
+#[cfg(all(feature = "lod_build", feature = "sort_radix"))]
+#[test]
+fn active_parent_retarget_commits_drawn_cut_before_refining() {
+    let (package, mut world, cloud, camera, mut schedule) =
+        resident_original_bootstrap_package(LodPresentationMode::ContinuousMorph);
+    world.get_mut::<GaussianLodSettings>(cloud).unwrap().quality = 0.0;
+    run_package_frame(&mut schedule, &mut world, cloud);
+    let parent_packet = {
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        state
+            .pending
+            .as_ref()
+            .expect("q0 parent must stage")
+            .get(camera)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(parent_packet.rendered_candidate_count(), 1);
+    assert!(parent_packet.temporal_transition().is_none());
+    run_package_frame(&mut schedule, &mut world, cloud);
+    assert!(parent_packet.render_is_prepared());
+    advance_package_render_candidates(&mut world, cloud);
+    assert!(parent_packet.render_is_active());
+    {
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        assert_eq!(
+            state
+                .current
+                .as_ref()
+                .unwrap()
+                .get(camera)
+                .unwrap()
+                .rendered_candidate_count(),
+            2
+        );
+        assert!(
+            state.pending.is_some(),
+            "GPU activation deliberately precedes main acknowledgement"
+        );
+    }
+
+    world.get_mut::<GaussianLodSettings>(cloud).unwrap().quality = 0.99;
+    world.insert_resource(LodAtlasUploadQueue::default());
+    schedule.run(&mut world);
+    let parent = package.manifest.roots[0];
+    {
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        let current = state.current.as_ref().unwrap().get(camera).unwrap();
+        assert!(Arc::ptr_eq(&current.phase, &parent_packet.phase));
+        assert!(current.render_is_active());
+        assert!(state.pending.is_none());
+        assert_eq!(current.target_render_ranges()[0].node, parent);
+        assert_eq!(state.current_page_leases.len(), 1);
+        assert_eq!(
+            state
+                .runtime
+                .lock()
+                .unwrap()
+                .selected_history_for_test(LodRuntimeViewId(camera.to_bits())),
+            &[parent]
+        );
+        assert!(!state.current_request_matches_live);
+    }
+    run_package_frame(&mut schedule, &mut world, cloud);
+    let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+    let replacement = state
+        .pending
+        .as_ref()
+        .expect("next frame refines the acknowledged parent")
+        .get(camera)
+        .unwrap();
+    let morph = replacement.temporal_transition().unwrap().morph().unwrap();
+    assert_eq!(morph.edges().len(), 1);
+    assert_eq!(morph.edges()[0].parent(), parent);
+    assert_eq!(morph.edges()[0].initial_weight(), 0.0);
+    assert_eq!(state.pending_page_leases.len(), 3);
+    assert!(Arc::ptr_eq(
+        &state.current.as_ref().unwrap().get(camera).unwrap().phase,
+        &parent_packet.phase
+    ));
+}
+
+#[cfg(all(feature = "lod_build", feature = "sort_radix"))]
+#[test]
+fn resident_parent_refinement_keeps_parent_packet_while_render_ack_is_delayed() {
+    let (package, mut world, cloud, camera, mut schedule) =
+        resident_original_bootstrap_package(LodPresentationMode::ContinuousMorph);
+    world.get_mut::<GaussianLodSettings>(cloud).unwrap().quality = 0.0;
+    drive_package_to_active_count(&mut schedule, &mut world, cloud, camera, 1);
+    for _ in 0..16 {
+        run_package_frame(&mut schedule, &mut world, cloud);
+    }
+    let parent = package.manifest.roots[0];
+    let view_id = LodRuntimeViewId(camera.to_bits());
+    let (previous, visible, previous_pages) = {
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        assert!(state.pending.is_none());
+        assert!(state.current_request.is_some());
+        assert_eq!(
+            state
+                .runtime
+                .lock()
+                .unwrap()
+                .selected_history_for_test(view_id),
+            &[parent],
+        );
+        (
+            state.current.as_ref().unwrap().get(camera).unwrap().clone(),
+            state.visible_ranges.clone(),
+            state.current_page_leases.clone(),
+        )
+    };
+    world.get_mut::<GaussianLodSettings>(cloud).unwrap().quality = 0.99;
+    run_package_frame(&mut schedule, &mut world, cloud);
+    let replacement = {
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        state
+            .pending
+            .as_ref()
+            .expect("refinement must stage")
+            .get(camera)
+            .unwrap()
+            .clone()
+    };
+    let morph = replacement.temporal_transition().unwrap().morph().unwrap();
+    assert_eq!(replacement.frontier().candidate_count(), 2);
+    assert_eq!(
+        replacement.temporal_transition_mode(),
+        Some(LodTemporalTransitionMode::Morphing)
+    );
+    assert_eq!(morph.edges().len(), 1);
+    assert_eq!(morph.edges()[0].parent(), parent);
+    assert_eq!(
+        morph.edges()[0].initial_weight().to_bits(),
+        0.0_f32.to_bits()
+    );
+    let identity = morph.identity();
+    let required_pages = morph
+        .required_ranges()
+        .iter()
+        .map(|range| range.page)
+        .collect::<BTreeSet<_>>();
+    // Keep the render token unacknowledged through repeated main-world turns,
+    // then through PREPARED staging. Neither optimistic selector history nor
+    // the stable-child cache may replace this parent's initial endpoint.
+    for prepared in [false, true] {
+        if prepared {
+            replacement.phase.store(
+                crate::stream::render_commit::LOD_RENDER_PREPARED,
+                Ordering::Release,
+            );
+        }
+        for _ in 0..8 {
+            world.insert_resource(LodAtlasUploadQueue::default());
+            schedule.run(&mut world);
+            let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+            let pending = state.pending.as_ref().unwrap().get(camera).unwrap();
+            let retained = state.current.as_ref().unwrap().get(camera).unwrap();
+            assert!(Arc::ptr_eq(&pending.phase, &replacement.phase));
+            assert!(Arc::ptr_eq(&retained.phase, &previous.phase));
+            assert_eq!(state.visible_ranges, visible);
+            assert_eq!(state.current_page_leases, previous_pages);
+            assert_eq!(state.pending_page_leases, required_pages);
+            assert_eq!(
+                pending
+                    .temporal_transition()
+                    .unwrap()
+                    .morph()
+                    .unwrap()
+                    .identity(),
+                identity
+            );
+            assert_eq!(
+                pending
+                    .temporal_transition()
+                    .unwrap()
+                    .morph()
+                    .unwrap()
+                    .edges()[0]
+                    .initial_weight(),
+                0.0
+            );
+        }
+    }
+    assert!(replacement.publish_view_blend_aggregate_snapshot(
+        &[0.0],
+        &[1.0],
+        1,
+        0,
+        0,
+        1.0,
+        0.0,
+        0.0,
+        &[LodViewBlendEndpoint::ParentExact],
+    ));
+    run_package_frame(&mut schedule, &mut world, cloud);
+    let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+    let current = state.current.as_ref().unwrap().get(camera).unwrap();
+    assert!(Arc::ptr_eq(&current.phase, &replacement.phase));
+    assert!(current.render_is_active());
+    assert_eq!(state.current_page_leases, required_pages);
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "lod_build",
+    feature = "sort_radix",
+))]
+#[test]
+fn resident_original_bootstrap_delayed_parent_defers_direct_publish_after_poll() {
+    let (package, mut world, cloud, camera, mut schedule) =
+        resident_original_bootstrap_package(LodPresentationMode::ContinuousMorph);
+    let parent = package.manifest.roots[0];
+    let descriptor = package
+        .manifest
+        .pages
+        .iter()
+        .find(|page| {
+            package
+                .manifest
+                .nodes
+                .iter()
+                .any(|node| node.id == parent && node.representation.page == page.id)
+        })
+        .unwrap();
+    let parent_page = descriptor.id;
+    let storage = descriptor.storage.as_ref().unwrap();
+    let encoded = std::fs::read(package.root.join(&storage.uri)).unwrap();
+    let (start, len) = storage.byte_range.unwrap_or((0, storage.encoded_len));
+    let mut transport = MemoryPageTransport::default();
+    transport.insert(
+        parent_page,
+        encoded[start as usize..(start + len) as usize].to_vec(),
+    );
+    let stats = Arc::new(std::sync::Mutex::new(
+        super::platform::DelayedPackageTransportStats::default(),
+    ));
+    let (previous, visible, current_pages) = {
+        let mut manager = world.resource_mut::<GaussianLodPackageManager>();
+        let state = manager.clouds.get_mut(&cloud).unwrap();
+        let previous = state.current.as_ref().unwrap().get(camera).unwrap().clone();
+        let visible = state.visible_ranges.clone();
+        let current_pages = state.current_page_leases.clone();
+        assert!(!current_pages.contains(&parent_page));
+        let runtime = state.runtime.get_mut().unwrap();
+        runtime
+            .cancel_package_view_work(&[
+                PACKAGE_ROOT_FALLBACK_VIEW,
+                LodRuntimeViewId(camera.to_bits()),
+            ])
+            .unwrap();
+        runtime.remove_view(PACKAGE_ROOT_FALLBACK_VIEW).unwrap();
+        // Original endpoint bootstrap can bypass the parent completely. If
+        // navigation happened to load it, remove only that unowned endpoint.
+        if runtime.cache().contains(parent_page) {
+            runtime.evict_unpinned_page_for_test(parent_page).unwrap();
+        }
+        assert!(runtime.decoded_page(parent_page).is_none());
+        *runtime.transport_mut() = super::platform::PackagePageTransport::DelayedMemory(
+            super::platform::DelayedPackageTransport {
+                transport,
+                delay_polls: 3,
+                stats: stats.clone(),
+                remaining: Default::default(),
+            },
+        );
+        (previous, visible, current_pages)
+    };
+    world.get_mut::<GaussianLodSettings>(cloud).unwrap().quality = 0.01;
+    run_package_frame(&mut schedule, &mut world, cloud);
+    assert_eq!(stats.lock().unwrap().begins, 1);
+    assert_eq!(stats.lock().unwrap().completed, 0);
+    let mut observed_post_poll_handoff = false;
+    for _ in 0..512 {
+        run_package_frame(&mut schedule, &mut world, cloud);
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        let current = state.current.as_ref().unwrap().get(camera).unwrap();
+        assert!(Arc::ptr_eq(&current.phase, &previous.phase));
+        assert!(current.render_is_active());
+        assert_eq!(state.visible_ranges, visible);
+        assert_eq!(state.current_page_leases, current_pages);
+        assert!(state.last_failure.is_none());
+        if state
+            .runtime
+            .lock()
+            .unwrap()
+            .decoded_page(parent_page)
+            .is_some()
+        {
+            // Preflight saw a missing parent at this update's entry. The poll
+            // completed it, but direct categorical publication must wait for
+            // next update's selector rebase and authored morph construction.
+            assert!(state.pending.is_none());
+            assert!(state.cold_direct_target.is_some());
+            assert!(state.pending_page_leases.contains(&parent_page));
+            observed_post_poll_handoff = true;
+            break;
+        }
+        assert!(state.pending.is_none());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        observed_post_poll_handoff,
+        "delayed authenticated parent never became resident"
+    );
+    run_package_frame(&mut schedule, &mut world, cloud);
+    let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+    let pending = state.pending.as_ref().unwrap().get(camera).unwrap();
+    assert_eq!(
+        pending.temporal_transition_mode(),
+        Some(LodTemporalTransitionMode::Morphing)
+    );
+    assert_eq!(pending.frontier().candidate_count(), 1);
+    assert_eq!(pending.rendered_candidate_count(), 2);
+    let morph = pending.temporal_transition().unwrap().morph().unwrap();
+    assert_eq!(morph.edges()[0].parent(), parent);
+    assert_eq!(morph.edges()[0].initial_weight(), 1.0);
+    assert!(state.cold_direct_target.is_none());
+    assert!(state.bootstrap_handoff.is_none());
+    assert_eq!(state.visible_ranges, visible);
+    assert_eq!(state.current_page_leases, current_pages);
+    assert!(Arc::ptr_eq(
+        &state.current.as_ref().unwrap().get(camera).unwrap().phase,
+        &previous.phase
+    ));
+    assert_eq!(
+        state.pending_page_leases,
+        morph
+            .required_ranges()
+            .iter()
+            .map(|range| range.page)
+            .collect()
+    );
+    let stats = stats.lock().unwrap();
+    assert_eq!((stats.begins, stats.completed, stats.cancels), (1, 1, 0));
+}
+
+#[cfg(all(feature = "lod_build", feature = "sort_radix"))]
+#[test]
+fn resident_original_bootstrap_two_view_handoff_requires_exact_request_and_rebases_both() {
+    let (package, mut world, cloud, camera, mut schedule) =
+        resident_original_bootstrap_package(LodPresentationMode::ContinuousMorph);
+    let second_camera = world
+        .spawn((
+            Camera {
+                viewport: Some(bevy::camera::Viewport {
+                    physical_size: UVec2::new(1280, 720),
+                    ..default()
+                }),
+                ..default()
+            },
+            Projection::Perspective(default()),
+            GlobalTransform::from(Transform::from_xyz(1.0, 0.0, 100.0)),
+            crate::GaussianCamera::default(),
+        ))
+        .id();
+    mark_package_cloud_visible(&mut world, second_camera, cloud);
+    for _ in 0..32 {
+        run_package_frame(&mut schedule, &mut world, cloud);
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        if state.pending.is_none()
+            && state
+                .current
+                .as_ref()
+                .is_some_and(|cut| cut.len() == 2 && package_candidate_set_is_active(cut))
+        {
+            break;
+        }
+    }
+    let mut settings = world.get::<GaussianLodSettings>(cloud).unwrap().clone();
+    settings.quality = 0.01;
+    let views = [
+        PackageCameraView {
+            entity: camera,
+            view: LodView::perspective(Vec3::new(0.0, 0.0, 100.0), 720.0, 1.0, 0.1),
+        },
+        PackageCameraView {
+            entity: second_camera,
+            view: LodView::perspective(Vec3::new(1.0, 0.0, 100.0), 720.0, 1.0, 0.1),
+        },
+    ];
+    let mut manager = world.resource_mut::<GaussianLodPackageManager>();
+    let state = manager.clouds.get_mut(&cloud).unwrap();
+    assert!(state.pending.is_none());
+    let retained = state
+        .current
+        .as_ref()
+        .unwrap()
+        .by_camera
+        .iter()
+        .map(|(&entity, candidate)| {
+            assert!(candidate.frontier().is_coverage_guard());
+            assert!(candidate.render_is_active());
+            (
+                entity,
+                candidate.clone(),
+                candidate
+                    .target_render_ranges()
+                    .iter()
+                    .map(|range| range.node)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(retained.len(), 2);
+    let visible = state.visible_ranges.clone();
+    let current_pages = state.current_page_leases.clone();
+    let settings = state.structural.apply(&settings);
+    let request = PackageCutRequestSignature::new(&settings, &GlobalTransform::IDENTITY, &views);
+    // Exercise the real endpoint-union capacity proof while delaying only the
+    // presentation handoff, so its exact request/lease behavior is observable.
+    assert!(
+        !preflight_package_bootstrap_handoff(
+            state,
+            &request,
+            &views,
+            &settings,
+            Mat4::IDENTITY,
+            true,
+        )
+        .unwrap()
+    );
+    let target_pages = state
+        .cold_direct_target
+        .as_ref()
+        .unwrap()
+        .plan
+        .pages()
+        .clone();
+    // Admission plans demand; it does not make the parent resident. Advance
+    // the actual authenticated transport/preprocessor path without publishing
+    // a package candidate, preserving both retained ACTIVE guards for rebase.
+    let mut root_settings = settings.clone();
+    root_settings.quality = 0.0;
+    root_settings.frustum_culling = false;
+    for _ in 0..512 {
+        let runtime = state.runtime.get_mut().unwrap();
+        let frame = runtime.begin_frame();
+        runtime
+            .prime_package_pages_in_frame(frame, LodRuntimeViewId(camera.to_bits()), &target_pages)
+            .unwrap();
+        runtime
+            .update_view_in_frame(
+                frame,
+                PACKAGE_ROOT_FALLBACK_VIEW,
+                LodView::perspective(Vec3::ZERO, 1.0, 1.0, 0.1),
+                &root_settings,
+                &state.runtime_streaming,
+            )
+            .unwrap();
+        runtime.finish_frame(frame).unwrap();
+        if target_pages
+            .iter()
+            .all(|page| runtime.cache().contains(*page) && runtime.decoded_page(*page).is_some())
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(target_pages.iter().all(|page| {
+        let runtime = state.runtime.get_mut().unwrap();
+        runtime.cache().contains(*page) && runtime.decoded_page(*page).is_some()
+    }));
+    replace_package_pending_page_leases(state, &target_pages).unwrap();
+    let first_id = LodRuntimeViewId(camera.to_bits());
+    let second_id = LodRuntimeViewId(second_camera.to_bits());
+    let parent = package.manifest.roots[0];
+    {
+        let runtime = state.runtime.get_mut().unwrap();
+        runtime
+            .retry_from_rendered_frontier(first_id, &[parent])
+            .unwrap();
+        runtime
+            .retry_from_rendered_frontier(second_id, &[])
+            .unwrap();
+    }
+    let mut moved_views = views;
+    moved_views[1].view = LodView::perspective(Vec3::new(3.0, 0.0, 100.0), 720.0, 1.0, 0.1);
+    let moved_request =
+        PackageCutRequestSignature::new(&settings, &GlobalTransform::IDENTITY, &moved_views);
+    assert_ne!(moved_request, request);
+    assert!(moved_request.same_critical_request(&request));
+    assert!(
+        !resume_resident_package_bootstrap_view_blend(state, &moved_request, &settings, false)
+            .unwrap()
+    );
+    assert_eq!(state.cold_direct_target.as_ref().unwrap().request, request);
+    assert_eq!(state.pending_page_leases, target_pages);
+    assert_eq!(state.current_page_leases, current_pages);
+    {
+        let runtime = state.runtime.get_mut().unwrap();
+        assert_eq!(runtime.selected_history_for_test(first_id), &[parent]);
+        assert!(runtime.selected_history_for_test(second_id).is_empty());
+    }
+    assert!(
+        resume_resident_package_bootstrap_view_blend(state, &request, &settings, false).unwrap()
+    );
+    assert!(state.cold_direct_target.is_none());
+    assert!(state.bootstrap_handoff.is_none());
+    assert!(state.pending_page_leases.is_empty());
+    assert!(state.pending.is_none());
+    assert_eq!(state.visible_ranges, visible);
+    assert_eq!(state.current_page_leases, current_pages);
+    for (entity, previous, nodes) in retained {
+        let current = state.current.as_ref().unwrap().get(entity).unwrap();
+        assert!(Arc::ptr_eq(&current.phase, &previous.phase));
+        assert!(current.render_is_active());
+        assert_eq!(
+            state
+                .runtime
+                .get_mut()
+                .unwrap()
+                .selected_history_for_test(current.frontier().view()),
+            nodes
+        );
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "sort_radix"))]
+fn delayed_bootstrap_package() -> (
+    NativeTestPackage,
+    World,
+    Entity,
+    Entity,
+    Schedule,
+    Arc<std::sync::Mutex<super::platform::DelayedPackageTransportStats>>,
+) {
+    let package = write_native_test_package_with_levels(3);
+    let mut settings = package_test_settings(0.0);
+    settings.budgets.max_resident_pages = 128;
+    settings.budgets.max_requests_per_frame = 4;
+    let (mut world, cloud, camera, _) = package_test_world(&package, settings, false, 0);
+    world
+        .resource_mut::<GaussianLodPackageConfig>()
+        .max_atlas_gaussians = 8192;
+    world
+        .resource_mut::<GaussianLodPackageConfig>()
+        .streaming
+        .max_concurrent_requests = 4;
+    let mut schedule = Schedule::default();
+    schedule.add_systems(update_lod_packages);
+    let mut bootstrapped = false;
+    for _ in 0..512 {
+        run_package_frame(&mut schedule, &mut world, cloud);
+        std::thread::sleep(Duration::from_millis(1));
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        if state
+            .current
+            .as_ref()
+            .and_then(|cut| cut.get(camera))
+            .is_some_and(|candidate| {
+                candidate.frontier().is_coverage_guard() && candidate.render_is_active()
+            })
+        {
+            bootstrapped = true;
+            break;
+        }
+    }
+    assert!(bootstrapped);
+    let mut transport = MemoryPageTransport::default();
+    let mut files = BTreeMap::new();
+    for page in &package.manifest.pages {
+        let storage = page.storage.as_ref().unwrap();
+        let bytes = files
+            .entry(storage.uri.clone())
+            .or_insert_with(|| std::fs::read(package.root.join(&storage.uri)).unwrap());
+        let (start, len) = storage.byte_range.unwrap_or((0, storage.encoded_len));
+        transport.insert(
+            page.id,
+            bytes[start as usize..(start + len) as usize].to_vec(),
+        );
+    }
+    let stats = Arc::new(std::sync::Mutex::new(
+        super::platform::DelayedPackageTransportStats::default(),
+    ));
+    {
+        let mut manager = world.resource_mut::<GaussianLodPackageManager>();
+        let runtime = manager
+            .clouds
+            .get_mut(&cloud)
+            .unwrap()
+            .runtime
+            .get_mut()
+            .unwrap();
+        assert_eq!(runtime.pending_request_count_for_test(), 0);
+        *runtime.transport_mut() = super::platform::PackagePageTransport::DelayedMemory(
+            super::platform::DelayedPackageTransport {
+                transport,
+                delay_polls: 3,
+                stats: stats.clone(),
+                remaining: Default::default(),
+            },
+        );
+    }
+    (package, world, cloud, camera, schedule, stats)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "sort_radix"))]
+#[test]
+fn bootstrap_target_io_completes_during_continuous_camera_motion() {
+    let (package, mut world, cloud, camera, mut schedule, stats) = delayed_bootstrap_package();
+    world.get_mut::<GaussianLodSettings>(cloud).unwrap().quality = 1.0;
+    let mut admitted_request = None;
+    let mut staged_complete_cut = false;
+    let mut activated = false;
+    for step in 0..1024 {
+        *world.get_mut::<GlobalTransform>(camera).unwrap() =
+            GlobalTransform::from(Transform::from_xyz(step as f32 * 0.0001, 0.0, 5.0));
+        run_package_frame(&mut schedule, &mut world, cloud);
+        std::thread::sleep(Duration::from_millis(1));
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        if let Some(target) = &state.cold_direct_target {
+            let original = admitted_request.get_or_insert_with(|| target.request.clone());
+            assert_eq!(
+                &target.request, original,
+                "motion must not restart admitted page demand"
+            );
+        }
+        if let Some(candidate) = state
+            .pending
+            .as_ref()
+            .and_then(|cut| cut.get(camera))
+            .filter(|candidate| !candidate.frontier().is_coverage_guard())
+        {
+            assert_eq!(
+                candidate.rendered_candidate_count() as usize,
+                package.source_count
+            );
+            assert_eq!(
+                candidate.frontier().quality_status().requested_target,
+                world
+                    .get::<GaussianLodSettings>(cloud)
+                    .unwrap()
+                    .quality_target()
+            );
+            let mut source_ranges = candidate
+                .render_ranges()
+                .iter()
+                .map(|range| {
+                    package
+                        .manifest
+                        .nodes
+                        .iter()
+                        .find(|node| node.id == range.node)
+                        .unwrap()
+                        .source
+                })
+                .collect::<Vec<_>>();
+            source_ranges.sort_unstable_by_key(|range| range.start);
+            let mut covered = 0;
+            for range in source_ranges {
+                assert_eq!(range.start, covered);
+                covered = range.end().unwrap();
+            }
+            assert_eq!(covered as usize, package.source_count);
+            staged_complete_cut = true;
+        }
+        if state
+            .current
+            .as_ref()
+            .and_then(|cut| cut.get(camera))
+            .is_some_and(|candidate| {
+                !candidate.frontier().is_coverage_guard()
+                    && candidate.render_is_active()
+                    && candidate.rendered_candidate_count() as usize == package.source_count
+            })
+        {
+            activated = true;
+            break;
+        }
+    }
+    assert!(
+        admitted_request.is_some() && staged_complete_cut && activated,
+        "delayed requests must decode, stage and activate under full-frame camera motion; stats={:?}",
+        stats.lock().unwrap()
+    );
+    let stats = stats.lock().unwrap();
+    assert!(stats.completed > 0);
+    assert_eq!(
+        stats.cancels, 0,
+        "same-policy camera motion must not cancel target tickets"
+    );
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "sort_radix"))]
+#[test]
+fn admitted_bootstrap_io_still_cancels_on_policy_and_camera_set_changes() {
+    for change_camera_set in [false, true] {
+        let (_package, mut world, cloud, camera, mut schedule, stats) = delayed_bootstrap_package();
+        world.get_mut::<GaussianLodSettings>(cloud).unwrap().quality = 1.0;
+        run_package_frame(&mut schedule, &mut world, cloud);
+        assert!(stats.lock().unwrap().begins > 0);
+        assert_eq!(stats.lock().unwrap().completed, 0);
+        let original = world.resource::<GaussianLodPackageManager>().clouds[&cloud]
+            .cold_direct_target
+            .as_ref()
+            .unwrap()
+            .request
+            .clone();
+        if change_camera_set {
+            let added = world
+                .spawn((
+                    Camera {
+                        viewport: Some(bevy::camera::Viewport {
+                            physical_size: UVec2::new(1280, 720),
+                            ..default()
+                        }),
+                        ..default()
+                    },
+                    Projection::Perspective(default()),
+                    GlobalTransform::from(Transform::from_xyz(1.0, 0.0, 5.0)),
+                    crate::GaussianCamera::default(),
+                ))
+                .id();
+            mark_package_cloud_visible(&mut world, added, cloud);
+        } else {
+            world.get_mut::<GaussianLodSettings>(cloud).unwrap().quality = 0.5;
+        }
+        run_package_frame(&mut schedule, &mut world, cloud);
+        assert!(
+            stats.lock().unwrap().cancels > 0,
+            "critical changes must cancel old delayed tickets"
+        );
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        assert!(
+            state
+                .cold_direct_target
+                .as_ref()
+                .is_none_or(|target| target.request != original)
+        );
+        assert!(
+            state
+                .current
+                .as_ref()
+                .unwrap()
+                .get(camera)
+                .unwrap()
+                .render_is_active(),
+            "critical demand cancellation must retain the complete covered endpoint"
+        );
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "sort_radix"))]
+#[test]
+fn discrete_package_activates_successive_complete_cohorts_before_final_pages_arrive() {
+    let (package, mut world, cloud, camera, mut schedule, _) = delayed_bootstrap_package();
+    {
+        let mut settings = world.get_mut::<GaussianLodSettings>(cloud).unwrap();
+        settings.presentation_mode = LodPresentationMode::Discrete;
+        settings.quality = 1.0;
+    }
+    let mut counts = Vec::new();
+    let mut previous_phase = None;
+    let mut intermediate_before_final_pages = 0;
+    for _ in 0..2048 {
+        run_package_frame(&mut schedule, &mut world, cloud);
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        let candidate = state.current.as_ref().unwrap().get(camera).unwrap();
+        if previous_phase
+            .as_ref()
+            .is_none_or(|phase| !Arc::ptr_eq(phase, &candidate.phase))
+        {
+            let count = candidate.rendered_candidate_count();
+            counts.push(count);
+            previous_phase = Some(Arc::clone(&candidate.phase));
+            let runtime = state.runtime.lock().unwrap();
+            let mut source = candidate
+                .target_render_ranges()
+                .iter()
+                .map(|range| runtime.hierarchy().node(range.node).unwrap().source)
+                .collect::<Vec<_>>();
+            source.sort_by_key(|range| range.start);
+            let mut end = 0;
+            for range in source {
+                assert_eq!(range.start, end);
+                end += range.count;
+            }
+            assert_eq!(
+                end, package.source_count as u64,
+                "every activated step is a complete nonoverlapping source cut"
+            );
+            if count < package.source_count as u32 && !candidate.frontier().is_coverage_guard() {
+                assert!(
+                    !state.current_request_matches_live,
+                    "an intermediate cut must not claim the final request"
+                );
+                if package
+                    .manifest
+                    .pages
+                    .iter()
+                    .filter(|page| page.kind == LodPageKind::SourceLeaves)
+                    .any(|page| runtime.decoded_page(page.id).is_none())
+                {
+                    intermediate_before_final_pages += 1;
+                }
+            }
+            if count == package.source_count as u32 {
+                break;
+            }
+        }
+    }
+    assert_eq!(
+        counts.last().copied(),
+        Some(package.source_count as u32),
+        "adjacent waves must converge: {counts:?}"
+    );
+    assert!(
+        intermediate_before_final_pages >= 2,
+        "expected multiple useful intermediate publications, got {counts:?}"
+    );
+    assert!(
+        counts.windows(2).all(|pair| pair[0] < pair[1]),
+        "stationary Discrete refinement must not regress: {counts:?}"
+    );
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "sort_radix"))]
+#[test]
+fn discrete_adjacent_demand_cancels_on_critical_change_and_unload_releases_ownership() {
+    let (_package, mut world, cloud, camera, mut schedule, stats) = delayed_bootstrap_package();
+    {
+        let mut settings = world.get_mut::<GaussianLodSettings>(cloud).unwrap();
+        settings.presentation_mode = LodPresentationMode::Discrete;
+        settings.quality = 1.0;
+    }
+    run_package_frame(&mut schedule, &mut world, cloud);
+    assert!(stats.lock().unwrap().begins > 0);
+    assert_eq!(stats.lock().unwrap().completed, 0);
+    world.get_mut::<GaussianLodSettings>(cloud).unwrap().quality = 0.0;
+    run_package_frame(&mut schedule, &mut world, cloud);
+    assert!(
+        stats.lock().unwrap().cancels > 0,
+        "critical policy change must cancel the old adjacent demand"
+    );
+    let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+    assert!(
+        state
+            .current
+            .as_ref()
+            .unwrap()
+            .get(camera)
+            .unwrap()
+            .render_is_active()
+    );
+    let atlas = state.atlas.id();
+    world.despawn(cloud);
+    schedule.run(&mut world);
+    assert!(
+        !world
+            .resource::<GaussianLodPackageManager>()
+            .clouds
+            .contains_key(&cloud)
+    );
+    assert!(
+        !world
+            .resource::<LodAtlasUploadQueue>()
+            .queued_slots()
+            .any(|upload| upload.atlas == atlas)
+    );
+    assert!(
+        !world
+            .resource::<LodTransientAtlasRegistry>()
+            .contains(atlas)
+    );
+}
+
+#[cfg(feature = "sort_radix")]
+fn assert_stationary_cold_package_publishes_bootstrap_then_fixed_point(package: NativeTestPackage) {
     let mut settings = package_test_settings(1.0);
     settings.budgets.max_resident_pages = 1024;
     settings.budgets.max_requests_per_frame = 1;
@@ -4277,6 +5831,10 @@ fn stationary_cold_package_publishes_one_bootstrap_then_one_fixed_point_cut() {
                 .expect("camera pending candidate exists");
             if candidate.frontier().is_coverage_guard() {
                 assert!(candidate.rendered_candidate_count() < exact_count);
+                assert!(
+                    state.resident_pages < package.manifest.header.page_count,
+                    "first presentation must not wait for the remaining deep pages"
+                );
                 assert!(
                     candidate
                         .render_ranges()
@@ -4357,7 +5915,7 @@ fn stationary_cold_package_publishes_one_bootstrap_then_one_fixed_point_cut() {
     }
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn coarsest_package_bootstrap_cpu_metadata_and_cached_toggle_stay_resident() {
     let package = write_native_test_package_with_levels(3);
@@ -4446,7 +6004,7 @@ fn coarsest_package_bootstrap_cpu_metadata_and_cached_toggle_stay_resident() {
     );
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn tiny_resident_capacity_retains_one_quiescent_bootstrap_with_typed_failure() {
     // Sixteen leaf pages are the exact target, while the package bootstrap cap
@@ -4727,7 +6285,7 @@ fn tiny_resident_capacity_retains_one_quiescent_bootstrap_with_typed_failure() {
     assert!(state.last_failure.is_none());
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn terminal_bootstrap_page_skips_bootstrap_and_publishes_one_honest_ancestor_cut() {
     let mut package = write_native_test_package_with_levels(3);
@@ -4818,9 +6376,9 @@ fn terminal_bootstrap_page_skips_bootstrap_and_publishes_one_honest_ancestor_cut
     ));
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
-fn legacy_external_abi_cold_package_retains_exact_only_publication() {
+fn unbounded_external_abi_cold_package_retains_exact_only_publication() {
     let mut package = write_native_test_package_with_levels(3);
     package.manifest.build.builder_abi_version = 5;
     package.manifest.build.reducer_version = EXTERNAL_MOMENT_MERGE_VERSION;
@@ -4866,7 +6424,7 @@ fn legacy_external_abi_cold_package_retains_exact_only_publication() {
                 .transport_request_starts_for_test();
             (starts > 0).then(|| (target.request.clone(), starts))
         })
-        .expect("legacy direct target must start bounded cold page work");
+        .expect("unbounded-refinement direct target must start bounded cold page work");
     world
         .entity_mut(camera)
         .insert(GlobalTransform::from(Transform::from_xyz(4.0, 0.0, 12.0)));
@@ -4876,8 +6434,11 @@ fn legacy_external_abi_cold_package_retains_exact_only_publication() {
         let target = state
             .cold_direct_target
             .as_ref()
-            .expect("camera motion must replace, not drop, the eligible direct target");
-        assert_ne!(target.request, initial_direct_request);
+            .expect("camera motion must retain the eligible admitted direct target");
+        assert_eq!(
+            target.request, initial_direct_request,
+            "camera-only changes must retain bounded admitted I/O until this complete cut arrives"
+        );
         let runtime = state.runtime.lock().unwrap();
         let pending = runtime.pending_request_count_for_test();
         let mut direct_footprint = target.plan.pages().clone();
@@ -4891,7 +6452,7 @@ fn legacy_external_abi_cold_package_retains_exact_only_publication() {
         );
         assert!(
             pending <= direct_footprint.len(),
-            "replaced direct demand must contain only target/root/guard work: pending={pending}, footprint_pages={}",
+            "retained direct demand must contain only target/root/guard work: pending={pending}, footprint_pages={}",
             direct_footprint.len()
         );
     }
@@ -4910,7 +6471,7 @@ fn legacy_external_abi_cold_package_retains_exact_only_publication() {
         {
             assert!(
                 !candidate.frontier().is_coverage_guard(),
-                "legacy singleton coarse rungs must not use the cold bootstrap path"
+                "uncertified singleton coarse rungs must not use the cold bootstrap path"
             );
         }
         if let Some(candidate) = state
@@ -4940,11 +6501,11 @@ fn legacy_external_abi_cold_package_retains_exact_only_publication() {
             .unwrap()
             .transport_request_starts_for_test()
             > request_starts_before_motion,
-        "the replacement direct target must resume bounded request progress"
+        "the admitted direct target must continue bounded request progress under motion"
     );
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn stationary_replacement_retains_current_until_one_fixed_point_activation() {
     let package = write_native_test_package(false);
@@ -5029,7 +6590,7 @@ fn stationary_replacement_retains_current_until_one_fixed_point_activation() {
     ));
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn package_cap_plus_one_cut_stages_bounded_prefix_and_activates_once() {
     let package = write_native_test_package(false);
@@ -5117,7 +6678,7 @@ fn package_cap_plus_one_cut_stages_bounded_prefix_and_activates_once() {
     );
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn canceling_partial_staging_retains_resident_sparse_upload() {
     let package = write_native_test_package(false);
@@ -5210,7 +6771,7 @@ fn canceling_partial_staging_retains_resident_sparse_upload() {
     assert!(!ticket.is_failed());
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn native_package_stages_whole_slots_and_rejects_subpage_cap() {
     let package = write_native_test_package(false);
@@ -5247,7 +6808,7 @@ fn native_package_stages_whole_slots_and_rejects_subpage_cap() {
     );
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn multiple_packages_share_one_live_main_world_staging_budget_fairly() {
     let package = write_native_test_package(false);
@@ -5307,7 +6868,7 @@ fn multiple_packages_share_one_live_main_world_staging_budget_fairly() {
     );
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn package_reports_typed_capacity_failure_for_globally_oversized_slot() {
     let package = write_native_test_package(false);
@@ -5470,7 +7031,7 @@ fn hundred_million_virtual_source_does_not_scale_physical_allocation() {
     assert_eq!(plan.slot_count, 4);
 }
 
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 #[test]
 fn package_atlas_plan_preserves_manifest_root_validation() {
     let package = write_native_test_package(false);
@@ -5920,4 +7481,338 @@ fn sparse_multi_camera_atlas_rewrites_are_bounded_and_generation_safe() {
         Ordering::Release,
     );
     assert!(!package_candidate_set_is_active(&current));
+}
+
+#[cfg(feature = "sort_radix")]
+#[test]
+fn immutable_package_preparation_is_record_bounded_and_equivalent() {
+    let package = write_native_test_package_with_levels(1);
+    let asset = GaussianLodAsset::new(package.manifest.clone()).unwrap();
+    let settings = package_test_settings(0.0);
+    let config = GaussianLodPackageConfig::default();
+    let source = GaussianLodPackageSource::native_directory(package.root.to_string_lossy());
+    let mut job = PackagePreparationJob::new(
+        AssetId::default(),
+        &asset,
+        &source,
+        &settings,
+        &config,
+        &config.streaming,
+        false,
+    );
+    assert!(!job.is_ready());
+    assert_eq!(job.advance(0), 0);
+    assert!(!job.is_ready());
+    let mut slices = 0;
+    while !job.is_ready() {
+        assert!(job.advance(1) <= 1);
+        slices += 1;
+        assert!(
+            slices < 10_000,
+            "the small immutable fixture must terminate"
+        );
+    }
+    assert!(slices > package.manifest.nodes.len() + package.manifest.pages.len());
+    let prepared = job.take_result().unwrap().unwrap();
+    assert!(
+        prepared.debug_index.is_none(),
+        "debug-Off startup must not allocate a debug manifest index"
+    );
+    assert_eq!(
+        prepared.plan,
+        GaussianLodPackageAtlasPlan::from_manifest(&package.manifest, &settings, &config).unwrap()
+    );
+    let expected_locations =
+        crate::stream::transport::ManifestPageLocations::from_manifest(&package.manifest).unwrap();
+    for page in &package.manifest.pages {
+        assert_eq!(
+            prepared.locations.get(page.id),
+            expected_locations.get(page.id)
+        );
+    }
+    let mut clouds = Assets::default();
+    let mut transient_atlases = LodTransientAtlasRegistry::default();
+    let mut uploads = LodAtlasUploadQueue::default();
+    let mut manager = GaussianLodPackageManager::default();
+    let state = instantiate_prepared_package(
+        prepared,
+        &asset,
+        &source,
+        &settings,
+        &config,
+        &config.streaming,
+        false,
+        &mut manager,
+        &mut clouds,
+        &mut transient_atlases,
+        &mut uploads,
+    )
+    .unwrap();
+    let runtime = state.runtime.lock().unwrap();
+    for node in &package.manifest.nodes {
+        assert_eq!(
+            runtime.hierarchy().node(node.id).unwrap().representation,
+            node.representation
+        );
+    }
+    assert_eq!(runtime.transport_request_starts_for_test(), 0);
+    assert_eq!(state.transient_atlas.materialized_slot_count().unwrap(), 0);
+}
+
+#[cfg(feature = "sort_radix")]
+#[test]
+fn cancelled_package_preparation_stays_charged_until_acknowledged() {
+    let package = write_native_test_package_with_levels(1);
+    let asset = GaussianLodAsset::new(package.manifest.clone()).unwrap();
+    let settings = package_test_settings(0.0);
+    let config = GaussianLodPackageConfig {
+        max_preparation_jobs: 1,
+        max_preparation_bytes: asset.preparation_bytes(),
+        ..default()
+    };
+    let source = GaussianLodPackageSource::native_directory(package.root.to_string_lossy());
+    let mut job = PackagePreparationJob::new(
+        AssetId::default(),
+        &asset,
+        &source,
+        &settings,
+        &config,
+        &config.streaming,
+        false,
+    );
+    assert_eq!(job.advance(1), 1);
+    let entity = Entity::from_bits(777);
+    let mut manager = GaussianLodPackageManager::default();
+    manager.preparations.insert(entity, job);
+    assert!(!manager.preparation_admission(asset.preparation_bytes(), &config));
+    manager.cancel_preparation(entity);
+    assert_eq!(manager.retired_preparations.len(), 1);
+    assert!(!manager.preparation_admission(asset.preparation_bytes(), &config));
+    manager.maintain_retired_preparations();
+    assert!(manager.retired_preparations.is_empty());
+    assert!(manager.preparation_admission(asset.preparation_bytes(), &config));
+    assert!(manager.clouds.is_empty());
+}
+
+#[cfg(feature = "sort_radix")]
+#[test]
+fn package_manifest_changes_cancel_preparation_before_atlas_publication() {
+    let package = write_native_test_package_with_levels(1);
+    let (mut world, cloud, _, _) =
+        package_test_world(&package, package_test_settings(0.0), false, 0);
+    world
+        .resource_mut::<GaussianLodPackageConfig>()
+        .preparation_records_per_frame = 1;
+    let mut schedule = Schedule::default();
+    schedule.add_systems(update_lod_packages);
+    run_package_frame(&mut schedule, &mut world, cloud);
+    assert!(
+        !world
+            .resource::<GaussianLodPackageManager>()
+            .clouds
+            .contains_key(&cloud)
+    );
+    assert!(
+        world
+            .resource::<GaussianLodPackageManager>()
+            .preparations
+            .contains_key(&cloud)
+    );
+    assert!(world.get::<PlanarGaussian3dHandle>(cloud).is_none());
+    world
+        .get_mut::<GaussianLodSettings>(cloud)
+        .unwrap()
+        .budgets
+        .max_pending_requests += 1;
+    run_package_frame(&mut schedule, &mut world, cloud);
+    let manager = world.resource::<GaussianLodPackageManager>();
+    assert!(manager.clouds.is_empty());
+    assert_eq!(manager.retired_preparations.len(), 1);
+    assert_eq!(
+        manager.preparations[&cloud].structural,
+        PackageStructuralSignature::new(world.get::<GaussianLodSettings>(cloud).unwrap())
+    );
+    world.despawn(cloud);
+    schedule.run(&mut world);
+    schedule.run(&mut world);
+    let manager = world.resource::<GaussianLodPackageManager>();
+    assert!(manager.clouds.is_empty());
+    assert!(manager.preparations.is_empty());
+    assert!(manager.retired_preparations.is_empty());
+}
+
+#[cfg(feature = "sort_radix")]
+#[test]
+fn debug_index_is_lazy_and_first_enable_is_record_bounded() {
+    let package = write_native_test_package_with_levels(1);
+    let (mut world, cloud, camera, _) =
+        package_test_world(&package, package_test_settings(0.0), false, 0);
+    let mut schedule = Schedule::default();
+    schedule.add_systems(update_lod_packages);
+    drive_package_to_active_count(
+        &mut schedule,
+        &mut world,
+        cloud,
+        camera,
+        package.manifest.quality.coarsest_gaussian_count as u32,
+    );
+    let mut manager = world.resource_mut::<GaussianLodPackageManager>();
+    let state = manager.clouds.get_mut(&cloud).unwrap();
+    assert!(state.debug_index.is_none());
+    let mut frames = 0;
+    while state.debug_index.is_none() {
+        let mut records = 1;
+        sync_package_debug_annotations_with_budget(state, true, &mut records).unwrap();
+        assert!(records <= 1);
+        frames += 1;
+        assert!(frames < 10_000);
+    }
+    assert!(frames > package.manifest.nodes.len());
+    let index = Arc::clone(state.debug_index.as_ref().unwrap());
+    sync_package_debug_annotations(state, false).unwrap();
+    assert!(state.debug_preparation.is_none());
+    assert!(Arc::ptr_eq(state.debug_index.as_ref().unwrap(), &index));
+    let mut records = 0;
+    sync_package_debug_annotations_with_budget(state, true, &mut records).unwrap();
+    assert!(Arc::ptr_eq(&state.debug.as_ref().unwrap().index, &index));
+}
+
+#[cfg(feature = "sort_radix")]
+#[test]
+fn package_preparation_keeps_immutable_work_ready_until_global_storage_is_admitted() {
+    use crate::stream::memory::LodMemoryLimits;
+    let package = write_native_test_package_with_levels(1);
+    let asset = GaussianLodAsset::new(package.manifest.clone()).unwrap();
+    let settings = package_test_settings(0.0);
+    let config = GaussianLodPackageConfig::default();
+    let source = GaussianLodPackageSource::native_directory(package.root.to_string_lossy());
+    let plan =
+        GaussianLodPackageAtlasPlan::from_manifest(&package.manifest, &settings, &config).unwrap();
+    let ledger = LodMemoryLedger::new(LodMemoryLimits {
+        max_cpu_bytes: u64::MAX,
+        max_gpu_bytes: plan.physical_bytes + 16,
+    });
+    let competitor = ledger
+        .try_reserve(LodMemoryCategory::CompactionGpu, 1)
+        .unwrap();
+    let metadata = ledger
+        .try_reserve(LodMemoryCategory::MetadataCpu, asset.preparation_bytes())
+        .unwrap();
+    let mut job = PackagePreparationJob::new_reserved(
+        AssetId::default(),
+        &asset,
+        &source,
+        &settings,
+        &config,
+        &config.streaming,
+        false,
+        Some(metadata),
+    );
+    while !job.is_ready() {
+        job.advance(128);
+    }
+    let before = ledger.snapshot();
+    assert!(job.reserve_ready_storage(&ledger).is_err());
+    assert_eq!(
+        ledger.snapshot(),
+        before,
+        "failed atomic admission must not partially charge storage"
+    );
+    assert!(job.is_ready());
+    assert!(
+        job.failure.is_none(),
+        "global pressure must remain retryable without recompilation"
+    );
+    drop(competitor);
+    job.reserve_ready_storage(&ledger).unwrap();
+    let admitted = ledger.snapshot();
+    assert_eq!(admitted.gpu_bytes, plan.physical_bytes + 16);
+    assert!(admitted.cpu_bytes > asset.preparation_bytes());
+    job.reserve_ready_storage(&ledger).unwrap();
+    assert_eq!(
+        ledger.snapshot(),
+        admitted,
+        "retry must share existing reservation identities"
+    );
+    let prepared = job.take_result().unwrap().unwrap();
+    drop(job);
+    assert_eq!(ledger.snapshot(), admitted);
+    drop(prepared);
+    assert_eq!(ledger.snapshot().total_bytes, 0);
+}
+
+#[test]
+fn presentation_mode_changes_the_critical_package_request() {
+    let mut settings = GaussianLodSettings::default();
+    let morph = PackageCutRequestSignature::new(&settings, &GlobalTransform::IDENTITY, &[]);
+    settings.presentation_mode = LodPresentationMode::Discrete;
+    let discrete = PackageCutRequestSignature::new(&settings, &GlobalTransform::IDENTITY, &[]);
+    assert!(!morph.same_critical_request(&discrete));
+    assert_ne!(morph, discrete);
+    assert_eq!(morph.target, discrete.target);
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "sort_radix"))]
+#[test]
+fn discrete_package_lowered_active_cap_publishes_resident_root_recovery_within_new_limit() {
+    let (package, mut world, cloud, camera, mut schedule, _) = delayed_bootstrap_package();
+    {
+        let mut settings = world.get_mut::<GaussianLodSettings>(cloud).unwrap();
+        settings.presentation_mode = LodPresentationMode::Discrete;
+        settings.quality = 1.0;
+    }
+    drive_package_to_active_count(
+        &mut schedule,
+        &mut world,
+        cloud,
+        camera,
+        package.source_count as u32,
+    );
+    let roots = package
+        .manifest
+        .roots
+        .iter()
+        .map(|id| {
+            package
+                .manifest
+                .nodes
+                .iter()
+                .find(|node| node.id == *id)
+                .unwrap()
+                .representation
+                .count
+        })
+        .sum::<u32>();
+    world
+        .get_mut::<GaussianLodSettings>(cloud)
+        .unwrap()
+        .budgets
+        .max_active_gaussians = u64::from(roots);
+    let mut saw_pending = false;
+    for _ in 0..128 {
+        run_package_frame(&mut schedule, &mut world, cloud);
+        let state = &world.resource::<GaussianLodPackageManager>().clouds[&cloud];
+        if let Some(pending) = &state.pending {
+            saw_pending = true;
+            assert!(
+                pending.get(camera).unwrap().rendered_candidate_count() <= roots,
+                "new render-policy cap must admit every recovery candidate"
+            );
+        }
+        if state
+            .current
+            .as_ref()
+            .unwrap()
+            .get(camera)
+            .unwrap()
+            .rendered_candidate_count()
+            == roots
+            && state.current_request_matches_live
+        {
+            return;
+        }
+    }
+    panic!(
+        "lowered cap did not activate the resident root recovery; pending observed={saw_pending}"
+    );
 }

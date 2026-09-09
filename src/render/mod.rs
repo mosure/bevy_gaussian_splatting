@@ -71,21 +71,22 @@ use crate::stream::render_commit::LodRenderCandidates;
 use crate::morph::interpolate::GaussianInterpolateBindGroups;
 #[cfg(feature = "morph_particles")]
 use crate::morph::particle::ParticleBehaviorBindGroup;
-#[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(feature = "sort_radix")]
 use crate::sort::radix::RadixBindGroup;
-
-#[cfg(feature = "packed")]
-mod packed;
-
-#[cfg(feature = "buffer_storage")]
-mod planar;
 
 #[cfg(lod_render_path)]
 pub mod lod;
+#[cfg(lod_render_path)]
+pub mod ordered;
+#[cfg(lod_render_path)]
+pub mod point;
 #[cfg(feature = "lod")]
 pub mod recovery;
-#[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
-mod texture;
+#[cfg(lod_render_path)]
+pub mod spatial_morph;
+pub mod support;
+#[cfg(lod_render_path)]
+pub mod traversal;
 
 const BINDINGS_SHADER_HANDLE: Handle<Shader> = uuid_handle!("cfd9a3d9-a0cb-40c8-ab0b-073110a02474");
 const GAUSSIAN_SHADER_HANDLE: Handle<Shader> = uuid_handle!("9a18d83b-137d-4f44-9628-e2defc4b62b0");
@@ -96,13 +97,15 @@ const GAUSSIAN_3D_SHADER_HANDLE: Handle<Shader> =
 const GAUSSIAN_4D_SHADER_HANDLE: Handle<Shader> =
     uuid_handle!("26234995-0932-4dfa-ab8d-53df1e779dd4");
 const HELPERS_SHADER_HANDLE: Handle<Shader> = uuid_handle!("9ca57ab0-07de-4a43-94f8-547c38e292cb");
+const SUPPORT_SHADER_HANDLE: Handle<Shader> = uuid_handle!("ab4705b2-3cbf-413d-aae7-bb6e546441ae");
+#[cfg(lod_render_path)]
+const PROJECTION_SHADER_HANDLE: Handle<Shader> =
+    uuid_handle!("a34fbb13-d649-411b-9953-e02e5b38bf21");
 const LOD_DEBUG_SHADER_HANDLE: Handle<Shader> =
     uuid_handle!("4d449c34-2e1e-48c4-9561-d04fed7c5f2b");
 const LOD_MORPH_SHADER_HANDLE: Handle<Shader> =
     uuid_handle!("872c7fd3-9f1f-4ad5-81dc-1cf33090e715");
-const PACKED_SHADER_HANDLE: Handle<Shader> = uuid_handle!("5bb62086-7004-4575-9972-274dc8acccf1");
 const PLANAR_SHADER_HANDLE: Handle<Shader> = uuid_handle!("d6a3f978-f795-4786-8475-26366f28d852");
-const TEXTURE_SHADER_HANDLE: Handle<Shader> = uuid_handle!("500e2ebf-51a8-402e-9c88-e0d5152c3486");
 const TRANSFORM_SHADER_HANDLE: Handle<Shader> =
     uuid_handle!("648516b2-87cc-4937-ae1c-d986952e9fa7");
 
@@ -294,6 +297,13 @@ where
 
         load_internal_asset!(
             app,
+            SUPPORT_SHADER_HANDLE,
+            "support.wgsl",
+            Shader::from_wgsl
+        );
+
+        load_internal_asset!(
+            app,
             LOD_DEBUG_SHADER_HANDLE,
             "lod_debug.wgsl",
             Shader::from_wgsl
@@ -306,14 +316,12 @@ where
             Shader::from_wgsl
         );
 
-        load_internal_asset!(app, PACKED_SHADER_HANDLE, "packed.wgsl", Shader::from_wgsl);
-
         load_internal_asset!(app, PLANAR_SHADER_HANDLE, "planar.wgsl", Shader::from_wgsl);
-
+        #[cfg(lod_render_path)]
         load_internal_asset!(
             app,
-            TEXTURE_SHADER_HANDLE,
-            "texture.wgsl",
+            PROJECTION_SHADER_HANDLE,
+            "projection.wgsl",
             Shader::from_wgsl
         );
 
@@ -325,9 +333,6 @@ where
         );
 
         app.add_plugins(UniformComponentPlugin::<CloudUniform>::default());
-
-        #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
-        app.add_plugins(texture::BufferTexturePlugin);
     }
 
     fn finish(&self, app: &mut App) {
@@ -377,7 +382,7 @@ fn invalidate_gaussian_gpu_component_caches<R: PlanarSync>(world: &mut World) {
     removed += remove_all::<GaussianViewBindGroup>(world);
     removed += remove_all::<GaussianComputeViewBindGroup>(world);
 
-    #[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+    #[cfg(feature = "sort_radix")]
     {
         removed += remove_all::<RadixBindGroup>(world);
     }
@@ -554,7 +559,7 @@ type GpuCloudBundleQuery<R: bevy_interleave::prelude::PlanarSync> = (
     Entity,
     &'static <R as bevy_interleave::prelude::PlanarSync>::PlanarTypeHandle,
     &'static Aabb,
-    &'static SortedEntriesHandle,
+    Option<&'static SortedEntriesHandle>,
     &'static CloudSettings,
     Option<&'static GaussianLodSettings>,
     &'static GlobalTransform,
@@ -1136,7 +1141,7 @@ fn update_lod_debug_sparse_binding_readiness(
     // belongs to its own candidate epoch. Consequently Residency, like the
     // invariant presets, can remain specialized while current and replacement
     // outputs overlap; mutable record payload uploads continue in the
-    // background for flat/legacy entries whose packed code is zero.
+    // background for flat entries whose packed code is zero.
     lod_debug_sparse_candidate_epoch_ready(
         candidate_epoch.candidates_are_current,
         candidate_epoch.retained_current,
@@ -1374,6 +1379,13 @@ const fn lod_debug_candidate_epoch_ready(
     candidates_are_current || (!pending_candidate_active && !pending_activation_armed)
 }
 
+type GaussianQueueView = (
+    &'static ExtractedView,
+    &'static GaussianCamera,
+    &'static RenderVisibleEntities,
+    Option<&'static Msaa>,
+);
+
 #[allow(clippy::too_many_arguments)]
 fn queue_gaussians<R: PlanarSync>(
     gaussian_cloud_uniform: Res<ComponentUniforms<CloudUniform>>,
@@ -1385,17 +1397,12 @@ fn queue_gaussians<R: PlanarSync>(
     gaussian_clouds: Res<RenderAssets<R::GpuPlanarType>>,
     sorted_entries: Res<RenderAssets<GpuSortedEntry>>,
     mut transparent_render_phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
-    mut views: Query<(
-        &ExtractedView,
-        &GaussianCamera,
-        &RenderVisibleEntities,
-        Option<&Msaa>,
-    )>,
+    mut views: Query<GaussianQueueView>,
     gaussian_splatting_bundles: Query<GpuCloudBundleQuery<R>>,
 ) {
     debug!("queue_gaussians");
 
-    let warmup = views.iter().any(|(_, camera, _, _)| camera.warmup);
+    let warmup = views.iter().any(|(_, camera, ..)| camera.warmup);
     if warmup {
         debug!("skipping gaussian cloud render during warmup");
         return;
@@ -1497,9 +1504,14 @@ fn queue_gaussians<R: PlanarSync>(
                 return;
             }
 
-            if sorted_entries.get(sorted_entries_handle).is_none() {
+            #[cfg(lod_render_path)]
+            let per_cloud_sort_ready =
+                sorted_entries_handle.is_some_and(|handle| sorted_entries.get(handle).is_some());
+            #[cfg(not(lod_render_path))]
+            let per_cloud_sort_ready = sorted_entries.get(sorted_entries_handle).is_some();
+            if !lod_candidate && !per_cloud_sort_ready {
                 debug!("sorted entries asset not found");
-                return;
+                continue;
             }
 
             let msaa = msaa.cloned().unwrap_or_default();
@@ -1848,28 +1860,11 @@ where
             Some("gaussian_lod_sorted_morph_layout"),
             &lod_sorted_layout_entries,
         );
-        #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
-        let sorted_layout = texture::get_sorted_bind_group_layout(render_device);
-        #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
-        let sorted_layout_desc = BindGroupLayoutDescriptor::new(
-            "texture_sorted_layout",
-            &[BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::VERTEX_FRAGMENT | ShaderStages::COMPUTE,
-                ty: BindingType::Texture {
-                    view_dimension: TextureViewDimension::D2,
-                    sample_type: TextureSampleType::Uint,
-                    multisampled: false,
-                },
-                count: None,
-            }],
-        );
-
         // Debug annotations use a fifth bind group so ordinary clouds retain
         // the established 0..=3 layout and do not pay for a dummy metadata
         // buffer. Four bind groups is the WebGPU minimum; unsupported adapters
         // simply keep this optional diagnostic path unavailable.
-        #[cfg(all(feature = "buffer_storage", not(feature = "webgl2")))]
+        #[cfg(feature = "buffer_storage")]
         let (lod_debug_layout, lod_debug_layout_desc) = if render_device.limits().max_bind_groups
             >= 5
             && render_device.limits().max_storage_buffer_binding_size
@@ -1908,7 +1903,7 @@ where
         } else {
             (None, None)
         };
-        #[cfg(not(all(feature = "buffer_storage", not(feature = "webgl2"))))]
+        #[cfg(not(feature = "buffer_storage"))]
         let (lod_debug_layout, lod_debug_layout_desc) = (None, None);
 
         debug!("created cloud pipeline");
@@ -2097,22 +2092,13 @@ pub fn shader_defs_with_defines(
     #[cfg(feature = "morph_particles")]
     shader_defs.push("READ_WRITE_POINTS".into());
 
-    #[cfg(feature = "packed")]
-    shader_defs.push("PACKED".into());
-
     #[cfg(feature = "buffer_storage")]
     shader_defs.push("BUFFER_STORAGE".into());
-
-    #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
-    shader_defs.push("BUFFER_TEXTURE".into());
 
     // #[cfg(feature = "f16")]
     // shader_defs.push("F16".into());
 
     shader_defs.push("F32".into());
-
-    #[cfg(feature = "packed")]
-    shader_defs.push("PACKED_F32".into());
 
     // #[cfg(all(feature = "f16", feature = "buffer_storage"))]
     // shader_defs.push("PLANAR_F16".into());
@@ -2120,19 +2106,10 @@ pub fn shader_defs_with_defines(
     #[cfg(feature = "buffer_storage")]
     shader_defs.push("PLANAR_F32".into());
 
-    // #[cfg(all(feature = "f16", feature = "buffer_texture"))]
-    // shader_defs.push("PLANAR_TEXTURE_F16".into());
-
-    #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
-    shader_defs.push("PLANAR_TEXTURE_F32".into());
-
     #[cfg(feature = "precompute_covariance_3d")]
     if key.gaussian_mode == GaussianMode::Gaussian3d {
         shader_defs.push("PRECOMPUTE_COVARIANCE_3D".into());
     }
-
-    #[cfg(feature = "webgl2")]
-    shader_defs.push("WEBGL2".into());
 
     match key.gaussian_mode {
         GaussianMode::Gaussian2d => shader_defs.push("GAUSSIAN_2D".into()),
@@ -2179,6 +2156,8 @@ pub struct CloudPipelineKey {
     pub lod_candidate: bool,
     pub sample_count: u32,
     pub hdr: bool,
+    /// Blending is fixed-function state and requires a distinct pipeline.
+    pub additive: bool,
 }
 
 /// Builds the exact Gaussian raster specialization shared by draw queuing and
@@ -2205,6 +2184,7 @@ pub(crate) fn cloud_pipeline_key(
         lod_candidate,
         sample_count,
         hdr,
+        additive: settings.additive,
     }
 }
 
@@ -2260,7 +2240,22 @@ impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
                 entry_point: Some("fs_main".into()),
                 targets: vec![Some(ColorTargetState {
                     format,
-                    blend: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    blend: Some(if key.additive {
+                        BlendState {
+                            color: BlendComponent {
+                                src_factor: BlendFactor::One,
+                                dst_factor: BlendFactor::One,
+                                operation: BlendOperation::Add,
+                            },
+                            alpha: BlendComponent {
+                                src_factor: BlendFactor::One,
+                                dst_factor: BlendFactor::One,
+                                operation: BlendOperation::Add,
+                            },
+                        }
+                    } else {
+                        BlendState::PREMULTIPLIED_ALPHA_BLENDING
+                    }),
                     write_mask: ColorWrites::ALL,
                 })],
             }),
@@ -2299,6 +2294,18 @@ impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
     }
 }
 
+#[cfg(lod_render_path)]
+#[allow(type_alias_bounds)]
+type DrawGaussians<R: bevy_interleave::prelude::PlanarSync> = (
+    CheckGaussianRasterBackend,
+    SetItemPipeline,
+    // SetViewBindGroup<0>,
+    SetPreviousViewBindGroup<0>,
+    SetGaussianUniformBindGroup<1>,
+    DrawGaussianInstanced<R>,
+);
+
+#[cfg(not(lod_render_path))]
 #[allow(type_alias_bounds)]
 type DrawGaussians<R: bevy_interleave::prelude::PlanarSync> = (
     SetItemPipeline,
@@ -2319,7 +2326,6 @@ pub struct CloudUniform {
     /// for all four vertices of every splat.
     pub transform_scale_bound: f32,
     pub count: u32,
-    pub count_root_ceil: u32,
     pub time: f32,
     pub time_start: f32,
     pub time_stop: f32,
@@ -2359,7 +2365,7 @@ pub fn extract_gaussians<R: PlanarSync>(
             &ViewVisibility,
             &R::PlanarTypeHandle,
             &Aabb,
-            &SortedEntriesHandle,
+            Option<&SortedEntriesHandle>,
             &CloudSettings,
             &GlobalTransform,
         )>,
@@ -2398,7 +2404,6 @@ pub fn extract_gaussians<R: PlanarSync>(
             global_scale: settings.global_scale,
             transform_scale_bound: gaussian_transform_scale_bound(transform_matrix),
             count: cloud.len() as u32,
-            count_root_ceil: (cloud.len() as f32).sqrt().ceil() as u32,
             time: settings.time,
             time_start: settings.time_start,
             time_stop: settings.time_stop,
@@ -2413,15 +2418,25 @@ pub fn extract_gaussians<R: PlanarSync>(
 
         commands_list.push((
             entity,
-            GpuCloudBundle::<R> {
-                aabb: *aabb,
-                settings: settings.clone(),
+            (
+                *aabb,
+                settings.clone(),
                 settings_uniform,
-                sorted_entries: sorted_entries.clone(),
-                cloud_handle: cloud_handle.clone(),
-                transform: *transform,
-            },
+                cloud_handle.clone(),
+                *transform,
+            ),
         ));
+        if let Some(sorted_entries) = sorted_entries {
+            commands.entity(entity).insert(sorted_entries.clone());
+        } else {
+            commands
+                .entity(entity)
+                .remove::<(SortedEntriesHandle, SortBindGroup)>();
+            #[cfg(feature = "sort_radix")]
+            commands
+                .entity(entity)
+                .remove::<crate::sort::radix::RadixBindGroup>();
+        }
     }
     *prev_commands_len = commands_list.len();
     commands.insert_batch(commands_list);
@@ -2435,6 +2450,20 @@ pub struct GaussianUniformBindGroups {
 #[derive(Component)]
 pub struct SortBindGroup {
     pub sorted_bind_group: BindGroup,
+    camera_stride: u64,
+    camera_count: usize,
+}
+
+impl SortBindGroup {
+    fn camera_offset(&self, index: usize) -> Option<u32> {
+        if index >= self.camera_count {
+            return None;
+        }
+        self.camera_stride
+            .checked_mul(index as u64)?
+            .try_into()
+            .ok()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2448,9 +2477,6 @@ fn queue_gaussian_bind_group<R: PlanarSync>(
     gaussian_cloud_res: Res<RenderAssets<R::GpuPlanarType>>,
     sorted_entries_res: Res<RenderAssets<GpuSortedEntry>>,
     gaussian_clouds: Query<GpuCloudBindGroupQuery<R>>,
-    #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))] gpu_images: Res<
-        RenderAssets<bevy::render::texture::GpuImage>,
-    >,
 ) {
     let Some(resource) = gaussian_uniforms.binding() else {
         return;
@@ -2470,18 +2496,8 @@ fn queue_gaussian_bind_group<R: PlanarSync>(
 
     let gaussian_assets_changed = gaussian_cloud_res.is_changed();
     let sorted_assets_changed = sorted_entries_res.is_changed();
-    #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
-    let mut should_refresh_for_assets =
-        pipeline_changed || gaussian_assets_changed || sorted_assets_changed;
-    #[cfg(not(all(feature = "buffer_texture", not(feature = "buffer_storage"))))]
     let should_refresh_for_assets =
         pipeline_changed || gaussian_assets_changed || sorted_assets_changed;
-
-    #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
-    {
-        let textures_changed = gpu_images.is_changed();
-        should_refresh_for_assets |= textures_changed;
-    }
 
     for query in gaussian_clouds.iter() {
         let (entity, cloud_handle, sorted_entries_handle, existing_bind_group) = query;
@@ -2539,26 +2555,14 @@ fn queue_gaussian_bind_group<R: PlanarSync>(
                 }),
             }],
         );
-        #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
-        let sorted_bind_group = render_device.create_bind_group(
-            Some("render_sorted_bind_group"),
-            &gaussian_cloud_pipeline.sorted_layout,
-            &[BindGroupEntry {
-                binding: 0,
-                resource: BindingResource::TextureView(
-                    &gpu_images
-                        .get(&sorted_entries.texture)
-                        .unwrap()
-                        .texture_view,
-                ),
-            }],
-        );
 
         debug!("inserting sorted bind group");
 
-        commands
-            .entity(entity)
-            .insert(SortBindGroup { sorted_bind_group });
+        commands.entity(entity).insert(SortBindGroup {
+            sorted_bind_group,
+            camera_stride: sorted_entries.camera_stride,
+            camera_count: sorted_entries.camera_count,
+        });
     }
 }
 
@@ -2833,6 +2837,58 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGaussianUniformBindGr
     }
 }
 
+/// Queue precedes point-workspace admission. Select the actual backend only
+/// when this command runs, after the current view's point pass and admission
+/// checks, so enabling GPS or falling back cannot lose or duplicate a frame.
+#[cfg(lod_render_path)]
+struct CheckGaussianRasterBackend;
+
+#[cfg(lod_render_path)]
+impl<P: PhaseItem> RenderCommand<P> for CheckGaussianRasterBackend {
+    type Param = (
+        Option<SRes<point::PointSplattingPipelineReadiness>>,
+        Option<SRes<ordered::GlobalOrderReadiness>>,
+    );
+    type ViewQuery = (
+        Read<ExtractedView>,
+        Option<Read<point::GaussianPointSplattingSettings>>,
+        Option<Read<ordered::GaussianGlobalOrderSettings>>,
+    );
+    type ItemQuery = (Read<CloudSettings>, Option<Read<LodRenderCandidates>>);
+
+    fn render<'w>(
+        _item: &P,
+        (view, point_settings, ordered_settings): ROQueryItem<'w, 'w, Self::ViewQuery>,
+        cloud: Option<ROQueryItem<'w, 'w, Self::ItemQuery>>,
+        (point_readiness, ordered_readiness): SystemParamItem<'w, '_, Self::Param>,
+        _pass: &mut TrackedRenderPass<'w>,
+    ) -> RenderCommandResult {
+        let Some((settings, candidates)) = cloud else {
+            return RenderCommandResult::Skip;
+        };
+        let candidate = candidates.and_then(|set| {
+            set.by_camera
+                .get(&view.retained_view_entity.main_entity.id())
+        });
+        let point = point_readiness
+            .as_ref()
+            .is_some_and(|ready| ready.suppresses_per_cloud_pass(view.retained_view_entity))
+            && point::point_splatting_for_cloud(point_settings, settings)
+            && candidate.is_none_or(point::supports_candidate);
+        let ordered = point_settings.is_none()
+            && ordered_readiness
+                .as_ref()
+                .is_some_and(|ready| ready.suppresses_per_cloud_pass(view.retained_view_entity))
+            && ordered::global_order_for_cloud(ordered_settings, settings)
+            && candidate.is_none_or(ordered::supports_candidate);
+        if point || ordered {
+            RenderCommandResult::Skip
+        } else {
+            RenderCommandResult::Success
+        }
+    }
+}
+
 pub struct DrawGaussianInstanced<R: PlanarSync> {
     phantom: std::marker::PhantomData<R>,
 }
@@ -2842,7 +2898,7 @@ pub struct DrawGaussianInstanced<R: PlanarSync> {
 type DrawGaussianItemQuery<R: PlanarSync> = (
     Read<R::PlanarTypeHandle>,
     Read<PlanarStorageBindGroup<R>>,
-    Read<SortBindGroup>,
+    Option<Read<SortBindGroup>>,
     Read<CloudSettings>,
     Option<Read<LodDebugBindGroup<R>>>,
     Option<Read<LodRenderCandidates>>,
@@ -2859,10 +2915,42 @@ type DrawGaussianItemQuery<R: PlanarSync> = (
 );
 
 #[allow(type_alias_bounds)]
-#[cfg(lod_render_path)]
+#[cfg(all(
+    lod_render_path,
+    not(any(
+        all(feature = "testing", feature = "headless", not(target_arch = "wasm32")),
+        all(feature = "testing", feature = "webgpu", target_arch = "wasm32")
+    ))
+))]
 type DrawGaussianParam<R: PlanarSync> = (
     SRes<RenderAssets<R::GpuPlanarType>>,
     SRes<lod::LodCompactionBuffers<R>>,
+);
+
+#[allow(type_alias_bounds)]
+#[cfg(all(
+    lod_render_path,
+    feature = "testing",
+    feature = "headless",
+    not(target_arch = "wasm32")
+))]
+type DrawGaussianParam<R: PlanarSync> = (
+    SRes<RenderAssets<R::GpuPlanarType>>,
+    SRes<lod::LodCompactionBuffers<R>>,
+    Option<SRes<crate::testing::lod_runtime_capture::LodRuntimeDrawProbe>>,
+);
+
+#[allow(type_alias_bounds)]
+#[cfg(all(
+    lod_render_path,
+    feature = "testing",
+    feature = "webgpu",
+    target_arch = "wasm32"
+))]
+type DrawGaussianParam<R: PlanarSync> = (
+    SRes<RenderAssets<R::GpuPlanarType>>,
+    SRes<lod::LodCompactionBuffers<R>>,
+    Option<SRes<crate::testing::lod_browser_capture::BrowserLodDrawProbe>>,
 );
 
 #[allow(type_alias_bounds)]
@@ -2906,9 +2994,6 @@ where
         #[cfg(not(lod_render_path))]
         let _ = item;
 
-        #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
-        let _ = view;
-
         #[cfg(lod_render_path)]
         let (
             handle,
@@ -2922,8 +3007,22 @@ where
         let (handle, planar_bind_groups, sort_bind_groups, _cloud_settings, lod_debug_bind_group) =
             entity.expect("gaussian cloud entity not found");
 
-        #[cfg(lod_render_path)]
+        #[cfg(all(
+            lod_render_path,
+            not(any(
+                all(feature = "testing", feature = "headless", not(target_arch = "wasm32")),
+                all(feature = "testing", feature = "webgpu", target_arch = "wasm32")
+            ))
+        ))]
         let (gaussian_clouds, lod_buffers) = gaussian_params;
+        #[cfg(all(
+            lod_render_path,
+            any(
+                all(feature = "testing", feature = "headless", not(target_arch = "wasm32")),
+                all(feature = "testing", feature = "webgpu", target_arch = "wasm32")
+            )
+        ))]
+        let (gaussian_clouds, lod_buffers, capture_draw_probe) = gaussian_params;
         #[cfg(lod_render_path)]
         let gaussian_clouds = gaussian_clouds.into_inner();
         #[cfg(lod_render_path)]
@@ -2974,7 +3073,6 @@ where
 
         #[cfg(feature = "buffer_storage")]
         {
-            // TODO: align dynamic offset to `min_storage_buffer_offset_alignment`
             #[cfg(lod_render_path)]
             if let Some(state) = lod_state {
                 pass.set_bind_group(
@@ -2983,28 +3081,22 @@ where
                     &[0],
                 );
             } else {
-                pass.set_bind_group(
-                    3,
-                    &sort_bind_groups.sorted_bind_group,
-                    &[view.camera_index as u32
-                        * std::mem::size_of::<SortEntry>() as u32
-                        * gpu_gaussian_cloud.len() as u32],
-                );
+                let Some(sort_bind_groups) = sort_bind_groups else {
+                    return RenderCommandResult::Skip;
+                };
+                let Some(offset) = sort_bind_groups.camera_offset(view.camera_index) else {
+                    return RenderCommandResult::Skip;
+                };
+                pass.set_bind_group(3, &sort_bind_groups.sorted_bind_group, &[offset]);
             }
 
             #[cfg(not(lod_render_path))]
-            pass.set_bind_group(
-                3,
-                &sort_bind_groups.sorted_bind_group,
-                &[view.camera_index as u32
-                    * std::mem::size_of::<SortEntry>() as u32
-                    * gpu_gaussian_cloud.len() as u32],
-            );
-        }
-
-        #[cfg(all(feature = "buffer_texture", not(feature = "buffer_storage")))]
-        {
-            pass.set_bind_group(3, &sort_bind_groups.sorted_bind_group, &[]);
+            {
+                let Some(offset) = sort_bind_groups.camera_offset(view.camera_index) else {
+                    return RenderCommandResult::Skip;
+                };
+                pass.set_bind_group(3, &sort_bind_groups.sorted_bind_group, &[offset]);
+            }
         }
 
         if _cloud_settings.lod_debug.requires_metadata()
@@ -3015,25 +3107,34 @@ where
             pass.set_bind_group(4, &lod_debug_bind_group.bind_group, &[]);
         }
 
-        #[cfg(feature = "webgl2")]
-        pass.draw(0..4, 0..gpu_gaussian_cloud.len() as u32);
+        #[cfg(lod_render_path)]
+        let draw_indirect_buffer = lod_buffers
+            .get_ready(
+                _extracted_view.retained_view_entity,
+                item.entity(),
+                handle.handle().id(),
+            )
+            .map(|state| &state.indirect_args_buffer)
+            .unwrap_or_else(|| gpu_gaussian_cloud.draw_indirect_buffer());
 
-        #[cfg(not(feature = "webgl2"))]
-        {
-            #[cfg(lod_render_path)]
-            let draw_indirect_buffer = lod_buffers
-                .get_ready(
-                    _extracted_view.retained_view_entity,
-                    item.entity(),
-                    handle.handle().id(),
-                )
-                .map(|state| &state.indirect_args_buffer)
-                .unwrap_or_else(|| gpu_gaussian_cloud.draw_indirect_buffer());
+        #[cfg(not(lod_render_path))]
+        let draw_indirect_buffer = gpu_gaussian_cloud.draw_indirect_buffer();
 
-            #[cfg(not(lod_render_path))]
-            let draw_indirect_buffer = gpu_gaussian_cloud.draw_indirect_buffer();
-
-            pass.draw_indirect(draw_indirect_buffer, 0);
+        pass.draw_indirect(draw_indirect_buffer, 0);
+        #[cfg(all(
+            lod_render_path,
+            any(
+                all(feature = "testing", feature = "headless", not(target_arch = "wasm32")),
+                all(feature = "testing", feature = "webgpu", target_arch = "wasm32")
+            )
+        ))]
+        if let Some(probe) = capture_draw_probe {
+            probe.observe(
+                _extracted_view.retained_view_entity.main_entity.id(),
+                item.entity(),
+                draw_indirect_buffer.id(),
+                lod_state.map(|state| state.generation()),
+            );
         }
 
         RenderCommandResult::Success
@@ -3136,12 +3237,12 @@ mod shader_contract_tests {
             2.0,
             f32::MAX,
         ] {
-            let legacy_flat = (9.0 + 2.0 * opacity.max(0.000_001_f32).ln())
+            let flat_cutoff = (9.0 + 2.0 * opacity.max(0.000_001_f32).ln())
                 .max(0.000_001)
                 .sqrt();
             assert_eq!(
                 gaussian_support_cutoff(opacity, true, false).to_bits(),
-                legacy_flat.to_bits(),
+                flat_cutoff.to_bits(),
                 "flat cutoff drifted for opacity={opacity}"
             );
             assert_eq!(
@@ -3425,13 +3526,32 @@ mod shader_contract_tests {
     #[test]
     fn gaussian_bounds_math_is_finite_and_matches_the_covariance_inverse() {
         fn obb_axes(covariance: [f32; 3]) -> ([f32; 2], [f32; 2]) {
-            let determinant = covariance[0] * covariance[2] - covariance[1] * covariance[1];
-            let midpoint = 0.5 * (covariance[0] + covariance[2]);
-            let discriminant = (midpoint * midpoint - determinant).max(0.0);
-            let lambda1 = midpoint + discriminant.sqrt();
-            let candidate = [-covariance[1], lambda1 - covariance[0]];
-            let candidate_l1 = candidate[0].abs() + candidate[1].abs();
-            let major = if candidate_l1 > 1.0e-12 {
+            let covariance_scale = covariance.into_iter().map(f32::abs).fold(0.0_f32, f32::max);
+            let covariance = covariance.map(|value| {
+                value
+                    / if covariance_scale > 0.0 {
+                        covariance_scale
+                    } else {
+                        1.0
+                    }
+            });
+            let half_difference = 0.5 * covariance[0] - 0.5 * covariance[2];
+            let difference_scale = half_difference.abs().max(covariance[1].abs());
+            let spectral_radius = if difference_scale > 0.0 {
+                let x = half_difference / difference_scale;
+                let y = covariance[1] / difference_scale;
+                difference_scale * (x * x + y * y).sqrt()
+            } else {
+                0.0
+            };
+            let candidate = if covariance[0] >= covariance[2] {
+                [spectral_radius + half_difference, -covariance[1]]
+            } else {
+                [-covariance[1], spectral_radius - half_difference]
+            };
+            let vector_scale = candidate[0].abs().max(candidate[1].abs());
+            let major = if vector_scale > 0.0 {
+                let candidate = candidate.map(|value| value / vector_scale);
                 let inverse_length =
                     1.0 / (candidate[0] * candidate[0] + candidate[1] * candidate[1]).sqrt();
                 [candidate[0] * inverse_length, candidate[1] * inverse_length]
@@ -3446,6 +3566,8 @@ mod shader_contract_tests {
             [4.0, 0.0, 9.0],
             [4.0, 0.0, 4.0],
             [4.0, 1.0e-7, 4.0],
+            [4.0, 1.0, 2.0],
+            [47.894_4, 0.0, 27.414_4],
         ] {
             let (major, minor) = obb_axes(covariance);
             assert!(major.into_iter().chain(minor).all(f32::is_finite));
@@ -3454,9 +3576,23 @@ mod shader_contract_tests {
             assert!((major[0] * minor[0] + major[1] * minor[1]).abs() <= 1.0e-6);
             let handedness = major[0] * minor[1] - major[1] * minor[0];
             assert!((handedness + 1.0).abs() <= 1.0e-6);
+            let product = [
+                covariance[0] * major[0] - covariance[1] * major[1],
+                -covariance[1] * major[0] + covariance[2] * major[1],
+            ];
+            assert!((product[0] * minor[0] + product[1] * minor[1]).abs() <= 2.0e-6);
+            assert!(
+                product[0] * major[0] + product[1] * major[1]
+                    >= covariance[0].max(covariance[2]) - 1.0e-6
+            );
         }
         assert_eq!(obb_axes([9.0, 0.0, 4.0]).0, [1.0, 0.0]);
         assert_eq!(obb_axes([4.0, 0.0, 9.0]).0, [0.0, 1.0]);
+        // These adjacent zoom covariances previously chose perpendicular axes
+        // because lambda-a rounded to a small nonzero residual in one view.
+        for covariance in [[47.894_4, 0.0, 27.414_4], [47.893_463, 0.0, 27.413_874]] {
+            assert_eq!(obb_axes(covariance).0, [1.0, 0.0]);
+        }
 
         let covariance = [4.0_f32, 1.0, 2.0];
         let delta = [2.0_f32, 1.0];
@@ -3484,27 +3620,17 @@ mod shader_contract_tests {
             );
         }
 
-        let helpers = include_str!("helpers.wgsl");
-        assert!(helpers.contains("let major_axis_candidate = vec2<f32>"));
-        assert!(helpers.contains("var eigvec1 = vec2<f32>(1.0, 0.0)"));
-        assert!(
-            helpers.contains("abs(major_axis_candidate.x) + abs(major_axis_candidate.y) > 1.0e-12")
-        );
-        assert!(helpers.contains("eigvec1.y,\n        -eigvec1.x"));
-
         let gaussian = include_str!("gaussian.wgsl");
-        assert_eq!(gaussian.matches("cutoff_squared: f32").count(), 6);
+        assert_eq!(gaussian.matches("cutoff_squared: f32").count(), 3);
         assert_eq!(
             gaussian
                 .matches("output.cutoff_squared = cutoff * cutoff")
                 .count(),
             1
         );
-        assert!(gaussian.contains("@location(8) cutoff_squared: f32"));
         assert!(gaussian.contains("@location(8) @interpolate(flat) cutoff_squared: f32"));
         assert!(gaussian.contains("let power = -0.5 * input.cutoff_squared * distance_squared"));
         assert!(!gaussian.contains("distance_squared > 3.0 * 3.0"));
-        assert_eq!(gaussian.matches("+ 2.0 * conic.y * d.x * d.y").count(), 2);
     }
 
     #[test]
@@ -3759,15 +3885,13 @@ mod shader_contract_tests {
         assert!(
             gaussian.contains("@location(9) @interpolate(flat) lod_morph_parent_color: vec4<f32>")
         );
-        assert_eq!(gaussian.matches("@location(9)").count(), 2);
+        assert_eq!(gaussian.matches("@location(9)").count(), 1);
         const LOD_MORPH_INTER_STAGE_LOCATION_COUNT: u32 = 10;
         const WEBGPU_MIN_MAX_INTER_STAGE_SHADER_VARIABLES: u32 = 16;
-        const WEBGL2_MIN_MAX_VARYING_VECTORS: u32 = 15;
         const {
             assert!(
                 LOD_MORPH_INTER_STAGE_LOCATION_COUNT <= WEBGPU_MIN_MAX_INTER_STAGE_SHADER_VARIABLES
             );
-            assert!(LOD_MORPH_INTER_STAGE_LOCATION_COUNT <= WEBGL2_MIN_MAX_VARYING_VECTORS);
         }
         assert!(gaussian.contains("gaussian_mip.parent_opacity_scale"));
         assert!(gaussian.contains("gaussian_mip.child_opacity_scale"));
@@ -4235,8 +4359,9 @@ mod shader_contract_tests {
         assert!(shader.contains("fn lod_debug_selection_pressure"));
         assert!(shader.contains("record.node_center[0]"));
         assert!(shader.contains("record.node_radius"));
-        assert!(shader.contains("view.clip_from_view[3][2]"));
-        assert!(shader.contains("view.clip_from_view[3][3] == 1.0"));
+        assert!(shader.contains("transpose(view.clip_from_world)"));
+        assert!(shader.contains("denominator_gradient_length == 0.0"));
+        assert!(shader.contains("w - node_radius_world * denominator_gradient_length"));
         assert!(shader.contains("fn lod_debug_projected_node"));
         assert!(shader.contains("2.0 * projected.support_radius_px / viewport_height_px"));
         assert!(shader.contains("HIGH_QUALITY_FIDELITY_GUARD_START: f32 = 0.90"));
@@ -4618,9 +4743,8 @@ mod shader_contract_tests {
 
         let gaussian = include_str!("gaussian.wgsl");
         let precomputed_storage_import = gaussian
-            .split("#else ifdef BUFFER_STORAGE")
+            .split("#ifdef BUFFER_STORAGE")
             .nth(1)
-            .and_then(|storage| storage.split("#else ifdef BUFFER_TEXTURE").next())
             .expect("precomputed planar storage import block");
         assert!(precomputed_storage_import.contains("get_cov3d,"));
         assert!(precomputed_storage_import.contains("get_rotation,"));

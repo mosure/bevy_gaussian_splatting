@@ -20,13 +20,13 @@ use std::{error::Error, io, path::PathBuf, process::ExitCode};
 use bevy_gaussian_splatting::{
     gaussian::{
         formats::planar_3d_lod::GaussianLodBuildSettings,
-        lod_build_gpu::hierarchy::{GpuLodHierarchyBuilder, GpuLodHierarchyLimits},
+        lod_build_gpu::sort::{GpuLodBatchSorter, GpuLodSortLimits},
     },
     io::{
         lod::LodCodecLimits,
         lod_build_external::{
             CpuExternalLodBatchPreprocessor, ExternalLodBuildConfig, ExternalLodBuildLimits,
-            GpuHierarchyExternalLodBatchPreprocessor, PlyGaussianSource,
+            ExternalLodBuildPlan, GpuExternalLodBatchPreprocessor, PlyGaussianSource,
             build_external_lod_package,
         },
     },
@@ -61,6 +61,11 @@ struct Args {
     /// New package directory. It must not already exist.
     #[arg(short, long)]
     output: PathBuf,
+
+    /// Validate the PLY header and print memory/disk/work bounds, then exit
+    /// without scanning vertices, initializing a GPU, or creating output.
+    #[arg(long)]
+    plan: bool,
 
     /// Maximum children per hierarchy node (2..=32).
     #[arg(long, default_value_t = 8)]
@@ -127,6 +132,15 @@ struct Args {
     #[arg(long, default_value_t = 2)]
     pipeline_depth: usize,
 
+    /// Requested independent CPU hierarchy fitting workers (1..=64). The
+    /// working-byte budget may admit fewer; page contents remain deterministic.
+    #[arg(long, default_value_t = 2)]
+    hierarchy_workers: usize,
+
+    /// Aggregate hard bound for concurrent hierarchy source/fit/page scratch.
+    #[arg(long, default_value_t = 1024 * 1024 * 1024)]
+    max_hierarchy_working_bytes: u64,
+
     /// Store representative-page SH through this degree as binary16. Source
     /// leaves remain full-degree f32, preserving the exact finest cut.
     #[arg(long)]
@@ -134,9 +148,8 @@ struct Args {
 
     /// GPU-accelerate bounded canonical preprocessing and run sorting. The
     /// quality-sensitive progressive hierarchy, external I/O, page encoding,
-    /// fsync, and publication remain on CPU. `--gpu-hierarchy` is retained as
-    /// a compatibility alias for older build commands and automation.
-    #[arg(long, visible_alias = "gpu-hierarchy")]
+    /// fsync, and publication remain on CPU.
+    #[arg(long)]
     gpu_preprocess: bool,
 
     /// GPU canonical-sort input-buffer safety bound; allocation remains
@@ -144,24 +157,13 @@ struct Args {
     #[arg(long, default_value_t = 256 * 1024 * 1024)]
     gpu_max_input_bytes: u64,
 
-    /// Compatibility scratch-node buffer bound reserved by the shared GPU sort
-    /// implementation. ABI 16 does not execute the legacy hierarchy reducer.
-    #[arg(long, default_value_t = 64 * 1024 * 1024)]
-    gpu_max_node_bytes: u64,
-
-    /// Compatibility scratch-node capacity reserved by the shared GPU sort
-    /// implementation. ABI 16 does not execute a global reduction batch.
-    #[arg(long, default_value_t = 131_072)]
-    gpu_max_hierarchy_nodes: u32,
-
     /// GPU sort command capacity per bounded run.
     #[arg(long, default_value_t = 1024)]
-    gpu_max_hierarchy_commands: u32,
+    gpu_max_sort_commands: u32,
 
-    /// GPU canonical-sort readback safety bound per in-flight slot, including
-    /// compatibility scratch reserved by the shared implementation.
+    /// GPU canonical-sort readback safety bound per in-flight slot.
     #[arg(long, default_value_t = 256 * 1024 * 1024)]
-    gpu_max_hierarchy_readback_bytes: u64,
+    gpu_max_readback_bytes: u64,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -171,6 +173,8 @@ fn main() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> ExitCode {
+    let mut logging = bevy::app::App::new();
+    logging.add_plugins(bevy::log::LogPlugin::default());
     match run(Args::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -214,10 +218,31 @@ fn run(args: Args) -> AnyResult<()> {
             max_shard_bytes: args.max_shard_bytes,
             max_pages_per_shard: args.max_pages_per_shard,
             pipeline_depth: args.pipeline_depth,
+            hierarchy_workers: args.hierarchy_workers,
+            max_hierarchy_working_bytes: args.max_hierarchy_working_bytes,
         },
     }
     .validate()?;
     let source = PlyGaussianSource::new(&args.input).with_sh_truncation(args.allow_sh_truncation);
+    let plan = ExternalLodBuildPlan::new(source.declared_count()?, config)?;
+    eprintln!(
+        "planned SH{}: {} declared vertices, {} runs/{} merge passes, {} nodes, {} hierarchy levels, temporary files <= {} bytes; payload validation follows during the scan",
+        SH_DEGREE,
+        plan.source_count,
+        plan.initial_run_count,
+        plan.merge_pass_count,
+        plan.total_node_count,
+        plan.hierarchy_level_counts.len(),
+        plan.maximum_temporary_bytes,
+    );
+    eprintln!(
+        "hierarchy admission: {} requested workers, {} admitted, aggregate scratch <= {} bytes",
+        args.hierarchy_workers, plan.hierarchy_worker_limit, plan.maximum_hierarchy_working_bytes
+    );
+    if args.plan {
+        eprintln!("{plan:#?}");
+        return Ok(());
+    }
 
     let report = if args.gpu_preprocess {
         let instance = wgpu::Instance::default();
@@ -235,21 +260,19 @@ fn run(args: Args) -> AnyResult<()> {
                 label: Some("external_gaussian_lod_preprocessor"),
                 ..Default::default()
             }))?;
-        let limits = GpuLodHierarchyLimits {
+        let limits = GpuLodSortLimits {
             max_records: u32::try_from(args.batch_size)
                 .map_err(|_| invalid_input("--batch-size exceeds the GPU u32 record limit"))?,
-            max_nodes: args.gpu_max_hierarchy_nodes,
-            max_stage_commands: args.gpu_max_hierarchy_commands,
+            max_stage_commands: args.gpu_max_sort_commands,
             max_input_bytes: args.gpu_max_input_bytes,
-            max_node_bytes: args.gpu_max_node_bytes,
-            max_readback_bytes: args.gpu_max_hierarchy_readback_bytes,
-            ..GpuLodHierarchyLimits::default()
+            max_readback_bytes: args.gpu_max_readback_bytes,
+            ..GpuLodSortLimits::default()
         };
-        let mut builder = GpuLodHierarchyBuilder::new(&device, limits)?;
-        let mut preprocessor = GpuHierarchyExternalLodBatchPreprocessor {
+        let mut sorter = GpuLodBatchSorter::new(&device, limits)?;
+        let mut preprocessor = GpuExternalLodBatchPreprocessor {
             device: &device,
             queue: &queue,
-            builder: &mut builder,
+            sorter: &mut sorter,
             settings: config.settings,
         };
         build_external_lod_package(&source, &args.output, config, &mut preprocessor)?
@@ -280,13 +303,13 @@ fn run(args: Args) -> AnyResult<()> {
         report.maximum_shard_bytes,
     );
     eprintln!(
-        "bounded working sets: spill host <= {} bytes, parallel merge host <= {} bytes, streamed merge/hierarchy handoff <= {} bytes, overlapping final merge+handoff <= {} bytes, streamed representative interval <= {} records, largest observed representative interval <= {} records, risk-aware domain <= {} records / {} host bytes, spatial sibling cohort <= {} source records / {} host bytes / {} node-pair checks / {} boundary probes, page <= {} records, hierarchy level <= {} nodes, morph runs <= {} records / {} bytes, overlapping morph source boundaries <= {} records / {} bytes, temporary runs+canonical spool <= {} bytes, compatibility summary scratch <= {} bytes, aggregate temporary <= {} bytes",
+        "bounded working sets: spill host <= {} bytes, parallel merge host <= {} bytes, streamed merge/hierarchy handoff <= {} bytes, overlapping final merge+handoff <= {} bytes, streamed representative interval <= {} records, largest observed representative interval <= {} records, risk-aware domain <= {} records / {} host bytes, spatial sibling cohort <= {} source records / {} host bytes / {} node-pair checks / {} boundary probes, page <= {} records, hierarchy level <= {} nodes, morph runs <= {} records / {} bytes, overlapping morph source boundaries <= {} records / {} bytes, temporary runs+canonical spool <= {} bytes, aggregate temporary <= {} bytes",
         report.maximum_spill_host_bytes,
         report.maximum_merge_host_bytes,
         report.maximum_stream_handoff_host_bytes,
         report.maximum_merge_hierarchy_overlap_host_bytes,
         report.maximum_reducer_input_records,
-        report.maximum_global_reduction_batch_records,
+        report.maximum_representative_source_records,
         report.maximum_risk_aware_source_records,
         report.maximum_risk_aware_host_bytes,
         report.maximum_spatial_cohort_source_records,
@@ -300,8 +323,13 @@ fn run(args: Args) -> AnyResult<()> {
         report.maximum_morph_source_boundary_records,
         report.maximum_morph_source_boundary_bytes,
         report.maximum_temporary_run_bytes,
-        report.maximum_temporary_summary_bytes,
         report.maximum_temporary_bytes,
+    );
+    eprintln!(
+        "hierarchy execution: {} admitted workers, {} observed concurrent cohorts, aggregate scratch <= {} bytes",
+        report.hierarchy_worker_limit,
+        report.maximum_concurrent_hierarchy_cohorts,
+        report.maximum_hierarchy_working_bytes
     );
     eprintln!(
         "spatial fit coverage: {} authored-support touching within-cohort node pairs ({} measured, {} source-less/unmeasured), <= {} cross-cohort same-depth pairs require image-oracle qualification, mixed-depth pairs jointly fitted: {}",

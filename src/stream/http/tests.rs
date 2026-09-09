@@ -49,6 +49,36 @@ impl HttpRangeClient for MockClient {
     }
 }
 
+struct ChecksumHintClient {
+    inner: MockClient,
+    checksum: u64,
+}
+
+impl HttpRangeClient for ChecksumHintClient {
+    type Ticket = u64;
+
+    fn begin(&mut self, request: HttpFetchRequest) -> Result<Self::Ticket, HttpClientFailure> {
+        self.inner.begin(request)
+    }
+
+    fn poll(&mut self, ticket: &Self::Ticket) -> HttpClientPoll {
+        self.inner.poll(ticket)
+    }
+
+    fn poll_with_payload_checksum(
+        &mut self,
+        ticket: &Self::Ticket,
+    ) -> (HttpClientPoll, Option<u64>) {
+        let result = self.inner.poll(ticket);
+        let checksum = matches!(&result, HttpClientPoll::Ready(_)).then_some(self.checksum);
+        (result, checksum)
+    }
+
+    fn cancel(&mut self, ticket: &Self::Ticket) {
+        self.inner.cancel(ticket);
+    }
+}
+
 fn fixture() -> (ManifestPageLocations, LodPageId) {
     let mut gaussian = Gaussian3d::default();
     gaussian.rotation.rotation = [1.0, 0.0, 0.0, 0.0];
@@ -146,6 +176,7 @@ fn default_transport_returns_encoded_payload_without_codec_retry() {
     };
 
     assert_eq!(payload.bytes, corrupt);
+    assert!(payload.verify(), "generic clients retain checksum fallback");
     assert_eq!(transport.client().requests.len(), 1);
     let descriptor = manifest
         .pages
@@ -156,6 +187,99 @@ fn default_transport_returns_encoded_payload_without_codec_retry() {
         decode_page_with_descriptor(&payload.bytes, descriptor, LodCodecLimits::default()).is_err(),
         "the downstream codec boundary must still reject the corrupt page"
     );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn worker_checksum_hint_preserves_body_and_downstream_verification() {
+    use super::super::{
+        preprocess::{LodPagePreprocessError, LodPagePreprocessInput, process_input},
+        transport::{PageRequestPriority, page_checksum64},
+    };
+
+    let (manifest, locations, page, encoded) = validation_fixture();
+    let descriptor = manifest
+        .pages
+        .iter()
+        .find(|p| p.id == page)
+        .unwrap()
+        .clone();
+    for valid_hint in [true, false] {
+        let bytes = encoded.clone();
+        let allocation = bytes.as_ptr();
+        let checksum = page_checksum64(&bytes) ^ u64::from(!valid_hint);
+        let mut inner = MockClient::default();
+        inner.responses.push_back(Ok(response(bytes, "\"v1\"")));
+        let client = ChecksumHintClient { inner, checksum };
+        let mut transport = HttpRangePageTransport::new(config(), locations.clone(), client)
+            .unwrap()
+            .with_manifest_validation(&manifest)
+            .unwrap();
+        let request = PageRequest::new(page, PageRequestPriority::visible(1));
+        let ticket = transport.begin(request).unwrap();
+        let PagePoll::Ready(payload) = transport.poll(&ticket) else {
+            panic!("the authenticated body is valid regardless of the untrusted checksum hint")
+        };
+        assert_eq!(
+            payload.bytes.as_ptr(),
+            allocation,
+            "no second body allocation"
+        );
+        assert_eq!(
+            payload.checksum, checksum,
+            "polling must not rescan the body"
+        );
+        assert_eq!(payload.verify(), valid_hint);
+        let result = process_input(LodPagePreprocessInput {
+            request,
+            payload,
+            descriptor: descriptor.clone(),
+            limits: LodCodecLimits::default(),
+            max_encoded_page_bytes: config().max_encoded_page_bytes,
+            support_sigma: manifest.build.settings.support_sigma,
+            node_ranges: None,
+        })
+        .result;
+        if valid_hint {
+            assert!(result.is_ok(), "unchanged authenticated decode succeeds");
+        } else {
+            assert!(matches!(
+                result,
+                Err(LodPagePreprocessError::PayloadChecksumMismatch)
+            ));
+        }
+    }
+}
+
+#[test]
+fn worker_checksum_hint_cannot_bypass_http_or_manifest_validation() {
+    use super::super::transport::{PageRequestPriority, page_checksum64};
+
+    let (manifest, locations, page, valid) = validation_fixture();
+    for corrupt_body in [false, true] {
+        let mut bytes = valid.clone();
+        if corrupt_body {
+            *bytes.last_mut().unwrap() ^= 1;
+        }
+        let checksum = page_checksum64(&bytes);
+        let mut response = response(bytes, "\"v1\"");
+        if !corrupt_body {
+            response.content_length = Some(valid.len() as u64 + 1);
+        }
+        let mut inner = MockClient::default();
+        inner.responses.push_back(Ok(response));
+        let client = ChecksumHintClient { inner, checksum };
+        let mut policy = config();
+        policy.retry_limit = 0;
+        let mut transport = HttpRangePageTransport::new(policy, locations.clone(), client)
+            .unwrap()
+            .with_manifest_validation(&manifest)
+            .unwrap();
+        let ticket = transport
+            .begin(PageRequest::new(page, PageRequestPriority::visible(1)))
+            .unwrap();
+        assert!(matches!(transport.poll(&ticket), PagePoll::Failed(_)));
+    }
 }
 
 #[test]
@@ -762,14 +886,16 @@ fn native_client_reads_local_range_without_public_network() {
     };
     let mut client = NativeUreqHttpClient::new(Duration::from_secs(2)).unwrap();
     let ticket = client.begin(request).unwrap();
-    let response = loop {
-        match client.poll(&ticket) {
-            HttpClientPoll::Pending => std::thread::yield_now(),
-            HttpClientPoll::Ready(response) => break response,
-            HttpClientPoll::Failed(error) => panic!("local HTTP failed: {error:?}"),
+    let (response, checksum) = loop {
+        match client.poll_with_payload_checksum(&ticket) {
+            (HttpClientPoll::Pending, None) => std::thread::yield_now(),
+            (HttpClientPoll::Ready(response), Some(checksum)) => break (response, checksum),
+            (HttpClientPoll::Failed(error), _) => panic!("local HTTP failed: {error:?}"),
+            result => panic!("native completion must carry its worker checksum: {result:?}"),
         }
     };
     assert_eq!(response.bytes, b"2345");
+    assert_eq!(checksum, super::super::transport::page_checksum64(b"2345"));
     assert_eq!(response.etag.as_deref(), Some("\"local-v1\""));
     server.join().unwrap();
 }
@@ -891,4 +1017,38 @@ fn cancelled_native_workers_remain_charged_until_reaped() {
         }
     }
     server.join().unwrap();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn cancelled_native_http_job_retains_package_reservation_until_worker_acknowledges() {
+    use crate::stream::memory::{LodMemoryCategory, LodMemoryLedger};
+    let ledger = LodMemoryLedger::default();
+    let reservation = ledger
+        .try_reserve(LodMemoryCategory::TransportCpu, 4096)
+        .unwrap();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let pool = super::native::NativeHttpWorkerPool { sender };
+    let mut client = NativeUreqHttpClient::new(Duration::from_secs(1)).unwrap();
+    client.set_memory_reservations(vec![reservation].into());
+    client
+        .begin_with_pool(
+            HttpFetchRequest {
+                url: "http://127.0.0.1/never-started".to_owned(),
+                byte_range: None,
+                expected_bytes: 1,
+                max_response_bytes: 1,
+                timeout: Duration::from_secs(1),
+                if_match: None,
+                expected_version: None,
+                object_version_header: None,
+            },
+            &pool,
+        )
+        .unwrap();
+    let job = receiver.try_recv().unwrap();
+    drop(client); // Cancellation occurs before this controlled worker runs.
+    assert_eq!(ledger.snapshot().cpu_bytes, 4096);
+    job(); // Cancellation path: no DNS, socket, filesystem or GPU work.
+    assert_eq!(ledger.snapshot().cpu_bytes, 0);
 }

@@ -360,10 +360,9 @@ require `lod`.
 
 Authenticated resident ECS materialization is available only when the crate's
 `lod_render_path` capability is present: `lod`, storage buffers, and radix sort
-must be enabled, while `buffer_texture` and `webgl2` must be absent. The
-standard `lod_render` and WebGPU `web` bundles meet that compile-time contract;
-a WebGL2 build retains portable format/planning APIs but cannot instantiate the
-resident LODGE renderer. This is a software availability contract, not evidence
+must be enabled. The standard `lod_render` and WebGPU `web` bundles meet that
+compile-time contract. Builds without the runtime renderer retain portable
+format/planning APIs. This is a software availability contract, not evidence
 of successful GPU or browser qualification on a particular adapter. Native and
 Wasm applications remain responsible for the authenticated dependency-loading
 steps above.

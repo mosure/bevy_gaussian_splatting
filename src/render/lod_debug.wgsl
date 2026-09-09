@@ -50,7 +50,7 @@ const REC709_LINEAR_LUMINANCE: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
 fn lod_debug_residency(record: LodDebugRecord, entry_residency: u32) -> u32 {
     // A compacted LoD entry owns its exact per-view residency epoch. Flat and
-    // legacy entries leave the packed code zero and retain record-authored
+    // flat entries leave the packed code zero and retain record-authored
     // behavior.
     if entry_residency == 1u || entry_residency == 2u {
         return entry_residency;
@@ -163,6 +163,36 @@ struct LodDebugProjectedNode {
     support_radius_px: f32,
 };
 
+// Largest singular value of a 2x3 map. Match hierarchy::screen_linear_norm:
+// normalize before forming the Gram matrix to avoid squaring large pixel scales.
+fn lod_debug_screen_linear_norm(row_x: vec3<f32>, row_y: vec3<f32>) -> f32 {
+    let components = max(abs(row_x), abs(row_y));
+    let scale = max(components.x, max(components.y, components.z));
+    if scale == 0.0 {
+        return 0.0;
+    }
+    if !(scale < 3.402823466e+38) {
+        return 3.402823466e+38;
+    }
+    let x = row_x / scale;
+    let y = row_y / scale;
+    let xx = dot(x, x);
+    let xy = dot(x, y);
+    let yy = dot(y, y);
+    let discriminant = sqrt((xx - yy) * (xx - yy) + 4.0 * xy * xy);
+    return scale * sqrt(0.5 * (xx + yy + discriminant));
+}
+
+fn lod_debug_projected_product(extent: f32, scale: f32) -> f32 {
+    if extent == 0.0 {
+        return 0.0;
+    }
+    if !(scale < 3.402823466e+38) {
+        return 3.402823466e+38;
+    }
+    return min(extent * scale, 3.402823466e+38);
+}
+
 // Reproduces LodView's projected error and support radius from the exact
 // owning-node sphere. This remains O(1) per Gaussian and does not approximate
 // node support from the representative Gaussian's position.
@@ -178,23 +208,49 @@ fn lod_debug_projected_node(record: LodDebugRecord) -> LodDebugProjectedNode {
         gaussian_uniforms.transform * vec4<f32>(node_center_local, 1.0)
     ).xyz;
     let node_radius_world = max(record.node_radius, 0.0) * transform_scale;
-    let focal_y_px = 0.5 * view.viewport.w * abs(view.clip_from_view[1][1]);
-    var projection_scale_px_per_world = focal_y_px;
-    if view.clip_from_view[3][3] == 1.0 {
+    let rows = transpose(view.clip_from_world);
+    let pixel_x = rows[0] * (0.5 * view.viewport.z);
+    let pixel_y = rows[1] * (0.5 * view.viewport.w);
+    let clip_w = rows[3];
+    let center = vec4<f32>(node_center_world, 1.0);
+    let w = dot(clip_w, center);
+    let denominator_gradient_length = length(clip_w.xyz);
+    if denominator_gradient_length == 0.0 {
+        let scale = lod_debug_screen_linear_norm(pixel_x.xyz, pixel_y.xyz) / abs(w);
         return LodDebugProjectedNode(
-            geometric_error_world * projection_scale_px_per_world,
-            node_radius_world * projection_scale_px_per_world,
+            lod_debug_projected_product(geometric_error_world, scale),
+            lod_debug_projected_product(node_radius_world, scale),
         );
     }
-    let near_plane = max(view.clip_from_view[3][2], 1e-20);
-    let distance_to_surface = max(
-        distance(view.world_position, node_center_world) - node_radius_world,
-        near_plane,
-    );
-    projection_scale_px_per_world = focal_y_px / distance_to_surface;
+    if !(w > 0.0 && w <= 3.402823466e+38) {
+        return LodDebugProjectedNode(
+            lod_debug_projected_product(geometric_error_world, 3.402823466e+38),
+            lod_debug_projected_product(node_radius_world, 3.402823466e+38),
+        );
+    }
+    let row_x = pixel_x.xyz - clip_w.xyz * (dot(pixel_x, center) / w);
+    let row_y = pixel_y.xyz - clip_w.xyz * (dot(pixel_y, center) / w);
+    let numerator_norm = lod_debug_screen_linear_norm(row_x, row_y);
+    let near_plane = rows[3] - rows[2];
+    let near_normal_length = length(near_plane.xyz);
+    var near_distance = 0.0;
+    if near_normal_length > 0.0 {
+        near_distance = dot(near_plane / near_normal_length, center);
+    }
+    let minimum_w = w - node_radius_world * denominator_gradient_length;
+    var support_scale = 3.402823466e+38;
+    if minimum_w > 0.0 && near_distance > node_radius_world {
+        support_scale = numerator_norm / minimum_w;
+    }
+    let error_radius = node_radius_world + geometric_error_world;
+    let error_minimum_w = w - error_radius * denominator_gradient_length;
+    var error_scale = 3.402823466e+38;
+    if error_minimum_w > 0.0 && near_distance > error_radius {
+        error_scale = (numerator_norm / error_minimum_w) * (w / error_minimum_w);
+    }
     return LodDebugProjectedNode(
-        geometric_error_world * projection_scale_px_per_world,
-        node_radius_world * projection_scale_px_per_world,
+        lod_debug_projected_product(geometric_error_world, error_scale),
+        lod_debug_projected_product(node_radius_world, support_scale),
     );
 }
 
@@ -301,7 +357,7 @@ fn lod_debug_selection_pressure(record: LodDebugRecord) -> f32 {
     // Balanced selection accepts a node once either target is met, while the
     // continuous authority term limits how far the structural shortcut may
     // exceed the advertised pixel target. Positive quantized-compatible
-    // certificates carry coverage-aware demand; legacy zero/tiny values stay
+    // certificates carry coverage-aware demand; uncertified zero/tiny values stay
     // compatible below .95 and fail closed for non-original nodes at .95+.
     let balanced_pressure = min(structural_pressure, error_pressure);
     let error_authority = lod_debug_projected_error_authority(requested_detail);

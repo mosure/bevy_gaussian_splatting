@@ -27,9 +27,19 @@ use bevy::{
 use bevy_interleave::prelude::Planar;
 use bevy_interleave::prelude::PlanarHandle;
 
+mod discrete;
+#[cfg(lod_render_path)]
+mod gpu;
+#[cfg(lod_render_path)]
+pub use gpu::GaussianGpuLodPackageStatus;
 #[cfg_attr(target_arch = "wasm32", path = "package/browser.rs")]
 #[cfg_attr(not(target_arch = "wasm32"), path = "package/native.rs")]
 mod platform;
+mod preparation;
+
+#[cfg(test)]
+use platform::package_page_transport;
+use preparation::{PackagePreparationJob, PreparedPackage};
 
 use crate::{
     CloudSettings, GaussianMode,
@@ -40,14 +50,15 @@ use crate::{
             planar_3d_chunked::{LodNodeId, LodPageId},
         },
         lod_settings::{
-            GaussianLodSettings, GaussianStreamingSettings, LodQualityTarget, LodSelectionMode,
+            GaussianLodSettings, GaussianStreamingSettings, LodPresentationMode, LodQualityTarget,
+            LodSelectionMode,
         },
     },
     io::{lod::GaussianLodHandle, lodge::GaussianLodgeHandle},
 };
 use platform::{
     PackageCacheRegistry, PackageManagerParam, PackagePageTransport, init_package_manager,
-    package_page_transport, validate_cache_config,
+    package_page_transport_with_prepared, validate_cache_config,
 };
 
 use crate::{
@@ -68,6 +79,7 @@ use crate::{
         cache::AtlasSlot,
         hierarchy::{LodHierarchy, LodView},
         http::HttpRangeTransportConfig,
+        memory::{LodMemoryAdmissionError, LodMemoryCategory, LodMemoryLease, LodMemoryLedger},
         persistent_cache::PersistentCachePackageIdentity,
         render_commit::{
             GaussianLodRenderCommitPlugin, LOD_RENDER_ACTIVE, LOD_RENDER_WAITING,
@@ -96,6 +108,13 @@ const PACKAGE_BOOTSTRAP_MAX_ACTIVE_GAUSSIANS: u64 = 8_192;
 const PACKAGE_BOOTSTRAP_MAX_ENCODED_BYTES: u64 = 2 * 1024 * 1024;
 const PACKAGE_BOOTSTRAP_MAX_DECODED_BYTES: u64 = 2 * 1024 * 1024;
 const PACKAGE_BOOTSTRAP_MAX_GPU_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Opts a package into GPU hierarchy traversal for GPS cameras. Changing this
+/// marker recreates its atlas and residency owner; CPU cut proofs are never
+/// transferred between the two publication modes.
+#[derive(Component, Clone, Copy, Debug, Default, Reflect)]
+#[reflect(Component)]
+pub struct GaussianGpuLodPackage;
 
 /// Page-byte source paired with a loaded [`GaussianLodHandle`].
 #[derive(Component, Clone, Debug, PartialEq, Eq, Reflect)]
@@ -127,6 +146,12 @@ pub struct GaussianLodPackageConfig {
     /// Hard canonical-plus-derived GPU storage bound for the physical atlas.
     pub max_atlas_bytes: u64,
     pub max_views_per_cloud: u32,
+    /// Hard running/ready/cancelled-unacknowledged immutable preparation jobs.
+    pub max_preparation_jobs: u32,
+    /// Conservative input-plus-index admission charge for preparation jobs.
+    pub max_preparation_bytes: u64,
+    /// Aggregate cooperative metadata record allowance per application frame.
+    pub preparation_records_per_frame: u32,
     /// Explicit parent directory for native persistent caches. Enabling cache
     /// persistence without setting this field fails closed on native targets.
     pub persistent_cache_root: Option<String>,
@@ -148,6 +173,9 @@ impl Default for GaussianLodPackageConfig {
             max_atlas_gaussians: 524_288,
             max_atlas_bytes: 512 * 1024 * 1024,
             max_views_per_cloud: 16,
+            max_preparation_jobs: 2,
+            max_preparation_bytes: 512 * 1024 * 1024,
+            preparation_records_per_frame: 4096,
             persistent_cache_root: None,
             persistent_cache_namespace: None,
             persistent_cache_max_entries: 16_384,
@@ -167,6 +195,18 @@ impl GaussianLodPackageConfig {
     }
 
     fn validate_limits(&self) -> Result<(), GaussianLodPackageError> {
+        for (name, value) in [
+            ("max_preparation_jobs", u64::from(self.max_preparation_jobs)),
+            ("max_preparation_bytes", self.max_preparation_bytes),
+            (
+                "preparation_records_per_frame",
+                u64::from(self.preparation_records_per_frame),
+            ),
+        ] {
+            if value == 0 {
+                return Err(GaussianLodPackageError::ZeroLimit(name));
+            }
+        }
         if self.max_atlas_gaussians == 0 {
             return Err(GaussianLodPackageError::ZeroLimit("max_atlas_gaussians"));
         }
@@ -257,7 +297,7 @@ impl GaussianLodPackageStatus {
         }
     }
 
-    /// Human-readable context retained for compatibility with logging and UI
+    /// Human-readable error context for logging and UI
     /// code that previously consumed an untyped error string.
     pub fn error_detail(&self) -> Option<&str> {
         self.failure.as_ref().and_then(|failure| failure.detail())
@@ -276,6 +316,17 @@ pub struct GaussianLodPackageAtlasPlan {
 }
 
 impl GaussianLodPackageAtlasPlan {
+    /// Canonical CPU slot payload ceiling retained for device recovery.
+    ///
+    /// This is additional to decoded-page cache capacity and `physical_bytes`
+    /// of GPU storage. Extraction shares immutable payloads; contiguous upload
+    /// packing may still allocate up to the global per-frame upload budget.
+    /// Slot retirement/reuse bounds retention without relying on discarding a
+    /// payload after upload, which would break recovery of an existing cut.
+    pub fn cpu_recovery_capacity_bytes(&self) -> u64 {
+        u64::from(self.physical_gaussians) * size_of::<Gaussian3d>() as u64
+    }
+
     pub fn from_manifest(
         manifest: &crate::GaussianLodManifest,
         settings: &GaussianLodSettings,
@@ -386,6 +437,9 @@ impl GaussianLodPackageAtlasPlan {
 }
 
 struct PackageInstantiation {
+    gpu_requested: bool,
+    #[cfg(lod_render_path)]
+    gpu: Option<gpu::GpuPackageState>,
     manifest: AssetId<GaussianLodAsset>,
     source: GaussianLodPackageSource,
     config: GaussianLodPackageConfig,
@@ -399,9 +453,10 @@ struct PackageInstantiation {
     plan: GaussianLodPackageAtlasPlan,
     runtime: Mutex<LodStreamingRuntime<PackagePageTransport>>,
     mirror: LodPageAtlasMirror,
-    /// Immutable annotation lookup compiled once at package instantiation.
-    /// Debug Off drops only live sidecar payloads, never this manifest index.
-    debug_index: Arc<LodDebugManifestIndex>,
+    /// Compiled only when first requested, then retained across debug toggles.
+    debug_index: Option<Arc<LodDebugManifestIndex>>,
+    debug_preparation: Option<PackageDebugIndexPreparation>,
+    _memory_leases: Vec<LodMemoryLease>,
     /// Immutable all-Resident page bases retained while debug presentation is
     /// Off. The live sidecar takes ownership while enabled; moving the bounded
     /// slot cache back here avoids regenerating support/color fields on a later
@@ -424,8 +479,9 @@ struct PackageInstantiation {
     /// stationary fixed point.
     pending_request_fixed_point: bool,
     /// Whether this transaction used the ABI16 progressive fixed-point
-    /// exception. A later render capability veto may never inherit that
-    /// admission as a categorical cut.
+    /// exception. A later render capability veto may never convert an authored
+    /// morph to a categorical cut under that admission; an authored exact
+    /// endpoint removal still requires its predecessor retirement proof.
     pending_progressive_view_blend: bool,
     /// Effective presentation mode finalized before the retirement and
     /// progressive-admission gates. ACTIVE publication must attest the same
@@ -436,9 +492,10 @@ struct PackageInstantiation {
     /// rejects an authored view-blend table, subsequent candidates are planned
     /// categorically in the main world before ordinary publication gates.
     render_view_blend_unsupported: bool,
-    /// A stale request which has already published morph entries must reach
-    /// its exact ACTIVE endpoint before the package may release the staged
-    /// parent/child union. The next live request supersedes it immediately
+    /// A live consumer which has already published nonempty ACTIVE or
+    /// TRANSITIONING output owns the staged union independently of request
+    /// staleness. Every consumer must commit or retire before it is released.
+    /// The next live request supersedes the committed cut immediately
     /// after this one infallible logical commit.
     pending_transition_must_commit: bool,
     /// Exact request satisfied by the retained current cut. A direct package
@@ -475,7 +532,7 @@ struct PackageInstantiation {
     /// the exact selection request. A rejected request remains quiescent until
     /// camera or policy identity changes.
     bootstrap_handoff: Option<PackageBootstrapHandoff>,
-    /// Direct exact-leaf demand for legacy packages that have no admissible
+    /// Direct exact-leaf demand for packages without bounded refinement that have no admissible
     /// presentation bootstrap. The all-resident target is planned once per
     /// selection request and its completed pages are retained until the first
     /// exact transaction takes ownership.
@@ -678,6 +735,7 @@ struct PackageStructuralSignature {
 struct PackageCutRequestSignature {
     target: LodQualityTarget,
     selection_mode: LodSelectionMode,
+    presentation_mode: LodPresentationMode,
     hysteresis: f32,
     frustum_culling: bool,
     frustum_margin: f32,
@@ -734,6 +792,7 @@ impl PackageCutRequestSignature {
         Self {
             target: settings.quality_target(),
             selection_mode: settings.selection_mode,
+            presentation_mode: settings.presentation_mode,
             hysteresis: settings.hysteresis,
             frustum_culling: settings.frustum_culling,
             frustum_margin: settings.frustum_margin,
@@ -757,6 +816,7 @@ impl PackageCutRequestSignature {
     fn same_critical_request(&self, other: &Self) -> bool {
         self.target == other.target
             && self.selection_mode == other.selection_mode
+            && self.presentation_mode == other.presentation_mode
             && self.hysteresis == other.hysteresis
             && self.frustum_culling == other.frustum_culling
             && self.frustum_margin == other.frustum_margin
@@ -777,6 +837,8 @@ impl PackageCutRequestSignature {
 struct GaussianLodPackageManager {
     clouds: HashMap<Entity, PackageInstantiation>,
     caches: PackageCacheRegistry,
+    preparations: HashMap<Entity, PackagePreparationJob>,
+    retired_preparations: Vec<PackagePreparationJob>,
 }
 
 /// Persistent cursor for deterministic package-cloud staging admission.
@@ -918,6 +980,40 @@ impl Drop for PackageStagingPermit<'_> {
 }
 
 impl GaussianLodPackageManager {
+    fn cancel_preparation(&mut self, entity: Entity) {
+        if let Some(mut job) = self.preparations.remove(&entity) {
+            job.cancel();
+            if !job.is_ready() {
+                self.retired_preparations.push(job);
+            }
+        }
+    }
+
+    fn maintain_retired_preparations(&mut self) {
+        for job in &mut self.retired_preparations {
+            job.advance(0);
+        }
+        self.retired_preparations.retain(|job| !job.is_ready());
+    }
+
+    fn preparation_admission(&self, bytes: u64, config: &GaussianLodPackageConfig) -> bool {
+        let charged = self
+            .preparations
+            .values()
+            .chain(&self.retired_preparations)
+            .filter(|job| job.charged_bytes > 0);
+        let mut count = 0_u64;
+        let mut pending = bytes;
+        for job in charged {
+            count += 1;
+            let Some(next) = pending.checked_add(job.charged_bytes) else {
+                return false;
+            };
+            pending = next;
+        }
+        count < u64::from(config.max_preparation_jobs) && pending <= config.max_preparation_bytes
+    }
+
     fn prune_unused_caches(&mut self) {
         self.caches.prune_unused();
     }
@@ -999,9 +1095,11 @@ pub(crate) struct GaussianLodPackageUpdate;
 
 impl Plugin for GaussianLodPackagePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<GaussianLodPackageConfig>()
+        app.init_resource::<LodMemoryLedger>()
+            .init_resource::<GaussianLodPackageConfig>()
             .init_resource::<GaussianLodPackageStagingScheduler>()
             .register_type::<GaussianLodPackageSource>()
+            .register_type::<GaussianGpuLodPackage>()
             .register_required_components::<GaussianLodHandle, GaussianLodSettings>()
             .register_required_components::<GaussianLodHandle, CloudSettings>()
             .register_required_components::<GaussianLodHandle, Transform>()
@@ -1078,6 +1176,7 @@ fn publish_package_status_transitions(
 fn update_lod_packages(
     mut commands: Commands,
     config: Res<GaussianLodPackageConfig>,
+    memory_ledger: Res<LodMemoryLedger>,
     upload_budget: Res<LodAtlasUploadBudget>,
     mut staging_scheduler: ResMut<GaussianLodPackageStagingScheduler>,
     mut manager: PackageManagerParam<'_>,
@@ -1088,6 +1187,7 @@ fn update_lod_packages(
     mut atlas_uploads: ResMut<LodAtlasUploadQueue>,
     cameras: Query<PackageCameraQueryItem, With<crate::GaussianCamera>>,
     cloud_handles: Query<&PlanarGaussian3dHandle>,
+    #[cfg(lod_render_path)] gpu_inputs: gpu::GpuPackageInputs,
     packages: Query<
         (
             Entity,
@@ -1098,10 +1198,20 @@ fn update_lod_packages(
             Option<&GaussianStreamingSettings>,
             Option<&ViewVisibility>,
             &GlobalTransform,
+            Has<GaussianGpuLodPackage>,
         ),
         Without<GaussianLodgeHandle>,
     >,
+    #[cfg(feature = "testing")] cpu_telemetry: Option<
+        Res<crate::testing::lod_package_cpu::LodPackageCpuTelemetry>,
+    >,
 ) {
+    #[cfg(feature = "testing")]
+    let _cpu_update = cpu_telemetry
+        .as_deref()
+        .and_then(|probe| probe.begin_update());
+    manager.maintain_retired_preparations();
+    let mut preparation_records = config.preparation_records_per_frame as usize;
     let changed_manifests = manifest_events
         .read()
         .filter_map(|event| match event {
@@ -1125,6 +1235,7 @@ fn update_lod_packages(
         per_cloud_streaming,
         visibility,
         transform,
+        gpu_requested,
     ) in packages
     {
         let mut staging = staging_frame.begin_owner();
@@ -1133,6 +1244,7 @@ fn update_lod_packages(
             match package_streaming_settings(per_cloud_streaming.unwrap_or(&config.streaming)) {
                 Ok(streaming) => streaming,
                 Err(error) => {
+                    manager.cancel_preparation(entity);
                     if let Some(previous) = manager.clouds.remove(&entity) {
                         release_package_instantiation(
                             PackageReleaseTarget::replacement(entity),
@@ -1152,7 +1264,13 @@ fn update_lod_packages(
                     continue;
                 }
             };
-        if let Err(error) = validate_package_render_path(&cloud_settings.sort_mode) {
+        let render_path = if gpu_requested {
+            require_lod_render_path().map_err(GaussianLodPackageError::UnsupportedRenderPath)
+        } else {
+            validate_package_render_path(&cloud_settings.sort_mode)
+        };
+        if let Err(error) = render_path {
+            manager.cancel_preparation(entity);
             if let Some(previous) = manager.clouds.remove(&entity) {
                 release_package_instantiation(
                     PackageReleaseTarget::replacement(entity),
@@ -1175,19 +1293,20 @@ fn update_lod_packages(
         let debug_metadata = cloud_settings.lod_debug.requires_metadata();
         let unchanged = !changed_manifests.contains(&handle.0.id())
             && manager.clouds.get(&entity).is_some_and(|state| {
-                PackageBuildSignature {
-                    manifest: state.manifest,
-                    source: &state.source,
-                    config: &state.config,
-                    streaming: &state.streaming,
-                    structural: state.requested_structural,
-                } == PackageBuildSignature {
-                    manifest: handle.0.id(),
-                    source,
-                    config: &config,
-                    streaming: &effective_streaming,
-                    structural,
-                }
+                state.gpu_requested == gpu_requested
+                    && PackageBuildSignature {
+                        manifest: state.manifest,
+                        source: &state.source,
+                        config: &state.config,
+                        streaming: &state.streaming,
+                        structural: state.requested_structural,
+                    } == PackageBuildSignature {
+                        manifest: handle.0.id(),
+                        source,
+                        config: &config,
+                        streaming: &effective_streaming,
+                        structural,
+                    }
             });
         if !unchanged {
             if let Some(previous) = manager.clouds.remove(&entity) {
@@ -1206,9 +1325,107 @@ fn update_lod_packages(
                 .remove::<LodRenderCandidates>()
                 .insert(GaussianLodPackageStatus::loading());
             let Some(asset) = manifests.get(&handle.0) else {
+                manager.cancel_preparation(entity);
                 continue;
             };
-            let result = instantiate_package(
+            let same_job = !changed_manifests.contains(&handle.0.id())
+                && manager.preparations.get(&entity).is_some_and(|job| {
+                    job.matches(
+                        PackageBuildSignature {
+                            manifest: handle.0.id(),
+                            source,
+                            config: &config,
+                            streaming: &effective_streaming,
+                            structural,
+                        },
+                        settings,
+                    )
+                });
+            if !same_job {
+                manager.cancel_preparation(entity);
+            }
+            if !manager.preparations.contains_key(&entity) {
+                if let Err(error) = config.validate_limits() {
+                    commands
+                        .entity(entity)
+                        .insert(GaussianLodPackageStatus::failed(error));
+                    continue;
+                }
+                if asset.preparation_bytes() > config.max_preparation_bytes {
+                    commands
+                        .entity(entity)
+                        .insert(GaussianLodPackageStatus::failed(
+                            GaussianLodPackageError::PreparationBytesExceedLimit {
+                                requested: asset.preparation_bytes(),
+                                limit: config.max_preparation_bytes,
+                            },
+                        ));
+                    continue;
+                }
+                if !manager.preparation_admission(asset.preparation_bytes(), &config) {
+                    continue;
+                }
+                let metadata_lease = match memory_ledger
+                    .try_reserve(LodMemoryCategory::MetadataCpu, asset.preparation_bytes())
+                {
+                    Ok(lease) => lease,
+                    Err(error) => {
+                        commands
+                            .entity(entity)
+                            .insert(GaussianLodPackageStatus::failed(
+                                GaussianLodPackageError::MemoryBudget(error),
+                            ));
+                        continue;
+                    }
+                };
+                manager.preparations.insert(
+                    entity,
+                    PackagePreparationJob::new_reserved(
+                        handle.0.id(),
+                        asset,
+                        source,
+                        settings,
+                        &config,
+                        &effective_streaming,
+                        debug_metadata,
+                        Some(metadata_lease),
+                    ),
+                );
+            }
+            let job = manager
+                .preparations
+                .get_mut(&entity)
+                .expect("preparation was admitted");
+            if let Some(error) = &job.failure {
+                commands
+                    .entity(entity)
+                    .insert(GaussianLodPackageStatus::failed(error.clone()));
+                continue;
+            }
+            preparation_records =
+                preparation_records.saturating_sub(job.advance(preparation_records));
+            if let Err(error) = job.reserve_ready_storage(&memory_ledger) {
+                commands
+                    .entity(entity)
+                    .insert(GaussianLodPackageStatus::failed(
+                        GaussianLodPackageError::MemoryBudget(error),
+                    ));
+                continue;
+            }
+            let Some(prepared) = job.take_result() else {
+                continue;
+            };
+            let prepared = match prepared {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    commands
+                        .entity(entity)
+                        .insert(GaussianLodPackageStatus::failed(error));
+                    continue;
+                }
+            };
+            let result = instantiate_prepared_package(
+                prepared,
                 asset,
                 source,
                 settings,
@@ -1222,6 +1439,7 @@ fn update_lod_packages(
             );
             match result {
                 Ok(state) => {
+                    manager.preparations.remove(&entity);
                     let bounds = asset.manifest().scene_bounds.map(|bounds| {
                         Aabb::from_min_max(Vec3::from(bounds.min), Vec3::from(bounds.max))
                     });
@@ -1229,6 +1447,7 @@ fn update_lod_packages(
                     manager.clouds.insert(
                         entity,
                         PackageInstantiation {
+                            gpu_requested,
                             manifest: handle.0.id(),
                             source: source.clone(),
                             config: config.clone(),
@@ -1245,6 +1464,10 @@ fn update_lod_packages(
                     }
                 }
                 Err(error) => {
+                    if let Some(job) = manager.preparations.get_mut(&entity) {
+                        job.failure = Some(error.clone());
+                        job.release_failed_reservation();
+                    }
                     commands
                         .entity(entity)
                         .insert(GaussianLodPackageStatus::failed(error));
@@ -1256,9 +1479,41 @@ fn update_lod_packages(
         let Some(state) = manager.clouds.get_mut(&entity) else {
             continue;
         };
+        #[cfg(lod_render_path)]
+        if gpu_requested {
+            let views = if visibility.is_some_and(|v| !v.get()) {
+                Ok(Vec::new())
+            } else {
+                package_camera_views_for_cloud(&cameras, entity, config.max_views_per_cloud)
+            };
+            let result = views.and_then(|views| {
+                gpu::update(
+                    entity,
+                    state,
+                    settings,
+                    cloud_settings,
+                    &views,
+                    &gpu_inputs.cameras,
+                    gpu_inputs.feedbacks.as_deref(),
+                    gpu_inputs.acknowledgements.as_deref(),
+                    &memory_ledger,
+                    &mut atlas_uploads,
+                    &mut staging,
+                    &mut commands,
+                )
+            });
+            if let Err(error) = result {
+                gpu::fail(entity, state, error, &mut commands);
+            }
+            continue;
+        }
         let mut debug_work = PackageDebugPreparationWork::default();
-        if let Err(error) = sync_package_debug_annotations(state, debug_metadata)
-            .and_then(|()| advance_package_debug_initialization(state, &mut debug_work))
+        if let Err(error) = sync_package_debug_annotations_with_budget(
+            state,
+            debug_metadata,
+            &mut preparation_records,
+        )
+        .and_then(|()| advance_package_debug_initialization(state, &mut debug_work))
         {
             publish_package_failure(entity, state, error, &mut commands);
             continue;
@@ -1312,6 +1567,15 @@ fn update_lod_packages(
             &mut commands,
             &cloud_handles,
         );
+    }
+    let stale_preparations = manager
+        .preparations
+        .keys()
+        .filter(|entity| !seen.contains(entity))
+        .copied()
+        .collect::<Vec<_>>();
+    for entity in stale_preparations {
+        manager.cancel_preparation(entity);
     }
     manager.prune_unused_caches();
 }
@@ -1411,6 +1675,10 @@ fn release_package_instantiation(
     entity_commands
         .remove::<LodRenderCandidates>()
         .remove::<LodDebugMetadata>();
+    #[cfg(lod_render_path)]
+    entity_commands
+        .remove::<crate::render::traversal::GpuLodHierarchy>()
+        .remove::<GaussianGpuLodPackageStatus>();
     #[cfg(feature = "testing")]
     entity_commands.remove::<GaussianLodPackageTestingSnapshot>();
     if target.remove_status {
@@ -1487,6 +1755,7 @@ fn package_cache_name(
     Ok(format!("{namespace}-{:016x}", identity.stable_hash()))
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn instantiate_package(
     asset: &GaussianLodAsset,
@@ -1500,63 +1769,87 @@ fn instantiate_package(
     transient_atlases: &mut LodTransientAtlasRegistry,
     atlas_uploads: &mut LodAtlasUploadQueue,
 ) -> Result<PackageInstantiation, GaussianLodPackageError> {
-    let manifest = asset.manifest();
-    let plan = GaussianLodPackageAtlasPlan::from_validated_manifest(manifest, settings, config)?;
-    let transport =
-        package_page_transport(manifest, source, config, streaming, &mut manager.caches)?;
-    let runtime_streaming = package_runtime_streaming_settings(source, streaming);
-    let mut effective = settings.clone();
-    effective.budgets.max_resident_pages = plan.slot_count;
-    effective.budgets.max_resident_gaussians = u64::from(plan.physical_gaussians);
-    effective.budgets.max_resident_bytes = u64::from(plan.physical_gaussians)
-        .checked_mul(size_of::<Gaussian3d>() as u64)
-        .ok_or(GaussianLodPackageError::AtlasSizeOverflow)?;
-    effective.budgets.max_active_gaussians = effective
-        .budgets
-        .max_active_gaussians
-        .min(u64::from(plan.physical_gaussians));
-    let structural = PackageStructuralSettings {
-        max_resident_gaussians: effective.budgets.max_resident_gaussians,
-        max_resident_bytes: effective.budgets.max_resident_bytes,
-        max_resident_pages: effective.budgets.max_resident_pages,
-        max_pending_requests: effective.budgets.max_pending_requests,
-    };
-    let gpu_bytes_per_slot = u64::from(plan.gaussians_per_slot)
-        .checked_mul(gaussian_3d_gpu_bytes_per_record())
-        .ok_or(GaussianLodPackageError::AtlasSizeOverflow)?;
-    let bootstrap = LodPackageBootstrapBudget {
-        max_pages: plan.slot_count.min(PACKAGE_BOOTSTRAP_MAX_PAGES),
-        max_active_gaussians: effective
-            .budgets
-            .max_active_gaussians
-            .min(PACKAGE_BOOTSTRAP_MAX_ACTIVE_GAUSSIANS),
-        max_encoded_bytes: PACKAGE_BOOTSTRAP_MAX_ENCODED_BYTES,
-        max_decoded_bytes: PACKAGE_BOOTSTRAP_MAX_DECODED_BYTES,
-        max_gpu_bytes: package_gpu_staging_step_byte_limit(&effective)
-            .min(PACKAGE_BOOTSTRAP_MAX_GPU_BYTES),
-        gpu_bytes_per_slot,
-    };
-    let runtime = LodStreamingRuntime::from_validated_shared_manifest_with_package_bootstrap(
-        asset.shared_manifest(),
-        transport,
-        &effective,
-        &runtime_streaming,
-        bootstrap,
+    let prepared = bevy::tasks::block_on(preparation::prepare_package(
+        asset.clone(),
+        source.clone(),
+        settings.clone(),
+        config.clone(),
+        streaming.clone(),
+        debug_metadata,
+        crate::stream::preparation::PreparationBudget::new(usize::MAX),
+    ))?;
+    instantiate_prepared_package(
+        prepared,
+        asset,
+        source,
+        settings,
+        config,
+        streaming,
+        debug_metadata,
+        manager,
+        clouds,
+        transient_atlases,
+        atlas_uploads,
     )
-    .map_err(GaussianLodPackageError::Runtime)?;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn instantiate_prepared_package(
+    prepared: PreparedPackage,
+    asset: &GaussianLodAsset,
+    source: &GaussianLodPackageSource,
+    settings: &GaussianLodSettings,
+    config: &GaussianLodPackageConfig,
+    streaming: &GaussianStreamingSettings,
+    debug_metadata: bool,
+    manager: &mut GaussianLodPackageManager,
+    clouds: &mut Assets<PlanarGaussian3d>,
+    transient_atlases: &mut LodTransientAtlasRegistry,
+    atlas_uploads: &mut LodAtlasUploadQueue,
+) -> Result<PackageInstantiation, GaussianLodPackageError> {
+    let manifest = asset.manifest();
+    let PreparedPackage {
+        plan,
+        runtime,
+        locations,
+        identities,
+        effective,
+        structural,
+        runtime_streaming,
+        debug_index,
+        mut memory_leases,
+    } = prepared;
+    let worker_memory_reservations: Arc<[LodMemoryLease]> = memory_leases
+        .iter()
+        .filter(|lease| {
+            !lease.category().is_gpu() && lease.category() != LodMemoryCategory::RecoveryStagingCpu
+        })
+        .cloned()
+        .collect::<Vec<_>>()
+        .into();
+    let transport = package_page_transport_with_prepared(
+        manifest,
+        source,
+        config,
+        streaming,
+        &mut manager.caches,
+        locations,
+        identities,
+        Arc::clone(&worker_memory_reservations),
+    )?;
+    let mut runtime =
+        LodStreamingRuntime::from_prepared(runtime, transport, &effective, &runtime_streaming)
+            .map_err(GaussianLodPackageError::Runtime)?;
+    runtime.set_preprocess_memory_reservations(worker_memory_reservations);
     let mirror = LodPageAtlasMirror::new(runtime.atlas_layout(), plan.slot_count)
         .map_err(GaussianLodPackageError::RenderCommit)?;
-    let debug_index = Arc::new(
-        LodDebugManifestIndex::from_validated_manifest(manifest)
-            .map_err(|error| GaussianLodPackageError::DebugAnnotations(error.to_string()))?,
-    );
-    let debug = if debug_metadata {
+    let debug = if debug_metadata && let Some(index) = debug_index.as_ref() {
         let atlas =
             LodDebugAnnotationAtlas::new_sparse(plan.slot_count, plan.gaussians_per_slot)
                 .map_err(|error| GaussianLodPackageError::DebugAnnotations(error.to_string()))?;
         Some(PackageDebugAnnotations {
             atlas,
-            index: Arc::clone(&debug_index),
+            index: Arc::clone(index),
             initialization: VecDeque::new(),
             page_bases: HashMap::new(),
         })
@@ -1564,13 +1857,24 @@ fn instantiate_package(
         None
     };
     let atlas = clouds.reserve_handle();
-    let transient_atlas = LodTransientAtlas::new_empty(plan.physical_gaussians)
+    let transient_atlas = LodTransientAtlas::new(plan.physical_gaussians)
         .map_err(|error| GaussianLodPackageError::AtlasUpload(error.to_string()))?;
+    if let Some(index) = memory_leases
+        .iter()
+        .position(|lease| lease.category() == LodMemoryCategory::AtlasGpu)
+    {
+        transient_atlas.set_gpu_memory_reservation(memory_leases.swap_remove(index));
+    }
+    if let Some(index) = memory_leases
+        .iter()
+        .position(|lease| lease.category() == LodMemoryCategory::RecoveryStagingCpu)
+    {
+        transient_atlas.set_recovery_memory_reservation(memory_leases.swap_remove(index));
+    }
     transient_atlases
         .register(
             atlas.id(),
             atlas.id(),
-            plan.physical_gaussians,
             plan.gaussians_per_slot,
             &transient_atlas,
         )
@@ -1578,6 +1882,9 @@ fn instantiate_package(
         .map_err(|error| GaussianLodPackageError::AtlasUpload(error.to_string()))?;
     let transient_atlas_generation = transient_atlas.ticket().generation();
     Ok(PackageInstantiation {
+        gpu_requested: false,
+        #[cfg(lod_render_path)]
+        gpu: None,
         manifest: AssetId::default(),
         source: source.clone(),
         config: config.clone(),
@@ -1588,6 +1895,8 @@ fn instantiate_package(
         runtime: Mutex::new(runtime),
         mirror,
         debug_index,
+        debug_preparation: None,
+        _memory_leases: memory_leases,
         retained_debug_page_bases: HashMap::new(),
         debug,
         current: None,
@@ -1658,11 +1967,74 @@ impl PackageDebugPreparationWork {
     }
 }
 
+type PackageDebugIndexFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<Arc<LodDebugManifestIndex>, GaussianLodPackageError>,
+            > + Send,
+    >,
+>;
+
+struct PackageDebugIndexPreparation {
+    future: Mutex<PackageDebugIndexFuture>,
+    work: crate::stream::preparation::PreparationBudget,
+}
+
+impl PackageDebugIndexPreparation {
+    fn new(manifest: Arc<crate::GaussianLodManifest>) -> Self {
+        let work = crate::stream::preparation::PreparationBudget::new(0);
+        let budget = work.clone();
+        let future = Box::pin(async move {
+            LodDebugManifestIndex::prepare_from_validated_manifest(&manifest, &budget)
+                .await
+                .map(Arc::new)
+                .map_err(|error| GaussianLodPackageError::DebugAnnotations(error.to_string()))
+        });
+        Self {
+            future: Mutex::new(future),
+            work,
+        }
+    }
+
+    fn advance(
+        &mut self,
+        records: &mut usize,
+    ) -> Option<Result<Arc<LodDebugManifestIndex>, GaussianLodPackageError>> {
+        self.work.reset(*records);
+        let future = self
+            .future
+            .get_mut()
+            .expect("debug future has one mutable owner");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            future
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+        }));
+        *records = self.work.remaining();
+        match result {
+            Ok(std::task::Poll::Pending) => None,
+            Ok(std::task::Poll::Ready(result)) => Some(result),
+            Err(_) => Some(Err(GaussianLodPackageError::PreparationPanicked)),
+        }
+    }
+}
+
+#[cfg(test)]
 fn sync_package_debug_annotations(
     state: &mut PackageInstantiation,
     required: bool,
 ) -> Result<(), GaussianLodPackageError> {
+    let mut remaining_records = usize::MAX;
+    sync_package_debug_annotations_with_budget(state, required, &mut remaining_records)
+}
+
+fn sync_package_debug_annotations_with_budget(
+    state: &mut PackageInstantiation,
+    required: bool,
+    records: &mut usize,
+) -> Result<(), GaussianLodPackageError> {
     if !required {
+        state.debug_preparation = None;
         if let Some(debug) = state.debug.take() {
             state.retained_debug_page_bases = debug.page_bases;
         }
@@ -1677,6 +2049,27 @@ fn sync_package_debug_annotations(
     if state.debug.is_some() {
         return Ok(());
     }
+    if state.debug_index.is_none() {
+        if state.debug_preparation.is_none() {
+            let runtime = state
+                .runtime
+                .get_mut()
+                .map_err(|_| GaussianLodPackageError::RuntimePoisoned)?;
+            state.debug_preparation = Some(PackageDebugIndexPreparation::new(
+                runtime.hierarchy().shared_manifest(),
+            ));
+        }
+        let Some(index) = state
+            .debug_preparation
+            .as_mut()
+            .expect("debug preparation exists")
+            .advance(records)
+        else {
+            return Ok(());
+        };
+        state.debug_preparation = None;
+        state.debug_index = Some(index?);
+    }
     let mut atlas =
         LodDebugAnnotationAtlas::new_sparse(state.plan.slot_count, state.plan.gaussians_per_slot)
             .map_err(|error| GaussianLodPackageError::DebugAnnotations(error.to_string()))?;
@@ -1690,7 +2083,12 @@ fn sync_package_debug_annotations(
     atlas.set_complete(initialization.is_empty());
     state.debug = Some(PackageDebugAnnotations {
         atlas,
-        index: Arc::clone(&state.debug_index),
+        index: Arc::clone(
+            state
+                .debug_index
+                .as_ref()
+                .expect("debug index was prepared"),
+        ),
         initialization,
         page_bases: std::mem::take(&mut state.retained_debug_page_bases),
     });
@@ -1791,11 +2189,11 @@ fn package_runtime_streaming_settings(
 }
 
 fn package_sort_is_supported(sort_mode: &crate::sort::SortMode) -> bool {
-    #[cfg(all(feature = "sort_radix", not(feature = "buffer_texture")))]
+    #[cfg(feature = "sort_radix")]
     {
         matches!(sort_mode, crate::sort::SortMode::Radix)
     }
-    #[cfg(not(all(feature = "sort_radix", not(feature = "buffer_texture"))))]
+    #[cfg(not(feature = "sort_radix"))]
     {
         let _ = sort_mode;
         false
@@ -1861,11 +2259,12 @@ fn package_camera_views_for_cloud(
     applicable.sort_by_key(|(entity, _, _, _, _)| *entity);
     let mut views = Vec::with_capacity(applicable.len());
     for (entity, camera, projection, transform, _) in applicable {
-        let viewport_height = camera
+        let viewport_size = camera
             .physical_viewport_size()
-            .map(|size| size.y as f32)
-            .filter(|height| *height > 0.0)
+            .map(|size| size.as_vec2())
+            .filter(|size| size.x > 0.0 && size.y > 0.0)
             .ok_or(GaussianLodPackageError::UnsupportedCamera(entity))?;
+        let viewport_height = viewport_size.y;
         let view = match projection {
             Projection::Perspective(perspective) => LodView::perspective(
                 transform.translation(),
@@ -1881,14 +2280,26 @@ fn package_camera_views_for_cloud(
                     .max(f32::EPSILON),
                 orthographic.near.abs().max(f32::EPSILON),
             ),
-            Projection::Custom(_) => {
-                return Err(GaussianLodPackageError::UnsupportedCamera(entity));
+            Projection::Custom(custom) => {
+                let calibrated = custom
+                    .get::<crate::camera::path::GaussianCameraIntrinsics>()
+                    .ok_or(GaussianLodPackageError::UnsupportedCamera(entity))?;
+                LodView::perspective(
+                    transform.translation(),
+                    viewport_height,
+                    calibrated.vertical_fov_radians(),
+                    calibrated.near(),
+                )
             }
         };
-        let clip_from_world = projection.get_clip_from_view() * transform.to_matrix().inverse();
+        let clip_from_view = camera.sub_camera_view.as_ref().map_or_else(
+            || projection.get_clip_from_view(),
+            |sub_view| projection.get_clip_from_view_for_sub(sub_view),
+        );
+        let clip_from_world = clip_from_view * transform.to_matrix().inverse();
         views.push(PackageCameraView {
             entity,
-            view: view.with_clip_from_world(clip_from_world),
+            view: view.with_view_projection(clip_from_world, viewport_size),
         });
     }
     Ok(views)
@@ -1956,65 +2367,22 @@ fn drive_package_state(
     }
     let effective = state.structural.apply(settings);
     let request = PackageCutRequestSignature::new(&effective, transform, camera_views);
+    if state.pending.is_none()
+        && state
+            .cold_direct_target
+            .as_ref()
+            .is_some_and(|target| !target.request.same_critical_request(&request))
+    {
+        // Camera-only motion cannot revoke admitted I/O, but policy and
+        // camera-set changes must cancel before a bootstrap
+        // rebind can publish a candidate for a different ownership domain.
+        // Already extracted pending cuts use the phase-aware cancellation path
+        // below, which preserves any render-owned endpoint union.
+        clear_package_direct_target(state)?;
+        state.bootstrap_handoff = None;
+    }
     state.current_request_matches_live =
         state.current.is_some() && state.current_request.as_ref() == Some(&request);
-    let pending_requested_view_blend_replan = state.pending.as_ref().is_some_and(|pending| {
-        pending
-            .by_camera
-            .values()
-            .any(LodRenderCandidate::view_blend_replan_requested)
-    });
-    if pending_requested_view_blend_replan {
-        // Render observed a newer predecessor endpoint/pressure state than the
-        // proof used to author this pending replacement. No replacement bytes
-        // were synchronized. Restore selector topology to the retained cut,
-        // cancel the token, and reselect from a fresh camera snapshot without
-        // treating an ordinary pipelined race as a hard capability failure.
-        state.pending_transition_must_commit = false;
-        clear_package_pending_transaction(state)?;
-        state.current_request = None;
-        state.current_request_matches_live = false;
-        state.last_failure = None;
-        return Ok(());
-    }
-    let pending_invalid_view_blend_pressure = state
-        .pending
-        .as_ref()
-        .is_some_and(package_candidate_set_has_invalid_view_blend_pressure);
-    if pending_invalid_view_blend_pressure {
-        // Render preflight found a non-finite or threshold-contradictory
-        // pressure pair before this token became drawable. Keep the retained
-        // current output, cancel the unrendered candidate, and give the next
-        // main-world turn a fresh camera snapshot for a categorical/recovered
-        // plan.
-        state.pending_transition_must_commit = false;
-        clear_package_pending_transaction(state)?;
-        state.current_request = None;
-        state.current_request_matches_live = false;
-        state.last_failure = Some(invalid_view_blend_pressure_failure());
-        return Ok(());
-    }
-    let render_requested_hard_fallback = state.pending.as_ref().is_some_and(|pending| {
-        pending
-            .by_camera
-            .values()
-            .any(LodRenderCandidate::render_hard_fallback_requested)
-    });
-    let static_mode_requires_hard_replan = gaussian_mode != GaussianMode::Gaussian3d
-        && state.pending.as_ref().is_some_and(|pending| {
-            pending.by_camera.values().any(|candidate| {
-                candidate.view_blend_mode() == Some(LodTemporalTransitionMode::Morphing)
-            })
-        });
-    if render_requested_hard_fallback || static_mode_requires_hard_replan {
-        // A capability downgrade is a request for a new package-authored hard
-        // transaction, never permission for RenderWorld to expose this token's
-        // target. Cancel while the retained current output/table is untouched,
-        // then let the ordinary fixed-point/capacity gates judge the replan.
-        state.render_view_blend_unsupported |= render_requested_hard_fallback;
-        state.pending_transition_must_commit = false;
-        clear_package_pending_transaction(state)?;
-    }
     let next_views = camera_views
         .iter()
         .map(|view| view.entity)
@@ -2036,6 +2404,79 @@ fn drive_package_state(
         }
     }
     state.views = next_views;
+    // Draw ownership is independent of request staleness. One consumer can
+    // publish ACTIVE while another fails or asks for a replan under the same
+    // request; every later cleanup path must already know its union is owned.
+    latch_package_pending_render_ownership(state)?;
+    let pending_requested_view_blend_replan = state.pending.as_ref().is_some_and(|pending| {
+        pending
+            .by_camera
+            .values()
+            .any(LodRenderCandidate::view_blend_replan_requested)
+    });
+    if pending_requested_view_blend_replan {
+        if state.pending_transition_must_commit {
+            state.last_failure = Some(render_owned_package_pending_failure());
+            return Ok(());
+        }
+        // Render observed a newer predecessor endpoint/pressure state than the
+        // proof used to author this pending replacement. No replacement bytes
+        // were synchronized. Restore selector topology to the retained cut,
+        // cancel the token, and reselect from a fresh camera snapshot without
+        // treating an ordinary pipelined race as a hard capability failure.
+        state.pending_transition_must_commit = false;
+        clear_package_pending_transaction(state)?;
+        state.current_request = None;
+        state.current_request_matches_live = false;
+        state.last_failure = None;
+        return Ok(());
+    }
+    let pending_invalid_view_blend_pressure = state
+        .pending
+        .as_ref()
+        .is_some_and(package_candidate_set_has_invalid_view_blend_pressure);
+    if pending_invalid_view_blend_pressure {
+        if state.pending_transition_must_commit {
+            state.last_failure = Some(invalid_view_blend_pressure_failure());
+            return Ok(());
+        }
+        // Render preflight found a non-finite or threshold-contradictory
+        // pressure pair before this token became drawable. Keep the retained
+        // current output, cancel the unrendered candidate, and give the next
+        // main-world turn a fresh camera snapshot for a categorical/recovered
+        // plan.
+        state.pending_transition_must_commit = false;
+        clear_package_pending_transaction(state)?;
+        state.current_request = None;
+        state.current_request_matches_live = false;
+        state.last_failure = Some(invalid_view_blend_pressure_failure());
+        return Ok(());
+    }
+    let render_requested_hard_fallback = state.pending.as_ref().is_some_and(|pending| {
+        pending
+            .by_camera
+            .values()
+            .any(LodRenderCandidate::render_hard_fallback_requested)
+    });
+    let static_mode_requires_hard_replan = gaussian_mode != GaussianMode::Gaussian3d
+        && state.pending.as_ref().is_some_and(|pending| {
+            pending.by_camera.values().any(|candidate| {
+                candidate.temporal_transition_mode() == Some(LodTemporalTransitionMode::Morphing)
+            })
+        });
+    if render_requested_hard_fallback || static_mode_requires_hard_replan {
+        if state.pending_transition_must_commit {
+            state.last_failure = Some(render_owned_package_pending_failure());
+            return Ok(());
+        }
+        // A capability downgrade is a request for a new package-authored hard
+        // transaction, never permission for RenderWorld to expose this token's
+        // target. Cancel while the retained current output/table is untouched,
+        // then let the ordinary fixed-point/capacity gates judge the replan.
+        state.render_view_blend_unsupported |= render_requested_hard_fallback;
+        state.pending_transition_must_commit = false;
+        clear_package_pending_transaction(state)?;
+    }
     let pending_request_is_stale = state.pending.as_ref().is_some_and(|pending| {
         let prepared = pending
             .by_camera
@@ -2068,6 +2509,15 @@ fn drive_package_state(
                 // speculative demand. Finish and logically commit that exact
                 // endpoint before selecting the superseding request.
                 state.pending_transition_must_commit = true;
+                if let Some(pending) = state.pending.as_ref() {
+                    // Camera removal revokes only that consumer. Keep the
+                    // authored capability map aligned with the surviving
+                    // transaction so ACTIVE validation cannot cancel its
+                    // already drawable owners as a spurious length mismatch.
+                    state
+                        .pending_presentation_modes
+                        .retain(|camera, _| pending.by_camera.contains_key(camera));
+                }
             }
             Some(PackagePendingStaleDisposition::CancelSafe) => {
                 state.pending_transition_must_commit = false;
@@ -2095,6 +2545,17 @@ fn drive_package_state(
             })
         });
         state.render_view_blend_unsupported |= surprise_hard_fallback;
+        if state.pending_transition_must_commit {
+            // Validation still rejects this presentation. Its live ACTIVE
+            // consumers may already have drawn, so rejection cannot revoke
+            // their atlas union while render recovery or retirement is pending.
+            state.last_failure = Some(if invalid_pressure {
+                invalid_view_blend_pressure_failure()
+            } else {
+                render_owned_package_pending_failure()
+            });
+            return Ok(());
+        }
         state.pending_transition_must_commit = false;
         clear_package_pending_transaction(state)?;
         if invalid_pressure {
@@ -2237,8 +2698,9 @@ fn drive_package_state(
             // `state.pending` until the infallible take below.
             let rendered_frontiers = pending
                 .by_camera
-                .values()
-                .map(|candidate| {
+                .iter()
+                .filter(|(camera, _)| state.views.contains(camera))
+                .map(|(_, candidate)| {
                     (
                         candidate.frontier().view(),
                         candidate
@@ -2347,12 +2809,30 @@ fn drive_package_state(
     }
 
     if let Some(current) = state.current.as_ref() {
-        for candidate in current.by_camera.values() {
-            if !candidate.failed() && !package_candidate_requires_atlas(candidate) {
+        for (camera, candidate) in &current.by_camera {
+            if state.views.contains(camera)
+                && !candidate.failed()
+                && !package_candidate_requires_atlas(candidate)
+            {
                 candidate.phase.store(LOD_RENDER_ACTIVE, Ordering::Release);
             }
         }
-        if current.by_camera.values().any(LodRenderCandidate::failed) {
+        let live_failed = current
+            .by_camera
+            .iter()
+            .any(|(camera, candidate)| state.views.contains(camera) && candidate.failed());
+        if live_failed {
+            if package_candidate_set_has_live_drawable(current, &state.views) {
+                // A per-camera raster failure cannot revoke a sibling's
+                // already drawable current cut. Retain the exact shared union
+                // until that consumer recovers or is removed from the live set.
+                state.current_request_matches_live = false;
+                state.last_failure = Some(LodOrchestrationFailure::with_detail(
+                    LodOrchestrationFailureCode::RenderCommitFailed,
+                    "a retained camera failed while a live sibling owns the current atlas union; waiting for render recovery or retirement",
+                ));
+                return Ok(());
+            }
             state.current = None;
             state.current_request = None;
             state.current_request_matches_live = false;
@@ -2366,9 +2846,17 @@ fn drive_package_state(
                 LodOrchestrationFailureCode::RenderCommitFailed,
                 "retained render state failed; staging a fresh cut from root fallback",
             ));
-        } else if package_candidate_set_is_active(current) {
+        } else if current.by_camera.iter().all(|(camera, candidate)| {
+            !state.views.contains(camera) || candidate.render_is_active()
+        }) {
+            // Removed consumers cannot acknowledge recovery. Their immutable
+            // packets and conservative leases remain until the next complete
+            // publication, but their old phase/pressure must not block it.
             state.current_recovery_queued = false;
-            if package_candidate_set_has_invalid_view_blend_pressure(current) {
+            if current.by_camera.iter().any(|(camera, candidate)| {
+                state.views.contains(camera)
+                    && package_view_blend_status_has_invalid_pressure(candidate.view_blend_status())
+            }) {
                 // The render world keeps the last drawable suffix/table
                 // bit-exact. This is not request ownership or successful
                 // convergence. Hold this exact ACTIVE transaction rather than
@@ -2381,7 +2869,12 @@ fn drive_package_state(
                 state.current_request_matches_live = false;
                 state.last_failure = Some(invalid_view_blend_pressure_failure());
                 return Ok(());
-            } else if package_candidate_set_has_missing_view_blend_consumers(current) {
+            } else if current.by_camera.iter().any(|(camera, candidate)| {
+                state.views.contains(camera)
+                    && package_view_blend_status_has_missing_consumers(
+                        candidate.view_blend_status(),
+                    )
+            }) {
                 // ACTIVE is not fixed-point ownership until every expected
                 // private view has published one coherent radix-proven
                 // snapshot. Retain the unanimous Fractional hold and allow
@@ -2437,25 +2930,39 @@ fn drive_package_state(
     if rebind_retained_package_bootstrap(state, &request, camera_views, &effective, transform)? {
         return Ok(());
     }
-    if preflight_package_bootstrap_handoff(
-        state,
-        &request,
-        camera_views,
-        &effective,
-        transform.to_matrix(),
-    )? {
-        return Ok(());
+    let force_hard_view_blend = gaussian_mode != GaussianMode::Gaussian3d
+        || !effective.allows_view_blend()
+        || state.render_view_blend_unsupported;
+    let discrete_incremental = discrete::enabled(state, camera_views, &effective);
+    if discrete::policy_enabled(state, &effective) {
+        if discrete_incremental {
+            discrete::prepare(
+                state,
+                &request,
+                camera_views,
+                &effective,
+                transform.to_matrix(),
+            )?;
+        }
+    } else {
+        if preflight_package_bootstrap_handoff(
+            state,
+            &request,
+            camera_views,
+            &effective,
+            transform.to_matrix(),
+            force_hard_view_blend,
+        )? {
+            return Ok(());
+        }
+        prepare_package_cold_direct_target(
+            state,
+            &request,
+            camera_views,
+            &effective,
+            transform.to_matrix(),
+        )?;
     }
-    prepare_package_cold_direct_target(
-        state,
-        &request,
-        camera_views,
-        &effective,
-        transform.to_matrix(),
-    )?;
-    let force_hard_view_blend =
-        gaussian_mode != GaussianMode::Gaussian3d || state.render_view_blend_unsupported;
-
     // A package bridge never presents a partial forest as a complete scene.
     let runtime = state
         .runtime
@@ -2467,7 +2974,7 @@ fn drive_package_state(
     let direct_target_streaming = state.cold_direct_target.is_some() && !camera_views.is_empty();
     if let (Some(target), Some(owner)) = (&state.cold_direct_target, camera_views.first()) {
         // Mark the exact target demand before the one runtime update which
-        // polls, publishes, and starts bounded page work. Legacy direct mode
+        // polls, publishes, and starts bounded page work. Direct asset mode
         // deliberately omits ordinary camera navigation demand: the immutable
         // plan is the selection result and transient ancestors must not compete
         // with it for request or cache capacity.
@@ -2596,7 +3103,7 @@ fn drive_package_state(
                     .filter(|previous| {
                         previous.render_is_active()
                             && (!force_hard_view_blend
-                                || previous.view_blend_mode()
+                                || previous.temporal_transition_mode()
                                     != Some(LodTemporalTransitionMode::Morphing))
                             && previous.same_payload(&candidate)
                     })
@@ -2616,7 +3123,10 @@ fn drive_package_state(
         .unwrap_or(u32::MAX);
     if state.terminal_failures > 0 {
         state.last_failure = Some(terminal_runtime_failure(runtime, state.terminal_failures));
-        if state.pending.is_none() && state.cold_direct_target.take().is_some() {
+        if !discrete_incremental
+            && state.pending.is_none()
+            && state.cold_direct_target.take().is_some()
+        {
             for page in std::mem::take(&mut state.pending_page_leases) {
                 runtime
                     .release_resident_page(page)
@@ -2699,13 +3209,61 @@ fn drive_package_state(
         return Ok(());
     }
     let mut direct_target_selected = false;
-    if let Some(target) = state.cold_direct_target.as_ref()
-        && let Some(frontiers) = runtime
-            .package_target_candidates(&target.plan, effective.max_active_gaussians_u32())
-            .map_err(GaussianLodPackageError::Runtime)?
-    {
+    let mut direct_target_matches_live = false;
+    if state.cold_direct_target.as_ref().is_some_and(|target| {
+        package_resident_bootstrap_view_blend_ready(
+            runtime,
+            state.current.as_ref(),
+            target,
+            &request,
+            &effective,
+            force_hard_view_blend,
+        )
+    }) {
+        // A missing endpoint may have completed inside this frame's poll.
+        // Preserve the ACTIVE cut and admitted page leases until next frame's
+        // preflight can rebase ordinary selection and author an owned morph.
+        // Publishing the direct target here would skip that transition.
+        return Ok(());
+    }
+    let target_candidates = if let Some(target) = state.cold_direct_target.as_ref() {
+        let target_views = camera_views
+            .iter()
+            .map(|camera| {
+                (
+                    LodRuntimeViewId(camera.entity.to_bits()),
+                    camera.view.with_world_from_local(world_from_local),
+                )
+            })
+            .collect::<Vec<_>>();
+        if discrete_incremental {
+            let nodes = discrete::current_nodes(
+                state
+                    .current
+                    .as_ref()
+                    .expect("incremental mode has a current cut"),
+            );
+            let ready = runtime
+                .package_discrete_resident_plan(&target.plan, &target_views, &nodes, &effective)
+                .map_err(GaussianLodPackageError::Runtime)?;
+            match ready {
+                Some(ready) => runtime
+                    .package_target_candidates(&ready, &target_views, &effective)
+                    .map_err(GaussianLodPackageError::Runtime)?,
+                None => None,
+            }
+        } else {
+            runtime
+                .package_target_candidates(&target.plan, &target_views, &effective)
+                .map_err(GaussianLodPackageError::Runtime)?
+        }
+    } else {
+        None
+    };
+    if let Some(frontiers) = target_candidates {
         let mut direct = LodRenderCandidates::default();
-        for (view, frontier) in frontiers {
+        direct_target_matches_live = frontiers.matches_live_target;
+        for (view, frontier) in frontiers.views {
             let camera = camera_views
                 .iter()
                 .find(|camera| camera.entity.to_bits() == view.0)
@@ -2723,7 +3281,7 @@ fn drive_package_state(
                 .filter(|previous| {
                     previous.render_is_active()
                         && (!force_hard_view_blend
-                            || previous.view_blend_mode()
+                            || previous.temporal_transition_mode()
                                 != Some(LodTemporalTransitionMode::Morphing))
                         && previous.same_payload(&candidate)
                 })
@@ -2733,13 +3291,13 @@ fn drive_package_state(
             direct.by_camera.insert(camera.entity, candidate);
         }
         candidates = direct;
-        fallback_nodes.clear();
+        fallback_nodes = package_candidate_fallback_nodes(&candidates);
         complete = true;
         direct_target_selected = true;
     }
     let publish_fixed_point =
         package_stream_frames_reached_publish_fixed_point(runtime, &stream_frames);
-    let request_fixed_point = direct_target_selected
+    let request_fixed_point = (direct_target_selected && direct_target_matches_live)
         || (publish_fixed_point
             && stream_frames.iter().all(|(_, frame)| {
                 frame.selection_stable() && !frame.temporal_transition_applied()
@@ -2786,13 +3344,17 @@ fn drive_package_state(
             runtime.hierarchy(),
             current,
             &candidates,
+            &state.views,
         ) else {
             // The selector may optimistically reach the next adjacent cut
             // before the previously published edge is drawable at the matching
             // endpoint. Rebase only topology history to the retained target
             // cut; residency and disjoint demand remain live for the next
             // attempt.
-            for candidate in current.by_camera.values() {
+            for (camera, candidate) in &current.by_camera {
+                if !state.views.contains(camera) {
+                    continue;
+                }
                 let nodes = candidate
                     .target_render_ranges()
                     .iter()
@@ -2842,7 +3404,8 @@ fn drive_package_state(
             .filter(|(_, frame)| frame.temporal_transition_applied())
             .all(|(camera, _)| {
                 candidates.get(*camera).is_some_and(|candidate| {
-                    candidate.view_blend_mode() == Some(LodTemporalTransitionMode::Morphing)
+                    candidate.temporal_transition_mode()
+                        == Some(LodTemporalTransitionMode::Morphing)
                         && candidate
                             .temporal_transition()
                             .and_then(|transition| transition.morph())
@@ -2852,7 +3415,7 @@ fn drive_package_state(
     let presentation_only_progressive_view_blend = applied_view_blend_frame_count == 0
         && state.current.as_ref().is_some_and(|current| {
             let identity = |candidate: &LodRenderCandidate| {
-                (candidate.view_blend_mode() == Some(LodTemporalTransitionMode::Morphing))
+                (candidate.temporal_transition_mode() == Some(LodTemporalTransitionMode::Morphing))
                     .then(|| {
                         candidate
                             .temporal_transition()
@@ -2875,7 +3438,7 @@ fn drive_package_state(
                 // With no exact-cut substitution this is only a persistent
                 // boundary-table addition/removal. Endpoint-safe removals were
                 // already proved above; at least one side must remain authored
-                // view-blend topology so categorical legacy churn cannot use
+                // view-blend topology so categorical churn cannot use
                 // this global fixed-point exception.
                 previous_identity.is_some() || next_identity.is_some()
             });
@@ -2901,9 +3464,8 @@ fn drive_package_state(
         // page waves for one stationary view; publishing every wave repeatedly
         // swaps parent representatives for their children and visibly pops even
         // though each individual cut is atomic. Keep the exact retained cut
-        // byte-for-byte while demand converges. A cold package deliberately
-        // remains Loading instead of exposing a visually useless root wave.
-        // Progressive v3 packages have one separate exception: the runtime may
+        // byte-for-byte while demand converges. Bounded-refinement packages,
+        // including spatial v4, have one startup exception: the runtime may
         // admit a deterministic, payload-capped global bootstrap antichain.
         // That transaction is complete before extraction and remains unchanged
         // until this fixed-point gate admits the final target.
@@ -2911,7 +3473,7 @@ fn drive_package_state(
         // ABI16 view-blend tables are a separate progressive exception: every
         // ready independent edge joins one persistent ACTIVE table while common
         // fractional edges inherit state. This removes the old global
-        // fixed-point burst cadence without exposing categorical legacy waves.
+        // fixed-point burst cadence without exposing categorical waves.
         //
         // Explicit retained-cut capacity pressure is the other narrow exception: a
         // complete replacement which releases a page held only by the current
@@ -3003,12 +3565,7 @@ fn drive_package_state(
     Ok(())
 }
 
-#[cfg(all(
-    test,
-    not(target_arch = "wasm32"),
-    feature = "sort_radix",
-    not(feature = "buffer_texture")
-))]
+#[cfg(all(test, not(target_arch = "wasm32"), feature = "sort_radix"))]
 fn drive_package_state_for_test(
     state: &mut PackageInstantiation,
     settings: &GaussianLodSettings,
@@ -3058,7 +3615,7 @@ fn package_candidate_has_downgraded_view_blend(candidate: &LodRenderCandidate) -
         .temporal_transition()
         .and_then(|transition| transition.morph())
         .is_some()
-        && candidate.view_blend_mode() != Some(LodTemporalTransitionMode::Morphing)
+        && candidate.temporal_transition_mode() != Some(LodTemporalTransitionMode::Morphing)
 }
 
 const fn package_progressive_view_blend_is_allowed(
@@ -3076,7 +3633,7 @@ fn package_author_hard_candidate_modes(candidates: &LodRenderCandidates) {
 }
 
 fn package_author_hard_candidate_mode(candidate: &LodRenderCandidate) {
-    if candidate.view_blend_mode() == Some(LodTemporalTransitionMode::Morphing) {
+    if candidate.temporal_transition_mode() == Some(LodTemporalTransitionMode::Morphing) {
         candidate.publish_temporal_transition_mode(LodTemporalTransitionMode::BoundedHardCohort);
     }
 }
@@ -3087,7 +3644,7 @@ fn package_candidate_presentation_modes(
     candidates
         .by_camera
         .iter()
-        .map(|(camera, candidate)| (*camera, candidate.view_blend_mode()))
+        .map(|(camera, candidate)| (*camera, candidate.temporal_transition_mode()))
         .collect()
 }
 
@@ -3278,6 +3835,7 @@ fn preflight_package_bootstrap_handoff(
     camera_views: &[PackageCameraView],
     settings: &GaussianLodSettings,
     world_from_local: Mat4,
+    force_hard_view_blend: bool,
 ) -> Result<bool, GaussianLodPackageError> {
     let current_is_bootstrap = state.current.as_ref().is_some_and(|current| {
         !current.is_empty()
@@ -3306,11 +3864,25 @@ fn preflight_package_bootstrap_handoff(
         return Ok(false);
     }
 
+    // One capacity-admitted global cut owns its bounded page work until it
+    // arrives. Restarting that work for every camera sample can cancel a slow
+    // transport forever. Live quality is recomputed before publication, and a
+    // changed target is not acknowledged as a fixed-point request.
     if let Some(handoff) = &state.bootstrap_handoff
-        && handoff.request() == request
+        && (handoff.request() == request
+            || (matches!(handoff, PackageBootstrapHandoff::Admitted(_))
+                && handoff.request().same_critical_request(request)))
     {
         return match handoff {
-            PackageBootstrapHandoff::Admitted(_) => Ok(false),
+            PackageBootstrapHandoff::Admitted(_) => {
+                resume_resident_package_bootstrap_view_blend(
+                    state,
+                    request,
+                    settings,
+                    force_hard_view_blend,
+                )?;
+                Ok(false)
+            }
             PackageBootstrapHandoff::CapacityExceeded { error, .. } => {
                 state.last_failure = Some(LodOrchestrationFailure::from(error));
                 Ok(true)
@@ -3320,7 +3892,7 @@ fn preflight_package_bootstrap_handoff(
     if state
         .cold_direct_target
         .as_ref()
-        .is_some_and(|target| target.request != *request)
+        .is_some_and(|target| !target.request.same_critical_request(request))
     {
         clear_package_direct_target(state)?;
     }
@@ -3375,12 +3947,50 @@ fn preflight_package_bootstrap_handoff(
         && required_decoded_bytes <= limits.max_bytes
         && required_gaussians <= limits.max_gaussians;
     if fits {
+        if !force_hard_view_blend
+            && settings.allows_view_blend()
+            && settings.quality_endpoint()
+                == crate::gaussian::lod_settings::LodQualityEndpoint::Continuous
+            && runtime.hierarchy().manifest().morph_map.is_some()
+            && let Some(current) = state.current.as_ref()
+        {
+            // Freeze genuine late demand at admission, before direct I/O can
+            // make endpoints resident. This path skips ordinary per-view
+            // selection while streaming, so it must preserve the same visible
+            // parent provenance explicitly. Capacity denial and fully resident
+            // requests never create late activation markers.
+            for (camera, candidate) in &current.by_camera {
+                if !state.views.contains(camera) || !candidate.render_is_active() {
+                    continue;
+                }
+                let view = candidate.frontier().view();
+                let Some(target_nodes) = plan.nodes_for_view(view) else {
+                    continue;
+                };
+                let rendered_nodes = candidate
+                    .target_render_ranges()
+                    .iter()
+                    .map(|range| range.node)
+                    .collect::<Vec<_>>();
+                runtime.record_package_target_view_blend_demand(
+                    view,
+                    &rendered_nodes,
+                    target_nodes,
+                );
+            }
+        }
         state.cold_direct_target = Some(PackageColdDirectTarget {
             request: request.clone(),
             plan,
         });
         state.bootstrap_handoff = Some(PackageBootstrapHandoff::Admitted(request.clone()));
         state.last_failure = None;
+        resume_resident_package_bootstrap_view_blend(
+            state,
+            request,
+            settings,
+            force_hard_view_blend,
+        )?;
         return Ok(false);
     }
 
@@ -3410,6 +4020,129 @@ fn preflight_package_bootstrap_handoff(
         request: request.clone(),
         error,
     });
+    Ok(true)
+}
+
+/// A direct bootstrap plan is also a capacity proof for its complete endpoints.
+/// Resume ordinary morph selection only when it cannot replay missing cold
+/// navigation rungs: every ancestor of both complete cuts must already have an
+/// authenticated decoded page. The normal runtime still constructs/validates
+/// the adjacent morph map and the package still leases its full endpoint union.
+/// Missing intermediate rungs retain the existing categorical direct fallback;
+/// this is not a promise to morph every possible quality jump.
+fn package_resident_bootstrap_view_blend_ready<T: LodPageTransport>(
+    runtime: &LodStreamingRuntime<T>,
+    current: Option<&LodRenderCandidates>,
+    target: &PackageColdDirectTarget,
+    request: &PackageCutRequestSignature,
+    settings: &GaussianLodSettings,
+    force_hard_view_blend: bool,
+) -> bool {
+    if force_hard_view_blend
+        || !settings.allows_view_blend()
+        || settings.quality_endpoint()
+            != crate::gaussian::lod_settings::LodQualityEndpoint::Continuous
+        || target.request != *request
+        || runtime.hierarchy().manifest().morph_map.is_none()
+    {
+        return false;
+    }
+    let Some(current) =
+        current.filter(|current| !current.is_empty() && current.len() == request.cameras.len())
+    else {
+        return false;
+    };
+    // Reject ordinary incomplete target I/O before walking ancestor paths.
+    // The validated hierarchy is acyclic; repeated shared ancestors are cheap
+    // on this rare handoff and avoid an unaccounted scratch allocation.
+    if target
+        .plan
+        .pages()
+        .iter()
+        .any(|page| !runtime.cache().contains(*page) || runtime.decoded_page(*page).is_none())
+    {
+        return false;
+    }
+    for candidate in current.by_camera.values() {
+        if !candidate.render_is_active() || !candidate.frontier().is_coverage_guard() {
+            return false;
+        }
+        let Some(target_nodes) = target.plan.nodes_for_view(candidate.frontier().view()) else {
+            return false;
+        };
+        for node in candidate
+            .target_render_ranges()
+            .iter()
+            .map(|range| range.node)
+            .chain(target_nodes.iter().copied())
+        {
+            let mut cursor = Some(node);
+            while let Some(node) = cursor {
+                let Some(page) = runtime.hierarchy().page(node) else {
+                    return false;
+                };
+                if !runtime.cache().contains(page) || runtime.decoded_page(page).is_none() {
+                    return false;
+                }
+                cursor = runtime.hierarchy().parent(node);
+            }
+        }
+    }
+    true
+}
+
+fn resume_resident_package_bootstrap_view_blend(
+    state: &mut PackageInstantiation,
+    request: &PackageCutRequestSignature,
+    settings: &GaussianLodSettings,
+    force_hard_view_blend: bool,
+) -> Result<bool, GaussianLodPackageError> {
+    let Some(target) = state.cold_direct_target.as_ref() else {
+        return Ok(false);
+    };
+    let runtime = state
+        .runtime
+        .get_mut()
+        .map_err(|_| GaussianLodPackageError::RuntimePoisoned)?;
+    if !package_resident_bootstrap_view_blend_ready(
+        runtime,
+        state.current.as_ref(),
+        target,
+        request,
+        settings,
+        force_hard_view_blend,
+    ) {
+        return Ok(false);
+    }
+
+    clear_package_direct_target(state)?;
+    let runtime = state
+        .runtime
+        .get_mut()
+        .map_err(|_| GaussianLodPackageError::RuntimePoisoned)?;
+    for (camera, candidate) in &state
+        .current
+        .as_ref()
+        .expect("resident handoff requires a retained cut")
+        .by_camera
+    {
+        if !state.views.contains(camera) {
+            continue;
+        }
+        let nodes = candidate
+            .target_render_ranges()
+            .iter()
+            .map(|range| range.node)
+            .collect::<Vec<_>>();
+        // Bootstrap/direct publication never committed ordinary selector
+        // history. Its next substitution must begin at the actually visible
+        // cut, not the last speculative/cold navigation frontier.
+        runtime
+            .retry_from_rendered_frontier(candidate.frontier().view(), &nodes)
+            .map_err(GaussianLodPackageError::Runtime)?;
+    }
+    state.bootstrap_handoff = None;
+    state.last_failure = None;
     Ok(true)
 }
 
@@ -3450,7 +4183,7 @@ fn prepare_package_cold_direct_target(
         || state
             .cold_direct_target
             .as_ref()
-            .is_some_and(|target| target.request == *request)
+            .is_some_and(|target| target.request.same_critical_request(request))
     {
         return Ok(());
     }
@@ -3637,6 +4370,15 @@ fn enqueue_package_materialized_slots(
 fn clear_package_pending_transaction(
     state: &mut PackageInstantiation,
 ) -> Result<(), GaussianLodPackageError> {
+    if state.pending.as_ref().is_some_and(|pending| {
+        state.pending_transition_must_commit
+            || package_candidate_set_has_live_drawable(pending, &state.views)
+    }) {
+        return Err(GaussianLodPackageError::RenderCommitFailed {
+            detail: "cannot cancel a pending atlas union owned by a live render consumer"
+                .to_owned(),
+        });
+    }
     restore_package_runtime_after_pending_cancellation(state)?;
     replace_package_pending_page_leases(state, &BTreeSet::new())?;
     if let Some(pending) = state.pending.take() {
@@ -4056,13 +4798,16 @@ fn package_candidate_set_view_blend_retirement_attestations<H>(
     hierarchy: &H,
     current: &LodRenderCandidates,
     replacement: &LodRenderCandidates,
+    live_views: &BTreeSet<Entity>,
 ) -> Option<BTreeMap<Entity, LodViewBlendPredecessorAttestation>>
 where
     H: LodHierarchy<NodeId = LodNodeId>,
 {
     let mut attestations = BTreeMap::new();
     for (camera, candidate) in &current.by_camera {
-        if candidate.view_blend_mode() != Some(LodTemporalTransitionMode::Morphing) {
+        if !live_views.contains(camera)
+            || candidate.temporal_transition_mode() != Some(LodTemporalTransitionMode::Morphing)
+        {
             continue;
         }
         let transition = candidate.temporal_transition()?;
@@ -4078,14 +4823,15 @@ where
         }
 
         let next = replacement.get(*camera)?;
-        let next_edges = if next.view_blend_mode() == Some(LodTemporalTransitionMode::Morphing) {
-            let next_morph = next
-                .temporal_transition()
-                .and_then(|transition| transition.morph())?;
-            next_morph.edges()
-        } else {
-            &[]
-        };
+        let next_edges =
+            if next.temporal_transition_mode() == Some(LodTemporalTransitionMode::Morphing) {
+                let next_morph = next
+                    .temporal_transition()
+                    .and_then(|transition| transition.morph())?;
+                next_morph.edges()
+            } else {
+                &[]
+            };
         let next_by_key = next_edges
             .iter()
             .map(|edge| (PackageViewBlendEdgeKey::from_edge(edge), edge))
@@ -4174,12 +4920,17 @@ fn package_pending_active_presentation_is_safe(
         return Ok(false);
     }
     if state.pending_progressive_view_blend
-        && pending.by_camera.values().any(|candidate| {
-            candidate.active_presentation() != Some(LodRenderActivePresentation::ViewBlend)
-        })
+        && pending
+            .by_camera
+            .values()
+            .any(package_candidate_has_downgraded_view_blend)
     {
         return Ok(false);
     }
+    // Progressive presentation-only changes may remove an edge table at an
+    // exact endpoint, leaving a categorical cut for that camera. The authored
+    // per-camera mode above and endpoint retirement proof below are required;
+    // only a downgraded authored morph is forbidden from progressive admission.
     let Some(current) = state.current.clone() else {
         return Ok(true);
     };
@@ -4191,6 +4942,7 @@ fn package_pending_active_presentation_is_safe(
         runtime.hierarchy(),
         &current,
         &pending,
+        &state.views,
     ) else {
         return Ok(false);
     };
@@ -4220,6 +4972,7 @@ fn package_candidate_set_matches_request(
                 frontier.view() == LodRuntimeViewId(camera.entity.to_bits())
                     && frontier.quality_status().requested_target == request.target
                     && frontier.selection_view_frozen() == frozen
+                    && frontier.presentation_mode() == request.presentation_mode
                     && u64::from(frontier.candidate_count()) <= request.max_active_gaussians
             })
         })
@@ -4236,14 +4989,6 @@ fn package_candidate_set_is_active(candidates: &LodRenderCandidates) -> bool {
 fn package_candidate_set_has_invalid_view_blend_pressure(candidates: &LodRenderCandidates) -> bool {
     candidates.by_camera.values().any(|candidate| {
         package_view_blend_status_has_invalid_pressure(candidate.view_blend_status())
-    })
-}
-
-fn package_candidate_set_has_missing_view_blend_consumers(
-    candidates: &LodRenderCandidates,
-) -> bool {
-    candidates.by_camera.values().any(|candidate| {
-        package_view_blend_status_has_missing_consumers(candidate.view_blend_status())
     })
 }
 
@@ -4292,7 +5037,7 @@ const fn package_same_payload_request_fixed_point(
     selector_fixed_point && !selection_view_frozen_changed && !view_blend_lagging
 }
 
-/// A categorical legacy cohort remains an intermediate topology step and does
+/// A categorical cohort remains an intermediate topology step and does
 /// not own the whole camera/policy request until selector convergence. ABI16 is
 /// different: an ACTIVE fractional edge table may itself be the stationary
 /// view-conditioned fixed point, provided selection is fixed, no edge is
@@ -4305,17 +5050,68 @@ enum PackagePendingStaleDisposition {
     FinishAndCommit,
 }
 
+fn render_owned_package_pending_failure() -> LodOrchestrationFailure {
+    LodOrchestrationFailure::with_detail(
+        LodOrchestrationFailureCode::RenderCommitFailed,
+        "a drawable package consumer owns the pending atlas union; retaining it until render recovery or retirement",
+    )
+}
+
+fn latch_package_pending_render_ownership(
+    state: &mut PackageInstantiation,
+) -> Result<(), GaussianLodPackageError> {
+    let Some(pending) = state.pending.as_mut() else {
+        return Ok(());
+    };
+    if !state.pending_transition_must_commit
+        && !package_candidate_set_has_live_drawable(pending, &state.views)
+    {
+        return Ok(());
+    }
+    match reconcile_stale_package_pending_transition(
+        pending,
+        &state.views,
+        state.pending_transition_must_commit,
+    ) {
+        PackagePendingStaleDisposition::FinishAndCommit => {
+            state.pending_transition_must_commit = true;
+            state
+                .pending_presentation_modes
+                .retain(|camera, _| pending.by_camera.contains_key(camera));
+        }
+        PackagePendingStaleDisposition::CancelSafe => {
+            state.pending_transition_must_commit = false;
+            clear_package_pending_transaction(state)?;
+        }
+    }
+    Ok(())
+}
+
+fn package_candidate_set_has_live_drawable(
+    pending: &LodRenderCandidates,
+    live_views: &BTreeSet<Entity>,
+) -> bool {
+    pending.by_camera.iter().any(|(camera, candidate)| {
+        live_views.contains(camera)
+            && (candidate.render_is_transitioning()
+                || (candidate.render_is_active() && candidate.rendered_candidate_count() != 0))
+    })
+}
+
 fn reconcile_stale_package_pending_transition(
     pending: &mut LodRenderCandidates,
     live_views: &BTreeSet<Entity>,
     already_latched: bool,
 ) -> PackagePendingStaleDisposition {
-    let live_transitioning = pending.by_camera.iter().any(|(camera, candidate)| {
-        live_views.contains(camera) && candidate.render_is_transitioning()
-    });
-    if !already_latched && !live_transitioning {
+    let live_drawable = package_candidate_set_has_live_drawable(pending, live_views);
+    if !already_latched && !live_drawable {
         return PackagePendingStaleDisposition::CancelSafe;
     }
+
+    // ACTIVE can precede the next main-world poll, including for categorical
+    // cuts which never enter TRANSITIONING. A newer request must commit that
+    // already drawn transaction once before selecting its successor; rolling
+    // back to the older current cut would invalidate the visible predecessor.
 
     // A removed camera owns no RenderView and therefore cannot draw or
     // acknowledge this transition. Retire only that consumer; every still-live
@@ -4492,6 +5288,10 @@ fn advance_package_staged_cut(
     staging: &mut PackageStagingPermit<'_>,
     max_gpu_bytes: u64,
 ) -> Result<(), GaussianLodPackageError> {
+    #[cfg(feature = "testing")]
+    let _cpu_scope = crate::testing::lod_package_cpu::scope(
+        crate::testing::lod_package_cpu::PackageCpuScope::AdvanceStagedCut,
+    );
     ensure_package_staged_debug_preparation(state, staged);
     let runtime = state
         .runtime
@@ -4814,6 +5614,11 @@ fn commit_package_staged_debug_annotations(
 /// Publishes all logical visible ownership without fallible cleanup work.
 /// Validation and target-page leasing must already be complete.
 fn publish_package_staged_cut(state: &mut PackageInstantiation, staged: PackageStagedCut) {
+    #[cfg(feature = "testing")]
+    let _cpu_scope = crate::testing::lod_package_cpu::scope(
+        crate::testing::lod_package_cpu::PackageCpuScope::PublishStagedCut,
+    );
+
     debug_assert!(staged.complete);
     state.visible_slots = staged.slots;
     state.visible_ranges = staged.ranges;
@@ -5111,12 +5916,13 @@ fn publish_package_state(
     candidates.candidates_are_current = candidates_are_current;
     candidates.retained_current_is_stale = retained_current && !state.current_request_matches_live;
     candidates.transition_must_commit = state.pending_transition_must_commit;
-    candidates.debug_metadata_staged = state.debug.is_none()
-        || state.pending.is_none()
-        || state
-            .staged
-            .as_ref()
-            .is_some_and(|staged| staged.debug.complete);
+    candidates.debug_metadata_staged = state.debug_preparation.is_none()
+        && (state.debug.is_none()
+            || state.pending.is_none()
+            || state
+                .staged
+                .as_ref()
+                .is_some_and(|staged| staged.debug.complete));
     let mut entity_commands = commands.entity(entity);
     entity_commands.insert(candidates);
     if let Some(debug) = &state.debug {
@@ -5227,6 +6033,12 @@ fn publish_package_failure(
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum GaussianLodPackageError {
+    MemoryBudget(LodMemoryAdmissionError),
+    PreparationPanicked,
+    PreparationBytesExceedLimit {
+        requested: u64,
+        limit: u64,
+    },
     ZeroLimit(&'static str),
     InvalidManifest(String),
     InvalidLodSettings(String),
@@ -5361,7 +6173,9 @@ impl From<&GaussianLodPackageError> for LodOrchestrationFailure {
             GaussianLodPackageError::RenderCommitFailed { .. } => {
                 LodOrchestrationFailureCode::RenderCommitFailed
             }
-            GaussianLodPackageError::AtlasCannotFitPage { .. }
+            GaussianLodPackageError::MemoryBudget(_)
+            | GaussianLodPackageError::PreparationBytesExceedLimit { .. }
+            | GaussianLodPackageError::AtlasCannotFitPage { .. }
             | GaussianLodPackageError::RootFallbackExceedsAtlas { .. }
             | GaussianLodPackageError::AtlasSizeOverflow
             | GaussianLodPackageError::AtlasAllocationFailed { .. }
@@ -5372,7 +6186,8 @@ impl From<&GaussianLodPackageError> for LodOrchestrationFailure {
             | GaussianLodPackageError::ViewLimitExceeded { .. } => {
                 LodOrchestrationFailureCode::CapacityExceeded
             }
-            GaussianLodPackageError::ConflictingAtlasSlot { .. }
+            GaussianLodPackageError::PreparationPanicked
+            | GaussianLodPackageError::ConflictingAtlasSlot { .. }
             | GaussianLodPackageError::ConflictingAtlasPage { .. }
             | GaussianLodPackageError::DebugAnnotations(_)
             | GaussianLodPackageError::RuntimePoisoned

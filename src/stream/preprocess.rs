@@ -12,6 +12,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     num::NonZeroU32,
+    sync::Arc,
 };
 
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -28,7 +29,9 @@ use wasm as platform;
 use crate::{
     gaussian::formats::{
         planar_3d::Gaussian3d,
-        planar_3d_chunked::{LodBounds, LodPageDescriptor, LodPageId, PlanarGaussian3dPage},
+        planar_3d_chunked::{
+            LodBounds, LodNodeId, LodPageDescriptor, LodPageId, LodPageRange, PlanarGaussian3dPage,
+        },
         planar_3d_lod::gaussian_support_bounds,
     },
     io::lod::{LodCodecError, LodCodecLimits},
@@ -167,6 +170,15 @@ impl std::fmt::Display for LodPagePreprocessAdmissionError {
 
 impl std::error::Error for LodPagePreprocessAdmissionError {}
 
+/// Immutable, offset-ordered node slices from a validated manifest. Sharing the
+/// plan keeps page admission independent of the number of nodes in the page.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SharedPageNodeRange {
+    pub node: LodNodeId,
+    pub range: LodPageRange,
+    pub bounds: LodBounds,
+}
+
 pub(crate) struct LodPagePreprocessInput {
     pub request: PageRequest,
     pub payload: PagePayload,
@@ -174,6 +186,7 @@ pub(crate) struct LodPagePreprocessInput {
     pub limits: LodCodecLimits,
     pub max_encoded_page_bytes: u64,
     pub support_sigma: f32,
+    pub node_ranges: Option<Arc<Vec<SharedPageNodeRange>>>,
 }
 
 impl LodPagePreprocessInput {
@@ -254,6 +267,17 @@ impl LodPagePreprocessor {
             byte_capacity,
             platform::BackendState::new_cooperative_for_tests(),
         ))
+    }
+
+    /// Worker clones preserve package capacity through cancellation and owner teardown.
+    pub(crate) fn set_memory_reservations(
+        &mut self,
+        reservations: Arc<[crate::stream::memory::LodMemoryLease]>,
+    ) {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.backend.set_memory_reservations(reservations);
+        #[cfg(target_arch = "wasm32")]
+        let _ = reservations; // Cooperative payloads cannot outlive their owner.
     }
 
     pub(crate) fn submit(
@@ -367,6 +391,14 @@ impl LodPagePreprocessor {
 
     pub(crate) fn ready_page_ids(&self) -> Vec<LodPageId> {
         self.ready.keys().copied().collect()
+    }
+
+    pub(crate) fn has_ready_pages(&self) -> bool {
+        !self.ready.is_empty()
+    }
+
+    pub(crate) fn is_ready(&self, page: LodPageId) -> bool {
+        self.ready.contains_key(&page)
     }
 
     pub(crate) fn take_ready(&mut self, page: LodPageId) -> Option<LodPagePreprocessOutput> {
@@ -490,7 +522,9 @@ fn validate_and_decode(
     }
     let page = decode_page_with_descriptor(&input.payload.bytes, &input.descriptor, input.limits)
         .map_err(LodPagePreprocessError::Codec)?;
-    validate_decoded_page_bounds(&page, &input.descriptor, input.support_sigma)?;
+    let mut bounds = DecodedPageBounds::new(input.node_ranges);
+    bounds.extend(&page.gaussians, &input.descriptor, input.support_sigma)?;
+    bounds.finish(&input.descriptor)?;
     Ok(page)
 }
 
@@ -513,37 +547,126 @@ pub(super) fn validate_input_envelope(
     Ok(())
 }
 
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 pub(crate) fn validate_decoded_page_bounds(
     page: &PlanarGaussian3dPage,
     descriptor: &LodPageDescriptor,
     support_sigma: f32,
 ) -> Result<(), LodPagePreprocessError> {
-    let mut actual_bounds: Option<LodBounds> = None;
-    extend_decoded_page_bounds(
-        &mut actual_bounds,
-        &page.gaussians,
-        descriptor.id,
-        support_sigma,
-    )?;
-    validate_accumulated_page_bounds(actual_bounds, descriptor)
+    let mut bounds = DecodedPageBounds::new(None);
+    bounds.extend(&page.gaussians, descriptor, support_sigma)?;
+    bounds.finish(descriptor)
 }
 
-pub(super) fn extend_decoded_page_bounds(
-    actual_bounds: &mut Option<LodBounds>,
-    gaussians: &[Gaussian3d],
-    page: LodPageId,
-    support_sigma: f32,
-) -> Result<(), LodPagePreprocessError> {
-    for gaussian in gaussians {
-        let bounds = gaussian_support_bounds(gaussian, support_sigma)
-            .map_err(|_| LodPagePreprocessError::InvalidSupportBounds(page))?;
-        *actual_bounds = Some(match *actual_bounds {
+/// One support calculation per newly decoded Gaussian, with constant state
+/// beyond the shared manifest plan. Node bounds finish at range boundaries,
+/// so cooperative completion never has a page-sized validation tail.
+pub(super) struct DecodedPageBounds {
+    actual_bounds: Option<LodBounds>,
+    node_ranges: Option<Arc<Vec<SharedPageNodeRange>>>,
+    node_index: usize,
+    node_bounds: Option<LodBounds>,
+    processed_gaussians: u32,
+    first_node_error: Option<LodPagePreprocessError>,
+}
+
+impl DecodedPageBounds {
+    pub(super) fn new(node_ranges: Option<Arc<Vec<SharedPageNodeRange>>>) -> Self {
+        Self {
+            actual_bounds: None,
+            node_ranges,
+            node_index: 0,
+            node_bounds: None,
+            processed_gaussians: 0,
+            first_node_error: None,
+        }
+    }
+
+    pub(super) fn extend(
+        &mut self,
+        gaussians: &[Gaussian3d],
+        descriptor: &LodPageDescriptor,
+        support_sigma: f32,
+    ) -> Result<(), LodPagePreprocessError> {
+        for gaussian in gaussians {
+            let bounds = gaussian_support_bounds(gaussian, support_sigma)
+                .map_err(|_| LodPagePreprocessError::InvalidSupportBounds(descriptor.id))?;
+            self.actual_bounds = Some(match self.actual_bounds {
+                Some(current) => current.union(bounds),
+                None => bounds,
+            });
+            if self.first_node_error.is_none()
+                && let Err(error) = self.extend_node_bounds(bounds, descriptor)
+            {
+                // Descriptor-wide and codec errors retain their established
+                // precedence even if an earlier node already escaped bounds.
+                self.first_node_error = Some(error);
+            }
+            self.processed_gaussians += 1;
+        }
+        Ok(())
+    }
+
+    fn extend_node_bounds(
+        &mut self,
+        bounds: LodBounds,
+        descriptor: &LodPageDescriptor,
+    ) -> Result<(), LodPagePreprocessError> {
+        let Some(ranges) = &self.node_ranges else {
+            return Ok(());
+        };
+        let Some(entry) = ranges.get(self.node_index) else {
+            return Err(ranges.last().map_or(
+                LodPagePreprocessError::InvalidSupportBounds(descriptor.id),
+                |entry| node_bounds_error(descriptor.id, entry.node),
+            ));
+        };
+        let error = || node_bounds_error(descriptor.id, entry.node);
+        let end = entry.range.end().ok_or_else(error)?;
+        if entry.range.page != descriptor.id
+            || entry.range.count == 0
+            || end > descriptor.gaussian_count
+            || (self.node_bounds.is_none() && entry.range.offset != self.processed_gaussians)
+        {
+            return Err(error());
+        }
+        self.node_bounds = Some(match self.node_bounds {
             Some(current) => current.union(bounds),
             None => bounds,
         });
+        if self.processed_gaussians + 1 == end {
+            let actual = self
+                .node_bounds
+                .take()
+                .expect("this record supplied node bounds");
+            let epsilon = 1e-5 * entry.bounds.radius().max(actual.radius()).max(1.0);
+            if !entry.bounds.contains_with_epsilon(&actual, epsilon) {
+                return Err(error());
+            }
+            self.node_index += 1;
+        }
+        Ok(())
     }
-    Ok(())
+
+    pub(super) fn finish(
+        self,
+        descriptor: &LodPageDescriptor,
+    ) -> Result<(), LodPagePreprocessError> {
+        validate_accumulated_page_bounds(self.actual_bounds, descriptor)?;
+        if let Some(error) = self.first_node_error {
+            return Err(error);
+        }
+        if let Some(ranges) = self.node_ranges
+            && let Some(entry) = ranges.get(self.node_index)
+        {
+            return Err(node_bounds_error(descriptor.id, entry.node));
+        }
+        Ok(())
+    }
+}
+
+fn node_bounds_error(page: LodPageId, node: LodNodeId) -> LodPagePreprocessError {
+    LodPagePreprocessError::PayloadOutsideNodeBounds { page, node }
 }
 
 pub(super) fn validate_accumulated_page_bounds(

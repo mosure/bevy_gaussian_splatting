@@ -5,7 +5,7 @@
     view,
     Entry,
 }
-#import bevy_gaussian_splatting::helpers::gaussian_mip_support_radius_world
+#import bevy_gaussian_splatting::helpers::{gaussian_mip_support_radius_world, gaussian_depth_sort_key}
 #ifdef LOD_MORPH_COMPACTION
 #import bevy_gaussian_splatting::lod_morph::{
     lod_morph_position,
@@ -13,12 +13,6 @@
     lod_morph_support_max_scale,
 }
 #endif
-#ifdef PACKED_F32
-#import bevy_gaussian_splatting::packed::{
-    get_position,
-    get_scale,
-}
-#else
 
 #ifdef BUFFER_STORAGE
 #import bevy_gaussian_splatting::planar::{
@@ -27,7 +21,6 @@
 }
 #endif
 
-#endif
 
 struct LodCompactionUniform {
     source_count: u32,
@@ -306,9 +299,9 @@ fn evaluate_candidate(candidate_offset: u32) -> LodCandidateEvaluation {
         !support_sphere_in_frustum(transformed_position, support_radius)) {
         return rejected;
     }
-    let diff = transformed_position - view.world_position;
-    let dist2 = dot(diff, diff);
-    let key = (0xFFFFFFFFu - bitcast<u32>(dist2)) >> #{RADIX_KEY_SHIFT}u;
+    let depth_key = gaussian_depth_sort_key(transformed_position);
+    if depth_key == 0xffffffffu { return rejected; }
+    let key = depth_key >> #{RADIX_KEY_SHIFT}u;
     return LodCandidateEvaluation(Entry(key, pack_lod_entry_value(source)), 1u);
 }
 

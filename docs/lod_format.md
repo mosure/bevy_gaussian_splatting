@@ -61,8 +61,8 @@ The serialized payload contains these top-level fields:
 - `build`: settings, reducer, builder/reducer ABI versions, and source/config
   fingerprints;
 - `quality`: depth, finest/coarsest counts, and maximum error;
-- `morph_map`: the ABI 16 monotone immediate-child-record to parent-record
-  correspondence described below; absent for every older readable ABI.
+- `morph_map`: the ABI 16/17 monotone immediate-child-record to parent-record
+  correspondence described below; absent for ABIs 5, 6, 14, and 15.
 
 The semantic header MUST use magic `BGSLOD3\0`, manifest version `3`, and page
 schema version `2`. Known `required_features` bits are:
@@ -76,25 +76,33 @@ schema version `2`. Known `required_features` bits are:
 | 4 | `0x10` | SH4 decoded layout |
 | 5 | `0x20` | monotonic high-fidelity certificates |
 | 6 | `0x40` | same-depth, same-kind nodes may share physical pages |
-| 7 | `0x80` | ABI 16 monotone parent/child morph map |
+| 7 | `0x80` | ABI 16/17 monotone parent/child morph map |
 
 Exactly one SH bit and the certificate bit MUST be set. The SH bit MUST match
 the reader's compiled SH degree. Bit 6 is optional. Bit 7 and `morph_map` MUST
-both be present for ABI 16 and MUST both be absent for older ABIs. Unknown
-required bits are rejected. The decoded padded SH coefficient counts for SH0
+both be present for ABIs 16 and 17 and MUST both be absent for ABIs 5, 6, 14, and 15.
+Unknown required bits are rejected. The decoded padded SH coefficient counts for SH0
 through SH4 are `4`, `12`, `28`, `48`, and `76`, respectively.
 
-The currently recognized MomentMerge builder/reducer ABI pairs are legacy
-external CPU `(5, 2)`, legacy external GPU `(6, 2)`, progressive in-memory CPU
-`(14, 3)`, progressive external-memory CPU `(15, 3)`, and spatial progressive
-external-memory CPU `(16, 4)`. ABI 15 remains readable and retains the
-configured wide topology while bounding every parent-to-children
-representation-count amplification and accumulating each representative from
-an original canonical source interval. ABI 16 retains those contracts, adds
-renderer-consistent bounded spatial fitting, and requires the monotone morph
-map. Other pairs are incompatible with semantic v3.
+Readers recognize MomentMerge builder/reducer ABI pairs `(5, 2)`, `(6, 2)`,
+`(14, 3)`, `(15, 3)`, `(16, 4)`, and `(17, 4)`. Other pairs are incompatible with semantic
+v3. Packages without a morph map use categorical parent/child substitutions.
 
-### ABI 16 morph map schema 1
+The current in-memory CPU builder emits `(14, 3)` and the external-memory
+builder emits `(17, 4)`. ABIs 5, 6, 15, and 16 remain supported data contracts.
+ABI 15 retains the configured wide topology while bounding every
+parent-to-children representation-count amplification and accumulating each
+representative from an original canonical source interval. ABI 16 retains
+those contracts, adds renderer-consistent bounded spatial fitting, and
+requires the monotone morph map. Optional GPU preprocessing sorts bounded
+source runs; the external builder constructs and fits the hierarchy on the CPU.
+ABI 17 retains the v4/morph contract and bounds only original descendants and
+actually emitted representatives. Un-emitted balanced-partition candidates no
+longer enlarge spatial bounds; their conservative error maxima and certificate
+minima still apply. The change preserves page payloads, topology, morph maps, and
+construction resource bounds while changing manifest bounds and writer ABI.
+
+### ABI 16/17 morph map schema 1
 
 `morph_map.schema_version` MUST be `1`. `node_runs` is index-aligned with the
 manifest's breadth-first `nodes` vector and contains one range into the flat
@@ -108,11 +116,11 @@ child retain page-local representation order. Run `p` maps the next
 `child_run_lengths[p]` concatenated child records to parent-local record `p`.
 The run sum MUST equal the total immediate-child representation count. The
 implicit parent indexes are therefore monotone and surjective without storing
-one parent index per child record. ABI 16 also constrains the configured leaf
+one parent index per child record. Both ABIs also constrain the configured leaf
 capacity to the portable `u16` run ABI.
 
 The sidecar changes neither page schema nor page encoding. Runtime morphing is
-optional presentation behavior: a reader that accepts ABI 16 MUST validate the
+optional presentation behavior: a reader that accepts either ABI MUST validate the
 sidecar fail-closed, while a renderer that cannot stage or bind a particular
 bounded morph transaction may publish the already-valid complete target cut as
 a categorical bounded-hard transition.
@@ -126,7 +134,7 @@ source records. Shared pages require bit 6 and may combine only non-overlapping
 slices of nodes with the same depth and page kind. Header, quality, node, page,
 source, and stored-record counts MUST agree.
 
-ABI 16's spatial fitter is a builder guarantee, not additional serialized
+The spatial fitter is a builder guarantee, not additional serialized
 topology. It jointly evaluates authored-support-touching nodes only within each
 same-depth future-parent cohort (at most the validated branching factor of 32).
 Same-depth boundaries split across different future parents and mixed-depth
@@ -282,7 +290,7 @@ disabled for page and shard objects so stored offsets remain valid.
 New byte layouts require a new container version or encoding discriminator;
 new decoded semantics require a new page schema, semantic version, or required
 feature bit. In particular, a plane-major/direct-upload page must not reuse
-`F32Planar`, and an ABI 16 writer must not omit or relabel the required morph
+`F32Planar`, and a spatial writer must not omit or relabel the required morph
 feature/sidecar. Writers SHOULD emit Flexbuffers manifests and readers MAY also
 accept JSON when that codec feature is compiled.
 

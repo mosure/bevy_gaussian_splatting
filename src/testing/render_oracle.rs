@@ -3,6 +3,9 @@
 //! This is intentionally not a production renderer. It provides a stable, linear-color image
 //! comparison that exercises hierarchy cuts and representative Gaussians on every CI adapter.
 
+pub mod fit;
+pub mod point;
+
 use std::{collections::BTreeMap, fmt};
 
 use bevy::prelude::{Mat3, Vec2, Vec3, Vec4};
@@ -20,9 +23,14 @@ use crate::{
     },
     material::spherical_harmonics::{SH_DEGREE, SphericalHarmonicCoefficients},
     render::{
-        GAUSSIAN_AUTHORED_SUPPORT_SIGMA, gaussian_mip_filter_covariance_2d, gaussian_support_cutoff,
+        GAUSSIAN_AUTHORED_SUPPORT_SIGMA, gaussian_mip_filter_covariance_2d,
+        gaussian_support_cutoff,
+        support::{
+            gaussian_near_clip_weight, gaussian_support_weight,
+            gaussian_support_weight_and_derivative,
+        },
     },
-    stream::hierarchy::{AllResident, LodView, ManifestLodHierarchy, select_frontier},
+    stream::hierarchy::{AllResident, ManifestLodHierarchy, select_frontier},
     testing::{
         image_metrics::{ImageMetrics, ImageMetricsError, compare_linear_rgba},
         lod_scenes::{LodProjection, LodTestCamera},
@@ -41,7 +49,7 @@ pub struct LodQualitySample {
 /// the largest final source-over alpha contribution at each pixel.
 ///
 /// Computing exact dominant attribution is intentionally more expensive than
-/// [`render_linear_gaussians`]. It exists to localize thin reconstruction
+/// [`render_lod_linear_gaussians`]. It exists to localize thin reconstruction
 /// errors around hierarchy boundaries rather than averaging them away in a
 /// whole-frame metric.
 #[derive(Clone, Debug, PartialEq)]
@@ -172,7 +180,7 @@ pub fn gather_frontier_gaussians_with_nodes(
 
 /// Render a deterministic linear premultiplied-RGBA image using a simple projected Gaussian
 /// footprint. Gaussians are composited back-to-front, matching the production ordering contract.
-pub fn render_linear_gaussians(
+pub fn render_lod_linear_gaussians(
     gaussians: &[Gaussian3d],
     camera: LodTestCamera,
     width: u32,
@@ -207,26 +215,6 @@ pub fn render_flat_linear_gaussians(
     .map(|rendered| rendered.rgba)
 }
 
-/// Render a node-attributed frontier and retain the dominant logical node per
-/// pixel for boundary-conditioned reconstruction metrics.
-pub fn render_linear_gaussians_with_nodes(
-    gaussians: &[(LodNodeId, Gaussian3d)],
-    camera: LodTestCamera,
-    width: u32,
-    height: u32,
-) -> Result<LodAttributedImage, LodRenderOracleError> {
-    render_linear_gaussians_internal(
-        gaussians
-            .iter()
-            .map(|(node, gaussian)| (Some(*node), gaussian)),
-        camera,
-        width,
-        height,
-        true,
-        LodOracleSupport::LodAuthoredThreeSigma,
-    )
-}
-
 /// Render a node-attributed LoD cut with the production authored-support
 /// floor, even for low-opacity MomentMerge representatives.
 pub fn render_lod_linear_gaussians_with_nodes(
@@ -248,7 +236,7 @@ pub fn render_lod_linear_gaussians_with_nodes(
 }
 
 /// Render a flat source with the production 3D covariance, SH-color, cutoff,
-/// and distance-squared ordering contracts.
+/// and forward camera-depth ordering contracts.
 ///
 /// The oracle assumes the cloud's world transform, global scale, and global
 /// opacity are identity/one, and mirrors the default `DrawMode::All` + OBB
@@ -327,7 +315,7 @@ pub fn render_production_lod_linear_gaussians(
 }
 
 /// Render an attributed LoD frontier with the production 3D covariance,
-/// authored-support floor, SH-color, and distance-squared ordering contracts.
+/// authored-support floor, SH-color, and forward camera-depth ordering contracts.
 pub fn render_production_lod_linear_gaussians_with_nodes(
     gaussians: &[(LodNodeId, Gaussian3d)],
     camera: LodTestCamera,
@@ -360,34 +348,11 @@ fn render_production_linear_gaussians_internal<'a>(
     if width == 0 || height == 0 {
         return Err(LodRenderOracleError::InvalidImageSize);
     }
-    let forward = (camera.target - camera.position).normalize_or_zero();
-    let right = forward.cross(camera.up).normalize_or_zero();
-    let up = right.cross(forward).normalize_or_zero();
-    if forward == Vec3::ZERO || right == Vec3::ZERO || up == Vec3::ZERO {
-        return Err(LodRenderOracleError::InvalidCamera("basis"));
-    }
-    let projection = match camera.projection {
-        LodProjection::Perspective {
-            vertical_fov_radians,
-        } if vertical_fov_radians.is_finite()
-            && vertical_fov_radians > 0.0
-            && vertical_fov_radians < std::f32::consts::PI =>
-        {
-            ProductionProjection::Perspective {
-                pixel_focal: 0.5 * height as f32 / (0.5 * vertical_fov_radians).tan(),
-                shader_focal: height as f32 / (0.5 * vertical_fov_radians).tan(),
-            }
-        }
-        LodProjection::Orthographic {
-            vertical_world_size,
-        } if vertical_world_size.is_finite() && vertical_world_size > 0.0 => {
-            ProductionProjection::Orthographic {
-                pixels_per_world: height as f32 / vertical_world_size,
-                shader_units_per_world: 2.0 * height as f32 / vertical_world_size,
-            }
-        }
-        _ => return Err(LodRenderOracleError::InvalidCamera("projection")),
-    };
+    let (forward, right, up) = camera
+        .basis()
+        .map_err(LodRenderOracleError::InvalidCamera)?;
+    let projection = production_projection(camera.projection, [width, height])?;
+    let world_support = ProductionWorldSupport::new(camera, [width, height])?;
 
     let mut projected = Vec::new();
     for (input_order, (node, gaussian)) in gaussians.into_iter().enumerate() {
@@ -396,23 +361,28 @@ fn render_production_linear_gaussians_internal<'a>(
         if gaussian.scale_opacity.opacity <= 0.0 {
             continue;
         }
+        let support_cutoff = support.cutoff(gaussian.scale_opacity.opacity);
+        if !world_support.contains(gaussian, support_cutoff) {
+            continue;
+        }
         let Some(geometry) = production_projected_geometry(
             gaussian, camera, width, height, forward, right, up, projection,
         ) else {
             continue;
         };
-        let opacity = (gaussian.scale_opacity.opacity * geometry.opacity_scale).clamp(0.0, 0.999);
+        // Vertex output permits a unit peak; only the fragment alpha is capped
+        // at .999. Capping here also attenuates every off-center fragment.
+        let opacity = (gaussian.scale_opacity.opacity * geometry.opacity_scale).clamp(0.0, 1.0);
         if !opacity.is_finite() || opacity <= 0.0 {
             continue;
         }
-        let support_cutoff = support.cutoff(gaussian.scale_opacity.opacity);
         let Some(obb) = production_obb(geometry.covariance, support_cutoff) else {
             continue;
         };
         projected.push(ProductionProjectedGaussian {
             node,
             input_order,
-            distance_squared: geometry.relative.length_squared(),
+            view_depth: geometry.view_depth,
             center: geometry.center,
             inverse_covariance: geometry.inverse_covariance,
             color: production_spherical_harmonics_linear_color(
@@ -421,18 +391,19 @@ fn render_production_linear_gaussians_internal<'a>(
                 color_space,
             ),
             opacity,
+            cutoff_squared: support_cutoff * support_cutoff,
             obb,
         });
     }
 
     // The flat radix path and the LoD compactor both key positive finite
-    // camera-to-mean distance squared, far to near. The default 32-bit radix
+    // forward camera depth (-view-space Z), far to near. The default 32-bit radix
     // setting preserves the complete f32 key; stable input order resolves an
     // equal key in the same way as the GPU passes.
     projected.sort_by(|left, right| {
         right
-            .distance_squared
-            .total_cmp(&left.distance_squared)
+            .view_depth
+            .total_cmp(&left.view_depth)
             .then_with(|| left.input_order.cmp(&right.input_order))
     });
 
@@ -474,7 +445,9 @@ fn render_production_linear_gaussians_internal<'a>(
                 if !mahalanobis.is_finite() || mahalanobis < 0.0 {
                     continue;
                 }
-                let alpha = (gaussian.opacity * (-0.5 * mahalanobis).exp()).clamp(0.0, 0.999);
+                let alpha = (gaussian.opacity
+                    * gaussian_support_weight(mahalanobis, gaussian.cutoff_squared))
+                .clamp(0.0, 0.999);
                 let pixel_index = (y as u32 * width + x as u32) as usize;
                 let pixel = &mut image[pixel_index];
                 for (channel, color) in gaussian.color.into_iter().enumerate() {
@@ -529,8 +502,9 @@ fn dominant_nodes_from_contributions(
 #[derive(Clone, Copy, Debug)]
 enum ProductionProjection {
     Perspective {
-        pixel_focal: f32,
-        shader_focal: f32,
+        pixel_focal: Vec2,
+        shader_focal: Vec2,
+        principal_point: Vec2,
     },
     Orthographic {
         pixels_per_world: f32,
@@ -538,14 +512,172 @@ enum ProductionProjection {
     },
 }
 
+fn production_projection(
+    projection: LodProjection,
+    viewport: [u32; 2],
+) -> Result<ProductionProjection, LodRenderOracleError> {
+    let [width, height] = viewport;
+    if width == 0 || height == 0 {
+        return Err(LodRenderOracleError::InvalidImageSize);
+    }
+    match projection {
+        LodProjection::Perspective {
+            vertical_fov_radians,
+        } if vertical_fov_radians.is_finite()
+            && vertical_fov_radians > 0.0
+            && vertical_fov_radians < std::f32::consts::PI =>
+        {
+            Ok(ProductionProjection::Perspective {
+                pixel_focal: Vec2::splat(0.5 * height as f32 / (0.5 * vertical_fov_radians).tan()),
+                shader_focal: Vec2::splat(height as f32 / (0.5 * vertical_fov_radians).tan()),
+                principal_point: Vec2::new(width as f32 * 0.5, height as f32 * 0.5),
+            })
+        }
+        LodProjection::Calibrated { .. } => {
+            let (pixel_focal, principal_point) = projection
+                .calibrated_intrinsics(Vec2::new(width as f32, height as f32))
+                .map_err(LodRenderOracleError::InvalidCamera)?;
+            Ok(ProductionProjection::Perspective {
+                pixel_focal,
+                shader_focal: 2.0 * pixel_focal,
+                principal_point,
+            })
+        }
+        LodProjection::Orthographic {
+            vertical_world_size,
+        } if vertical_world_size.is_finite() && vertical_world_size > 0.0 => {
+            Ok(ProductionProjection::Orthographic {
+                pixels_per_world: height as f32 / vertical_world_size,
+                shader_units_per_world: 2.0 * height as f32 / vertical_world_size,
+            })
+        }
+        _ => Err(LodRenderOracleError::InvalidCamera("projection")),
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ProductionProjectedGeometry {
     relative: Vec3,
+    /// Positive forward camera depth, equivalent to negative Bevy view-space Z.
+    view_depth: f32,
     center: Vec2,
     /// Filtered covariance in helpers.wgsl coordinates: two units per pixel.
     covariance: [f32; 3],
     inverse_covariance: [f32; 3],
     opacity_scale: f32,
+}
+
+/// Cache the deployment frustum, independent of a physical-pixel crop or
+/// sparse target grid. Matches projected_support_in_frustum for identity clouds.
+#[derive(Clone, Copy)]
+struct ProductionWorldSupport {
+    camera_position: Vec3,
+    forward: Vec3,
+    min_shader_focal: f32,
+    perspective: bool,
+    frustum: bevy::math::primitives::ViewFrustum,
+}
+
+impl ProductionWorldSupport {
+    fn new(mut camera: LodTestCamera, viewport: [u32; 2]) -> Result<Self, LodRenderOracleError> {
+        let mut viewport = viewport;
+        if let LodProjection::Calibrated {
+            image_size, crop, ..
+        } = &mut camera.projection
+            && crop.is_some()
+        {
+            viewport = *image_size;
+            *crop = None;
+        }
+        let projection = production_projection(camera.projection, viewport)?;
+        let clip = match projection {
+            ProductionProjection::Perspective {
+                pixel_focal,
+                principal_point,
+                ..
+            } => {
+                let size = Vec2::new(viewport[0] as f32, viewport[1] as f32);
+                let scale = 2.0 * pixel_focal / size;
+                let offset = 2.0 * principal_point / size - Vec2::ONE;
+                bevy::prelude::Mat4::from_cols(
+                    Vec4::new(scale.x, 0.0, 0.0, 0.0),
+                    Vec4::new(0.0, scale.y, 0.0, 0.0),
+                    Vec4::new(-offset.x, offset.y, 0.0, -1.0),
+                    Vec4::new(0.0, 0.0, camera.near, 0.0),
+                )
+            }
+            ProductionProjection::Orthographic {
+                pixels_per_world, ..
+            } => {
+                let half =
+                    Vec2::new(viewport[0] as f32, viewport[1] as f32) / (2.0 * pixels_per_world);
+                bevy::prelude::Mat4::orthographic_rh(
+                    -half.x,
+                    half.x,
+                    -half.y,
+                    half.y,
+                    camera.far,
+                    camera.near,
+                )
+            }
+        };
+        let view = match camera.world_rotation {
+            Some(rotation) => {
+                bevy::prelude::Mat4::from_rotation_translation(rotation, camera.position).inverse()
+            }
+            None => bevy::prelude::Mat4::look_at_rh(camera.position, camera.target, camera.up),
+        };
+        Self::from_matrices(camera, projection, clip, view)
+    }
+
+    fn from_matrices(
+        camera: LodTestCamera,
+        projection: ProductionProjection,
+        clip: bevy::prelude::Mat4,
+        view: bevy::prelude::Mat4,
+    ) -> Result<Self, LodRenderOracleError> {
+        let (forward, _, _) = camera
+            .basis()
+            .map_err(LodRenderOracleError::InvalidCamera)?;
+        let min_shader_focal = match projection {
+            ProductionProjection::Perspective { shader_focal, .. } => shader_focal.min_element(),
+            ProductionProjection::Orthographic {
+                shader_units_per_world,
+                ..
+            } => shader_units_per_world,
+        };
+        Ok(Self {
+            camera_position: camera.position,
+            forward,
+            min_shader_focal,
+            perspective: matches!(projection, ProductionProjection::Perspective { .. }),
+            frustum: bevy::math::primitives::ViewFrustum::from_clip_from_world_custom_far(
+                &(clip * view),
+                &camera.position,
+                &-forward,
+                camera.far,
+            ),
+        })
+    }
+
+    fn contains(self, gaussian: &Gaussian3d, cutoff: f32) -> bool {
+        let position = Vec3::from_array(gaussian.position_visibility.position);
+        let mut margin = cutoff * 1.2_f32.sqrt() / self.min_shader_focal;
+        if self.perspective {
+            margin *= (position - self.camera_position).dot(self.forward).abs();
+        }
+        let radius = cutoff
+            * Vec3::from_array(gaussian.scale_opacity.scale)
+                .abs()
+                .max_element()
+            + margin;
+        for plane in &self.frustum.half_spaces {
+            if plane.normal_d().dot(position.extend(1.0)) < -radius {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -562,7 +694,13 @@ fn production_projected_geometry(
     let world = Vec3::from_array(gaussian.position_visibility.position);
     let relative = world - camera.position;
     let depth = relative.dot(forward);
-    if !depth.is_finite() || depth < camera.near || depth > camera.far {
+    // Perspective uses Bevy's infinite reverse-Z projection: the finite far
+    // plane gates world support, not the Gaussian center. Orthographic depth
+    // remains finite and clips centers at both planes.
+    if !depth.is_finite()
+        || depth < camera.near
+        || (matches!(projection, ProductionProjection::Orthographic { .. }) && depth > camera.far)
+    {
         return None;
     }
     let view_x = relative.dot(right);
@@ -571,18 +709,19 @@ fn production_projected_geometry(
         ProductionProjection::Perspective {
             pixel_focal,
             shader_focal,
+            principal_point,
         } => {
             let reciprocal_depth = 1.0 / depth;
             let reciprocal_depth_squared = reciprocal_depth * reciprocal_depth;
             (
                 Vec2::new(
-                    width as f32 * 0.5 + pixel_focal * view_x * reciprocal_depth,
-                    height as f32 * 0.5 - pixel_focal * view_y * reciprocal_depth,
+                    principal_point.x + pixel_focal.x * view_x * reciprocal_depth,
+                    principal_point.y - pixel_focal.y * view_y * reciprocal_depth,
                 ),
-                right * (shader_focal * reciprocal_depth)
-                    - forward * (shader_focal * view_x * reciprocal_depth_squared),
-                -up * (shader_focal * reciprocal_depth)
-                    + forward * (shader_focal * view_y * reciprocal_depth_squared),
+                right * (shader_focal.x * reciprocal_depth)
+                    - forward * (shader_focal.x * view_x * reciprocal_depth_squared),
+                -up * (shader_focal.y * reciprocal_depth)
+                    + forward * (shader_focal.y * view_y * reciprocal_depth_squared),
             )
         }
         ProductionProjection::Orthographic {
@@ -614,6 +753,10 @@ fn production_projected_geometry(
         Vec3::new(packed[1], packed[3], packed[4]),
         Vec3::new(packed[2], packed[4], packed[5]),
     );
+    // Identity-cloud form of the shared world-plane test. The near normal is
+    // forward for both perspective and orthographic cameras, including crops.
+    let near_weight =
+        gaussian_near_clip_weight(depth - camera.near, forward.dot(covariance_3d * forward));
     let covariance_shader = [
         jacobian_x.dot(covariance_3d * jacobian_x),
         jacobian_x.dot(covariance_3d * jacobian_y),
@@ -641,10 +784,11 @@ fn production_projected_geometry(
     }
     Some(ProductionProjectedGeometry {
         relative,
+        view_depth: depth,
         center,
         covariance,
         inverse_covariance,
-        opacity_scale: mip.opacity_scale,
+        opacity_scale: mip.opacity_scale * near_weight,
     })
 }
 
@@ -652,11 +796,12 @@ fn production_projected_geometry(
 struct ProductionProjectedGaussian {
     node: Option<LodNodeId>,
     input_order: usize,
-    distance_squared: f32,
+    view_depth: f32,
     center: Vec2,
     inverse_covariance: [f32; 3],
     color: [f32; 3],
     opacity: f32,
+    cutoff_squared: f32,
     obb: ProductionObb,
 }
 
@@ -678,13 +823,29 @@ impl ProductionObb {
 }
 
 fn production_obb(covariance: [f32; 3], cutoff: f32) -> Option<ProductionObb> {
-    let [covariance_x, covariance_xy, covariance_y] = covariance;
-    let determinant = covariance_x * covariance_y - covariance_xy * covariance_xy;
-    let midpoint = 0.5 * (covariance_x + covariance_y);
-    let discriminant = (midpoint * midpoint - determinant).max(0.0);
-    let term = discriminant.sqrt();
-    let major_radius = (midpoint + term).sqrt();
-    let minor_radius = (midpoint - term).max(0.0).sqrt();
+    if !covariance.into_iter().all(f32::is_finite) {
+        return None;
+    }
+    let covariance_scale = covariance.into_iter().map(f32::abs).fold(0.0_f32, f32::max);
+    let [covariance_x, covariance_xy, covariance_y] = covariance.map(|value| {
+        value
+            / if covariance_scale > 0.0 {
+                covariance_scale
+            } else {
+                1.0
+            }
+    });
+    let midpoint = 0.5 * covariance_x + 0.5 * covariance_y;
+    let half_difference = 0.5 * covariance_x - 0.5 * covariance_y;
+    let difference_scale = half_difference.abs().max(covariance_xy.abs());
+    let spectral_radius = if difference_scale > 0.0 {
+        difference_scale * (Vec2::new(half_difference, covariance_xy) / difference_scale).length()
+    } else {
+        0.0
+    };
+    let radius_scale = covariance_scale.sqrt();
+    let major_radius = radius_scale * (midpoint + spectral_radius).max(0.0).sqrt();
+    let minor_radius = radius_scale * (midpoint - spectral_radius).max(0.0).sqrt();
     if !cutoff.is_finite()
         || cutoff <= 0.0
         || !major_radius.is_finite()
@@ -694,15 +855,23 @@ fn production_obb(covariance: [f32; 3], cutoff: f32) -> Option<ProductionObb> {
         return None;
     }
 
-    // Keep this zero-safe analytic eigenvector and negative-handed
-    // perpendicular in lockstep with helpers.wgsl::get_bounding_box_clip.
-    let candidate = Vec2::new(-covariance_xy, midpoint + term - covariance_x);
-    let major_axis = if candidate.x.abs() + candidate.y.abs() > 1.0e-12 {
-        candidate.normalize()
+    // Construct the shader's zero-safe NDC axes, then reflect their Y component
+    // into framebuffer displacement coordinates. The conic already uses the
+    // screen-down Jacobian; omitting this reflection mirrors anisotropic support.
+    let candidate = if covariance_x >= covariance_y {
+        Vec2::new(spectral_radius + half_difference, -covariance_xy)
+    } else {
+        Vec2::new(-covariance_xy, spectral_radius - half_difference)
+    };
+    let vector_scale = candidate.abs().max_element();
+    let major_axis = if vector_scale > 0.0 {
+        (candidate / vector_scale).normalize()
     } else {
         Vec2::X
     };
     let minor_axis = Vec2::new(major_axis.y, -major_axis.x);
+    let major_axis = major_axis * Vec2::new(1.0, -1.0);
+    let minor_axis = minor_axis * Vec2::new(1.0, -1.0);
     let half_extent_shader = cutoff * Vec2::new(major_radius, minor_radius);
     let aabb_radius_pixels =
         0.5 * (major_axis.abs() * half_extent_shader.x + minor_axis.abs() * half_extent_shader.y);
@@ -804,6 +973,165 @@ fn production_srgb_display_channel_to_linear(value: f32) -> f32 {
     }
 }
 
+/// Streaming, physical-pixel projection for authenticated cut diagnostics.
+/// The cloud is identity transformed, with default scale/opacity and fixed
+/// three-sigma support. No full image or projected-record array is retained.
+#[allow(dead_code)] // The native attribution CLI is wired separately.
+pub(crate) struct ProductionPixelProjector {
+    camera: LodTestCamera,
+    forward: Vec3,
+    right: Vec3,
+    up: Vec3,
+    projection: ProductionProjection,
+    world_support: ProductionWorldSupport,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct ProductionPixelContribution {
+    pub view_depth: f32,
+    pub color: [f32; 3],
+    pub alpha: f32,
+}
+
+#[allow(dead_code)]
+impl ProductionPixelProjector {
+    /// Conservative OBB/rectangle intersection at physical pixel centers.
+    /// This retains occluded/zero-opacity records; context selection never
+    /// depends on image alpha or the current fitted foreground.
+    pub(crate) fn intersects_region(
+        &self,
+        gaussian: &Gaussian3d,
+        crop: crate::testing::lod_scenes::LodPixelCrop,
+    ) -> bool {
+        if !self.world_support.contains(gaussian, 3.0) {
+            return false;
+        }
+        let camera = self.camera;
+        let Some(geometry) = production_projected_geometry(
+            gaussian,
+            camera,
+            camera.viewport[0],
+            camera.viewport[1],
+            self.forward,
+            self.right,
+            self.up,
+            self.projection,
+        ) else {
+            return false;
+        };
+        let Some(obb) = production_obb(geometry.covariance, 3.0) else {
+            return false;
+        };
+        let size = Vec2::new(crop.size[0] as f32, crop.size[1] as f32);
+        let center = Vec2::new(crop.origin[0] as f32, crop.origin[1] as f32) + size * 0.5;
+        let delta = 2.0 * (center - geometry.center);
+        let rectangle_half = size - Vec2::ONE;
+        let radius = 2.0 * obb.aabb_radius_pixels + rectangle_half;
+        let tolerance =
+            16.0 * f32::EPSILON * (1.0 + delta.abs().max_element() + radius.max_element());
+        if delta.x.abs() > radius.x + tolerance || delta.y.abs() > radius.y + tolerance {
+            return false;
+        }
+        delta.dot(obb.major_axis).abs()
+            <= obb.half_extent_shader.x + rectangle_half.dot(obb.major_axis.abs()) + tolerance
+            && delta.dot(obb.minor_axis).abs()
+                <= obb.half_extent_shader.y + rectangle_half.dot(obb.minor_axis.abs()) + tolerance
+    }
+
+    pub(crate) fn new(
+        camera: LodTestCamera,
+        clip_from_view: bevy::prelude::Mat4,
+        view_from_world: bevy::prelude::Mat4,
+    ) -> Result<Self, LodRenderOracleError> {
+        let (forward, right, up) = camera
+            .basis()
+            .map_err(LodRenderOracleError::InvalidCamera)?;
+        let projection = production_projection(camera.projection, camera.viewport)?;
+        let world_support = ProductionWorldSupport::from_matrices(
+            camera,
+            projection,
+            clip_from_view,
+            view_from_world,
+        )?;
+        Ok(Self {
+            camera,
+            forward,
+            right,
+            up,
+            projection,
+            world_support,
+        })
+    }
+
+    /// Each output corresponds to one physical pixel center. Callers bound
+    /// retained nonzero hits themselves; out-of-frustum records emit no hits.
+    pub(crate) fn sample(
+        &self,
+        gaussian: &Gaussian3d,
+        pixels: &[[u32; 2]],
+        color_space: GaussianColorSpace,
+        output: &mut [Option<ProductionPixelContribution>],
+    ) {
+        assert_eq!(pixels.len(), output.len());
+        output.fill(None);
+        if !self.world_support.contains(gaussian, 3.0) {
+            return;
+        }
+        let camera = self.camera;
+        let Some(geometry) = production_projected_geometry(
+            gaussian,
+            camera,
+            camera.viewport[0],
+            camera.viewport[1],
+            self.forward,
+            self.right,
+            self.up,
+            self.projection,
+        ) else {
+            return;
+        };
+        let opacity = (gaussian.scale_opacity.opacity * geometry.opacity_scale).clamp(0.0, 1.0);
+        let view_depth = geometry.view_depth;
+        if !(opacity > 0.0 && opacity.is_finite() && view_depth.is_finite()) {
+            return;
+        }
+        let Some(obb) = production_obb(geometry.covariance, 3.0) else {
+            return;
+        };
+        let mut color = None;
+        for (&pixel, output) in pixels.iter().zip(output) {
+            let delta =
+                2.0 * (Vec2::new(pixel[0] as f32 + 0.5, pixel[1] as f32 + 0.5) - geometry.center);
+            if !obb.contains_shader_delta(delta) {
+                continue;
+            }
+            let q = geometry.inverse_covariance;
+            let mahalanobis = q[0] * delta.x * delta.x
+                + 2.0 * q[1] * delta.x * delta.y
+                + q[2] * delta.y * delta.y;
+            if !mahalanobis.is_finite() || mahalanobis < 0.0 {
+                continue;
+            }
+            let alpha = (opacity * gaussian_support_weight(mahalanobis, 9.0)).clamp(0.0, 0.999);
+            if alpha <= 0.0 {
+                continue;
+            }
+            *output = Some(ProductionPixelContribution {
+                view_depth,
+                color: *color.get_or_insert_with(|| {
+                    production_spherical_harmonics_linear_color(
+                        geometry.relative.normalize(),
+                        &gaussian.spherical_harmonic,
+                        color_space,
+                    )
+                }),
+                alpha,
+            });
+        }
+    }
+}
+
 fn render_linear_gaussians_internal<'a>(
     gaussians: impl IntoIterator<Item = (Option<LodNodeId>, &'a Gaussian3d)>,
     camera: LodTestCamera,
@@ -815,12 +1143,9 @@ fn render_linear_gaussians_internal<'a>(
     if width == 0 || height == 0 {
         return Err(LodRenderOracleError::InvalidImageSize);
     }
-    let forward = (camera.target - camera.position).normalize_or_zero();
-    let right = forward.cross(camera.up).normalize_or_zero();
-    let up = right.cross(forward).normalize_or_zero();
-    if forward == Vec3::ZERO || right == Vec3::ZERO || up == Vec3::ZERO {
-        return Err(LodRenderOracleError::InvalidCamera("basis"));
-    }
+    let (forward, right, up) = camera
+        .basis()
+        .map_err(LodRenderOracleError::InvalidCamera)?;
     let aspect = width as f32 / height as f32;
     let projection = match camera.projection {
         LodProjection::Perspective {
@@ -924,13 +1249,16 @@ fn render_linear_gaussians_internal<'a>(
         if min_x > max_x || min_y > max_y {
             continue;
         }
-        let inverse_two_sigma_squared = 0.5 / gaussian.sigma_px.powi(2);
+        let inverse_sigma_squared = 1.0 / gaussian.sigma_px.powi(2);
         for y in min_y..=max_y {
             for x in min_x..=max_x {
                 let dx = x as f32 + 0.5 - gaussian.pixel_x;
                 let dy = y as f32 + 0.5 - gaussian.pixel_y;
                 let alpha = (gaussian.opacity
-                    * (-(dx * dx + dy * dy) * inverse_two_sigma_squared).exp())
+                    * gaussian_support_weight(
+                        (dx * dx + dy * dy) * inverse_sigma_squared,
+                        gaussian.support_cutoff.powi(2),
+                    ))
                 .clamp(0.0, 0.999);
                 if alpha < 1.0 / 1024.0 {
                     continue;
@@ -987,24 +1315,7 @@ pub fn render_quality_sweep(
 ) -> Result<Vec<LodQualitySample>, LodRenderOracleError> {
     let hierarchy = ManifestLodHierarchy::new(&lod.manifest)
         .map_err(|error| LodRenderOracleError::InvalidManifest(format!("{error:?}")))?;
-    let view = match camera.projection {
-        LodProjection::Perspective {
-            vertical_fov_radians,
-        } => LodView::perspective(
-            camera.position,
-            height as f32,
-            vertical_fov_radians,
-            camera.near,
-        ),
-        LodProjection::Orthographic {
-            vertical_world_size,
-        } => LodView::orthographic(
-            camera.position,
-            height as f32,
-            vertical_world_size,
-            camera.near,
-        ),
-    };
+    let view = camera.lod_view(Vec2::new(width as f32, height as f32));
 
     let mut reference_settings = settings.clone();
     reference_settings.quality = 1.0;
@@ -1012,7 +1323,7 @@ pub fn render_quality_sweep(
         select_frontier(&hierarchy, &AllResident, view, &reference_settings)
             .map_err(|error| LodRenderOracleError::Selection(format!("{error:?}")))?;
     let reference_gaussians = gather_frontier_gaussians(lod, &reference_frontier.nodes)?;
-    let reference = render_linear_gaussians(&reference_gaussians, camera, width, height)?;
+    let reference = render_lod_linear_gaussians(&reference_gaussians, camera, width, height)?;
 
     let mut samples = Vec::with_capacity(qualities.len());
     for &quality in qualities {
@@ -1024,7 +1335,7 @@ pub fn render_quality_sweep(
         let frontier = select_frontier(&hierarchy, &AllResident, view, &settings)
             .map_err(|error| LodRenderOracleError::Selection(format!("{error:?}")))?;
         let gaussians = gather_frontier_gaussians(lod, &frontier.nodes)?;
-        let rendered = render_linear_gaussians(&gaussians, camera, width, height)?;
+        let rendered = render_lod_linear_gaussians(&gaussians, camera, width, height)?;
         let metrics = compare_linear_rgba(&reference, &rendered, 1.0 / 255.0)
             .map_err(LodRenderOracleError::ImageMetrics)?;
         samples.push(LodQualitySample {
@@ -1058,6 +1369,7 @@ struct ProjectedGaussian {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::lod_scenes::LodPixelCrop;
     use crate::{
         gaussian::{
             formats::{
@@ -1070,7 +1382,7 @@ mod tests {
         io::lod::encode_page,
         stream::{
             hierarchy::{
-                LodTemporalStepBudget, apply_temporal_substitution_step,
+                LodTemporalStepBudget, LodView, apply_temporal_substitution_step,
                 select_frontier_with_previous, temporal_substitution_candidates,
             },
             runtime::{LodRuntimeViewId, LodStreamingRuntime, LodTemporalTransitionMode},
@@ -1090,6 +1402,193 @@ mod tests {
     }
 
     #[test]
+    fn calibrated_production_crop_preserves_native_pixels_and_anisotropic_filter() {
+        let camera = LodTestCamera {
+            position: Vec3::ZERO,
+            target: -Vec3::Z,
+            projection: LodProjection::Calibrated {
+                focal_length_px: Vec2::new(95.0, 130.0),
+                principal_point_px: Vec2::new(53.0, 47.0),
+                image_size: [128, 96],
+                crop: None,
+            },
+            viewport: [128, 96],
+            ..Default::default()
+        };
+        let mut gaussian = LodTestScene::screen_space_ladder().gaussians[0].gaussian;
+        gaussian.position_visibility.position = [0.0, 0.0, -3.0];
+        gaussian.scale_opacity.scale = [0.09, 0.17, 0.04];
+        gaussian.rotation.rotation = [1.0, 0.0, 0.0, 0.0];
+        let (forward, right, up) = camera.basis().unwrap();
+        let geometry = production_projected_geometry(
+            &gaussian,
+            camera,
+            128,
+            96,
+            forward,
+            right,
+            up,
+            production_projection(camera.projection, [128, 96]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(geometry.center, Vec2::new(53.0, 47.0));
+        let clip = bevy::prelude::Mat4::from_cols(
+            Vec4::new(2.0 * 95.0 / 128.0, 0.0, 0.0, 0.0),
+            Vec4::new(0.0, 2.0 * 130.0 / 96.0, 0.0, 0.0),
+            Vec4::new(1.0 - 2.0 * 53.0 / 128.0, 2.0 * 47.0 / 96.0 - 1.0, 0.0, -1.0),
+            Vec4::new(0.0, 0.0, camera.near, 0.0),
+        );
+        let projector =
+            ProductionPixelProjector::new(camera, clip, bevy::prelude::Mat4::IDENTITY).unwrap();
+        let pixels = [[53, 47], [58, 49], [120, 90]];
+        let mut probes = [None; 3];
+        projector.sample(
+            &gaussian,
+            &pixels,
+            GaussianColorSpace::default(),
+            &mut probes,
+        );
+        let single = render_production_lod_linear_gaussians(
+            &[(LodNodeId(0), gaussian)],
+            camera,
+            128,
+            96,
+            GaussianColorSpace::default(),
+        )
+        .unwrap();
+        for (pixel, probe) in pixels.into_iter().zip(probes) {
+            let expected = single[(pixel[1] * 128 + pixel[0]) as usize];
+            let actual = probe.map_or([0.0; 4], |p| {
+                [
+                    p.color[0] * p.alpha,
+                    p.color[1] * p.alpha,
+                    p.color[2] * p.alpha,
+                    p.alpha,
+                ]
+            });
+            for (actual, expected) in actual.into_iter().zip(expected) {
+                assert_close(actual, expected, 1e-6, "streamed physical pixel projection");
+            }
+        }
+        assert_close(
+            geometry.covariance[0],
+            (2.0 * 95.0 * 0.09 / 3.0_f32).powi(2) + 1.2,
+            2e-5,
+            "independent horizontal focal",
+        );
+        assert_close(
+            geometry.covariance[2],
+            (2.0 * 130.0 * 0.17 / 3.0_f32).powi(2) + 1.2,
+            5e-5,
+            "independent vertical focal",
+        );
+        let mut outside_center = gaussian;
+        outside_center.position_visibility.position = [-0.7, 0.0, -3.0];
+        outside_center.scale_opacity.scale = [0.3, 0.15, 0.04];
+        outside_center.scale_opacity.opacity = 0.3;
+        let input = [(LodNodeId(0), gaussian), (LodNodeId(1), outside_center)];
+        let full = render_production_lod_linear_gaussians(
+            &input,
+            camera,
+            128,
+            96,
+            GaussianColorSpace::default(),
+        )
+        .unwrap();
+        let cropped = camera
+            .with_crop(LodPixelCrop {
+                origin: [40, 30],
+                size: [40, 32],
+            })
+            .unwrap();
+        let crop = render_production_lod_linear_gaussians(
+            &input,
+            cropped,
+            40,
+            32,
+            GaussianColorSpace::default(),
+        )
+        .unwrap();
+        let mut maximum_error = 0.0_f32;
+        for y in 0..32_usize {
+            for x in 0..40_usize {
+                for (actual, expected) in crop[y * 40 + x].iter().zip(full[(y + 30) * 128 + x + 40])
+                {
+                    maximum_error = maximum_error.max((actual - expected).abs());
+                }
+            }
+        }
+        assert!(crop.iter().any(|pixel| pixel[3] > 0.1));
+        assert!(
+            maximum_error <= 5e-6,
+            "physical crop changed native pixels by {maximum_error}"
+        );
+        assert!(
+            render_production_lod_linear_gaussians(
+                &input,
+                cropped,
+                20,
+                16,
+                GaussianColorSpace::default()
+            )
+            .is_err(),
+            "a crop must not silently resize its filter"
+        );
+    }
+
+    #[test]
+    fn production_near_clip_uses_current_camera_and_directional_covariance() {
+        let mut gaussian = LodTestScene::screen_space_ladder().gaussians[0].gaussian;
+        gaussian.position_visibility.position = [0.0, 0.0, -0.5];
+        gaussian.rotation.rotation = [1.0, 0.0, 0.0, 0.0];
+        gaussian.scale_opacity.scale = [0.125, 0.125, 0.25];
+        let camera = LodTestCamera {
+            position: Vec3::ZERO,
+            target: Vec3::NEG_Z,
+            up: Vec3::Y,
+            world_rotation: None,
+            projection: LodProjection::Orthographic {
+                vertical_world_size: 2.0,
+            },
+            near: 0.125,
+            far: 100.0,
+            viewport: [64, 64],
+        };
+        let projection = production_projection(camera.projection, camera.viewport).unwrap();
+        let project = |gaussian: &Gaussian3d, camera: LodTestCamera| {
+            production_projected_geometry(
+                gaussian,
+                camera,
+                64,
+                64,
+                Vec3::NEG_Z,
+                Vec3::X,
+                Vec3::Y,
+                projection,
+            )
+            .unwrap()
+        };
+        let middle = project(&gaussian, camera);
+        let mut inside = gaussian;
+        inside.position_visibility.position[2] = -1.125;
+        let full = project(&inside, camera);
+        assert_eq!(middle.covariance, full.covariance);
+        assert_eq!(middle.opacity_scale, 0.5 * full.opacity_scale);
+        let approached = LodTestCamera {
+            position: Vec3::new(0.0, 0.0, -0.1875),
+            target: Vec3::new(0.0, 0.0, -1.1875),
+            ..camera
+        };
+        let closer = project(&gaussian, approached);
+        assert_eq!(closer.covariance, full.covariance);
+        assert_eq!(closer.opacity_scale, 0.15625 * full.opacity_scale);
+        gaussian.scale_opacity.scale[2] = 0.125;
+        let thin = project(&gaussian, camera);
+        assert_eq!(thin.covariance, full.covariance);
+        assert_eq!(thin.opacity_scale, full.opacity_scale);
+    }
+
+    #[test]
     fn production_projection_matches_shader_mean_covariance_mip_cutoff_and_sh_contracts() {
         let scene = LodTestScene::screen_space_ladder();
         let mut gaussian = scene.gaussians[0].gaussian;
@@ -1106,6 +1605,7 @@ mod tests {
             position: Vec3::new(0.0, 0.0, 5.0),
             target: Vec3::ZERO,
             up: Vec3::Y,
+            world_rotation: None,
             projection: LodProjection::Perspective {
                 vertical_fov_radians: std::f32::consts::FRAC_PI_2,
             },
@@ -1117,14 +1617,42 @@ mod tests {
         let right = forward.cross(camera.up).normalize();
         let up = right.cross(forward).normalize();
         let projection = ProductionProjection::Perspective {
-            pixel_focal: 50.0,
-            shader_focal: 100.0,
+            pixel_focal: Vec2::splat(50.0),
+            shader_focal: Vec2::splat(100.0),
+            principal_point: Vec2::new(100.0, 50.0),
         };
         let geometry = production_projected_geometry(
             &gaussian, camera, 200, 100, forward, right, up, projection,
         )
         .expect("centered Gaussian projects");
         assert_eq!(geometry.center, Vec2::new(100.0, 50.0));
+        assert_eq!(geometry.view_depth, 5.0);
+        // Parallel lateral pan changes radial distance order but must preserve
+        // the near/far key used by quad compositing and the fitting objective.
+        let mut near = gaussian;
+        near.position_visibility.position = [0.2, 0.0, 0.01];
+        let mut far = gaussian;
+        far.position_visibility.position = [-0.2, 0.0, 0.0];
+        let mut radial_order = Vec::new();
+        for x in [-1.0, 1.0] {
+            let panned = LodTestCamera {
+                position: Vec3::new(x, 0.0, 5.0),
+                target: Vec3::new(x, 0.0, 0.0),
+                ..camera
+            };
+            let near = production_projected_geometry(
+                &near, panned, 200, 100, forward, right, up, projection,
+            )
+            .unwrap();
+            let far = production_projected_geometry(
+                &far, panned, 200, 100, forward, right, up, projection,
+            )
+            .unwrap();
+            assert!(near.view_depth < far.view_depth);
+            assert_eq!(far.view_depth, geometry.view_depth);
+            radial_order.push(near.relative.length_squared() < far.relative.length_squared());
+        }
+        assert_ne!(radial_order[0], radial_order[1]);
         // helpers.wgsl uses two covariance units per physical pixel. At depth
         // five, its full-viewport focal 100 yields sigma 20 and 40 before mip;
         // +0.3 physical px^2 is therefore +1.2 in shader covariance.
@@ -1261,9 +1789,9 @@ mod tests {
         assert_close(obb.major_axis.y.abs(), 0.0, 1e-6, "x-major OBB cross axis");
         assert_close(
             obb.major_axis.perp_dot(obb.minor_axis),
-            -1.0,
+            1.0,
             1e-6,
-            "OBB negative handedness",
+            "OBB framebuffer reflection changes handedness",
         );
         let corner = 0.9
             * (obb.major_axis * obb.half_extent_shader.x
@@ -1274,8 +1802,27 @@ mod tests {
             + rotated.inverse_covariance[2] * corner.y * corner.y;
         assert!(
             corner_mahalanobis > 9.0 && corner_mahalanobis < 18.0,
-            "the production OBB retains valid anisotropic rectangle corners"
+            "the raster OBB conservatively contains corners beyond radial support"
         );
+        assert_eq!(gaussian_support_weight(corner_mahalanobis, 9.0), 0.0);
+        // The old lambda-a subtraction flipped the first covariance's OBB by
+        // 90 degrees; this adjacent zoom must retain the same support axes.
+        for covariance in [[47.894_4, 0.0, 27.414_4], [47.893_463, 0.0, 27.413_874]] {
+            let obb = production_obb(covariance, 3.0).unwrap();
+            assert_eq!(obb.major_axis, Vec2::X);
+            assert_close(
+                obb.half_extent_shader.x,
+                3.0 * covariance[0].sqrt(),
+                2e-6,
+                "x support",
+            );
+            assert_close(
+                obb.half_extent_shader.y,
+                3.0 * covariance[2].sqrt(),
+                2e-6,
+                "y support",
+            );
+        }
     }
 
     fn off_axis_gaussian(gaussian: &Gaussian3d) -> Gaussian3d {
@@ -1298,7 +1845,8 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        let rendered = render_linear_gaussians_with_nodes(&tagged, scene.camera, 96, 64).unwrap();
+        let rendered =
+            render_lod_linear_gaussians_with_nodes(&tagged, scene.camera, 96, 64).unwrap();
         assert_eq!(rendered.rgba.len(), 96 * 64);
         assert_eq!(rendered.dominant_nodes.len(), rendered.rgba.len());
         assert!(rendered.dominant_nodes.contains(&Some(LodNodeId(1))));
@@ -1412,6 +1960,7 @@ mod tests {
             position: Vec3::new(0.0, 0.0, 5.0),
             target: Vec3::ZERO,
             up: Vec3::Y,
+            world_rotation: None,
             projection: LodProjection::Perspective {
                 vertical_fov_radians: 60.0_f32.to_radians(),
             },
@@ -1422,10 +1971,10 @@ mod tests {
         let flat = render_flat_linear_gaussians(&[gaussian], camera, 96, 96).unwrap();
         let tagged = [(LodNodeId(1), gaussian)];
         let lod = render_lod_linear_gaussians_with_nodes(&tagged, camera, 96, 96).unwrap();
-        let legacy = render_linear_gaussians(&[gaussian], camera, 96, 96).unwrap();
+        let unattributed = render_lod_linear_gaussians(&[gaussian], camera, 96, 96).unwrap();
         assert_eq!(
-            legacy, lod.rgba,
-            "legacy wrapper must retain authored 3sigma support"
+            unattributed, lod.rgba,
+            "unattributed LoD rendering must retain authored three-sigma support"
         );
         let visible = |image: &[[f32; 4]]| image.iter().filter(|pixel| pixel[3] > 0.0).count();
         assert!(
@@ -1577,7 +2126,7 @@ mod tests {
         camera.projection = LodProjection::Orthographic {
             vertical_world_size: 8.0,
         };
-        let image = render_linear_gaussians(
+        let image = render_lod_linear_gaussians(
             &scene
                 .gaussians
                 .iter()
@@ -1764,17 +2313,7 @@ mod tests {
             let mut camera = scene.camera;
             camera.position = Vec3::new(0.0, 0.0, camera_z);
             camera.viewport = [WIDTH, HEIGHT];
-            let view = LodView::perspective(
-                camera.position,
-                HEIGHT as f32,
-                match camera.projection {
-                    LodProjection::Perspective {
-                        vertical_fov_radians,
-                    } => vertical_fov_radians,
-                    LodProjection::Orthographic { .. } => unreachable!(),
-                },
-                camera.near,
-            );
+            let view = camera.lod_view(Vec2::new(WIDTH as f32, HEIGHT as f32));
             let frontier = select_frontier_with_previous(
                 &hierarchy,
                 &AllResident,
@@ -1794,9 +2333,9 @@ mod tests {
                 .expect("temporal LoD frontier resolves");
             let exact_gaussians = gather_frontier_gaussians(&lod, &exact_frontier.nodes)
                 .expect("temporal exact frontier resolves");
-            let lod_image = render_linear_gaussians(&lod_gaussians, camera, WIDTH, HEIGHT)
+            let lod_image = render_lod_linear_gaussians(&lod_gaussians, camera, WIDTH, HEIGHT)
                 .expect("temporal LoD image renders");
-            let exact_image = render_linear_gaussians(&exact_gaussians, camera, WIDTH, HEIGHT)
+            let exact_image = render_lod_linear_gaussians(&exact_gaussians, camera, WIDTH, HEIGHT)
                 .expect("temporal exact image renders");
             assert!(
                 exact_image.iter().any(|pixel| pixel[3] > FOREGROUND_ALPHA),
@@ -1924,7 +2463,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_categorical_runtime_bounds_large_camera_jump_event_energy() {
+    fn categorical_runtime_bounds_large_camera_jump_event_energy() {
         const WIDTH: u32 = 80;
         const HEIGHT: u32 = 80;
         const QUALITY: f32 = 0.60;
@@ -2088,7 +2627,7 @@ mod tests {
         let mut staggered_events = Vec::new();
         let mut complete_cuts = std::collections::BTreeSet::from([previous_nodes.clone()]);
         let mut reached_target = false;
-        // A pre-ABI16 package has no view-blend payload, so compatibility
+        // A package without a morph map has no view-blend payload, so categorical
         // rendering advances complete categorical cohorts. Bound this trace by
         // hierarchy structure rather than a historical fixed frame count; the
         // cubic quality authority may legitimately expose more adjacent cuts.
@@ -2226,7 +2765,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         eprintln!(
-            "legacy categorical LoD cohort trace: immediate_rmse={:.6} immediate_topology_energy={} bounded_peak_topology_energy={} bounded_max_rmse={:.6} complete_cuts={} events={event_trace:?}",
+            "categorical LoD cohort trace: immediate_rmse={:.6} immediate_topology_energy={} bounded_peak_topology_energy={} bounded_max_rmse={:.6} complete_cuts={} events={event_trace:?}",
             immediate_metrics.foreground_rgb_rmse,
             immediate_topology_energy,
             staggered_peak_topology_energy,
@@ -2235,11 +2774,11 @@ mod tests {
         );
         assert!(
             reached_target,
-            "legacy categorical runtime did not reach the immediate target"
+            "categorical runtime did not reach the immediate target"
         );
         assert!(
             complete_cuts.len() >= 3 && staggered_events.len() >= 2,
-            "legacy categorical coarsening did not distribute the jump: {event_trace:?}"
+            "categorical coarsening did not distribute the jump: {event_trace:?}"
         );
         assert!(
             immediate_metrics.foreground_rgb_rmse.is_finite()
@@ -2256,11 +2795,11 @@ mod tests {
         );
         assert!(
             staggered_peak_topology_energy < immediate_topology_energy,
-            "legacy categorical runtime did not bound the immediate topology energy: immediate={immediate_topology_energy}, peak={staggered_peak_topology_energy}, events={event_trace:?}"
+            "categorical runtime did not bound the immediate topology energy: immediate={immediate_topology_energy}, peak={staggered_peak_topology_energy}, events={event_trace:?}"
         );
         assert!(
             staggered_max <= MAX_STAGGERED_EVENT_RMSE,
-            "legacy categorical runtime exceeded the fixed absolute event gate: max={staggered_max}, gate={MAX_STAGGERED_EVENT_RMSE}, events={event_trace:?}"
+            "categorical runtime exceeded the fixed absolute event gate: max={staggered_max}, gate={MAX_STAGGERED_EVENT_RMSE}, events={event_trace:?}"
         );
     }
 
@@ -2332,17 +2871,8 @@ mod tests {
     }
 
     fn temporal_view(camera: LodTestCamera, height: u32) -> LodView {
-        LodView::perspective(
-            camera.position,
-            height as f32,
-            match camera.projection {
-                LodProjection::Perspective {
-                    vertical_fov_radians,
-                } => vertical_fov_radians,
-                LodProjection::Orthographic { .. } => unreachable!(),
-            },
-            camera.near,
-        )
+        let aspect = camera.viewport[0] as f32 / camera.viewport[1] as f32;
+        camera.lod_view(Vec2::new(height as f32 * aspect, height as f32))
     }
 
     fn render_frontier(
@@ -2353,7 +2883,7 @@ mod tests {
         height: u32,
     ) -> Vec<[f32; 4]> {
         let gaussians = gather_frontier_gaussians(lod, nodes).expect("temporal frontier resolves");
-        render_linear_gaussians(&gaussians, camera, width, height)
+        render_lod_linear_gaussians(&gaussians, camera, width, height)
             .expect("temporal frontier renders")
     }
 

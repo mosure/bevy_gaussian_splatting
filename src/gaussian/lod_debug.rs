@@ -297,7 +297,7 @@ fn pack_lod_debug_residency_certificate(
     let mut certificate_code = (certificate * LOD_DEBUG_CERTIFICATE_MAX as f32).round() as u32;
     // CPU selection treats values strictly above one UNORM16 quantum as
     // certified. Preserve that boundary after rounding: code 1 remains the
-    // legacy/tiny sentinel, while the smallest usable value is promoted to 2.
+    // uncertified/tiny sentinel, while the smallest usable value is promoted to 2.
     if certificate > 1.0 / LOD_DEBUG_CERTIFICATE_MAX as f32
         && certificate_code < LOD_DEBUG_CERTIFICATE_MIN_USABLE_CODE
     {
@@ -323,7 +323,7 @@ pub struct LodDebugMetadata {
 
 /// Immutable, cheap-to-clone snapshot of a streamed annotation atlas.
 ///
-/// Unlike the legacy dense payload, this representation never allocates or
+/// Unlike the dense payload, this representation never allocates or
 /// copies the unused physical address space on the CPU. Each populated slot is
 /// independently reference counted and carries a revision consumed by the
 /// render-world subrange uploader.
@@ -470,6 +470,16 @@ impl LodDebugManifestIndex {
     pub(crate) fn from_validated_manifest(
         manifest: &GaussianLodManifest,
     ) -> Result<Self, LodDebugMetadataError> {
+        bevy::tasks::block_on(Self::prepare_from_validated_manifest(
+            manifest,
+            &crate::stream::preparation::PreparationBudget::new(usize::MAX),
+        ))
+    }
+
+    pub(crate) async fn prepare_from_validated_manifest(
+        manifest: &GaussianLodManifest,
+        work: &crate::stream::preparation::PreparationBudget,
+    ) -> Result<Self, LodDebugMetadataError> {
         let mut descriptors = Vec::new();
         descriptors
             .try_reserve_exact(manifest.pages.len())
@@ -479,6 +489,7 @@ impl LodDebugManifestIndex {
             .try_reserve(manifest.pages.len())
             .map_err(|_| LodDebugMetadataError::AllocationFailed(manifest.pages.len()))?;
         for (descriptor_index, descriptor) in manifest.pages.iter().enumerate() {
+            work.record().await;
             descriptor_by_page.insert(descriptor.id, descriptor_index);
             descriptors.push(LodPageDescriptor {
                 id: descriptor.id,
@@ -496,14 +507,21 @@ impl LodDebugManifestIndex {
         nodes
             .try_reserve_exact(manifest.nodes.len())
             .map_err(|_| LodDebugMetadataError::AllocationFailed(manifest.nodes.len()))?;
-        nodes.extend(manifest.nodes.iter().map(LodDebugIndexedNode::from));
+        for node in &manifest.nodes {
+            work.record().await;
+            nodes.push(LodDebugIndexedNode::from(node));
+        }
 
         let mut node_counts = Vec::new();
         node_counts
             .try_reserve_exact(manifest.pages.len())
             .map_err(|_| LodDebugMetadataError::AllocationFailed(manifest.pages.len()))?;
-        node_counts.resize(manifest.pages.len(), 0_usize);
+        for _ in &manifest.pages {
+            work.record().await;
+            node_counts.push(0_usize);
+        }
         for node in &manifest.nodes {
+            work.record().await;
             let descriptor_index = descriptor_by_page
                 .get(&node.representation.page)
                 .copied()
@@ -518,6 +536,7 @@ impl LodDebugManifestIndex {
             .try_reserve_exact(manifest.pages.len())
             .map_err(|_| LodDebugMetadataError::AllocationFailed(manifest.pages.len()))?;
         for node_count in node_counts {
+            work.record().await;
             let mut node_indices = Vec::new();
             node_indices
                 .try_reserve_exact(node_count)
@@ -525,6 +544,7 @@ impl LodDebugManifestIndex {
             node_indices_by_descriptor.push(node_indices);
         }
         for (node_index, node) in manifest.nodes.iter().enumerate() {
+            work.record().await;
             let descriptor_index = descriptor_by_page[&node.representation.page];
             node_indices_by_descriptor[descriptor_index].push(node_index);
         }
@@ -1708,11 +1728,11 @@ mod tests {
         assert_eq!(zero.high_fidelity_certificate(), 0.0);
 
         let quantum = 1.0 / LOD_DEBUG_CERTIFICATE_MAX as f32;
-        let legacy_threshold = LodDebugRecord {
+        let minimum_threshold = LodDebugRecord {
             residency: pack_lod_debug_residency_certificate(LodDebugResidency::Resident, quantum),
             ..default()
         };
-        assert_eq!(legacy_threshold.high_fidelity_certificate(), quantum);
+        assert_eq!(minimum_threshold.high_fidelity_certificate(), quantum);
         let smallest_usable = LodDebugRecord {
             residency: pack_lod_debug_residency_certificate(
                 LodDebugResidency::Resident,

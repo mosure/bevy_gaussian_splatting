@@ -205,6 +205,8 @@ pub struct LodPageCache {
     limits: PageCacheLimits,
     atlas: BoundedAtlasAllocator,
     entries: BTreeMap<LodPageId, ResidentPage>,
+    /// Only unpinned pages participate in deterministic eviction order.
+    evictable: BTreeSet<(u64, LodPageId)>,
     resident_bytes: u64,
     resident_gaussians: u64,
 }
@@ -218,6 +220,7 @@ impl LodPageCache {
             limits,
             atlas,
             entries: BTreeMap::new(),
+            evictable: BTreeSet::new(),
             resident_bytes: 0,
             resident_gaussians: 0,
         })
@@ -227,8 +230,23 @@ impl LodPageCache {
         self.limits
     }
 
+    /// Conservative package-ledger allowance for the lazy ordered index,
+    /// including tree nodes and fixed root allocation overhead.
+    #[cfg(feature = "lod")]
+    pub(crate) fn eviction_index_bytes(max_pages: u32) -> u64 {
+        u64::from(max_pages) * 64 + 256
+    }
+
     pub fn get(&self, page_id: LodPageId) -> Option<&ResidentPage> {
         self.entries.get(&page_id)
+    }
+
+    /// Iterates only the bounded resident set, without visiting manifest pages.
+    #[cfg(lod_render_path)]
+    pub(crate) fn resident_pages(&self) -> impl Iterator<Item = (LodPageId, &ResidentPage)> {
+        self.entries
+            .iter()
+            .map(|(&page, resident)| (page, resident))
     }
 
     pub fn contains(&self, page_id: LodPageId) -> bool {
@@ -244,14 +262,50 @@ impl LodPageCache {
             resident_pages: self.entries.len().try_into().unwrap_or(u32::MAX),
             resident_bytes: self.resident_bytes,
             resident_gaussians: self.resident_gaussians,
-            pinned_pages: self
-                .entries
-                .values()
-                .filter(|entry| entry.pin_count > 0)
-                .count()
+            pinned_pages: (self.entries.len() - self.evictable.len())
                 .try_into()
                 .unwrap_or(u32::MAX),
         }
+    }
+
+    /// Checks a missing-page footprint against ordinary unpinned eviction.
+    /// A full cache alone does not require retiring a published GPU snapshot.
+    #[cfg(lod_render_path)]
+    pub(crate) fn can_admit_with_eviction(
+        &self,
+        additional_pages: u64,
+        additional_bytes: u64,
+        additional_gaussians: u64,
+    ) -> bool {
+        let Some(mut pages) = (self.entries.len() as u64).checked_add(additional_pages) else {
+            return false;
+        };
+        let Some(mut bytes) = self.resident_bytes.checked_add(additional_bytes) else {
+            return false;
+        };
+        let Some(mut gaussians) = self.resident_gaussians.checked_add(additional_gaussians) else {
+            return false;
+        };
+        let fits = |pages, bytes, gaussians| {
+            pages <= u64::from(self.limits.max_pages)
+                && bytes <= self.limits.max_bytes
+                && gaussians <= self.limits.max_gaussians
+        };
+        if !fits(additional_pages, additional_bytes, additional_gaussians) {
+            return false;
+        }
+        // The same indexed candidates as insert(), stopping as soon as the
+        // deficit is covered; no resident scan, victim allocation or mutation.
+        for &(_, page) in &self.evictable {
+            if fits(pages, bytes, gaussians) {
+                return true;
+            }
+            let candidate = &self.entries[&page];
+            pages -= 1;
+            bytes -= candidate.byte_len;
+            gaussians -= candidate.gaussian_count;
+        }
+        fits(pages, bytes, gaussians)
     }
 
     /// Commits a page after upload. Evictions are decided before mutation, so a
@@ -272,13 +326,14 @@ impl LodPageCache {
         if byte_len > self.limits.max_bytes || gaussian_count > self.limits.max_gaussians {
             return Err(PageCacheError::PageExceedsLimits(page_id));
         }
-        if let Some(entry) = self.entries.get_mut(&page_id) {
+        if let Some(entry) = self.entries.get(&page_id) {
             if entry.byte_len != byte_len || entry.gaussian_count != gaussian_count {
                 return Err(PageCacheError::MetadataMismatch(page_id));
             }
-            entry.last_used_epoch = epoch;
+            let slot = entry.slot;
+            self.touch(page_id, epoch);
             return Ok(CacheInsert {
-                slot: entry.slot,
+                slot,
                 evicted: Vec::new(),
                 already_resident: true,
             });
@@ -294,25 +349,27 @@ impl LodPageCache {
             .checked_add(gaussian_count)
             .ok_or(PageCacheError::CountOverflow)?;
 
-        let mut candidates: Vec<_> = self
-            .entries
-            .values()
-            .filter(|entry| entry.pin_count == 0)
-            .copied()
-            .collect();
-        candidates.sort_by_key(|entry| (entry.last_used_epoch, entry.page_id));
         let mut victims = Vec::new();
-        for candidate in candidates {
-            if pages <= u64::from(self.limits.max_pages)
-                && bytes <= self.limits.max_bytes
-                && gaussians <= self.limits.max_gaussians
-            {
-                break;
+        // Admission with spare capacity must not scan/sort the working set.
+        // Only pressure needs an eviction plan, which remains transactional:
+        // no resident page is removed until every budget can be satisfied.
+        if pages > u64::from(self.limits.max_pages)
+            || bytes > self.limits.max_bytes
+            || gaussians > self.limits.max_gaussians
+        {
+            for &(_, page) in &self.evictable {
+                if pages <= u64::from(self.limits.max_pages)
+                    && bytes <= self.limits.max_bytes
+                    && gaussians <= self.limits.max_gaussians
+                {
+                    break;
+                }
+                let candidate = &self.entries[&page];
+                pages -= 1;
+                bytes -= candidate.byte_len;
+                gaussians -= candidate.gaussian_count;
+                victims.push(candidate.page_id);
             }
-            pages -= 1;
-            bytes -= candidate.byte_len;
-            gaussians -= candidate.gaussian_count;
-            victims.push(candidate.page_id);
         }
         if pages > u64::from(self.limits.max_pages)
             || bytes > self.limits.max_bytes
@@ -339,14 +396,10 @@ impl LodPageCache {
                 pin_count: 0,
             },
         );
-        self.resident_bytes = self
-            .resident_bytes
-            .checked_add(byte_len)
-            .ok_or(PageCacheError::CountOverflow)?;
-        self.resident_gaussians = self
-            .resident_gaussians
-            .checked_add(gaussian_count)
-            .ok_or(PageCacheError::CountOverflow)?;
+        self.evictable.insert((epoch, page_id));
+        // The complete post-eviction totals were checked before mutation.
+        self.resident_bytes = bytes;
+        self.resident_gaussians = gaussians;
         Ok(CacheInsert {
             slot,
             evicted: victims,
@@ -356,6 +409,10 @@ impl LodPageCache {
 
     pub fn touch(&mut self, page_id: LodPageId, epoch: u64) -> bool {
         if let Some(entry) = self.entries.get_mut(&page_id) {
+            if entry.last_used_epoch != epoch && entry.pin_count == 0 {
+                self.evictable.remove(&(entry.last_used_epoch, page_id));
+                self.evictable.insert((epoch, page_id));
+            }
             entry.last_used_epoch = epoch;
             true
         } else {
@@ -373,6 +430,9 @@ impl LodPageCache {
             .pin_count
             .checked_add(1)
             .ok_or(PageCacheError::CountOverflow)?;
+        if entry.pin_count == 1 {
+            self.evictable.remove(&(entry.last_used_epoch, page_id));
+        }
         Ok(entry.slot)
     }
 
@@ -385,6 +445,9 @@ impl LodPageCache {
             return Err(PageCacheError::NotPinned(page_id));
         }
         entry.pin_count -= 1;
+        if entry.pin_count == 0 {
+            self.evictable.insert((entry.last_used_epoch, page_id));
+        }
         Ok(())
     }
 
@@ -433,6 +496,7 @@ impl LodPageCache {
             .free(entry.slot)
             .map_err(PageCacheError::Allocator)?;
         debug_assert_eq!(freed_page, page_id);
+        self.evictable.remove(&(entry.last_used_epoch, page_id));
         self.resident_bytes -= entry.byte_len;
         self.resident_gaussians -= entry.gaussian_count;
         Ok(entry)
@@ -522,6 +586,14 @@ mod tests {
         cache.touch(LodPageId(1), 3);
         let result = cache.insert(LodPageId(3), 50, 5, 4).unwrap();
         assert_eq!(result.evicted, vec![LodPageId(2)]);
+        assert!(
+            cache
+                .insert(LodPageId(1), 50, 5, 5)
+                .unwrap()
+                .already_resident
+        );
+        let result = cache.insert(LodPageId(4), 50, 5, 6).unwrap();
+        assert_eq!(result.evicted, vec![LodPageId(3)]);
     }
 
     #[test]
@@ -529,6 +601,14 @@ mod tests {
         let mut cache = LodPageCache::new(limits(1)).unwrap();
         let root_slot = cache.insert(LodPageId(10), 50, 5, 1).unwrap().slot;
         cache.pin_fallback(LodPageId(10)).unwrap();
+        cache.pin_fallback(LodPageId(10)).unwrap();
+        cache.touch(LodPageId(10), 3);
+        cache.unpin_fallback(LodPageId(10)).unwrap();
+        assert_eq!(cache.stats().pinned_pages, 1);
+        assert!(
+            cache.evictable.is_empty(),
+            "one remaining pin still prevents eviction"
+        );
         assert_eq!(
             cache.insert(LodPageId(1), 50, 5, 2),
             Err(PageCacheError::InsufficientEvictableCapacity)
@@ -537,9 +617,73 @@ mod tests {
         assert!(cache.is_slot_current(root_slot));
 
         cache.unpin_fallback(LodPageId(10)).unwrap();
+        assert_eq!(cache.stats().pinned_pages, 0);
+        assert_eq!(cache.evictable.first(), Some(&(3, LodPageId(10))));
         let inserted = cache.insert(LodPageId(1), 50, 5, 2).unwrap();
         assert_eq!(inserted.evicted, vec![LodPageId(10)]);
         assert!(!cache.is_slot_current(root_slot));
+    }
+
+    #[test]
+    fn admission_at_exact_capacity_preserves_existing_slots_and_pins() {
+        let mut cache = LodPageCache::new(PageCacheLimits {
+            max_pages: 2,
+            max_bytes: 100,
+            max_gaussians: 10,
+        })
+        .unwrap();
+        let first = cache.insert(LodPageId(1), 40, 4, 1).unwrap().slot;
+        cache.pin_fallback(LodPageId(1)).unwrap();
+        let inserted = cache.insert(LodPageId(2), 60, 6, 2).unwrap();
+        assert!(inserted.evicted.is_empty());
+        assert!(cache.is_slot_current(first));
+        assert_eq!(cache.get(LodPageId(1)).unwrap().pin_count, 1);
+        assert_eq!(
+            cache.stats(),
+            PageCacheStats {
+                resident_pages: 2,
+                resident_bytes: 100,
+                resident_gaussians: 10,
+                pinned_pages: 1,
+            }
+        );
+        #[cfg(lod_render_path)]
+        {
+            let before = cache.stats();
+            assert!(cache.can_admit_with_eviction(1, 60, 6));
+            assert!(!cache.can_admit_with_eviction(1, 61, 6));
+            assert!(!cache.can_admit_with_eviction(1, 60, 7));
+            assert!(!cache.can_admit_with_eviction(u64::MAX, 1, 1));
+            assert_eq!(cache.stats(), before, "pressure checks do not evict pages");
+            cache.pin_fallback(LodPageId(2)).unwrap();
+            assert!(!cache.can_admit_with_eviction(1, 60, 6));
+            cache.unpin_fallback(LodPageId(2)).unwrap();
+            assert!(cache.can_admit_with_eviction(1, 60, 6));
+            assert!(cache.is_slot_current(first));
+            assert!(cache.is_slot_current(inserted.slot));
+        }
+    }
+
+    #[test]
+    fn insufficient_capacity_does_not_commit_partial_eviction_plan() {
+        let mut cache = LodPageCache::new(PageCacheLimits {
+            max_pages: 3,
+            max_bytes: 100,
+            max_gaussians: 10,
+        })
+        .unwrap();
+        let pinned = cache.insert(LodPageId(1), 80, 8, 1).unwrap().slot;
+        cache.pin_fallback(LodPageId(1)).unwrap();
+        let evictable = cache.insert(LodPageId(2), 20, 2, 2).unwrap().slot;
+        let before = cache.stats();
+        assert_eq!(
+            cache.insert(LodPageId(3), 30, 3, 3),
+            Err(PageCacheError::InsufficientEvictableCapacity)
+        );
+        assert_eq!(cache.stats(), before);
+        assert!(cache.is_slot_current(pinned));
+        assert!(cache.is_slot_current(evictable));
+        assert!(!cache.contains(LodPageId(3)));
     }
 
     #[test]

@@ -166,7 +166,7 @@ impl PersistentCachePageIdentity {
 #[derive(Clone, Debug)]
 pub struct PersistentCachePageIdentities {
     package: Arc<PersistentCachePackageIdentity>,
-    entries: Arc<[PersistentCachePageIdentityMetadata]>,
+    entries: Arc<Vec<PersistentCachePageIdentityMetadata>>,
     index: CompiledPageIndex,
 }
 
@@ -175,6 +175,46 @@ struct PersistentCachePageIdentityMetadata {
     page_id: LodPageId,
     content_hash: u64,
     encoded_len: u64,
+}
+
+pub(crate) struct PersistentCachePageIdentitiesBuilder {
+    package: Arc<PersistentCachePackageIdentity>,
+    entries: Vec<PersistentCachePageIdentityMetadata>,
+}
+
+impl PersistentCachePageIdentitiesBuilder {
+    pub(crate) fn new(manifest: &GaussianLodManifest) -> Self {
+        Self {
+            package: Arc::new(PersistentCachePackageIdentity::from_validated_manifest(
+                manifest,
+            )),
+            entries: Vec::with_capacity(manifest.pages.len()),
+        }
+    }
+
+    pub(crate) fn push(
+        &mut self,
+        descriptor: &crate::gaussian::formats::planar_3d_chunked::LodPageDescriptor,
+    ) -> Result<(), PersistentCacheError> {
+        let storage = descriptor
+            .storage
+            .as_ref()
+            .ok_or(PersistentCacheError::MissingStorage(descriptor.id))?;
+        self.entries.push(PersistentCachePageIdentityMetadata {
+            page_id: descriptor.id,
+            content_hash: descriptor.content_hash,
+            encoded_len: storage.encoded_len,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn finish(self, index: CompiledPageIndex) -> PersistentCachePageIdentities {
+        PersistentCachePageIdentities {
+            package: self.package,
+            entries: Arc::new(self.entries),
+            index,
+        }
+    }
 }
 
 impl PersistentCachePageIdentities {
@@ -224,7 +264,7 @@ impl PersistentCachePageIdentities {
         }
         Ok(Self {
             package: Arc::new(package),
-            entries: entries.into(),
+            entries: Arc::new(entries),
             index,
         })
     }

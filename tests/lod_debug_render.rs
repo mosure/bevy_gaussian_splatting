@@ -262,7 +262,10 @@ mod headless {
             DebugCase::SelectionPressure => {
                 let projection = PerspectiveProjection::default();
                 let focal_y_px = 0.5 * HEIGHT as f32 / (0.5 * projection.fov).tan();
-                let projected_error_px = 0.125 * focal_y_px / (5.0 - 1.0);
+                // Matrix-aware Jacobian bound over node support plus residual.
+                let error_minimum_depth = 5.0 - (1.0 + 0.125);
+                let projected_error_px =
+                    0.125 * (focal_y_px / error_minimum_depth) * (5.0 / error_minimum_depth);
                 let projected_support_radius_px = focal_y_px / (5.0 - 1.0);
                 let projected_coverage =
                     (2.0 * projected_support_radius_px / HEIGHT as f32).clamp(0.0, 1.0);

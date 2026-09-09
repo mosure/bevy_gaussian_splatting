@@ -7,6 +7,7 @@ pub struct NativeUreqHttpClient {
     workers: BTreeMap<u64, NativeUreqWorker>,
     max_workers: u32,
     next_ticket: u64,
+    memory_reservations: std::sync::Arc<[crate::stream::memory::LodMemoryLease]>,
 }
 
 impl Drop for NativeUreqHttpClient {
@@ -20,8 +21,15 @@ impl Drop for NativeUreqHttpClient {
 }
 
 struct NativeUreqWorker {
-    receiver: std::sync::mpsc::Receiver<Result<HttpFetchResponse, HttpClientFailure>>,
+    receiver: std::sync::mpsc::Receiver<Result<NativeHttpResponse, HttpClientFailure>>,
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// The body and its checksum cross the same bounded completion channel. No
+/// side table or duplicate body is retained by caller-thread polling.
+struct NativeHttpResponse {
+    response: HttpFetchResponse,
+    payload_checksum: u64,
 }
 
 pub(super) type NativeHttpJob = Box<dyn FnOnce() + Send + 'static>;
@@ -410,7 +418,15 @@ impl NativeUreqHttpClient {
             workers: BTreeMap::new(),
             max_workers,
             next_ticket: 1,
+            memory_reservations: std::sync::Arc::from([]),
         })
+    }
+
+    pub(crate) fn set_memory_reservations(
+        &mut self,
+        reservations: std::sync::Arc<[crate::stream::memory::LodMemoryLease]>,
+    ) {
+        self.memory_reservations = reservations;
     }
 
     fn reap_cancelled_workers(&mut self) {
@@ -444,7 +460,9 @@ impl NativeUreqHttpClient {
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let cancelled_for_job = cancelled.clone();
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let memory_reservations = std::sync::Arc::clone(&self.memory_reservations);
         let job: NativeHttpJob = Box::new(move || {
+            let _memory_reservations = memory_reservations;
             let result = if cancelled_for_job.load(std::sync::atomic::Ordering::Relaxed) {
                 Err(HttpClientFailure::new(
                     HttpClientFailureKind::Cancelled,
@@ -452,7 +470,10 @@ impl NativeUreqHttpClient {
                     false,
                 ))
             } else {
-                fetch_with_ureq(&agent, request)
+                fetch_with_ureq(&agent, request).map(|response| NativeHttpResponse {
+                    payload_checksum: super::super::transport::page_checksum64(&response.bytes),
+                    response,
+                })
             };
             let _ = sender.send(result);
         });
@@ -493,37 +514,56 @@ impl HttpRangeClient for NativeUreqHttpClient {
     }
 
     fn poll(&mut self, ticket: &Self::Ticket) -> HttpClientPoll {
+        self.poll_with_payload_checksum(ticket).0
+    }
+
+    fn poll_with_payload_checksum(
+        &mut self,
+        ticket: &Self::Ticket,
+    ) -> (HttpClientPoll, Option<u64>) {
         let Some(worker) = self.workers.get(ticket) else {
-            return HttpClientPoll::Failed(HttpClientFailure::new(
-                HttpClientFailureKind::InvalidRequest,
-                format!("invalid native HTTP ticket {ticket}"),
-                false,
-            ));
+            return (
+                HttpClientPoll::Failed(HttpClientFailure::new(
+                    HttpClientFailureKind::InvalidRequest,
+                    format!("invalid native HTTP ticket {ticket}"),
+                    false,
+                )),
+                None,
+            );
         };
         if worker.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-            return HttpClientPoll::Failed(HttpClientFailure::new(
-                HttpClientFailureKind::Cancelled,
-                format!("native HTTP ticket {ticket} was cancelled"),
-                false,
-            ));
+            return (
+                HttpClientPoll::Failed(HttpClientFailure::new(
+                    HttpClientFailureKind::Cancelled,
+                    format!("native HTTP ticket {ticket} was cancelled"),
+                    false,
+                )),
+                None,
+            );
         }
         match worker.receiver.try_recv() {
             Ok(Ok(response)) => {
                 self.workers.remove(ticket);
-                HttpClientPoll::Ready(response)
+                (
+                    HttpClientPoll::Ready(response.response),
+                    Some(response.payload_checksum),
+                )
             }
             Ok(Err(error)) => {
                 self.workers.remove(ticket);
-                HttpClientPoll::Failed(error)
+                (HttpClientPoll::Failed(error), None)
             }
-            Err(std::sync::mpsc::TryRecvError::Empty) => HttpClientPoll::Pending,
+            Err(std::sync::mpsc::TryRecvError::Empty) => (HttpClientPoll::Pending, None),
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.workers.remove(ticket);
-                HttpClientPoll::Failed(HttpClientFailure::new(
-                    HttpClientFailureKind::Network,
-                    "native HTTP worker disconnected",
-                    true,
-                ))
+                (
+                    HttpClientPoll::Failed(HttpClientFailure::new(
+                        HttpClientFailureKind::Network,
+                        "native HTTP worker disconnected",
+                        true,
+                    )),
+                    None,
+                )
             }
         }
     }

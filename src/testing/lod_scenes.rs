@@ -1,4 +1,4 @@
-use bevy::prelude::{Quat, Vec3};
+use bevy::prelude::{Mat4, Quat, Vec2, Vec3, Vec4};
 use bevy_interleave::prelude::Planar;
 
 use crate::{
@@ -8,8 +8,104 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LodProjection {
-    Perspective { vertical_fov_radians: f32 },
-    Orthographic { vertical_world_size: f32 },
+    Perspective {
+        vertical_fov_radians: f32,
+    },
+    Orthographic {
+        vertical_world_size: f32,
+    },
+    /// Pinhole calibration at `image_size`, in physical framebuffer pixels.
+    /// Full-frame renders resize these intrinsics. A crop retains the original
+    /// pixel footprint and shifts only the principal point.
+    Calibrated {
+        focal_length_px: Vec2,
+        principal_point_px: Vec2,
+        image_size: [u32; 2],
+        crop: Option<LodPixelCrop>,
+    },
+}
+
+/// A rectangular physical-pixel region, with no implicit resizing or filtering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LodPixelCrop {
+    pub origin: [u32; 2],
+    pub size: [u32; 2],
+}
+
+impl LodPixelCrop {
+    pub fn validate(self, image_size: [u32; 2]) -> Result<(), &'static str> {
+        for (axis, extent) in image_size.into_iter().enumerate() {
+            if self.size[axis] == 0
+                || self.origin[axis]
+                    .checked_add(self.size[axis])
+                    .is_none_or(|end| end > extent)
+            {
+                return Err("pixel crop must be nonempty and contained in the calibrated image");
+            }
+        }
+        Ok(())
+    }
+}
+
+impl LodProjection {
+    pub(crate) fn calibrated_intrinsics(
+        self,
+        viewport: Vec2,
+    ) -> Result<(Vec2, Vec2), &'static str> {
+        let Self::Calibrated {
+            focal_length_px,
+            principal_point_px,
+            image_size,
+            crop,
+        } = self
+        else {
+            return Err("projection is not calibrated");
+        };
+        if !focal_length_px.is_finite()
+            || focal_length_px.min_element() <= 0.0
+            || !principal_point_px.is_finite()
+            || image_size.contains(&0)
+            || !viewport.is_finite()
+            || viewport.min_element() <= 0.0
+        {
+            return Err(
+                "calibrated projection requires finite positive focal lengths and image size",
+            );
+        }
+        let (focal, principal) = match crop {
+            Some(crop) => {
+                crop.validate(image_size)?;
+                if viewport != Vec2::new(crop.size[0] as f32, crop.size[1] as f32) {
+                    return Err("cropped projection viewport must match its physical pixel size");
+                }
+                (
+                    focal_length_px,
+                    principal_point_px - Vec2::new(crop.origin[0] as f32, crop.origin[1] as f32),
+                )
+            }
+            None => {
+                let scale = viewport / Vec2::new(image_size[0] as f32, image_size[1] as f32);
+                (focal_length_px * scale, principal_point_px * scale)
+            }
+        };
+        if !focal.is_finite() || focal.min_element() <= 0.0 || !principal.is_finite() {
+            return Err("resized calibrated intrinsics are not finite and positive");
+        }
+        Ok((focal, principal))
+    }
+
+    fn calibrated_clip_from_view(self, viewport: Vec2, near: f32) -> Result<Mat4, &'static str> {
+        let (focal, principal) = self.calibrated_intrinsics(viewport)?;
+        let scale = 2.0 * focal / viewport;
+        let offset = 2.0 * principal / viewport - Vec2::ONE;
+        Ok(Mat4::from_cols(
+            Vec4::new(scale.x, 0.0, 0.0, 0.0),
+            Vec4::new(0.0, scale.y, 0.0, 0.0),
+            Vec4::new(-offset.x, offset.y, 0.0, -1.0),
+            Vec4::new(0.0, 0.0, near, 0.0),
+        ))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -17,10 +113,149 @@ pub struct LodTestCamera {
     pub position: Vec3,
     pub target: Vec3,
     pub up: Vec3,
+    /// Exact imported camera-to-world rotation. When present, it supplies the
+    /// basis instead of reconstructing it from a potentially distant target.
+    pub world_rotation: Option<Quat>,
     pub projection: LodProjection,
     pub near: f32,
     pub far: f32,
     pub viewport: [u32; 2],
+}
+
+impl LodTestCamera {
+    pub fn basis(self) -> Result<(Vec3, Vec3, Vec3), &'static str> {
+        if let Some(rotation) = self.world_rotation {
+            if !rotation.is_finite() || (rotation.length_squared() - 1.0).abs() > 1e-4 {
+                return Err("camera rotation must be finite and normalized");
+            }
+            return Ok((rotation * -Vec3::Z, rotation * Vec3::X, rotation * Vec3::Y));
+        }
+        let forward = (self.target - self.position).normalize_or_zero();
+        let right = forward.cross(self.up).normalize_or_zero();
+        let up = right.cross(forward).normalize_or_zero();
+        if forward == Vec3::ZERO || right == Vec3::ZERO || up == Vec3::ZERO {
+            return Err("camera look-at basis is singular");
+        }
+        Ok((forward, right, up))
+    }
+
+    /// Reuse the validated OpenCV-to-Bevy pose and independent focal lengths of
+    /// the native camera importer. `viewport` is the full deployment image size.
+    pub fn from_camera_path_frame(
+        frame: &crate::camera::path::GaussianCameraPathFrame,
+        viewport: [u32; 2],
+        near: f32,
+        far: f32,
+    ) -> Result<Self, String> {
+        let clip = frame
+            .projection(near, far)
+            .map_err(|error| error.to_string())?
+            .get_clip_from_view();
+        let size = Vec2::new(viewport[0] as f32, viewport[1] as f32);
+        let transform = frame.transform();
+        let projection = LodProjection::Calibrated {
+            focal_length_px: 0.5 * size * Vec2::new(clip.x_axis.x, clip.y_axis.y),
+            principal_point_px: 0.5 * size * Vec2::new(1.0 - clip.z_axis.x, 1.0 + clip.z_axis.y),
+            image_size: viewport,
+            crop: None,
+        };
+        projection
+            .calibrated_intrinsics(size)
+            .map_err(str::to_owned)?;
+        Ok(Self {
+            position: transform.translation,
+            target: transform.translation + transform.rotation * -Vec3::Z,
+            up: transform.rotation * Vec3::Y,
+            world_rotation: Some(transform.rotation),
+            projection,
+            near,
+            far,
+            viewport,
+        })
+    }
+
+    /// Crop in the calibration's physical pixel coordinates. A sparse fitter
+    /// grid can subsequently set `viewport` and `FitReferencePixels` explicitly.
+    pub fn with_crop(mut self, pixel_crop: LodPixelCrop) -> Result<Self, String> {
+        let LodProjection::Calibrated {
+            image_size,
+            ref mut crop,
+            ..
+        } = self.projection
+        else {
+            return Err("physical pixel crops require a calibrated projection".to_owned());
+        };
+        pixel_crop.validate(image_size).map_err(str::to_owned)?;
+        *crop = Some(pixel_crop);
+        self.viewport = pixel_crop.size;
+        Ok(self)
+    }
+
+    /// The same matrix-aware selection contract used by production cameras.
+    /// Taking a physical viewport explicitly also supports low-resolution oracle
+    /// rendering with a separately specified deployment selection resolution.
+    pub fn lod_view(self, viewport_size_px: Vec2) -> crate::stream::hierarchy::LodView {
+        use crate::stream::hierarchy::LodView;
+
+        let aspect = viewport_size_px.x / viewport_size_px.y;
+        let (view, clip_from_view) = match self.projection {
+            LodProjection::Perspective {
+                vertical_fov_radians,
+            } => (
+                LodView::perspective(
+                    self.position,
+                    viewport_size_px.y,
+                    vertical_fov_radians,
+                    self.near,
+                ),
+                Mat4::perspective_infinite_reverse_rh(vertical_fov_radians, aspect, self.near),
+            ),
+            LodProjection::Orthographic {
+                vertical_world_size,
+            } => {
+                let half_height = 0.5 * vertical_world_size;
+                let half_width = half_height * aspect;
+                (
+                    LodView::orthographic(
+                        self.position,
+                        viewport_size_px.y,
+                        vertical_world_size,
+                        self.near,
+                    ),
+                    Mat4::orthographic_rh(
+                        -half_width,
+                        half_width,
+                        -half_height,
+                        half_height,
+                        self.far,
+                        self.near,
+                    ),
+                )
+            }
+            LodProjection::Calibrated { .. } => {
+                let (focal, _) = self
+                    .projection
+                    .calibrated_intrinsics(viewport_size_px)
+                    .expect("LoD selection requires valid calibrated intrinsics");
+                (
+                    LodView::perspective(
+                        self.position,
+                        viewport_size_px.y,
+                        2.0 * (0.5 * viewport_size_px.y / focal.y).atan(),
+                        self.near,
+                    ),
+                    self.projection
+                        .calibrated_clip_from_view(viewport_size_px, self.near)
+                        .expect("LoD selection requires valid calibrated intrinsics"),
+                )
+            }
+        };
+        let view_from_world = match self.world_rotation {
+            Some(rotation) => Mat4::from_rotation_translation(rotation, self.position).inverse(),
+            None => Mat4::look_at_rh(self.position, self.target, self.up),
+        };
+        view.with_view_projection(clip_from_view * view_from_world, viewport_size_px)
+    }
 }
 
 impl Default for LodTestCamera {
@@ -29,6 +264,7 @@ impl Default for LodTestCamera {
             position: Vec3::new(0.0, 0.0, 8.0),
             target: Vec3::ZERO,
             up: Vec3::Y,
+            world_rotation: None,
             projection: LodProjection::Perspective {
                 vertical_fov_radians: 60.0_f32.to_radians(),
             },
@@ -620,6 +856,98 @@ impl StableRng {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn calibrated_camera_reuses_imported_rotation_intrinsics_and_pixel_crop() {
+        let path = crate::camera::path::GaussianCameraPath::from_json(
+            br#"[
+            {"id":0,"width":120,"height":80,"fx":90,"fy":130,
+             "position":[67108864,67108864,67108864],
+             "rotation":[[0,-1,0],[1,0,0],[0,0,1]]}
+        ]"#,
+        )
+        .unwrap();
+        let frame = &path.frames()[0];
+        let camera = LodTestCamera::from_camera_path_frame(frame, [60, 40], 0.1, 100.0).unwrap();
+        assert_eq!(camera.world_rotation, Some(frame.transform().rotation));
+        let (forward, right, up) = camera.basis().unwrap();
+        assert!((forward - Vec3::Z).length() < 1e-6);
+        assert!((right - Vec3::Y).length() < 1e-6);
+        assert!((up - Vec3::X).length() < 1e-6);
+        // Position + unit forward rounds back to position at this magnitude.
+        assert_eq!(camera.position, camera.target);
+        assert_eq!(
+            camera
+                .projection
+                .calibrated_intrinsics(Vec2::new(60.0, 40.0))
+                .unwrap(),
+            (Vec2::new(45.0, 65.0), Vec2::new(30.0, 20.0))
+        );
+        let imported_clip = frame.projection(0.1, 100.0).unwrap().get_clip_from_view();
+        let oracle_clip = camera
+            .projection
+            .calibrated_clip_from_view(Vec2::new(60.0, 40.0), 0.1)
+            .unwrap();
+        assert!(imported_clip.abs_diff_eq(oracle_clip, 1e-6));
+        let cropped = camera
+            .with_crop(LodPixelCrop {
+                origin: [7, 9],
+                size: [20, 16],
+            })
+            .unwrap();
+        assert_eq!(
+            cropped
+                .projection
+                .calibrated_intrinsics(Vec2::new(20.0, 16.0))
+                .unwrap(),
+            (Vec2::new(45.0, 65.0), Vec2::new(23.0, 11.0))
+        );
+        let crop_clip = cropped
+            .projection
+            .calibrated_clip_from_view(Vec2::new(20.0, 16.0), 0.1)
+            .unwrap();
+        let p = Vec4::new(0.2, -0.1, -2.0, 1.0);
+        let full_ndc = imported_clip * p;
+        let crop_ndc = crop_clip * p;
+        let full_pixel = Vec2::new(30.0, 20.0)
+            + Vec2::new(full_ndc.x, -full_ndc.y) / full_ndc.w * Vec2::new(30.0, 20.0);
+        let crop_pixel = Vec2::new(10.0, 8.0)
+            + Vec2::new(crop_ndc.x, -crop_ndc.y) / crop_ndc.w * Vec2::new(10.0, 8.0);
+        assert!((full_pixel - Vec2::new(7.0, 9.0) - crop_pixel).length() < 1e-5);
+        assert!(
+            cropped
+                .projection
+                .calibrated_intrinsics(Vec2::new(10.0, 8.0))
+                .is_err()
+        );
+        assert!(
+            camera
+                .with_crop(LodPixelCrop {
+                    origin: [u32::MAX, 0],
+                    size: [1, 1]
+                })
+                .is_err()
+        );
+        assert!(
+            camera
+                .with_crop(LodPixelCrop {
+                    origin: [59, 0],
+                    size: [2, 1]
+                })
+                .is_err()
+        );
+        let invalid = LodProjection::Calibrated {
+            focal_length_px: Vec2::new(f32::NAN, 1.0),
+            principal_point_px: Vec2::ZERO,
+            image_size: [60, 40],
+            crop: None,
+        };
+        assert!(
+            invalid
+                .calibrated_intrinsics(Vec2::new(60.0, 40.0))
+                .is_err()
+        );
+    }
 
     #[test]
     fn fixtures_are_deterministic_and_finite() {

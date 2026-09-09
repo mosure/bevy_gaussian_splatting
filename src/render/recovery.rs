@@ -79,17 +79,10 @@ impl Default for GaussianRenderRecoverySettings {
 /// environment variables or probing the host filesystem. Applications can
 /// still replace this complete profile before installing the plugin.
 fn deterministic_wgpu_settings() -> WgpuSettings {
-    let backends = if cfg!(all(target_arch = "wasm32", feature = "webgl2")) {
-        Backends::GL
-    } else if cfg!(target_arch = "wasm32") {
+    let backends = if cfg!(target_arch = "wasm32") {
         Backends::BROWSER_WEBGPU
     } else {
         Backends::all()
-    };
-    let limits = if cfg!(all(target_arch = "wasm32", feature = "webgl2")) {
-        WgpuLimits::downlevel_webgl2_defaults()
-    } else {
-        WgpuLimits::default()
     };
     WgpuSettings {
         device_label: None,
@@ -98,7 +91,7 @@ fn deterministic_wgpu_settings() -> WgpuSettings {
         priority: WgpuSettingsPriority::Functionality,
         features: WgpuFeatures::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
         disabled_features: None,
-        limits,
+        limits: WgpuLimits::default(),
         constrained_limits: None,
         dx12_shader_compiler: Dx12Compiler::Fxc,
         gles3_minor_version: Gles3MinorVersion::Automatic,

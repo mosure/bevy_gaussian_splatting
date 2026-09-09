@@ -65,8 +65,12 @@ const EXTERNAL_PROGRESSIVE_MOMENT_MERGE_BUILDER_ABI_VERSION: u32 = 15;
 /// External-memory progressive ABI with renderer-consistent spatial fitting
 /// and a required monotone child-record to parent-record morph map.
 pub(crate) const EXTERNAL_SPATIAL_MOMENT_MERGE_BUILDER_ABI_VERSION: u32 = 16;
-/// External CPU/GPU builders retain their shared optical-depth-union reducer
-/// until the GPU implementation can provide the same all-view proof as ABI 14.
+/// Spatial fitting with support bounds covering emitted records and descendants,
+/// excluding un-emitted balanced-partition candidates. Error and certificate
+/// envelopes retain the same conservative policy as ABI 16.
+pub(crate) const EXTERNAL_EMITTED_SUPPORT_MOMENT_MERGE_BUILDER_ABI_VERSION: u32 = 17;
+/// Optical-depth-union reducer identifier for reading external ABI 5/6 packages.
+/// Current package builders author progressive reducers with an all-view proof.
 pub(crate) const EXTERNAL_MOMENT_MERGE_VERSION: u32 = 2;
 /// MomentMerge version 3 conservatively calibrates representative opacity so
 /// projected alpha mass cannot inflate in any view. Version 2 fixed the
@@ -456,6 +460,7 @@ const fn is_bounded_refinement_moment_merge_builder_abi(builder_abi_version: u32
         PROGRESSIVE_MOMENT_MERGE_BUILDER_ABI_VERSION
             | EXTERNAL_PROGRESSIVE_MOMENT_MERGE_BUILDER_ABI_VERSION
             | EXTERNAL_SPATIAL_MOMENT_MERGE_BUILDER_ABI_VERSION
+            | EXTERNAL_EMITTED_SUPPORT_MOMENT_MERGE_BUILDER_ABI_VERSION
     )
 }
 
@@ -465,7 +470,10 @@ const fn moment_merge_reducer_version_for_builder_abi(builder_abi_version: u32) 
         | EXTERNAL_GPU_MOMENT_MERGE_BUILDER_ABI_VERSION => Some(EXTERNAL_MOMENT_MERGE_VERSION),
         PROGRESSIVE_MOMENT_MERGE_BUILDER_ABI_VERSION
         | EXTERNAL_PROGRESSIVE_MOMENT_MERGE_BUILDER_ABI_VERSION => Some(MOMENT_MERGE_VERSION),
-        EXTERNAL_SPATIAL_MOMENT_MERGE_BUILDER_ABI_VERSION => Some(SPATIAL_MOMENT_MERGE_VERSION),
+        EXTERNAL_SPATIAL_MOMENT_MERGE_BUILDER_ABI_VERSION
+        | EXTERNAL_EMITTED_SUPPORT_MOMENT_MERGE_BUILDER_ABI_VERSION => {
+            Some(SPATIAL_MOMENT_MERGE_VERSION)
+        }
         _ => None,
     }
 }
@@ -484,7 +492,7 @@ pub struct GaussianLodManifestHeader {
     pub page_count: u32,
 }
 
-/// Compact morph correspondence for ABI 16 hierarchies.
+/// Compact morph correspondence for ABI 16/17 hierarchies.
 ///
 /// `node_runs` is index-aligned with [`GaussianLodManifest::nodes`]. For one
 /// internal node, the referenced u16 values are ordered by parent-local record
@@ -511,7 +519,7 @@ pub struct GaussianLodManifest {
     pub pages: Vec<LodPageDescriptor>,
     pub build: GaussianLodBuildMetadata,
     pub quality: GaussianLodQualityMetadata,
-    /// Required for ABI 16 and absent from every older readable ABI.
+    /// Required for ABIs 16/17 and absent from every earlier readable ABI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub morph_map: Option<GaussianLodMorphMap>,
 }
@@ -616,8 +624,11 @@ impl GaussianLodManifest {
         }
         let morph_feature =
             self.header.required_features & LOD_REQUIRED_FEATURE_MONOTONE_MORPH_MAP != 0;
-        let spatial_builder =
-            self.build.builder_abi_version == EXTERNAL_SPATIAL_MOMENT_MERGE_BUILDER_ABI_VERSION;
+        let spatial_builder = matches!(
+            self.build.builder_abi_version,
+            EXTERNAL_SPATIAL_MOMENT_MERGE_BUILDER_ABI_VERSION
+                | EXTERNAL_EMITTED_SUPPORT_MOMENT_MERGE_BUILDER_ABI_VERSION
+        );
         match (spatial_builder, morph_feature, self.morph_map.as_ref()) {
             (true, true, Some(morph_map)) => {
                 if morph_map.schema_version != LOD_MORPH_MAP_SCHEMA_VERSION {
@@ -1268,7 +1279,7 @@ const SPATIAL_FIT_MAX_PROBES_PER_NODE_PAIR: usize =
 #[cfg(any(feature = "lod_build", test))]
 const SPATIAL_FIT_SAMPLE_POINTS_PER_DIRECTION: usize = 3;
 
-/// One bounded ABI 16 node participating in a sibling-cohort spatial fit.
+/// One bounded spatial node participating in a sibling-cohort spatial fit.
 ///
 /// Risk-aware rungs retain their original records and exact representative
 /// source partitions until their at-most-32-node sibling cohort is complete.
@@ -1417,7 +1428,7 @@ fn spatial_fit_scratch_host_bytes(
         .checked_add(size_of::<MomentMergeResult>().checked_mul(2)?)
 }
 
-/// Allocation bound for one ABI 16 sibling-cohort fit. The validated
+/// Allocation bound for one spatial sibling-cohort fit. The validated
 /// branching limit keeps the outer pair count at 496 and the fixed tangential
 /// grid keeps the probe count at 4,464 without a representative cross product.
 #[cfg(any(feature = "lod_build", test))]
@@ -2700,7 +2711,7 @@ fn spatial_widened_representative(
     }))
 }
 
-/// Exact oriented support AABB used only by ABI 16's spatial fitter. The
+/// Exact oriented support AABB used by the spatial fitter. The
 /// portable manifest continues to retain its older conservative sphere bounds;
 /// this narrower envelope prevents the fitter from widening past authored
 /// source support while preserving format compatibility.
@@ -8957,10 +8968,9 @@ mod tests {
             lod_config_fingerprint_for_reducer(settings, None, EXTERNAL_MOMENT_MERGE_VERSION);
         assert!(external_v2.validate().is_ok());
 
-        let mut legacy_gpu_external_v2 = external_v2.clone();
-        legacy_gpu_external_v2.build.builder_abi_version =
-            EXTERNAL_GPU_MOMENT_MERGE_BUILDER_ABI_VERSION;
-        assert!(legacy_gpu_external_v2.validate().is_ok());
+        let mut gpu_external_v2 = external_v2.clone();
+        gpu_external_v2.build.builder_abi_version = EXTERNAL_GPU_MOMENT_MERGE_BUILDER_ABI_VERSION;
+        assert!(gpu_external_v2.validate().is_ok());
 
         let mut external_with_progressive_reducer = external_v2;
         external_with_progressive_reducer.build.reducer_version = MOMENT_MERGE_VERSION;

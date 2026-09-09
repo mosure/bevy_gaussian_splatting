@@ -1,0 +1,105 @@
+{
+  "output": "../../target/lod-roadmap/captures/synthetic-discrete",
+  "manifest": null,
+  "source": null,
+  "synthetic": true,
+  "builder_revision": "in_process_cpu_builder_same_executable_sha256",
+  "viewport": [
+    320,
+    180
+  ],
+  "vertical_fov_radians": 0.7853982,
+  "near": 0.1,
+  "quality": 0.35,
+  "max_active_gaussians": 4096,
+  "max_resident_gaussians": 16384,
+  "max_resident_bytes": 67108864,
+  "max_resident_pages": 1024,
+  "max_upload_bytes_per_frame": 8388608,
+  "capture_every": 3,
+  "readback_slots": 3,
+  "timeout_seconds": 180,
+  "request_timestamps": true,
+  "segments": [
+    {
+      "scenario": "cold_start",
+      "frames": 90,
+      "from": [
+        0,
+        0,
+        8
+      ],
+      "to": [
+        0,
+        0,
+        8
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "scenario": "warm_stationary",
+      "frames": 90,
+      "from": [
+        0,
+        0,
+        8
+      ],
+      "to": [
+        0,
+        0,
+        8
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "scenario": "motion",
+      "frames": 90,
+      "from": [
+        0,
+        0,
+        8
+      ],
+      "to": [
+        3,
+        1,
+        4
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "scenario": "return",
+      "frames": 90,
+      "from": [
+        3,
+        1,
+        4
+      ],
+      "to": [
+        0,
+        0,
+        8
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "render_mode": "hierarchy",
+  "capture_images": true,
+  "max_source_gaussians": 1000000,
+  "presentation_mode": "Discrete"
+}

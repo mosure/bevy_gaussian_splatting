@@ -1,0 +1,28 @@
+{
+  "viewport": [160, 90],
+  "from": [0.0, 0.0, 2.0],
+  "to": [0.2, 0.0, 2.0],
+  "target": [0.0, 0.0, 0.0],
+  "quality": 1.0,
+  "max_active_gaussians": 32,
+  "max_atlas_gaussians": 256,
+  "max_atlas_bytes": 4194304,
+  "max_cpu_bytes": 67108864,
+  "max_gpu_bytes": 33554432,
+  "max_encoded_page_bytes": 1048576,
+  "max_concurrent_requests": 4,
+  "preparation_records_per_frame": 32,
+  "sample_every_frames": 4,
+  "phase_frames": 24,
+  "timeout_seconds": 90,
+  "point_gpu": {
+    "samples_per_pixel": 1,
+    "max_projected_gaussians": 32,
+    "max_points_per_frame": 262144,
+    "max_gpu_bytes": 4194304,
+    "max_traversal_gpu_bytes": 2097152,
+    "max_frontier_nodes": 64,
+    "max_visited_nodes": 256,
+    "max_page_requests": 16
+  }
+}

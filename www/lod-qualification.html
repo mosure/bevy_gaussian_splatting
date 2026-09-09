@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>LoD browser qualification</title>
+<style>
+body { margin: 0; background: #12161c; color: #e5e9ef; font: 14px system-ui; }
+aside { padding: 12px; } canvas { display: block; } button { margin-right: 12px; }
+</style>
+<aside><button id="download" disabled>Download evidence JSONL</button><span id="status">Checking artifacts…</span></aside>
+<canvas id="bevy"></canvas>
+<script type="module">
+const records = [];
+const startupObservations = [];
+let sessionStarted = false;
+globalThis.__bgsBrowserQualification = { done: false, records, error: null };
+const status = document.querySelector('#status');
+const download = document.querySelector('#download');
+download.onclick = () => {
+  const blob = new Blob([records.map(r => JSON.stringify(r)).join('\n') + '\n'], {type: 'application/x-ndjson'});
+  const link = document.createElement('a'); link.href = URL.createObjectURL(blob);
+  link.download = 'browser-lod-evidence.jsonl'; link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+};
+function fail(error) {
+  const message = String(error?.stack ?? error);
+  globalThis.__bgsBrowserQualification.error = message;
+  globalThis.__bgsBrowserQualification.done = true;
+  records.push(...startupObservations.splice(0));
+  records.push({kind: 'harness_error', error: message});
+  status.textContent = message; download.disabled = false;
+}
+globalThis.addEventListener('error', e => fail(e.error ?? e.message));
+globalThis.addEventListener('unhandledrejection', e => fail(e.reason));
+globalThis.__bgsBrowserQualificationEmit = record => {
+  if (globalThis.__bgsBrowserQualification.done) return;
+  if (records.length >= 10000) { fail('Capture record ceiling exceeded'); return; }
+  records.push(record);
+  if (record.kind === 'session') {
+    sessionStarted = true;
+    records.push(...startupObservations.splice(0));
+  }
+  if (record.kind === 'transition') status.textContent = `Phase: ${record.to}`;
+  if (record.kind === 'terminal') {
+    globalThis.__bgsBrowserQualification.done = true;
+    status.textContent = record.execution_complete ? 'Lifecycle observed; quality qualification remains separate.' : `Incomplete: ${record.reason}`;
+    download.disabled = false;
+  }
+};
+const sha256 = async bytes => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)),
+  x => x.toString(16).padStart(2, '0')).join('');
+async function read(url) {
+  const response = await fetch(url, {cache: 'no-store'});
+  if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
+  return response.arrayBuffer();
+}
+try {
+  if (!navigator.gpu || !globalThis.isSecureContext) throw new Error('A secure WebGPU browser context is required.');
+  const config = await (await fetch('/qualification.json', {cache:'no-store'})).json();
+  config.manifest_url = new URL(config.manifest_url, location.href).href;
+  const [manifest, wasm] = await Promise.all([read(config.manifest_url), read('/out/lod-browser/capture_lod_browser_bg.wasm')]);
+  if (await sha256(manifest) !== config.manifest_sha256) throw new Error('Manifest identity changed before startup');
+  if (await sha256(wasm) !== config.wasm_sha256) throw new Error('Wasm differs from its build identity');
+  globalThis.__bgsBrowserQualificationConfig = config;
+  const canvas = document.querySelector('#bevy');
+  canvas.width = config.viewport[0]; canvas.height = config.viewport[1];
+  canvas.style.width = `${config.viewport[0]}px`; canvas.style.height = `${config.viewport[1]}px`;
+  status.textContent = 'Starting actual WebGPU package renderer…';
+  const {observeRendererAdapter} = await import('/lod-adapter-observer.js');
+  observeRendererAdapter(navigator.gpu, config.wasm_sha256, record => {
+    if (sessionStarted) globalThis.__bgsBrowserQualificationEmit(record);
+    else {
+      if (startupObservations.length >= 16) throw new Error('Renderer adapter request ceiling exceeded');
+      startupObservations.push(record);
+    }
+  });
+  const {default:init} = await import('/out/lod-browser/capture_lod_browser.js');
+  await init({module_or_path:wasm});
+} catch (error) { fail(error); }
+</script>
+</html>

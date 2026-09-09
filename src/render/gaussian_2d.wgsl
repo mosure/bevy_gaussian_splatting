@@ -11,26 +11,8 @@
     intrinsic_matrix,
 }
 
-#ifdef PACKED
-    #import bevy_gaussian_splatting::packed::{
-        get_position,
-        get_color,
-        get_visibility,
-        get_opacity,
-        get_rotation,
-        get_scale,
-    }
-#else ifdef BUFFER_STORAGE
+#ifdef BUFFER_STORAGE
     #import bevy_gaussian_splatting::planar::{
-        get_position,
-        get_color,
-        get_visibility,
-        get_opacity,
-        get_rotation,
-        get_scale,
-    }
-#else BUFFER_TEXTURE
-    #import bevy_gaussian_splatting::texture::{
         get_position,
         get_color,
         get_visibility,

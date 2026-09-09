@@ -1331,8 +1331,10 @@ mod tests {
     fn configured_limits_apply_before_object_allocation() {
         let values = ids(&[1, 2, 3]);
         let source = LodgeMembershipSliceSource::new(&values);
-        let mut limits = LodgeCodecLimits::default();
-        limits.max_members_per_cluster = 2;
+        let limits = LodgeCodecLimits {
+            max_members_per_cluster: 2,
+            ..Default::default()
+        };
         assert_eq!(
             build_canonical_lodge_membership_artifact(
                 "members.bgslmem",
@@ -1353,8 +1355,10 @@ mod tests {
             })
         );
 
-        let mut limits = LodgeCodecLimits::default();
-        limits.max_dependency_bytes = 64;
+        let limits = LodgeCodecLimits {
+            max_dependency_bytes: 64,
+            ..Default::default()
+        };
         assert!(matches!(
             build_canonical_lodge_membership_artifact(
                 "members.bgslmem",

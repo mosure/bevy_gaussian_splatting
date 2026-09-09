@@ -78,12 +78,12 @@ impl PackageCacheRegistry {
         Ok(service)
     }
 
-    #[cfg(all(test, feature = "sort_radix", not(feature = "buffer_texture")))]
+    #[cfg(all(test, feature = "sort_radix"))]
     pub(super) fn len(&self) -> usize {
         self.caches.len()
     }
 
-    #[cfg(all(test, feature = "sort_radix", not(feature = "buffer_texture")))]
+    #[cfg(all(test, feature = "sort_radix"))]
     pub(super) fn is_empty(&self) -> bool {
         self.caches.is_empty()
     }
@@ -98,6 +98,67 @@ pub(super) enum PackagePageTransport {
     NativeFileCached(SharedPersistentCachePageTransport<NativeFilePageTransport>),
     NativeHttp(NativeHttpPageTransport),
     NativeHttpCached(SharedPersistentCachePageTransport<NativeHttpPageTransport>),
+    #[cfg(test)]
+    DelayedMemory(DelayedPackageTransport),
+}
+
+#[cfg(test)]
+#[derive(Default, Debug)]
+pub(super) struct DelayedPackageTransportStats {
+    pub begins: u64,
+    pub cancels: u64,
+    pub completed: u64,
+}
+
+/// Deterministic latency for package lifecycle tests: a request needs several
+/// later polls, so cancellation on every camera update cannot accidentally
+/// succeed because a local file happened to finish within the same frame.
+#[cfg(test)]
+pub(super) struct DelayedPackageTransport {
+    pub transport: crate::stream::transport::MemoryPageTransport,
+    pub delay_polls: u32,
+    pub stats: Arc<Mutex<DelayedPackageTransportStats>>,
+    pub remaining: HashMap<u64, u32>,
+}
+
+#[cfg(test)]
+impl LodPageTransport for DelayedPackageTransport {
+    type Ticket = u64;
+    type Error = GaussianLodPackageTransportError;
+
+    fn begin(&mut self, request: PageRequest) -> Result<u64, Self::Error> {
+        let ticket = self
+            .transport
+            .begin(request)
+            .map_err(|error| GaussianLodPackageTransportError::NativeFile(format!("{error:?}")))?;
+        self.remaining.insert(ticket, self.delay_polls);
+        self.stats.lock().unwrap().begins += 1;
+        Ok(ticket)
+    }
+
+    fn poll(&mut self, ticket: &u64) -> PagePoll<Self::Error> {
+        if let Some(remaining) = self.remaining.get_mut(ticket)
+            && *remaining > 0
+        {
+            *remaining -= 1;
+            return PagePoll::Pending;
+        }
+        self.remaining.remove(ticket);
+        let result = map_package_poll(self.transport.poll(ticket), |error| {
+            GaussianLodPackageTransportError::NativeFile(format!("{error:?}"))
+        });
+        if matches!(result, PagePoll::Ready(_)) {
+            self.stats.lock().unwrap().completed += 1;
+        }
+        result
+    }
+
+    fn cancel(&mut self, ticket: &u64) {
+        if self.remaining.remove(ticket).is_some() {
+            self.stats.lock().unwrap().cancels += 1;
+        }
+        self.transport.cancel(ticket);
+    }
 }
 
 impl LodPageTransport for PackagePageTransport {
@@ -106,6 +167,8 @@ impl LodPageTransport for PackagePageTransport {
 
     fn begin(&mut self, request: PageRequest) -> Result<Self::Ticket, Self::Error> {
         match self {
+            #[cfg(test)]
+            Self::DelayedMemory(transport) => transport.begin(request),
             Self::NativeFile(transport) => transport.begin(request).map_err(native_file_error),
             Self::NativeFileCached(transport) => {
                 transport.begin(request).map_err(native_file_cache_error)
@@ -117,6 +180,8 @@ impl LodPageTransport for PackagePageTransport {
 
     fn poll(&mut self, ticket: &Self::Ticket) -> PagePoll<Self::Error> {
         match self {
+            #[cfg(test)]
+            Self::DelayedMemory(transport) => transport.poll(ticket),
             Self::NativeFile(transport) => {
                 map_package_poll(transport.poll(ticket), native_file_error)
             }
@@ -132,6 +197,8 @@ impl LodPageTransport for PackagePageTransport {
 
     fn cancel(&mut self, ticket: &Self::Ticket) {
         match self {
+            #[cfg(test)]
+            Self::DelayedMemory(transport) => transport.cancel(ticket),
             Self::NativeFile(transport) => transport.cancel(ticket),
             Self::NativeFileCached(transport) => transport.cancel(ticket),
             Self::NativeHttp(transport) => transport.cancel(ticket),
@@ -176,6 +243,8 @@ impl PackagePageTransport {
         page: LodPageId,
     ) -> Result<(), GaussianLodPackageError> {
         match self {
+            #[cfg(test)]
+            Self::DelayedMemory(_) => Ok(()),
             Self::NativeFileCached(transport) => transport
                 .invalidate_page(page)
                 .map_err(|error| GaussianLodPackageError::PersistentCache(error.to_string())),
@@ -188,6 +257,8 @@ impl PackagePageTransport {
 
     pub(super) fn maintain_cache(&mut self) -> Result<bool, GaussianLodPackageError> {
         match self {
+            #[cfg(test)]
+            Self::DelayedMemory(_) => Ok(true),
             Self::NativeFileCached(transport) => transport
                 .maintain_cache()
                 .map_err(|error| GaussianLodPackageError::PersistentCache(error.to_string())),
@@ -199,12 +270,13 @@ impl PackagePageTransport {
     }
 }
 
-#[cfg(all(test, feature = "sort_radix", not(feature = "buffer_texture")))]
+#[cfg(all(test, feature = "sort_radix"))]
 impl PackagePageTransport {
     pub(super) fn shared_native_cache_service(
         &self,
     ) -> Option<&Arc<Mutex<NativePersistentCacheService>>> {
         match self {
+            Self::DelayedMemory(_) => None,
             Self::NativeFileCached(transport) => Some(transport.shared_cache()),
             Self::NativeHttpCached(transport) => Some(transport.shared_cache()),
             Self::NativeFile(_) | Self::NativeHttp(_) => None,
@@ -212,6 +284,7 @@ impl PackagePageTransport {
     }
 }
 
+#[cfg(test)]
 pub(super) fn package_page_transport(
     manifest: &crate::GaussianLodManifest,
     source: &GaussianLodPackageSource,
@@ -228,17 +301,47 @@ pub(super) fn package_page_transport(
         None
     };
 
+    let locations = ManifestPageLocations::from_validated_manifest(manifest)
+        .map_err(|error| GaussianLodPackageError::HttpTransport(error.to_string()))?;
+    bevy::tasks::block_on(super::preparation::validate_package_locations(
+        source,
+        streaming,
+        &locations,
+        &crate::stream::preparation::PreparationBudget::new(usize::MAX),
+    ))?;
+    package_page_transport_with_prepared(
+        manifest,
+        source,
+        config,
+        streaming,
+        caches,
+        locations,
+        identities,
+        std::sync::Arc::from([]),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn package_page_transport_with_prepared(
+    manifest: &crate::GaussianLodManifest,
+    source: &GaussianLodPackageSource,
+    config: &GaussianLodPackageConfig,
+    streaming: &GaussianStreamingSettings,
+    caches: &mut PackageCacheRegistry,
+    locations: ManifestPageLocations,
+    identities: Option<PersistentCachePageIdentities>,
+    memory_reservations: std::sync::Arc<[crate::stream::memory::LodMemoryLease]>,
+) -> Result<PackagePageTransport, GaussianLodPackageError> {
     match source {
         GaussianLodPackageSource::NativeDirectory { root } => {
             let root = validate_native_root(root)?;
-            let locations = ManifestPageLocations::from_validated_manifest(manifest)
-                .map_err(|error| GaussianLodPackageError::NativeTransport(error.to_string()))?;
-            let upstream = NativeFilePageTransport::with_max_encoded_page_bytes(
-                root,
+            let mut upstream = NativeFilePageTransport::from_prevalidated_locations(
+                root.to_path_buf(),
                 locations,
                 streaming.effective_max_encoded_page_bytes(),
             )
             .map_err(|error| GaussianLodPackageError::NativeTransport(error.to_string()))?;
+            upstream.set_memory_reservations(memory_reservations);
             if let Some(identities) = identities {
                 let cache = caches.shared_cache(
                     native_cache_config(manifest, config, streaming)?,
@@ -252,20 +355,19 @@ pub(super) fn package_page_transport(
             }
         }
         GaussianLodPackageSource::Url { base_url } => {
-            let locations = ManifestPageLocations::from_validated_manifest(manifest)
-                .map_err(|error| GaussianLodPackageError::HttpTransport(error.to_string()))?;
             let http_config = package_http_config(base_url, streaming)?;
-            let client = NativeUreqHttpClient::with_max_workers(
+            let mut client = NativeUreqHttpClient::with_max_workers(
                 http_config.request_timeout,
                 streaming.max_concurrent_requests,
             )
             .map_err(|error| GaussianLodPackageError::HttpTransport(error.to_string()))?;
+            client.set_memory_reservations(memory_reservations);
             // Package HTTP transports own only byte-range, response-shape, and
             // immutable-object validation. The runtime's bounded page
             // preprocessor is the single owner of checksum, codec, manifest,
             // and support-bound validation.
-            let upstream = HttpRangePageTransport::new(http_config, locations, client)
-                .map_err(|error| GaussianLodPackageError::HttpTransport(error.to_string()))?;
+            let upstream =
+                HttpRangePageTransport::from_prevalidated_locations(http_config, locations, client);
             if let Some(identities) = identities {
                 let cache = caches.shared_cache(
                     native_cache_config(manifest, config, streaming)?,

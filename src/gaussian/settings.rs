@@ -108,6 +108,10 @@ pub struct CloudSettings {
     pub time_scale: f32,
     pub time_start: f32,
     pub time_stop: f32,
+    /// Additive/emissive blending, preserved from main. The default uses
+    /// premultiplied alpha-over. When enabled, overlapping premultiplied
+    /// fragments accumulate light with One + One blending and no occlusion.
+    pub additive: bool,
 }
 
 impl Default for CloudSettings {
@@ -131,6 +135,7 @@ impl Default for CloudSettings {
             time_scale: 1.0,
             time_start: 0.0,
             time_stop: 1.0,
+            additive: false,
         }
     }
 }

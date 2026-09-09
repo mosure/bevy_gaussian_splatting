@@ -50,10 +50,7 @@ default = [
 
   "lod_render",
 
-  # "packed",
   "planar",
-
-  # "buffer_texture",
 
   "sh3",
 
@@ -66,7 +63,6 @@ default = [
   # "morph_particles",
   "morph_interpolate",
 
-  "sort_bitonic",
   "sort_rayon",
   "sort_std",
 
@@ -97,8 +93,7 @@ lod = [
   # loading must decode that format without relying on unrelated default flags.
   "io_flexbuffers",
 ]
-# Supported storage-buffer LoD renderer bundle. The internal `lod_render_path`
-# cfg additionally excludes the deprecated buffer-texture and WebGL2 paths.
+# Storage-buffer LoD renderer bundle.
 lod_render = ["lod", "buffer_storage", "sort_radix"]
 # Production package builder core. The spherical-harmonic degree is part of
 # the portable package ABI, so callers must select it explicitly instead of
@@ -134,17 +129,14 @@ sh4 = []
 
 precompute_covariance_3d = []
 
-packed = []
 planar = []
 
 buffer_storage = []
-buffer_texture = []
 
 query_raycast = []
 query_select = []
 query_sparse = ["dep:kd-tree", "query_select"]
 
-sort_bitonic = []
 sort_radix = []
 sort_rayon = ["dep:rayon"]
 sort_std = []
@@ -153,20 +145,21 @@ testing = []
 tooling = ["dep:byte-unit"]
 debug_tooling = ["tooling"]
 
+# Rendering without a window is independent of the asset SH ABI. Select `sh0`
+# or `sh3` explicitly (the normal default feature set still selects SH3).
 headless = [
   "bevy/png",
   "io_flexbuffers",
   "io_ply",
   "planar",
   "lod_render",
-  "sh3",
   "sort_rayon",
   "sort_std",
-  "sort_bitonic",
 ]
 
 viewer = [
   "dep:bevy-inspector-egui",
+  "dep:bevy_flycam",
   "dep:bevy_panorbit_camera",
   "bevy_panorbit_camera/bevy_egui",
   # "bevy_transform_gizmo",
@@ -195,8 +188,6 @@ web_asset = [
   "bevy/https",
 ]
 
-# note: webgl2/buffer_texture are deprecated
-webgl2 = ["bevy/webgl2"]
 webgpu = ["bevy/webgpu"]
 
 
@@ -204,6 +195,7 @@ webgpu = ["bevy/webgpu"]
 base64 = "0.22"
 bevy-inspector-egui = { version = "0.37.0", optional = true, default-features = false, features = ["bevy"] }
 bevy_args = "4.0.0"
+bevy_flycam = { version = "0.19.0", optional = true }
 bevy_interleave = "0.10.0"
 bevy_panorbit_camera = { version = "0.35.0", optional = true }
 bincode2 = { version = "2.0", optional = true }
@@ -338,6 +330,21 @@ required-features = ["io_ply", "tooling"]
 name = "build_lod"
 path = "tools/build_lod.rs"
 required-features = ["lod_build"]
+
+[[bin]]
+name = "capture_lod"
+path = "tools/capture_lod.rs"
+required-features = ["headless", "testing"]
+
+[[bin]]
+name = "capture_lod_browser"
+path = "tools/capture_lod_browser.rs"
+required-features = ["testing", "lod_render", "webgpu", "web_asset"]
+
+[[bin]]
+name = "capture_lod_virtual_city"
+path = "tools/capture_lod_virtual_city.rs"
+required-features = ["headless", "testing", "lod_render"]
 
 [[bin]]
 name = "compare_aabb_obb"

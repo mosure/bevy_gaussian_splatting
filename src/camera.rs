@@ -3,6 +3,8 @@ use bevy::{
     render::extract_component::{ExtractComponent, ExtractComponentPlugin},
 };
 
+pub mod path;
+
 #[derive(Clone, Component, Debug, Default, ExtractComponent, Reflect)]
 pub struct GaussianCamera {
     pub warmup: bool,

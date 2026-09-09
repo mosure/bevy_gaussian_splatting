@@ -1,0 +1,18 @@
+{
+  "viewport": [960, 540],
+  "from": [0.0, 0.0, 5.0],
+  "to": [2.0, 0.5, 4.0],
+  "target": [0.0, 0.0, 0.0],
+  "quality": 0.0,
+  "max_active_gaussians": 131072,
+  "max_atlas_gaussians": 262144,
+  "max_atlas_bytes": 67108864,
+  "max_cpu_bytes": 536870912,
+  "max_gpu_bytes": 268435456,
+  "max_encoded_page_bytes": 8388608,
+  "max_concurrent_requests": 4,
+  "preparation_records_per_frame": 256,
+  "sample_every_frames": 10,
+  "phase_frames": 120,
+  "timeout_seconds": 180
+}

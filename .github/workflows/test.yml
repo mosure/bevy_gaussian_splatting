@@ -15,6 +15,28 @@ env:
   RUST_TOOLCHAIN: nightly-2026-07-30
 
 jobs:
+  capture_protocols:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+
+    - name: install image-metric test dependencies
+      run: python -m pip install numpy==2.3.5 Pillow==12.1.1
+
+    - name: test capture protocols and image metrics without a renderer
+      run: python -m unittest discover -s tools -p 'test_*.py'
+
+    - name: test actual-adapter observation protocol with synthetic objects
+      run: node --test tools/test_lod_adapter_observer.mjs
+
   test:
 
     strategy:
@@ -162,11 +184,6 @@ jobs:
         }
         test_contract "planar lod_render sh0 io_flexbuffers"
         test_contract "planar buffer_storage lod sh0 sort_std io_flexbuffers"
-        test_contract "planar lod_render sh0 io_flexbuffers webgl2"
-        cargo check --locked --lib --no-default-features \
-          --features="planar buffer_texture lod sh0 sort_std io_flexbuffers"
-        cargo check --locked --lib --no-default-features \
-          --features="planar lod_render buffer_texture sh0 sort_std io_flexbuffers"
 
     - name: compile LoD benchmarks
       run: |
@@ -191,37 +208,44 @@ jobs:
     - name: test visibility render
       env:
         RUN_GPU_RENDER_TESTS: "1"
-      run: cargo test --locked --no-default-features --features headless --test visibility_render -- --nocapture
+      run: cargo test --locked --no-default-features --features="headless sh3" --test visibility_render -- --nocapture
 
     - name: test support-aware edge rendering
       env:
         RUN_GPU_RENDER_TESTS: "1"
-      run: cargo test --locked --no-default-features --features headless --test support_overlap_render -- --nocapture
+      run: cargo test --locked --no-default-features --features="headless sh3" --test support_overlap_render -- --nocapture
+
+    - name: test SH0 and SH3 camera isolation, ordering, GPS, near clipping, package and traversal contracts
+      env:
+        BGS_RUN_GPU_QUALIFICATION: "1"
+        BGS_GPU_QUALIFICATION_SUITE: core
+        BGS_RUST_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
+      run: bash tools/run_lod_gpu_qualification.sh
 
     - name: test LoD debug annotations
       env:
         RUN_GPU_RENDER_TESTS: "1"
-      run: cargo test --locked --no-default-features --features headless --test lod_debug_render -- --nocapture
+      run: cargo test --locked --no-default-features --features="headless sh3" --test lod_debug_render -- --nocapture
 
     - name: test LoD debug annotations with precomputed covariance
       env:
         RUN_GPU_RENDER_TESTS: "1"
-      run: cargo test --locked --no-default-features --features="headless precompute_covariance_3d" --test lod_debug_render -- --nocapture
+      run: cargo test --locked --no-default-features --features="headless sh3 precompute_covariance_3d" --test lod_debug_render -- --nocapture
 
     - name: test support-aware edge rendering with precomputed covariance
       env:
         RUN_GPU_RENDER_TESTS: "1"
-      run: cargo test --locked --no-default-features --features="headless precompute_covariance_3d" --test support_overlap_render -- --nocapture
+      run: cargo test --locked --no-default-features --features="headless sh3 precompute_covariance_3d" --test support_overlap_render -- --nocapture
 
     - name: test LoD quality counts and image metrics
       env:
         RUN_GPU_RENDER_TESTS: "1"
-      run: cargo test --locked --no-default-features --features="headless testing" --test lod_quality_render -- --nocapture
+      run: cargo test --locked --no-default-features --features="headless sh3 testing" --test lod_quality_render -- --nocapture
 
     - name: test LoD quality subrange uploads with precomputed covariance
       env:
         RUN_GPU_RENDER_TESTS: "1"
-      run: cargo test --locked --no-default-features --features="headless testing precompute_covariance_3d" --test lod_quality_render -- --nocapture
+      run: cargo test --locked --no-default-features --features="headless sh3 testing precompute_covariance_3d" --test lod_quality_render -- --nocapture
 
     - name: test authenticated ABI16 K=2 morph radiance and visibility
       env:
@@ -246,19 +270,19 @@ jobs:
     - name: test active LoD rendering after device loss
       env:
         RUN_GPU_DEVICE_LOSS_TESTS: "1"
-      run: cargo test --locked --no-default-features --features="headless testing" --test lod_device_recovery headless::active_lod_render_recovers_after_injected_device_loss -- --exact --nocapture
+      run: cargo test --locked --no-default-features --features="headless sh3 testing" --test lod_device_recovery headless::active_lod_render_recovers_after_injected_device_loss -- --exact --nocapture
 
     - name: test precomputed-covariance LoD rendering after device loss
       env:
         RUN_GPU_DEVICE_LOSS_TESTS: "1"
-      run: cargo test --locked --no-default-features --features="headless testing precompute_covariance_3d" --test lod_device_recovery headless::active_lod_render_recovers_after_injected_device_loss -- --exact --nocapture
+      run: cargo test --locked --no-default-features --features="headless sh3 testing precompute_covariance_3d" --test lod_device_recovery headless::active_lod_render_recovers_after_injected_device_loss -- --exact --nocapture
 
     - name: test GPU canonical sort collisions
       env:
-        RUN_GPU_LOD_HIERARCHY_TESTS: "1"
+        RUN_GPU_LOD_PREPROCESS_TESTS: "1"
       run: cargo test --locked --features lod_build_sh3 --lib gpu_collision_sort_matches_cpu_canonical_order -- --ignored --nocapture
 
     - name: test GPU-sorted external package parity
       env:
-        RUN_GPU_LOD_HIERARCHY_TESTS: "1"
+        RUN_GPU_LOD_PREPROCESS_TESTS: "1"
       run: cargo test --locked --features lod_build_sh3 --lib gpu_sorted_external_multi_run_matches_cpu_package -- --ignored --nocapture

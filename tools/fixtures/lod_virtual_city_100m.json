@@ -1,0 +1,5 @@
+{
+  "source_gaussians": 100000000,
+  "prepared": "../../target/lod-roadmap/virtual-city/100m-prepared",
+  "output": "../../target/lod-roadmap/virtual-city/100m-capture"
+}

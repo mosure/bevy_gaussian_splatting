@@ -1,3 +1,4 @@
+#import bevy_gaussian_splatting::helpers::gaussian_depth_sort_key
 #import bevy_gaussian_splatting::bindings::{
     view,
     gaussian_uniforms,
@@ -9,19 +10,12 @@
     output_entries,
     Entry,
 }
-#ifdef PACKED_F32
-#import bevy_gaussian_splatting::packed::{get_position, get_visibility}
-#else
 
 #ifdef BUFFER_STORAGE
 #import bevy_gaussian_splatting::planar::{get_position, get_visibility}
 #endif
 
-#endif
 
-#ifdef BUFFER_TEXTURE
-#import bevy_gaussian_splatting::texture::{get_position, get_visibility}
-#endif
 
 struct SortingGlobal {
     digit_histogram: array<array<atomic<u32>, #{RADIX_BASE}>, #{RADIX_DIGIT_PLACES}>,
@@ -117,17 +111,14 @@ fn radix_sort_a(
         var key: u32 = 0xFFFFFFFFu;
         let position = vec4<f32>(get_position(entry_index), 1.0);
         let transformed_position = (gaussian_uniforms.transform * position).xyz;
-        let diff = transformed_position - view.world_position;
-        let dist2 = dot(diff, diff);
-        let dist_bits = bitcast<u32>(dist2);
-        let key_distance = 0xFFFFFFFFu - dist_bits;
-        // Rotation-stable global pre-sort only: per-frame support-frustum
-        // culling belongs to the raster vertex stage. This is not per-pixel
-        // StopThePop ordering.
+        // Support-frustum culling remains in raster; ordering follows the
+        // current camera direction, including pure rotation.
         if (get_visibility(entry_index) > 0.0) {
-            key = key_distance;
+            key = gaussian_depth_sort_key(transformed_position);
         }
-        key = key >> #{RADIX_KEY_SHIFT}u;
+        // Keep the raster invalid marker intact at every precision. Radix
+        // still observes all-one digits and places it after finite entries.
+        key = select(key >> #{RADIX_KEY_SHIFT}u, 0xffffffffu, key == 0xffffffffu);
         input_entries[entry_index].key = key;
         input_entries[entry_index].value = entry_index;
         for(var shift = 0u; shift < #{RADIX_DIGIT_PLACES}u; shift += 1u) {

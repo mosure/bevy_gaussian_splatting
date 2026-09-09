@@ -11,6 +11,7 @@ pub struct BrowserFetchHttpClient {
     tickets: BTreeMap<u64, BrowserFetchTicket>,
     max_requests: u32,
     next_ticket: u64,
+    memory_reservations: std::sync::Arc<[crate::stream::memory::LodMemoryLease]>,
 }
 
 struct BrowserFetchTicket {
@@ -131,11 +132,19 @@ impl Default for BrowserFetchHttpClient {
             tickets: BTreeMap::new(),
             max_requests: 32,
             next_ticket: 1,
+            memory_reservations: std::sync::Arc::from([]),
         }
     }
 }
 
 impl BrowserFetchHttpClient {
+    pub(crate) fn set_memory_reservations(
+        &mut self,
+        reservations: std::sync::Arc<[crate::stream::memory::LodMemoryLease]>,
+    ) {
+        self.memory_reservations = reservations;
+    }
+
     pub fn with_max_requests(max_requests: u32) -> Result<Self, HttpRangeTransportError> {
         if max_requests == 0 {
             return Err(HttpRangeTransportError::ZeroMaxConcurrentRequests);
@@ -144,6 +153,7 @@ impl BrowserFetchHttpClient {
             tickets: BTreeMap::new(),
             max_requests,
             next_ticket: 1,
+            memory_reservations: std::sync::Arc::from([]),
         })
     }
 }
@@ -208,7 +218,9 @@ impl HttpRangeClient for BrowserFetchHttpClient {
             start_browser_fetch_timer(&window, request.timeout, abort.clone(), shared.clone())?;
         let shared_for_task = shared.clone();
         let timer_for_task = deadline_timer.clone();
+        let memory_reservations = std::sync::Arc::clone(&self.memory_reservations);
         wasm_bindgen_futures::spawn_local(async move {
+            let _memory_reservations = memory_reservations;
             let _task_permit = task_permit;
             let fetched = async {
                 let value = wasm_bindgen_futures::JsFuture::from(

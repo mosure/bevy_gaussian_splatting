@@ -6,6 +6,18 @@ out/
 *.pdb
 
 *.py
+!tools/check_lod_capture.py
+!tools/test_check_lod_capture.py
+!tools/compare_lod_captures.py
+!tools/test_compare_lod_captures.py
+!tools/serve_lod_browser_capture.py
+!tools/run_lod_browser_capture.py
+!tools/check_lod_browser_capture.py
+!tools/test_lod_browser_capture.py
+!tools/check_lod_virtual_city.py
+!tools/test_lod_virtual_city.py
+!tools/test_lod_gpu_qualification.py
+tools/__pycache__/
 
 *.gc4d
 *.gcloud
@@ -13,6 +25,12 @@ out/
 *.ply
 *.ply4d
 *.json
+!tools/fixtures/lod_runtime_*.json
+!tools/fixtures/lod_browser_capture.json
+!tools/fixtures/lod_browser_point_gpu_capture.json
+!tools/fixtures/lod_virtual_city_*.json
+!tools/fixtures/lod_fit_*.json
+!tools/fixtures/lod_gpu_qualification_matrix.json
 
 .DS_Store
 

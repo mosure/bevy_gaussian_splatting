@@ -236,7 +236,7 @@ fn traversal_quality_benchmarks(c: &mut Criterion) {
 
 /// Measures the public owned-manifest hierarchy API. The first case excludes
 /// input setup and measures validation plus topology compilation; the second
-/// explicitly includes the legacy/ownership cost of a full manifest clone.
+/// explicitly includes the ownership cost of a full manifest clone.
 /// The package path instead shares its already-validated asset Arc.
 fn manifest_compilation_benchmarks(c: &mut Criterion) {
     let manifest = runtime_benchmark_fixture().manifest;

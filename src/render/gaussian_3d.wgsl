@@ -7,6 +7,7 @@
 }
 #import bevy_gaussian_splatting::helpers::{
     cov2d,
+    gaussian_near_clip_weight,
     get_rotation_matrix,
     get_scale_matrix,
 }
@@ -16,35 +17,13 @@
     }
 #endif
 
-#ifdef PACKED
-    #ifdef PRECOMPUTE_COVARIANCE_3D
-        #import bevy_gaussian_splatting::packed::{
-            get_cov3d,
-        }
-    #else
-        #import bevy_gaussian_splatting::packed::{
-            get_rotation,
-            get_scale,
-        }
-    #endif
-#else ifdef BUFFER_STORAGE
+#ifdef BUFFER_STORAGE
     #ifdef PRECOMPUTE_COVARIANCE_3D
         #import bevy_gaussian_splatting::planar::{
             get_cov3d,
         }
     #else
         #import bevy_gaussian_splatting::planar::{
-            get_rotation,
-            get_scale,
-        }
-    #endif
-#else ifdef BUFFER_TEXTURE
-    #ifdef PRECOMPUTE_COVARIANCE_3D
-        #import bevy_gaussian_splatting::texture::{
-            get_cov3d,
-        }
-    #else
-        #import bevy_gaussian_splatting::texture::{
             get_rotation,
             get_scale,
         }
@@ -165,7 +144,10 @@ fn compute_cov2d_3dgs(
         }
     #endif
 
-    let filtered = cov2d(position, transform_local_cov3d(local_cov3d));
+    let world_cov3d = transform_local_cov3d(local_cov3d);
+    let mip = cov2d(position, world_cov3d);
+    let near_weight = gaussian_near_clip_weight(position, world_cov3d);
+    let filtered = vec4<f32>(mip.xyz, mip.w * near_weight);
     var parent_opacity_scale = filtered.w;
     var child_opacity_scale = filtered.w;
     var parent_projected_area_ratio = 1.0;
@@ -180,8 +162,11 @@ fn compute_cov2d_3dgs(
                 child_position,
                 transform_local_cov3d(child_local_cov3d),
             );
-            parent_opacity_scale = parent_filtered.w;
-            child_opacity_scale = child_filtered.w;
+            // Both radiance terms occupy the current interpolated Gaussian.
+            // Clipping their separate endpoint centers could leave a visible
+            // morph when its current center reaches the near plane.
+            parent_opacity_scale = parent_filtered.w * near_weight;
+            child_opacity_scale = child_filtered.w * near_weight;
             parent_projected_area_ratio = projected_area_ratio(
                 parent_filtered.xyz,
                 filtered.xyz,
