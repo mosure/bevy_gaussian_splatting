@@ -300,7 +300,11 @@ mod tests {
     fn loads_sample_ssog() {
         let path = std::env::var("SSOG_SAMPLE")
             .unwrap_or_else(|_| "assets/Apartment Pool.ssog".to_string());
-        let bytes = std::fs::read(&path).expect("read sample file");
+        // the sample is not committed; skip rather than fail when it is absent
+        let Ok(bytes) = std::fs::read(&path) else {
+            println!("skipping: sample file not found at {path}");
+            return;
+        };
 
         let started = std::time::Instant::now();
         let cloud = crate::io::sog::parse_sog_archive(&bytes).expect("decode sample ssog");
