@@ -202,6 +202,7 @@ impl<R: PlanarSync> FromWorld for ParticleBehaviorPipeline<R> {
                 shader_defs: shader_defs.clone(),
                 entry_point: Some("apply_particle_behaviors".into()),
                 zero_initialize_workgroup_memory: true,
+                constants: vec![],
             });
 
         Self {

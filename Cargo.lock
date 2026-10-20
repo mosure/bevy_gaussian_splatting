@@ -554,7 +554,8 @@ dependencies = [
 [[package]]
 name = "bevy_args"
 version = "5.0.0"
-source = "git+https://github.com/mosure/bevy_args?branch=main#6408a16848eb3db488a0d28544aae4f12856f7c2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee809fb9ceb337bfb563223076f47c677c8099523ae42360dbc0d237381d744"
 dependencies = [
  "bevy",
  "clap",
@@ -936,7 +937,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_gaussian_splatting"
-version = "8.0.2"
+version = "9.0.0"
 dependencies = [
  "base64 0.22.1",
  "bevy",
@@ -1106,8 +1107,9 @@ dependencies = [
 
 [[package]]
 name = "bevy_interleave"
-version = "0.10.0"
-source = "git+https://github.com/mosure/bevy_interleave?branch=main#05029281a009907dd55647e2896f64ad1e15661f"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4c28f1fb29d41db87274b5ee1178bb259d4d8077f3a25bb77c6edf42347b634"
 dependencies = [
  "bevy",
  "bevy_interleave_interface",
@@ -1122,16 +1124,18 @@ dependencies = [
 
 [[package]]
 name = "bevy_interleave_interface"
-version = "0.10.0"
-source = "git+https://github.com/mosure/bevy_interleave?branch=main#05029281a009907dd55647e2896f64ad1e15661f"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49cc1c63d5b5e961bc179d617f04fd0b7d030807fd20009e4c18e17da3fb8cef"
 dependencies = [
  "bevy",
 ]
 
 [[package]]
 name = "bevy_interleave_macros"
-version = "0.10.0"
-source = "git+https://github.com/mosure/bevy_interleave?branch=main#05029281a009907dd55647e2896f64ad1e15661f"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdb2c344b04f6bf0df9a21cf82b203debde7c9316c0772e0c716fcf5b97ccd6e"
 dependencies = [
  "bevy",
  "bevy_interleave_interface",
@@ -1346,7 +1350,8 @@ checksum = "bff34eb29ff4b8a8688bc7299f14fb6b597461ca80fec03ed7d22939ab33e48f"
 [[package]]
 name = "bevy_panorbit_camera"
 version = "0.36.0"
-source = "git+https://github.com/dave-gray101/bevy_panorbit_camera?branch=feat-bevy-0.20#d316b0bfbab19b055b65e8f6f20d8af0f98160d1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af273e956e0f7a54874e51fc79aa3535da55e7eb84afdd627758a7d7d6da0c9f"
 dependencies = [
  "bevy",
 ]
@@ -4297,7 +4302,7 @@ version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
 dependencies = [
- "proc-macro-crate 1.3.1",
+ "proc-macro-crate 3.5.0",
  "proc-macro2",
  "quote",
  "syn 2.0.118",
