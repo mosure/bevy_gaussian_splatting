@@ -11,6 +11,8 @@ out/
 *.gcloud
 *.glb
 *.ply
+*.sog
+*.ssog
 *.ply4d
 *.json
 

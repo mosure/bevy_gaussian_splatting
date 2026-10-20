@@ -352,7 +352,19 @@ fn save_captured_frame(
     mut images: ResMut<Assets<Image>>,
     mut controller: ResMut<CaptureController>,
     mut app_exit: MessageWriter<AppExit>,
+    asset_server: Res<AssetServer>,
+    clouds: Query<&PlanarGaussian3dHandle>,
 ) {
+    // do not start the countdown until every cloud has finished loading, since large
+    // assets (e.g. SSOG) can take far longer than the fixed frame count
+    if clouds
+        .iter()
+        .any(|cloud| !asset_server.is_loaded_with_dependencies(cloud.0.id()))
+    {
+        while receiver.try_recv().is_ok() {}
+        return;
+    }
+
     if controller.frames_to_wait > 0 {
         controller.frames_to_wait -= 1;
         while receiver.try_recv().is_ok() {}

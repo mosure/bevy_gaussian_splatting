@@ -8,6 +8,12 @@ pub mod scene;
 #[cfg(feature = "io_ply")]
 pub mod ply;
 
+#[cfg(feature = "io_sog")]
+pub mod sog;
+
+#[cfg(feature = "io_sog_streamed")]
+pub mod sog_streamed;
+
 #[derive(Default)]
 pub struct IoPlugin;
 impl Plugin for IoPlugin {

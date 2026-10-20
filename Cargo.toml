@@ -39,6 +39,8 @@ default-run = "bevy_gaussian_splatting"
 default = [
   "io_flexbuffers",
   "io_ply",
+  "io_sog",
+  "io_sog_streamed",
 
   # "packed",
   "planar",
@@ -74,6 +76,8 @@ debug_gpu = []
 io_bincode2 = ["dep:bincode2", "dep:flate2"]
 io_flexbuffers = ["dep:flexbuffers"]
 io_ply = ["dep:ply-rs"]
+io_sog = ["dep:image", "dep:zip"]
+io_sog_streamed = ["io_sog"]
 
 material_noise = ["noise", "dep:noise"]
 
@@ -176,12 +180,14 @@ half = { version = "2.7", features = ["serde"] }
 # image = { version = "0.25.6", default-features = false, features = ["png"] }
 kd-tree = { version = "0.6", optional = true }
 noise = { version = "0.9.0", optional = true }
+image = { version = "0.25", default-features = false, features = ["webp"], optional = true }
 ply-rs = { version = "0.1", optional = true }
 rand = "0.9"
 rayon = { version = "1.8", optional = true }
 serde = "1.0"
 serde_json = "1.0"
 static_assertions = "1.1"
+zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
 typenum = "1.18"
 wgpu = "29"
 
