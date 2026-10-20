@@ -13,8 +13,8 @@ impl Plugin for ClassificationMaterialPlugin {
         load_internal_asset!(
             app,
             CLASSIFICATION_SHADER_HANDLE,
-            "classification.wgsl",
-            Shader::from_wgsl
+            "classification.wesl",
+            |src, _| crate::wesl_shader(src, "material/classification.wesl")
         );
     }
 }

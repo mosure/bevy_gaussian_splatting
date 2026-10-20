@@ -1,9 +1,13 @@
 use bevy::{
     prelude::*,
-    render::extract_component::{ExtractComponent, ExtractComponentPlugin},
+    render::{
+        RenderApp,
+        extract_component::{ExtractComponent, ExtractComponentPlugin},
+    },
 };
 
 #[derive(Clone, Component, Debug, Default, ExtractComponent, Reflect)]
+#[extract_app(RenderApp)]
 pub struct GaussianCamera {
     pub warmup: bool,
 }

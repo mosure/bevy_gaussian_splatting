@@ -1,4 +1,4 @@
-use bevy::{math::bounding::Aabb3d, prelude::*};
+use bevy::{shape::Aabb3d, prelude::*};
 use bevy_interleave::prelude::Planar;
 
 #[cfg(feature = "sort_rayon")]

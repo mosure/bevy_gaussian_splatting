@@ -149,7 +149,7 @@ pub fn setup_multi_camera(
             ..default()
         },
         Transform::from_translation(Vec3::new(0.0, 1.5, 20.0)),
-        Tonemapping::None,
+        Tonemapping::Linear,
         CameraPosition {
             pos: UVec2::new(0, 0),
         },
@@ -167,7 +167,7 @@ pub fn setup_multi_camera(
     //             ..default()
     //         },
     //         transform: Transform::from_translation(Vec3::new(0.0, 0.0, 40.0)),
-    //         tonemapping: Tonemapping::None,
+    //         tonemapping: Tonemapping::Linear,
     //         ..default()
     //     },
     //     CameraPosition {
@@ -204,7 +204,7 @@ fn press_s_to_spawn_camera(
                 ..default()
             },
             Transform::from_translation(Vec3::new(0.0, 0.0, 40.0)),
-            Tonemapping::None,
+            Tonemapping::Linear,
             CameraPosition { pos },
             PanOrbitCamera {
                 allow_upside_down: true,

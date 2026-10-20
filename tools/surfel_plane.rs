@@ -111,7 +111,7 @@ pub fn setup_surfel_compare(
     commands.spawn((
         camera_transform,
         Camera3d::default(),
-        Tonemapping::None,
+        Tonemapping::Linear,
         PanOrbitCamera {
             allow_upside_down: true,
             ..default()

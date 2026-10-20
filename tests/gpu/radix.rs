@@ -34,7 +34,7 @@ fn setup(mut commands: Commands, mut gaussian_assets: ResMut<Assets<PlanarGaussi
     commands.spawn((
         Camera3d::default(),
         Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
-        Tonemapping::None,
+        Tonemapping::Linear,
         GaussianCamera::default(),
     ));
 }

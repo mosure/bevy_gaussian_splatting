@@ -1,9 +1,7 @@
-#define_import_path bevy_gaussian_splatting::helpers
-
-#import bevy_gaussian_splatting::bindings::{
+import bevy_gaussian_splatting::render::bindings::{
     view,
     gaussian_uniforms,
-}
+};
 
 fn cov2d(
     position: vec3<f32>,
@@ -66,57 +64,52 @@ fn get_bounding_box_clip(
     let x_axis_length = sqrt(lambda1);
     let y_axis_length = sqrt(lambda2);
 
-#ifdef USE_AABB
-    let radius_px = cutoff * max(x_axis_length, y_axis_length);
-    let radius_ndc = vec2<f32>(
+    @if(USE_AABB) let radius_px = cutoff * max(x_axis_length, y_axis_length);
+    @if(USE_AABB) let radius_ndc = vec2<f32>(
         radius_px / view.viewport.zw,
     );
 
-    return vec4<f32>(
+    @if(USE_AABB) return vec4<f32>(
         radius_ndc * direction,
         radius_px * direction,
     );
-#endif
 
-#ifdef USE_OBB
+    @if(USE_OBB) let a = (cov2d.x - cov2d.z) * (cov2d.x - cov2d.z);
+    @if(USE_OBB) let b = sqrt(a + 4.0 * cov2d.y * cov2d.y);
+    @if(USE_OBB) let major_radius = sqrt((cov2d.x + cov2d.z + b) * 0.5);
+    @if(USE_OBB) let minor_radius = sqrt((cov2d.x + cov2d.z - b) * 0.5);
 
-    let a = (cov2d.x - cov2d.z) * (cov2d.x - cov2d.z);
-    let b = sqrt(a + 4.0 * cov2d.y * cov2d.y);
-    let major_radius = sqrt((cov2d.x + cov2d.z + b) * 0.5);
-    let minor_radius = sqrt((cov2d.x + cov2d.z - b) * 0.5);
-
-    let bounds = cutoff * vec2<f32>(
+    @if(USE_OBB) let bounds = cutoff * vec2<f32>(
         major_radius,
         minor_radius,
     );
 
-    let eigvec1 = normalize(vec2<f32>(
+    @if(USE_OBB) let eigvec1 = normalize(vec2<f32>(
         -cov2d.y,
         lambda1 - cov2d.x,
     ));
-    let eigvec2 = vec2<f32>(
+    @if(USE_OBB) let eigvec2 = vec2<f32>(
         eigvec1.y,
         -eigvec1.x
     );
 
-    let rotation_matrix = transpose(
+    @if(USE_OBB) let rotation_matrix = transpose(
         mat2x2(
             eigvec1,
             eigvec2,
         )
     );
 
-    let scaled_vertex = direction * bounds;
-    let rotated_vertex = scaled_vertex * rotation_matrix;
+    @if(USE_OBB) let scaled_vertex = direction * bounds;
+    @if(USE_OBB) let rotated_vertex = scaled_vertex * rotation_matrix;
 
-    let scaling_factor = 1.0 / view.viewport.zw;
-    let ndc_vertex = rotated_vertex * scaling_factor;
+    @if(USE_OBB) let scaling_factor = 1.0 / view.viewport.zw;
+    @if(USE_OBB) let ndc_vertex = rotated_vertex * scaling_factor;
 
-    return vec4<f32>(
+    @if(USE_OBB) return vec4<f32>(
         ndc_vertex,
         rotated_vertex,
     );
-#endif
 }
 
 fn intrinsic_matrix() -> mat3x4<f32> {

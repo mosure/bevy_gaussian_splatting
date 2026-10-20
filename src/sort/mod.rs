@@ -9,6 +9,7 @@ use bevy::{
     platform::time::Instant,
     prelude::*,
     render::{
+        RenderApp,
         extract_component::{ExtractComponent, ExtractComponentPlugin},
         render_asset::{PrepareAssetError, RenderAsset, RenderAssetPlugin},
         render_resource::*,
@@ -141,6 +142,7 @@ where
 }
 
 #[derive(Component, ExtractComponent, Debug, Default, Clone, PartialEq, Reflect)]
+#[extract_app(RenderApp)]
 #[reflect(Component)]
 pub struct SortTrigger {
     pub camera_index: usize,

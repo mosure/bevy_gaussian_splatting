@@ -158,7 +158,7 @@ fn setup_gaussian_cloud(
     commands
         .spawn(Camera3d::default())
         .insert(Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)))
-        .insert(Tonemapping::None)
+        .insert(Tonemapping::Linear)
         .insert(MotionVectorPrepass)
         .insert(PanOrbitCamera {
             allow_upside_down: true,

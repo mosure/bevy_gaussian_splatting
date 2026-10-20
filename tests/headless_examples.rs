@@ -499,7 +499,7 @@ fn setup_gaussian_cloud(
         Camera::default(),
         RenderTarget::Image(render_target_handle.into()),
         Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
-        Tonemapping::None,
+        Tonemapping::Linear,
         GaussianCamera::default(),
     ));
 }
@@ -980,7 +980,7 @@ fn receive_image_from_buffer(
 
         rx.recv().expect("Failed to receive buffer map");
 
-        let _ = sender.send(buffer_slice.get_mapped_range().to_vec());
+        let _ = sender.send(buffer_slice.get_mapped_range().expect("buffer should be mapped").to_vec());
         image_copier.buffer.unmap();
     }
 }

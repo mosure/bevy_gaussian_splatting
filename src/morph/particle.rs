@@ -85,8 +85,8 @@ where
         load_internal_asset!(
             app,
             PARTICLE_SHADER_HANDLE,
-            "particle.wgsl",
-            Shader::from_wgsl
+            "particle.wesl",
+            |src, _| crate::wesl_shader(src, "morph/particle.wesl")
         );
 
         app.register_type::<ParticleBehaviors>();

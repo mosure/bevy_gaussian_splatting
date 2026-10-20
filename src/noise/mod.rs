@@ -10,6 +10,6 @@ pub struct NoisePlugin;
 
 impl Plugin for NoisePlugin {
     fn build(&self, app: &mut App) {
-        load_internal_asset!(app, NOISE_SHADER_HANDLE, "noise.wgsl", Shader::from_wgsl);
+        load_internal_asset!(app, NOISE_SHADER_HANDLE, "noise.wesl", |src, _| crate::wesl_shader(src, "noise/noise.wesl"));
     }
 }
