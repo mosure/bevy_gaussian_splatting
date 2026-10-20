@@ -185,7 +185,7 @@ fn press_s_to_spawn_camera(
     mut commands: Commands,
     windows: Query<&Window>,
 ) {
-    if keys.just_pressed(KeyCode::KeyS) {
+    if keys.just_pressed(KeyCode::KeyP) {
         let window = windows.single().unwrap();
         let size = window.physical_size() / UVec2::new(2, 1);
         let pos = UVec2::new(1, 0);

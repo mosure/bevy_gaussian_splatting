@@ -547,6 +547,7 @@ fn viewer_app() {
     app.add_plugins(default_plugins);
     app.add_plugins(BevyArgsPlugin::<GaussianSplattingViewer>::default());
     app.add_plugins(PanOrbitCameraPlugin);
+    app.add_systems(Update, keyboard_orbit_controls);
 
     if config.press_esc_close {
         app.add_systems(Update, press_esc_close);
@@ -596,7 +597,7 @@ pub fn press_s_screenshot(
     keys: Res<ButtonInput<KeyCode>>,
     current_frame: Res<FrameCount>,
 ) {
-    if keys.just_pressed(KeyCode::KeyS) {
+    if keys.just_pressed(KeyCode::KeyP) {
         let images_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("screenshots");
         std::fs::create_dir_all(&images_dir).unwrap();
         let output_path = images_dir.join(format!("output_{}.png", current_frame.0));
@@ -690,6 +691,59 @@ fn draw_axes(mut gizmos: Gizmos, query: Query<(&Transform, &Aabb), With<ShowAxes
     for (&transform, aabb) in &query {
         let length = aabb.half_extents.length();
         gizmos.axes(transform, length);
+    }
+}
+
+/// Keyboard orbit controls. Pan and dolly rates scale with the orbit radius, so steps stay
+/// fine when zoomed in. Hold Shift for finer steps and Ctrl for coarser steps. Modifiers only
+/// apply while a movement key is held, so a stuck modifier cannot change speed on its own.
+const KEY_PAN_RATE: f32 = 0.5;
+const KEY_DOLLY_RATE: f32 = 0.5;
+const KEY_ORBIT_RATE: f32 = 1.0;
+const KEY_FINE_FACTOR: f32 = 0.25;
+const KEY_COARSE_FACTOR: f32 = 4.0;
+
+/// A·D pan left/right, Q·E pan down/up, W·S dolly toward/away from the focus, and the arrow
+/// keys orbit (yaw/pitch) around the focus.
+fn keyboard_orbit_controls(
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    mut cameras: Query<(&Transform, &mut PanOrbitCamera), With<ViewerMainCamera>>,
+) {
+    let axis = |positive: KeyCode, negative: KeyCode| -> f32 {
+        (keys.pressed(positive) as i32 - keys.pressed(negative) as i32) as f32
+    };
+
+    let pan_x = axis(KeyCode::KeyD, KeyCode::KeyA);
+    let pan_y = axis(KeyCode::KeyE, KeyCode::KeyQ);
+    let dolly = axis(KeyCode::KeyS, KeyCode::KeyW);
+    let yaw = axis(KeyCode::ArrowLeft, KeyCode::ArrowRight);
+    let pitch = axis(KeyCode::ArrowDown, KeyCode::ArrowUp);
+
+    if pan_x == 0.0 && pan_y == 0.0 && dolly == 0.0 && yaw == 0.0 && pitch == 0.0 {
+        return;
+    }
+
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    let fine = match (shift, ctrl) {
+        (true, false) => KEY_FINE_FACTOR,
+        (false, true) => KEY_COARSE_FACTOR,
+        _ => 1.0,
+    };
+    let dt = time.delta_secs() * fine;
+
+    for (transform, mut camera) in &mut cameras {
+        let radius = camera.target_radius;
+
+        let pan = transform.right() * pan_x + transform.up() * pan_y;
+        camera.target_focus += pan * radius * KEY_PAN_RATE * dt;
+
+        camera.target_radius =
+            (radius * (dolly * KEY_DOLLY_RATE * dt).exp()).max(camera.zoom_lower_limit);
+
+        camera.target_yaw += yaw * KEY_ORBIT_RATE * dt;
+        camera.target_pitch += pitch * KEY_ORBIT_RATE * dt;
     }
 }
 
