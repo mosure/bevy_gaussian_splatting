@@ -62,7 +62,7 @@ pub fn setup_aabb_obb_compare(
     commands.spawn((
         Camera3d::default(),
         Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
-        Tonemapping::Linear,
+        Tonemapping::None,
         PanOrbitCamera {
             allow_upside_down: true,
             ..default()

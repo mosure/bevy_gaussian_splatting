@@ -166,8 +166,8 @@ webgpu = ["bevy/webgpu"]
 
 [dependencies]
 base64 = "0.22"
-bevy_args = { git = "https://github.com/dave-gray101/bevy_args", branch = "feat-bevy-0.20" }
-bevy_interleave = { git = "https://github.com/dave-gray101/bevy_interleave", branch = "feat-bevy-0.20" }
+bevy_args = { git = "https://github.com/mosure/bevy_args", branch = "main" }
+bevy_interleave = { git = "https://github.com/mosure/bevy_interleave", branch = "main" }
 bevy_panorbit_camera = { git = "https://github.com/dave-gray101/bevy_panorbit_camera", branch = "feat-bevy-0.20", optional = true }
 bincode2 = { version = "2.0", optional = true }
 byte-unit = { version = "5.2", optional = true }

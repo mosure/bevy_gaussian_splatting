@@ -18,13 +18,18 @@ bevy_gaussian_splatting --input-cloud [file://gaussian.ply | https://mitchell.mo
 bevy_gaussian_splatting --input-scene [file://scene.glb | https://mitchell.mosure.me/trellis.glb]
 ```
 
-> note: default bevy_gaussian_splatting features require nightly rust for generic associated types. to use on stable, disable default features and `nightly_generic_alias` feature
+> note: the `nightly_generic_alias` feature enables nightly-only bound checking on generic type aliases. it is optional; the default build compiles on stable rust
 
 ## viewer hotkeys
 
 - `esc`: close viewer
-- `s`: save screenshot to `screenshots/`
+- `p`: save screenshot to `screenshots/`
 - `g`: export the loaded gaussian scene to `exports/gaussian_scene_<frame>.glb` (cloud transforms + active camera)
+- `a` / `d`: pan left / right
+- `q` / `e`: pan down / up
+- `w` / `s`: dolly toward / away from the focus
+- arrow keys: orbit (left/right = yaw, up/down = pitch)
+- hold `shift` for finer keyboard steps, `ctrl` for coarser steps (applies only while a movement key is held)
 
 
 ## capabilities

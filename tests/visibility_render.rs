@@ -156,7 +156,7 @@ mod headless {
             Camera::default(),
             RenderTarget::Image(render_target.into()),
             Transform::from_translation(Vec3::new(0.0, 0.0, 5.0)),
-            Tonemapping::Linear,
+            Tonemapping::None,
             GaussianCamera::default(),
         ));
     }

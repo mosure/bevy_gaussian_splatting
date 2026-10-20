@@ -554,7 +554,7 @@ dependencies = [
 [[package]]
 name = "bevy_args"
 version = "5.0.0"
-source = "git+https://github.com/dave-gray101/bevy_args?branch=feat-bevy-0.20#5ee4e265ef3fadb38df87d19df4f941d9abcda31"
+source = "git+https://github.com/mosure/bevy_args?branch=main#6408a16848eb3db488a0d28544aae4f12856f7c2"
 dependencies = [
  "bevy",
  "clap",
@@ -1107,7 +1107,7 @@ dependencies = [
 [[package]]
 name = "bevy_interleave"
 version = "0.10.0"
-source = "git+https://github.com/dave-gray101/bevy_interleave?branch=feat-bevy-0.20#8581e4eb739e1739b5ab5eb10fd08705b39d7a4e"
+source = "git+https://github.com/mosure/bevy_interleave?branch=main#05029281a009907dd55647e2896f64ad1e15661f"
 dependencies = [
  "bevy",
  "bevy_interleave_interface",
@@ -1123,7 +1123,7 @@ dependencies = [
 [[package]]
 name = "bevy_interleave_interface"
 version = "0.10.0"
-source = "git+https://github.com/dave-gray101/bevy_interleave?branch=feat-bevy-0.20#8581e4eb739e1739b5ab5eb10fd08705b39d7a4e"
+source = "git+https://github.com/mosure/bevy_interleave?branch=main#05029281a009907dd55647e2896f64ad1e15661f"
 dependencies = [
  "bevy",
 ]
@@ -1131,7 +1131,7 @@ dependencies = [
 [[package]]
 name = "bevy_interleave_macros"
 version = "0.10.0"
-source = "git+https://github.com/dave-gray101/bevy_interleave?branch=feat-bevy-0.20#8581e4eb739e1739b5ab5eb10fd08705b39d7a4e"
+source = "git+https://github.com/mosure/bevy_interleave?branch=main#05029281a009907dd55647e2896f64ad1e15661f"
 dependencies = [
  "bevy",
  "bevy_interleave_interface",
@@ -4297,7 +4297,7 @@ version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
 dependencies = [
- "proc-macro-crate 3.5.0",
+ "proc-macro-crate 1.3.1",
  "proc-macro2",
  "quote",
  "syn 2.0.118",

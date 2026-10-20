@@ -499,7 +499,7 @@ fn setup_gaussian_cloud(
         Camera::default(),
         RenderTarget::Image(render_target_handle.into()),
         Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
-        Tonemapping::Linear,
+        Tonemapping::None,
         GaussianCamera::default(),
     ));
 }
