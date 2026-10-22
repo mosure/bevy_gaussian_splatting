@@ -25,9 +25,11 @@ use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 
 #[cfg(feature = "web_asset")]
 use base64::{Engine as _, engine::general_purpose::URL_SAFE};
+// only used by the native-only glTF export query; gated to match it so wasm/docs builds stay warning-free
+#[cfg(not(target_arch = "wasm32"))]
+use bevy_gaussian_splatting::GaussianPrimitiveMetadata;
 use bevy_gaussian_splatting::{
-    CloudSettings, GaussianCamera, GaussianMode, GaussianPrimitiveMetadata, GaussianScene,
-    GaussianSceneHandle, GaussianSplattingPlugin, PlanarGaussian3d, PlanarGaussian3dHandle,
+    CloudSettings, GaussianCamera, GaussianMode, GaussianScene, GaussianSceneHandle, GaussianSplattingPlugin, PlanarGaussian3d, PlanarGaussian3dHandle,
     PlanarGaussian4d, PlanarGaussian4dHandle,
     gaussian::interface::TestCloud,
     io::scene::GaussianSceneLoaded,

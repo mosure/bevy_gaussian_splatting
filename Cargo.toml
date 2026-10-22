@@ -18,7 +18,6 @@ categories = [
   "rendering",
   "rendering::data-formats",
 ]
-homepage = "https://github.com/mosure/bevy_gaussian_splatting"
 repository = "https://github.com/mosure/bevy_gaussian_splatting"
 readme = "README.md"
 exclude = [

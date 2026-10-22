@@ -133,12 +133,12 @@ pub fn decode_streamed(
     let mut gaussians = Vec::new();
 
     for run in runs {
-        if !chunks.contains_key(&run.file) {
+        if let std::collections::hash_map::Entry::Vacant(entry) = chunks.entry(run.file) {
             let name = index
                 .filenames
                 .get(run.file)
                 .ok_or_else(|| invalid("streamed SOG run references a missing chunk"))?;
-            chunks.insert(run.file, decode_dataset(&mut read, name)?);
+            entry.insert(decode_dataset(&mut read, name)?);
         }
 
         let chunk = &chunks[&run.file];

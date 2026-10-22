@@ -108,8 +108,8 @@ pub fn parse_ply_3d(mut reader: &mut dyn BufRead) -> Result<PlanarGaussian3d, st
             + gaussian.scale_opacity.scale[1]
             + gaussian.scale_opacity.scale[2])
             / 3.0;
-        for i in 0..3 {
-            gaussian.scale_opacity.scale[i] = gaussian.scale_opacity.scale[i]
+        for scale in &mut gaussian.scale_opacity.scale {
+            *scale = scale
                 .max(mean_scale - MAX_SIZE_VARIANCE)
                 .min(mean_scale + MAX_SIZE_VARIANCE)
                 .exp();
@@ -119,8 +119,8 @@ pub fn parse_ply_3d(mut reader: &mut dyn BufRead) -> Result<PlanarGaussian3d, st
             .map(|i| gaussian.rotation.rotation[i].powf(2.0))
             .sum::<f32>()
             .sqrt();
-        for i in 0..4 {
-            gaussian.rotation.rotation[i] /= norm;
+        for component in &mut gaussian.rotation.rotation {
+            *component /= norm;
         }
     }
 

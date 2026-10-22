@@ -217,8 +217,8 @@ pub fn decode_sog(
 
         // DC color (SH coefficient 0) and linear opacity
         let dc_texel = sh0.get_pixel(x, y).0;
-        for channel in 0..SH_CHANNELS {
-            let value = lookup(&meta.sh0.codebook, dc_texel[channel])?;
+        for (channel, &code) in dc_texel.iter().enumerate().take(SH_CHANNELS) {
+            let value = lookup(&meta.sh0.codebook, code)?;
             gaussian.spherical_harmonic.set(channel, value);
         }
         gaussian.scale_opacity.opacity = dc_texel[3] as f32 / 255.0;
@@ -239,11 +239,11 @@ pub fn decode_sog(
 
             for c in 0..*coeffs {
                 let texel = centroids.get_pixel((u_base + c) as u32, v).0;
-                for channel in 0..SH_CHANNELS {
+                for (channel, &code) in texel.iter().enumerate().take(SH_CHANNELS) {
                     // AC coefficient `c` is SH coefficient `c + 1`
                     let index = (c + 1) * SH_CHANNELS + channel;
                     if index < SH_COEFF_COUNT {
-                        let value = lookup(&sh_n.codebook, texel[channel])?;
+                        let value = lookup(&sh_n.codebook, code)?;
                         gaussian.spherical_harmonic.set(index, value);
                     }
                 }
@@ -428,12 +428,8 @@ pub(crate) mod tests {
         assert_close(g0.position_visibility.position[2], 0.0, 1e-3);
 
         let g1 = &gaussians[1];
-        for axis in 0..3 {
-            assert_close(
-                g1.position_visibility.position[axis],
-                -(1.0f32.exp() - 1.0),
-                TOLERANCE,
-            );
+        for axis in g1.position_visibility.position {
+            assert_close(axis, -(1.0f32.exp() - 1.0), TOLERANCE);
         }
 
         // scales are exponentiated from the log codebook
