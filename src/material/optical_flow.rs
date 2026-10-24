@@ -13,8 +13,8 @@ impl Plugin for OpticalFlowMaterialPlugin {
         load_internal_asset!(
             app,
             OPTICAL_FLOW_SHADER_HANDLE,
-            "optical_flow.wgsl",
-            Shader::from_wgsl
+            "optical_flow.wesl",
+            |src, _| crate::wesl_shader(src, "material/optical_flow.wesl")
         );
     }
 }

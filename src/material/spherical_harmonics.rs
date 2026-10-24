@@ -24,8 +24,8 @@ impl Plugin for SphericalHarmonicCoefficientsPlugin {
         load_internal_asset!(
             app,
             SPHERICAL_HARMONICS_SHADER_HANDLE,
-            "spherical_harmonics.wgsl",
-            Shader::from_wgsl
+            "spherical_harmonics.wesl",
+            |src, _| crate::wesl_shader(src, "material/spherical_harmonics.wesl")
         );
     }
 }

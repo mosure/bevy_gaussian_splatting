@@ -338,7 +338,7 @@ fn receive_image_from_buffer(
 
         rx.recv().expect("Failed to receive buffer map");
 
-        let _ = sender.send(buffer_slice.get_mapped_range().to_vec());
+        let _ = sender.send(buffer_slice.get_mapped_range().expect("buffer should be mapped").to_vec());
         image_copier.buffer.unmap();
     }
 }
@@ -352,7 +352,21 @@ fn save_captured_frame(
     mut images: ResMut<Assets<Image>>,
     mut controller: ResMut<CaptureController>,
     mut app_exit: MessageWriter<AppExit>,
+    asset_server: Res<AssetServer>,
+    clouds: Query<&PlanarGaussian3dHandle>,
 ) {
+    // do not start the countdown until every file-backed cloud has finished loading, since large
+    // assets (e.g. SSOG) can take far longer than the fixed frame count. generated clouds
+    // (test model, --gaussian-count) are inserted via `Assets::add` and have no asset path, so
+    // they never enter the loader and must not be waited on.
+    if clouds.iter().any(|cloud| {
+        asset_server.get_path(cloud.0.id()).is_some()
+            && !asset_server.is_loaded_with_dependencies(cloud.0.id())
+    }) {
+        while receiver.try_recv().is_ok() {}
+        return;
+    }
+
     if controller.frames_to_wait > 0 {
         controller.frames_to_wait -= 1;
         while receiver.try_recv().is_ok() {}

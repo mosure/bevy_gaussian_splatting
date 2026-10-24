@@ -85,8 +85,8 @@ where
         load_internal_asset!(
             app,
             PARTICLE_SHADER_HANDLE,
-            "particle.wgsl",
-            Shader::from_wgsl
+            "particle.wesl",
+            |src, _| crate::wesl_shader(src, "morph/particle.wesl")
         );
 
         app.register_type::<ParticleBehaviors>();
@@ -202,6 +202,7 @@ impl<R: PlanarSync> FromWorld for ParticleBehaviorPipeline<R> {
                 shader_defs: shader_defs.clone(),
                 entry_point: Some("apply_particle_behaviors".into()),
                 zero_initialize_workgroup_memory: true,
+                constants: vec![],
             });
 
         Self {

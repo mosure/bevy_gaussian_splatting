@@ -1,44 +1,40 @@
-#define_import_path bevy_gaussian_splatting::gaussian_2d
-
-#ifdef GAUSSIAN_2D
-#import bevy_gaussian_splatting::bindings::{
+import bevy_gaussian_splatting::render::bindings::{
     view,
     gaussian_uniforms,
-}
-#import bevy_gaussian_splatting::helpers::{
+};
+import bevy_gaussian_splatting::render::helpers::{
     get_rotation_matrix,
     get_scale_matrix,
     intrinsic_matrix,
-}
+};
 
-#ifdef PACKED
-    #import bevy_gaussian_splatting::packed::{
-        get_position,
-        get_color,
-        get_visibility,
-        get_opacity,
-        get_rotation,
-        get_scale,
-    }
-#else ifdef BUFFER_STORAGE
-    #import bevy_gaussian_splatting::planar::{
-        get_position,
-        get_color,
-        get_visibility,
-        get_opacity,
-        get_rotation,
-        get_scale,
-    }
-#else BUFFER_TEXTURE
-    #import bevy_gaussian_splatting::texture::{
-        get_position,
-        get_color,
-        get_visibility,
-        get_opacity,
-        get_rotation,
-        get_scale,
-    }
-#endif
+@if(PACKED)
+import bevy_gaussian_splatting::render::packed::{
+    get_position,
+    get_color,
+    get_visibility,
+    get_opacity,
+    get_rotation,
+    get_scale,
+};
+@if(!PACKED && BUFFER_STORAGE)
+import bevy_gaussian_splatting::render::planar::{
+    get_position,
+    get_color,
+    get_visibility,
+    get_opacity,
+    get_rotation,
+    get_scale,
+};
+@if(!PACKED && !BUFFER_STORAGE)
+import bevy_gaussian_splatting::render::texture::{
+    get_position,
+    get_color,
+    get_visibility,
+    get_opacity,
+    get_rotation,
+    get_scale,
+};
 
 struct Surfel {
     local_to_pixel: mat3x3<f32>,
@@ -154,5 +150,3 @@ fn surfel_fragment_power(
 
     return power;
 }
-
-#endif  // GAUSSIAN_2D

@@ -82,13 +82,13 @@ where
             return;
         }
 
-        load_internal_asset!(app, RADIX_SHADER_HANDLE, "radix.wgsl", Shader::from_wgsl);
+        load_internal_asset!(app, RADIX_SHADER_HANDLE, "radix.wesl", |src, _| crate::wesl_shader(src, "sort/radix.wesl"));
 
         load_internal_asset!(
             app,
             TEMPORAL_SORT_SHADER_HANDLE,
-            "temporal.wgsl",
-            Shader::from_wgsl
+            "temporal.wesl",
+            |src, _| crate::wesl_shader(src, "sort/temporal.wesl")
         );
 
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
@@ -378,6 +378,7 @@ fn queue_radix_sort_pipeline_variant(
         shader: RADIX_SHADER_HANDLE,
         shader_defs: shader_defs.clone(),
         entry_point: Some("radix_reset".into()),
+        constants: vec![],
         zero_initialize_workgroup_memory: true,
     });
 
@@ -388,6 +389,7 @@ fn queue_radix_sort_pipeline_variant(
         shader: RADIX_SHADER_HANDLE,
         shader_defs: shader_defs.clone(),
         entry_point: Some("radix_sort_a".into()),
+        constants: vec![],
         zero_initialize_workgroup_memory: true,
     });
 
@@ -398,6 +400,7 @@ fn queue_radix_sort_pipeline_variant(
         shader: RADIX_SHADER_HANDLE,
         shader_defs: shader_defs.clone(),
         entry_point: Some("radix_sort_b".into()),
+        constants: vec![],
         zero_initialize_workgroup_memory: true,
     });
 
@@ -408,6 +411,7 @@ fn queue_radix_sort_pipeline_variant(
         shader: RADIX_SHADER_HANDLE,
         shader_defs: shader_defs.clone(),
         entry_point: Some("radix_sort_c_count_tiles".into()),
+        constants: vec![],
         zero_initialize_workgroup_memory: true,
     });
 
@@ -418,6 +422,7 @@ fn queue_radix_sort_pipeline_variant(
         shader: RADIX_SHADER_HANDLE,
         shader_defs: shader_defs.clone(),
         entry_point: Some("radix_sort_c_scan_tiles".into()),
+        constants: vec![],
         zero_initialize_workgroup_memory: true,
     });
 
@@ -428,6 +433,7 @@ fn queue_radix_sort_pipeline_variant(
         shader: RADIX_SHADER_HANDLE,
         shader_defs,
         entry_point: Some("radix_sort_c_scatter".into()),
+        constants: vec![],
         zero_initialize_workgroup_memory: true,
     });
 
@@ -741,7 +747,7 @@ fn run_radix_sort<R: PlanarSync>(
                 .unwrap();
             pass.set_pipeline(radix_sort_c_scan);
             // ONE workgroup of RADIX_BASE lanes (lane = digit), not RADIX_BASE single-lane
-            // workgroups -- see `radix_sort_c_scan_tiles`'s @workgroup_size in radix.wgsl.
+            // workgroups -- see `radix_sort_c_scan_tiles`'s @workgroup_size in radix.wesl.
             pass.dispatch_workgroups(1, 1, 1);
 
             let radix_sort_c_scatter = pipeline_cache

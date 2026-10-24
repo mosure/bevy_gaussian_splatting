@@ -1,5 +1,3 @@
-#define_import_path bevy_gaussian_splatting::noise
-
 //  MIT License. © Ian McEwan, Stefan Gustavson, Munrocket, Johan Helsing
 //
 fn mod289_2d(x: vec2<f32>) -> vec2<f32> {

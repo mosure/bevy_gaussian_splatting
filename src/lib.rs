@@ -4,6 +4,15 @@
 use bevy::prelude::*;
 pub use bevy_interleave::prelude::*;
 
+/// Builds a WESL shader registered under `embedded://bevy_gaussian_splatting/<module>`,
+/// so `import bevy_gaussian_splatting::<module>::...` resolves to it.
+pub(crate) fn wesl_shader(source: &'static str, module: &str) -> bevy::shader::Shader {
+    bevy::shader::Shader::from_wesl(
+        source,
+        format!("embedded://bevy_gaussian_splatting/{module}"),
+    )
+}
+
 pub use camera::GaussianCamera;
 
 pub use gaussian::{

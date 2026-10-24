@@ -1,17 +1,11 @@
-#define_import_path bevy_gaussian_splatting::optical_flow
+import bevy_render::color_operations::hsv_to_rgb;
+import bevy_render::maths::PI_2;
 
-#import bevy_pbr::{
-    forward_io::VertexOutput,
-    prepass_utils,
-}
-#import bevy_render::color_operations::hsv_to_rgb
-#import bevy_render::maths::PI_2
-
-#import bevy_gaussian_splatting::bindings::{
+import bevy_gaussian_splatting::render::bindings::{
     globals,
     previous_view_uniforms,
     view,
-}
+};
 
 fn calculate_motion_vector(
     world_position: vec3<f32>,
