@@ -164,7 +164,9 @@ pub fn decode_sog(
     let (width, height) = means_l.dimensions();
     for image in [&means_u, &scales, &quats, &sh0] {
         if image.dimensions() != (width, height) {
-            return Err(invalid("SOG per-Gaussian images have mismatched dimensions"));
+            return Err(invalid(
+                "SOG per-Gaussian images have mismatched dimensions",
+            ));
         }
     }
     if meta.count > width as usize * height as usize {
@@ -180,7 +182,9 @@ pub fn decode_sog(
                 return Err(invalid("SOG shN labels have mismatched dimensions"));
             }
             if centroids.width() as usize != 64 * coeffs {
-                return Err(invalid("SOG shN palette width does not match its band count"));
+                return Err(invalid(
+                    "SOG shN palette width does not match its band count",
+                ));
             }
             Some((sh_n, coeffs, centroids, labels))
         }
@@ -210,9 +214,8 @@ pub fn decode_sog(
 
         // scale: codebook holds log-domain values
         let scale_texel = scales.get_pixel(x, y).0;
-        for axis in 0..3 {
-            gaussian.scale_opacity.scale[axis] =
-                lookup(&meta.scales.codebook, scale_texel[axis])?.exp();
+        for (scale, code) in gaussian.scale_opacity.scale.iter_mut().zip(scale_texel) {
+            *scale = lookup(&meta.scales.codebook, code)?.exp();
         }
 
         // DC color (SH coefficient 0) and linear opacity
@@ -423,7 +426,11 @@ pub(crate) mod tests {
         assert_eq!(gaussians.len(), 32);
 
         let g0 = &gaussians[0];
-        assert_close(g0.position_visibility.position[0], 1.0f32.exp() - 1.0, TOLERANCE);
+        assert_close(
+            g0.position_visibility.position[0],
+            1.0f32.exp() - 1.0,
+            TOLERANCE,
+        );
         assert_close(g0.position_visibility.position[1], 0.0, 1e-3);
         assert_close(g0.position_visibility.position[2], 0.0, 1e-3);
 
@@ -493,6 +500,9 @@ pub(crate) mod tests {
             "scales": {"codebook":[], "files":["c"]}, "quats": {"files":["d"]}, "sh0": {"codebook":[], "files":["e"]}
         });
         let zip_bytes = build_zip(&[("meta.json", serde_json::to_vec(&meta).unwrap())]);
-        assert!(parse_sog_zip(&zip_bytes).is_err(), "traversal must be rejected");
+        assert!(
+            parse_sog_zip(&zip_bytes).is_err(),
+            "traversal must be rejected"
+        );
     }
 }

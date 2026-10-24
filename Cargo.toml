@@ -21,7 +21,9 @@ categories = [
 repository = "https://github.com/mosure/bevy_gaussian_splatting"
 readme = "README.md"
 exclude = [
+  ".cargo",
   ".devcontainer",
+  ".vscode",
   ".github",
   "docs",
   "dist",

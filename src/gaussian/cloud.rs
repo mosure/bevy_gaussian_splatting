@@ -4,8 +4,8 @@ use bevy::{
         visibility::{NoFrustumCulling, VisibilityClass, VisibilitySystems, add_visibility_class},
     },
     ecs::{lifecycle::HookContext, world::DeferredWorld},
-    shape::BoundingVolume,
     prelude::*,
+    shape::BoundingVolume,
 };
 use bevy_interleave::prelude::*;
 

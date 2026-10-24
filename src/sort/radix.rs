@@ -82,7 +82,9 @@ where
             return;
         }
 
-        load_internal_asset!(app, RADIX_SHADER_HANDLE, "radix.wesl", |src, _| crate::wesl_shader(src, "sort/radix.wesl"));
+        load_internal_asset!(app, RADIX_SHADER_HANDLE, "radix.wesl", |src, _| {
+            crate::wesl_shader(src, "sort/radix.wesl")
+        });
 
         load_internal_asset!(
             app,
@@ -618,6 +620,15 @@ pub fn queue_radix_bind_group<R: PlanarSync>(
     }
 }
 
+#[allow(type_alias_bounds)]
+type RadixCloudQueryItem<R: PlanarSync> = (
+    &'static <R as PlanarSync>::PlanarTypeHandle,
+    &'static PlanarStorageBindGroup<R>,
+    &'static RadixBindGroup,
+    &'static DynamicUniformIndex<CloudUniform>,
+    &'static CloudSettings,
+);
+
 #[allow(clippy::too_many_arguments)]
 fn run_radix_sort<R: PlanarSync>(
     mut render_context: RenderContext,
@@ -627,13 +638,7 @@ fn run_radix_sort<R: PlanarSync>(
     sort_buffers: Res<RadixSortBuffers<R>>,
     gpu_planars: Res<RenderAssets<R::GpuPlanarType>>,
     view_bind_group: ViewQuery<RadixViewQueryItem>,
-    gaussian_clouds: Query<(
-        &'static <R as PlanarSync>::PlanarTypeHandle,
-        &'static PlanarStorageBindGroup<R>,
-        &'static RadixBindGroup,
-        &'static DynamicUniformIndex<CloudUniform>,
-        &'static CloudSettings,
-    )>,
+    gaussian_clouds: Query<RadixCloudQueryItem<R>>,
 ) where
     R::GpuPlanarType: GpuPlanarStorage,
 {

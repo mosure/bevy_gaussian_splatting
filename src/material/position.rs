@@ -9,11 +9,8 @@ pub struct PositionMaterialPlugin;
 
 impl Plugin for PositionMaterialPlugin {
     fn build(&self, app: &mut App) {
-        load_internal_asset!(
-            app,
-            POSITION_SHADER_HANDLE,
-            "position.wesl",
-            |src, _| crate::wesl_shader(src, "material/position.wesl")
-        );
+        load_internal_asset!(app, POSITION_SHADER_HANDLE, "position.wesl", |src, _| {
+            crate::wesl_shader(src, "material/position.wesl")
+        });
     }
 }

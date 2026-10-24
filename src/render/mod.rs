@@ -143,19 +143,13 @@ where
             return;
         }
 
-        load_internal_asset!(
-            app,
-            BINDINGS_SHADER_HANDLE,
-            "bindings.wesl",
-            |src, _| crate::wesl_shader(src, "render/bindings.wesl")
-        );
+        load_internal_asset!(app, BINDINGS_SHADER_HANDLE, "bindings.wesl", |src, _| {
+            crate::wesl_shader(src, "render/bindings.wesl")
+        });
 
-        load_internal_asset!(
-            app,
-            GAUSSIAN_SHADER_HANDLE,
-            "gaussian.wesl",
-            |src, _| crate::wesl_shader(src, "render/gaussian.wesl")
-        );
+        load_internal_asset!(app, GAUSSIAN_SHADER_HANDLE, "gaussian.wesl", |src, _| {
+            crate::wesl_shader(src, "render/gaussian.wesl")
+        });
 
         load_internal_asset!(
             app,
@@ -178,30 +172,25 @@ where
             |src, _| crate::wesl_shader(src, "render/gaussian_4d.wesl")
         );
 
-        load_internal_asset!(
-            app,
-            HELPERS_SHADER_HANDLE,
-            "helpers.wesl",
-            |src, _| crate::wesl_shader(src, "render/helpers.wesl")
-        );
+        load_internal_asset!(app, HELPERS_SHADER_HANDLE, "helpers.wesl", |src, _| {
+            crate::wesl_shader(src, "render/helpers.wesl")
+        });
 
-        load_internal_asset!(app, PACKED_SHADER_HANDLE, "packed.wesl", |src, _| crate::wesl_shader(src, "render/packed.wesl"));
+        load_internal_asset!(app, PACKED_SHADER_HANDLE, "packed.wesl", |src, _| {
+            crate::wesl_shader(src, "render/packed.wesl")
+        });
 
-        load_internal_asset!(app, PLANAR_SHADER_HANDLE, "planar.wesl", |src, _| crate::wesl_shader(src, "render/planar.wesl"));
+        load_internal_asset!(app, PLANAR_SHADER_HANDLE, "planar.wesl", |src, _| {
+            crate::wesl_shader(src, "render/planar.wesl")
+        });
 
-        load_internal_asset!(
-            app,
-            TEXTURE_SHADER_HANDLE,
-            "texture.wesl",
-            |src, _| crate::wesl_shader(src, "render/texture.wesl")
-        );
+        load_internal_asset!(app, TEXTURE_SHADER_HANDLE, "texture.wesl", |src, _| {
+            crate::wesl_shader(src, "render/texture.wesl")
+        });
 
-        load_internal_asset!(
-            app,
-            TRANSFORM_SHADER_HANDLE,
-            "transform.wesl",
-            |src, _| crate::wesl_shader(src, "render/transform.wesl")
-        );
+        load_internal_asset!(app, TRANSFORM_SHADER_HANDLE, "transform.wesl", |src, _| {
+            crate::wesl_shader(src, "render/transform.wesl")
+        });
 
         app.add_plugins(UniformComponentPlugin::<CloudUniform>::default());
 

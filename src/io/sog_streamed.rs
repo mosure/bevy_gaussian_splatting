@@ -61,7 +61,9 @@ fn checked_relative(name: &str) -> io::Result<&str> {
     if safe {
         Ok(name)
     } else {
-        Err(invalid("streamed SOG paths must be relative and stay in the dataset"))
+        Err(invalid(
+            "streamed SOG paths must be relative and stay in the dataset",
+        ))
     }
 }
 
@@ -79,7 +81,9 @@ fn collect_level0_runs(node: &Node, out: &mut Vec<LodRun>) -> io::Result<()> {
             }
             Ok(())
         }
-        _ => Err(invalid("streamed SOG nodes must be either interior or leaf")),
+        _ => Err(invalid(
+            "streamed SOG nodes must be either interior or leaf",
+        )),
     }
 }
 
@@ -116,7 +120,9 @@ pub fn decode_streamed(
 
     let version = index.version.unwrap_or(1);
     if version > 1 {
-        return Err(invalid(format!("unsupported streamed SOG version {version}")));
+        return Err(invalid(format!(
+            "unsupported streamed SOG version {version}"
+        )));
     }
 
     let mut runs = Vec::new();
@@ -222,7 +228,8 @@ mod tests {
     }
 
     fn write_dataset(name: &str, index: &serde_json::Value) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("sog_streamed_{}_{}", std::process::id(), name));
+        let root =
+            std::env::temp_dir().join(format!("sog_streamed_{}_{}", std::process::id(), name));
         let _ = std::fs::remove_dir_all(&root);
         for (file, data) in dataset_files(index) {
             let path = root.join(&file);
@@ -317,20 +324,29 @@ mod tests {
         let padding = gaussians.iter().filter(|g| is_padding(g)).count();
         let finite = gaussians.iter().filter(|g| !is_padding(g)).all(|g| {
             g.position_visibility.position.iter().all(|v| v.is_finite())
-                && g.scale_opacity.scale.iter().all(|v| v.is_finite() && *v > 0.0)
+                && g.scale_opacity
+                    .scale
+                    .iter()
+                    .all(|v| v.is_finite() && *v > 0.0)
                 && g.scale_opacity.opacity.is_finite()
         });
 
         println!("file: {path}");
         println!("gaussians (padded): {}", gaussians.len());
         println!("decode time: {elapsed:.2?}");
-        println!("first position: {:?}", gaussians[0].position_visibility.position);
+        println!(
+            "first position: {:?}",
+            gaussians[0].position_visibility.position
+        );
         println!("padding splats: {padding}");
         println!("all finite with positive scales: {finite}");
 
         assert!(!gaussians.is_empty());
         assert_eq!(gaussians.len() % 32, 0);
         assert!(padding < 32, "at most 31 padding splats expected");
-        assert!(finite, "decoded values must be finite, with positive scales");
+        assert!(
+            finite,
+            "decoded values must be finite, with positive scales"
+        );
     }
 }

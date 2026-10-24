@@ -82,12 +82,9 @@ where
             render_app.add_systems(ExtractSchedule, extract_particle_behaviors);
         }
 
-        load_internal_asset!(
-            app,
-            PARTICLE_SHADER_HANDLE,
-            "particle.wesl",
-            |src, _| crate::wesl_shader(src, "morph/particle.wesl")
-        );
+        load_internal_asset!(app, PARTICLE_SHADER_HANDLE, "particle.wesl", |src, _| {
+            crate::wesl_shader(src, "morph/particle.wesl")
+        });
 
         app.register_type::<ParticleBehaviors>();
         app.register_type::<ParticleBehaviorsHandle>();

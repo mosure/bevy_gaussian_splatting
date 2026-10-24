@@ -29,8 +29,9 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE};
 #[cfg(not(target_arch = "wasm32"))]
 use bevy_gaussian_splatting::GaussianPrimitiveMetadata;
 use bevy_gaussian_splatting::{
-    CloudSettings, GaussianCamera, GaussianMode, GaussianScene, GaussianSceneHandle, GaussianSplattingPlugin, PlanarGaussian3d, PlanarGaussian3dHandle,
-    PlanarGaussian4d, PlanarGaussian4dHandle,
+    CloudSettings, GaussianCamera, GaussianMode, GaussianScene, GaussianSceneHandle,
+    GaussianSplattingPlugin, PlanarGaussian3d, PlanarGaussian3dHandle, PlanarGaussian4d,
+    PlanarGaussian4dHandle,
     gaussian::interface::TestCloud,
     io::scene::GaussianSceneLoaded,
     random_gaussians_3d, random_gaussians_3d_seeded, random_gaussians_4d,

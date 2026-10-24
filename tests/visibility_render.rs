@@ -138,7 +138,7 @@ mod headless {
                 PlanarGaussian3dHandle(cloud),
                 CloudSettings {
                     gaussian_mode: GaussianMode::Gaussian3d,
-                    sort_mode: SortMode::None,
+                    sort_mode: SortMode::default(),
                     global_opacity: 2.0,
                     global_scale: 1.0,
                     opacity_adaptive_radius: false,

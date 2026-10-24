@@ -18,7 +18,7 @@ bevy_gaussian_splatting --input-cloud [file://gaussian.ply | https://mitchell.mo
 bevy_gaussian_splatting --input-scene [file://scene.glb | https://mitchell.mosure.me/trellis.glb]
 ```
 
-> note: the `nightly_generic_alias` feature enables nightly-only bound checking on generic type aliases. it is optional; the default build compiles on stable rust
+> note: the `nightly_generic_alias` feature enables nightly-only bound checking on generic type aliases. it is optional; the default build compiles on stable rust 1.97.1 or later
 
 contributors who want the generic alias checks can run them with nightly: `cargo +nightly test --features nightly_generic_alias`
 
