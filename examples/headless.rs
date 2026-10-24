@@ -355,12 +355,14 @@ fn save_captured_frame(
     asset_server: Res<AssetServer>,
     clouds: Query<&PlanarGaussian3dHandle>,
 ) {
-    // do not start the countdown until every cloud has finished loading, since large
-    // assets (e.g. SSOG) can take far longer than the fixed frame count
-    if clouds
-        .iter()
-        .any(|cloud| !asset_server.is_loaded_with_dependencies(cloud.0.id()))
-    {
+    // do not start the countdown until every file-backed cloud has finished loading, since large
+    // assets (e.g. SSOG) can take far longer than the fixed frame count. generated clouds
+    // (test model, --gaussian-count) are inserted via `Assets::add` and have no asset path, so
+    // they never enter the loader and must not be waited on.
+    if clouds.iter().any(|cloud| {
+        asset_server.get_path(cloud.0.id()).is_some()
+            && !asset_server.is_loaded_with_dependencies(cloud.0.id())
+    }) {
         while receiver.try_recv().is_ok() {}
         return;
     }
