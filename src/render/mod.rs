@@ -146,61 +146,61 @@ where
         load_internal_asset!(
             app,
             BINDINGS_SHADER_HANDLE,
-            "bindings.wgsl",
-            Shader::from_wgsl
+            "bindings.wesl",
+            |src, _| crate::wesl_shader(src, "render/bindings.wesl")
         );
 
         load_internal_asset!(
             app,
             GAUSSIAN_SHADER_HANDLE,
-            "gaussian.wgsl",
-            Shader::from_wgsl
+            "gaussian.wesl",
+            |src, _| crate::wesl_shader(src, "render/gaussian.wesl")
         );
 
         load_internal_asset!(
             app,
             GAUSSIAN_2D_SHADER_HANDLE,
-            "gaussian_2d.wgsl",
-            Shader::from_wgsl
+            "gaussian_2d.wesl",
+            |src, _| crate::wesl_shader(src, "render/gaussian_2d.wesl")
         );
 
         load_internal_asset!(
             app,
             GAUSSIAN_3D_SHADER_HANDLE,
-            "gaussian_3d.wgsl",
-            Shader::from_wgsl
+            "gaussian_3d.wesl",
+            |src, _| crate::wesl_shader(src, "render/gaussian_3d.wesl")
         );
 
         load_internal_asset!(
             app,
             GAUSSIAN_4D_SHADER_HANDLE,
-            "gaussian_4d.wgsl",
-            Shader::from_wgsl
+            "gaussian_4d.wesl",
+            |src, _| crate::wesl_shader(src, "render/gaussian_4d.wesl")
         );
 
         load_internal_asset!(
             app,
             HELPERS_SHADER_HANDLE,
-            "helpers.wgsl",
-            Shader::from_wgsl
+            "helpers.wesl",
+            |src, _| crate::wesl_shader(src, "render/helpers.wesl")
         );
 
-        load_internal_asset!(app, PACKED_SHADER_HANDLE, "packed.wgsl", Shader::from_wgsl);
+        load_internal_asset!(app, PACKED_SHADER_HANDLE, "packed.wesl", |src, _| crate::wesl_shader(src, "render/packed.wesl"));
 
-        load_internal_asset!(app, PLANAR_SHADER_HANDLE, "planar.wgsl", Shader::from_wgsl);
+        load_internal_asset!(app, PLANAR_SHADER_HANDLE, "planar.wesl", |src, _| crate::wesl_shader(src, "render/planar.wesl"));
 
         load_internal_asset!(
             app,
             TEXTURE_SHADER_HANDLE,
-            "texture.wgsl",
-            Shader::from_wgsl
+            "texture.wesl",
+            |src, _| crate::wesl_shader(src, "render/texture.wesl")
         );
 
         load_internal_asset!(
             app,
             TRANSFORM_SHADER_HANDLE,
-            "transform.wgsl",
-            Shader::from_wgsl
+            "transform.wesl",
+            |src, _| crate::wesl_shader(src, "render/transform.wesl")
         );
 
         app.add_plugins(UniformComponentPlugin::<CloudUniform>::default());
@@ -806,6 +806,39 @@ pub fn shader_defs_with_defines(
         ),
     ];
 
+    // WESL `@if` takes bare flags only, so the thresholds the shaders branch on
+    // are precomputed here instead of being written as comparisons in shader code.
+    let sh_coeff_count = SH_COEFF_COUNT as u32;
+    let sh_degree = SH_DEGREE as u32;
+    let sh_degree_time = SH_4D_DEGREE_TIME as u32;
+    shader_defs.push(ShaderDefVal::Bool(
+        "SINGLE_SH_VEC4_PLANE".into(),
+        SH_VEC4_PLANES == 1,
+    ));
+    shader_defs.push(ShaderDefVal::Bool(
+        "SH_COEFF_COUNT_GT_11".into(),
+        sh_coeff_count > 11,
+    ));
+    shader_defs.push(ShaderDefVal::Bool(
+        "SH_COEFF_COUNT_GT_26".into(),
+        sh_coeff_count > 26,
+    ));
+    shader_defs.push(ShaderDefVal::Bool(
+        "SH_COEFF_COUNT_GT_47".into(),
+        sh_coeff_count > 47,
+    ));
+    shader_defs.push(ShaderDefVal::Bool("SH_DEGREE_GT_0".into(), sh_degree > 0));
+    shader_defs.push(ShaderDefVal::Bool("SH_DEGREE_GT_1".into(), sh_degree > 1));
+    shader_defs.push(ShaderDefVal::Bool("SH_DEGREE_GT_2".into(), sh_degree > 2));
+    shader_defs.push(ShaderDefVal::Bool(
+        "SH_DEGREE_TIME_GT_0".into(),
+        sh_degree_time > 0,
+    ));
+    shader_defs.push(ShaderDefVal::Bool(
+        "SH_DEGREE_TIME_GT_1".into(),
+        sh_degree_time > 1,
+    ));
+
     if key.aabb {
         shader_defs.push("USE_AABB".into());
     }
@@ -940,11 +973,13 @@ impl<R: PlanarSync> SpecializedRenderPipeline for CloudPipeline<R> {
                 shader_defs: shader_defs.clone(),
                 entry_point: Some("vs_points".into()),
                 buffers: vec![],
+                constants: vec![],
             },
             fragment: Some(FragmentState {
                 shader: self.shader.clone(),
                 shader_defs,
                 entry_point: Some("fs_main".into()),
+                constants: vec![],
                 targets: vec![Some(ColorTargetState {
                     format,
                     blend: Some(if key.additive {

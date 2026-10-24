@@ -1,19 +1,16 @@
-#define_import_path bevy_gaussian_splatting::gaussian_4d
-
-#import bevy_gaussian_splatting::bindings::{
+import bevy_gaussian_splatting::render::bindings::{
     view,
     globals,
     gaussian_uniforms,
-}
+};
 
-#ifdef BUFFER_STORAGE
-    #import bevy_gaussian_splatting::planar::{
-        get_isotropic_rotations,
-        get_scale,
-        get_timestamp,
-        get_time_scale,
-    }
-#endif
+@if(BUFFER_STORAGE)
+import bevy_gaussian_splatting::render::planar::{
+    get_isotropic_rotations,
+    get_scale,
+    get_timestamp,
+    get_time_scale,
+};
 
 struct DecomposedGaussian4d {
     cov3d: array<f32, 6>,

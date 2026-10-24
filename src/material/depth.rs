@@ -9,6 +9,6 @@ pub struct DepthMaterialPlugin;
 
 impl Plugin for DepthMaterialPlugin {
     fn build(&self, app: &mut App) {
-        load_internal_asset!(app, DEPTH_SHADER_HANDLE, "depth.wgsl", Shader::from_wgsl);
+        load_internal_asset!(app, DEPTH_SHADER_HANDLE, "depth.wesl", |src, _| crate::wesl_shader(src, "material/depth.wesl"));
     }
 }

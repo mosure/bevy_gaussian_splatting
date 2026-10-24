@@ -1,9 +1,9 @@
 [package]
 name = "bevy_gaussian_splatting"
 description = "bevy gaussian splatting render pipeline plugin"
-version = "8.0.2"
+version = "9.0.0"
 edition = "2024"
-rust-version = "1.95.0"
+rust-version = "1.97.1"
 authors = ["mosure <mitchell@mosure.me>"]
 license = "MIT OR Apache-2.0"
 keywords = [
@@ -18,7 +18,6 @@ categories = [
   "rendering",
   "rendering::data-formats",
 ]
-homepage = "https://github.com/mosure/bevy_gaussian_splatting"
 repository = "https://github.com/mosure/bevy_gaussian_splatting"
 readme = "README.md"
 exclude = [
@@ -39,6 +38,8 @@ default-run = "bevy_gaussian_splatting"
 default = [
   "io_flexbuffers",
   "io_ply",
+  "io_sog",
+  "io_sog_streamed",
 
   # "packed",
   "planar",
@@ -57,8 +58,6 @@ default = [
   # "morph_particles",
   "morph_interpolate",
 
-  "nightly_generic_alias",
-
   "sort_bitonic",
   "sort_radix",
   "sort_rayon",
@@ -76,6 +75,8 @@ debug_gpu = []
 io_bincode2 = ["dep:bincode2", "dep:flate2"]
 io_flexbuffers = ["dep:flexbuffers"]
 io_ply = ["dep:ply-rs"]
+io_sog = ["dep:image", "dep:zip"]
+io_sog_streamed = ["io_sog"]
 
 material_noise = ["noise", "dep:noise"]
 
@@ -102,7 +103,7 @@ buffer_texture = []
 
 query_raycast = []
 query_select = []
-query_sparse = ["dep:kd-tree", "query_select"]
+query_sparse = ["dep:kd-tree", "dep:typenum", "query_select"]
 
 sort_bitonic = []
 sort_radix = []
@@ -164,9 +165,9 @@ webgpu = ["bevy/webgpu"]
 
 [dependencies]
 base64 = "0.22"
-bevy_args = "4.0.0"
-bevy_interleave = "0.10.0"
-bevy_panorbit_camera = { version = "0.35.0", optional = true }
+bevy_args = "5.0"
+bevy_interleave = "0.11"
+bevy_panorbit_camera = { version = "0.36", optional = true }
 bincode2 = { version = "2.0", optional = true }
 byte-unit = { version = "5.2", optional = true }
 bytemuck = "1.23"
@@ -178,14 +179,16 @@ half = { version = "2.7", features = ["serde"] }
 # image = { version = "0.25.6", default-features = false, features = ["png"] }
 kd-tree = { version = "0.6", optional = true }
 noise = { version = "0.9.0", optional = true }
+image = { version = "0.25", default-features = false, features = ["webp"], optional = true }
 ply-rs = { version = "0.1", optional = true }
 rand = "0.9"
 rayon = { version = "1.8", optional = true }
 serde = "1.0"
 serde_json = "1.0"
 static_assertions = "1.1"
-typenum = "1.18"
-wgpu = "29"
+zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
+typenum = { version = "1.18", optional = true }
+wgpu = "30"
 
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -195,7 +198,7 @@ wasm-bindgen = "0.2"
 
 
 [dependencies.bevy]
-version = "0.19.0"
+version = "0.20.0"
 default-features = false
 features = [
   "bevy_asset",

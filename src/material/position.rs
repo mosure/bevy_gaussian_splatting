@@ -12,8 +12,8 @@ impl Plugin for PositionMaterialPlugin {
         load_internal_asset!(
             app,
             POSITION_SHADER_HANDLE,
-            "position.wgsl",
-            Shader::from_wgsl
+            "position.wesl",
+            |src, _| crate::wesl_shader(src, "material/position.wesl")
         );
     }
 }

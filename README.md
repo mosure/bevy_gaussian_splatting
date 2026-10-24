@@ -13,18 +13,27 @@ bevy gaussian splatting render pipeline plugin. view the [live demo gallery](htt
 ## install
 
 ```bash
-cargo +nightly install bevy_gaussian_splatting
+cargo install bevy_gaussian_splatting
 bevy_gaussian_splatting --input-cloud [file://gaussian.ply | https://mitchell.mosure.me/go_trimmed.ply]
 bevy_gaussian_splatting --input-scene [file://scene.glb | https://mitchell.mosure.me/trellis.glb]
 ```
 
-> note: default bevy_gaussian_splatting features require nightly rust for generic associated types. to use on stable, disable default features and `nightly_generic_alias` feature
+> note: the `nightly_generic_alias` feature enables nightly-only bound checking on generic type aliases. it is optional; the default build compiles on stable rust
+
+contributors who want the generic alias checks can run them with nightly: `cargo +nightly test --features nightly_generic_alias`
 
 ## viewer hotkeys
 
 - `esc`: close viewer
-- `s`: save screenshot to `screenshots/`
+- `p`: save screenshot to `screenshots/`
 - `g`: export the loaded gaussian scene to `exports/gaussian_scene_<frame>.glb` (cloud transforms + active camera)
+- `i`: invert the selection (selected gaussians are hidden, all others are shown, and the previously hidden gaussians become the selection)
+- `o`: save the selected gaussians to `live_output.gcloud` in the working directory
+- `a` / `d`: pan left / right
+- `q` / `e`: pan down / up
+- `w` / `s`: dolly toward / away from the focus
+- arrow keys: orbit (left/right = yaw, up/down = pitch)
+- hold `shift` for finer keyboard steps, `ctrl` for coarser steps (applies only while a movement key is held)
 
 
 ## capabilities
@@ -43,6 +52,8 @@ bevy_gaussian_splatting --input-scene [file://scene.glb | https://mitchell.mosur
 - [X] 3dgs
 - [x] 4dgs
 - [X] [glTF `KHR_gaussian_splatting`](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_gaussian_splatting) scene load/save
+- [X] [SOG (Spatially Organized Gaussians) loading](https://developer.playcanvas.com/user-manual/gaussian-splatting/formats/sog/)
+- [X] [SSOG (Streamed SOG) loading](https://developer.playcanvas.com/user-manual/gaussian-splatting/formats/streamed-sog/)
 - [ ] 4dgs motion blur
 - [ ] [deformable radial kernel](https://github.com/VAST-AI-Research/Deformable-Radial-Kernel-Splatting)
 - [ ] implicit mlp node (isotropic rotation, color)
@@ -123,6 +134,7 @@ the following tools are compatible with `bevy_gaussian_splatting`:
 
 | `bevy_gaussian_splatting` | `bevy` |
 | :--                       | :--    |
+| `9.0`                     | `0.20` |
 | `8.0`                     | `0.19` |
 | `7.0`                     | `0.18` |
 | `6.0`                     | `0.17` |

@@ -62,8 +62,8 @@ where
         load_internal_asset!(
             app,
             INTERPOLATE_SHADER_HANDLE,
-            "interpolate.wgsl",
-            Shader::from_wgsl
+            "interpolate.wesl",
+            |src, _| crate::wesl_shader(src, "morph/interpolate.wesl")
         );
 
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
@@ -102,7 +102,7 @@ fn ensure_gaussian_interpolate_synced<R: PlanarSync>(
                 ?entity,
                 "adding SyncToRenderWorld to GaussianInterpolate entity"
             );
-            commands.entity(entity).insert(SyncToRenderWorld);
+            commands.entity(entity).insert(SyncToRenderWorld::default());
         }
     }
 }
@@ -212,6 +212,7 @@ where
                 shader: INTERPOLATE_SHADER_HANDLE,
                 shader_defs,
                 entry_point: Some("interpolate_gaussians".into()),
+                constants: vec![],
                 zero_initialize_workgroup_memory: true,
             });
 
