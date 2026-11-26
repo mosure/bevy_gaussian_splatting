@@ -50,7 +50,7 @@ fn radix_reset(
     }
     if (global_id.x == 0u && global_id.y == 0u) {
         atomicStore(&sorting.assignment_counter, 0u);
-        draw_indirect.instance_count = 0u;
+        atomicStore(&draw_indirect.instance_count, 0u);
     }
 }
 
